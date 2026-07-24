@@ -6,7 +6,7 @@
  * button in the app talks to the live database and Storage buckets without any
  * other file needing changes.
  *
- * Project: ecafyqlvjqiwetkmboum   (see supabase/setup.sql for the schema)
+ * Project: mgmtggxjlhzsekkrxaus   (see supabase/setup.sql for the schema)
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { createClient } from '@supabase/supabase-js';
@@ -15,10 +15,10 @@ import { createClient } from '@supabase/supabase-js';
 // project this app is wired to. The anon key is public by design (RLS protects data).
 const SUPABASE_URL =
   (import.meta as any).env?.VITE_SUPABASE_URL ||
-  'https://ecafyqlvjqiwetkmboum.supabase.co';
+  'https://mgmtggxjlhzsekkrxaus.supabase.co';
 const SUPABASE_ANON_KEY =
   (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVjYWZ5cWx2anFpd2V0a21ib3VtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5MTkxNTgsImV4cCI6MjEwMDQ5NTE1OH0.NwpGCQNWnWRoAXKYhlSAbizEJArHlQtohKJasYqDvLE';
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1nbXRnZ3hqbGh6c2Vra3J4YXVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5MjI0MjIsImV4cCI6MjEwMDQ5ODQyMn0._SXlyMqNozPIt7Z8jVmKTbYt2caRQ45s3muLTfJbgmk';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
