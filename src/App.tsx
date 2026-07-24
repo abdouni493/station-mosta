@@ -196,7 +196,7 @@ const AppLoader = () => (
         <span className="text-2xl">⛽</span>
       </div>
       <div className="w-10 h-10 border-4 border-white/20 border-t-[#FFB800] rounded-full animate-spin" />
-      <p className="text-white/60 font-semibold text-sm">Chargement de StationPro...</p>
+      <p className="text-white/60 font-semibold text-sm">Chargement de altech station...</p>
     </div>
   </div>
 );

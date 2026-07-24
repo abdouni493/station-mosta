@@ -303,7 +303,7 @@ export function printInvoice(opts: {
   win.document.write(`<html><head><title>${opts.title} ${opts.ref}</title></head>
     <body style="font-family:Arial,sans-serif;color:#1e293b;padding:32px;max-width:720px;margin:auto">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #003087;padding-bottom:16px;margin-bottom:20px">
-        <div><h1 style="margin:0;color:#003087;font-size:22px">${opts.store || 'StationPro'}</h1>
+        <div><h1 style="margin:0;color:#003087;font-size:22px">${opts.store || 'altech station'}</h1>
           <p style="margin:4px 0 0;color:#64748b;font-size:13px">Naftal System</p></div>
         <div style="text-align:right"><h2 style="margin:0;color:#FFB800;font-size:20px">${opts.title}</h2>
           <p style="margin:4px 0 0;font-weight:700">${opts.ref}</p>

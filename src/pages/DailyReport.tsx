@@ -680,7 +680,7 @@ const DailyReport = () => {
                 </div>
                 <div>
                   <h2 className="text-2xl font-black text-white uppercase tracking-tight leading-none">
-                    {settings.name || "STATIONPRO NAFTAL"}
+                    {settings.name || "ALTECH STATION"}
                   </h2>
                   <p className="text-[10px] font-black uppercase tracking-[0.35em] mt-1"
                      style={{ color: `rgba(255,184,0,0.6)` }}>

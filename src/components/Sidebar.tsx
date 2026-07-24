@@ -407,7 +407,7 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
             </div>
             <div className="flex-1 min-w-0">
               <h1 className="text-white font-black text-lg tracking-tight leading-none">
-                {settings?.stationName || settings?.name || "StationPro"}
+                {settings?.stationName || settings?.name || "altech station"}
               </h1>
               <p className="text-[10px] font-semibold uppercase tracking-widest mt-0.5"
                 style={{ color: "rgba(255,184,0,0.65)" }}>Naftal System</p>

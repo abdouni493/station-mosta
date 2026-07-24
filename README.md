@@ -1,4 +1,4 @@
-# StationPro — Naftal Station Manager v2
+# altech station — Naftal Station Manager v2
 
 ## 🎨 Design
 - **Naftal brand**: Blue #003087 + Yellow #FFB800 throughout

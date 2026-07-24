@@ -94,7 +94,7 @@ const routeTitles: Record<string, { title: string; subtitle: string; emoji: stri
 const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const baseRoute = routeTitles[activePath] || MODULE_ROUTE_TITLES[activePath] || { title: "StationPro", subtitle: "", emoji: "⛽" };
+  const baseRoute = routeTitles[activePath] || MODULE_ROUTE_TITLES[activePath] || { title: "altech station", subtitle: "", emoji: "⛽" };
   const keys = routeKeys[activePath];
   const routeInfo = {
     emoji: baseRoute.emoji,
@@ -185,7 +185,7 @@ const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
             style={{ background: "rgba(0,48,135,0.07)" }}>
             <Fuel className="w-3 h-3 text-blue-700" />
           </div>
-          <span className="text-slate-400">StationPro</span>
+          <span className="text-slate-400">altech station</span>
           <ChevronRight className="w-3 h-3 text-slate-300" />
         </div>
         <div className="flex items-center gap-2 min-w-0">

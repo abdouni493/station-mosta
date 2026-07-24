@@ -9,7 +9,7 @@ import LanguageDetector from "i18next-browser-languagedetector";
 const resources = {
   fr: {
     translation: {
-      app_name: "StationPro",
+      app_name: "altech station",
       tagline: "Système de gestion",
 
       login: {
@@ -19,8 +19,6 @@ const resources = {
         email: "Adresse Email",
         password: "Mot de Passe",
         submit: "Se Connecter",
-        demo_admin: "Connexion Démo Administrateur",
-        demo_hint: "Version démo — aucune base de données requise",
         secure_footer: "Connexion sécurisée",
         left_kicker: "Solution de Gestion Intégrée",
         left_title_1: "Gérez votre",
@@ -142,7 +140,7 @@ const resources = {
 
   ar: {
     translation: {
-      app_name: "ستيشن برو",
+      app_name: "ألتك ستيشن",
       tagline: "نظام الإدارة",
 
       login: {
@@ -152,8 +150,6 @@ const resources = {
         email: "البريد الإلكتروني",
         password: "كلمة المرور",
         submit: "تسجيل الدخول",
-        demo_admin: "دخول تجريبي كمشرف",
-        demo_hint: "نسخة تجريبية — لا حاجة لقاعدة بيانات",
         secure_footer: "اتصال آمن",
         left_kicker: "حل إدارة متكامل",
         left_title_1: "أدر",

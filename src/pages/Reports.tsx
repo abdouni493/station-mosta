@@ -1344,7 +1344,7 @@ const Reports = () => {
                 </div>
                 <div>
                   <h3 className="text-lg font-black text-blue-900 uppercase italic tracking-tight">
-                    {settings?.stationName || settings?.name || "STATIONPRO NAFTAL"}
+                    {settings?.stationName || settings?.name || "ALTECH STATION"}
                   </h3>
                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
                     {settings?.address ?? ""}{settings?.phone ? ` · ${settings.phone}` : ""}

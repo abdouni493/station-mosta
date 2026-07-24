@@ -6,7 +6,7 @@ import {
   CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { signIn, signUpAdmin, signOut, signInDemoAdmin, adminExists } from "../lib/supabase";
+import { signIn, signUpAdmin, signOut, adminExists } from "../lib/supabase";
 import { useAppState } from "../store/AppContext";
 
 type UserRole = 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
@@ -38,7 +38,6 @@ const Login = ({ onLogin }: LoginProps) => {
   const [showPass, setShowPass]   = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loading, setLoading]     = useState(false);
-  const [demoLoading, setDemoLoading] = useState(false);
 
   // Signup form state
   const [signupName, setSignupName]         = useState("");
@@ -98,20 +97,6 @@ const Login = ({ onLogin }: LoginProps) => {
       return;
     }
     onLogin(role, result.user?.id);
-  };
-
-  // ── One-click demo administrator login (requires the demo account to exist) ─
-  const handleDemoLogin = async () => {
-    setLoginError(null);
-    setDemoLoading(true);
-    try {
-      const result = await signInDemoAdmin();
-      setDemoLoading(false);
-      onLogin(result.role, result.user?.id);
-    } catch {
-      setDemoLoading(false);
-      setLoginError("Compte démo indisponible. Créez d'abord un compte administrateur.");
-    }
   };
 
   // ── Create admin account via Supabase auth ────────────────────────────────
@@ -229,7 +214,7 @@ const Login = ({ onLogin }: LoginProps) => {
             </motion.div>
           </div>
 
-          <div className="text-white/20 text-xs">© 2026 StationPro · Version Démo</div>
+          <div className="text-white/20 text-xs">© 2026 altech station</div>
         </div>
       </motion.div>
 
@@ -332,31 +317,6 @@ const Login = ({ onLogin }: LoginProps) => {
                     )}
                   </button>
                 </form>
-
-                {/* ── Demo administrator quick-access ── */}
-                <div className="flex items-center gap-3 my-5">
-                  <div className="flex-1 h-px bg-slate-100" />
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">Démo</span>
-                  <div className="flex-1 h-px bg-slate-100" />
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleDemoLogin}
-                  disabled={demoLoading}
-                  className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-black text-sm uppercase tracking-widest text-white transition-all duration-200 hover:shadow-xl active:scale-[0.98] disabled:opacity-70"
-                  style={{ background: "linear-gradient(135deg, #003087 0%, #001f5c 100%)", boxShadow: "0 4px 16px rgba(0,48,135,0.35)" }}
-                >
-                  {demoLoading ? (
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <><ShieldCheck className="w-4 h-4" /><span>{t('login.demo_admin')}</span></>
-                  )}
-                </button>
-
-                <p className="text-center text-[11px] text-slate-400 mt-3 font-medium">
-                  {t('login.demo_hint')}
-                </p>
 
                 {/* ── Create administrator account (shown only until one exists) ── */}
                 {canCreateAdmin && (
