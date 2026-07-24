@@ -224,12 +224,7 @@ const DeliveryNotes = () => {
       });
       return;
     }
-    // Mandatory scan
-    if (photos.length === 0) {
-      setScanError(true);
-      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Le scan du Bon de Livraison est obligatoire" } });
-      return;
-    }
+    // Scan is optional — no longer blocks saving.
 
     setIsLoading(true);
     try {
@@ -604,7 +599,7 @@ const DeliveryNotes = () => {
                 {/* Mandatory scan */}
                 <section className={cn("p-5 bg-white border-2 rounded-[1.8rem] space-y-4", scanError ? "border-red-300" : "border-slate-100")}>
                   <h4 className={cn("text-[10px] font-black uppercase tracking-[0.25em] border-b pb-3 flex items-center gap-2", scanError ? "text-red-600 border-red-100" : "text-slate-400 border-slate-50")}>
-                    <Camera className="w-4 h-4" /> Scanner le Bon de Livraison *
+                    <Camera className="w-4 h-4" /> Scanner le Bon de Livraison <span className="text-slate-300 normal-case">(optionnel)</span>
                   </h4>
                   {scanError && <p className="text-[10px] font-black text-red-600 uppercase">Au moins un scan est obligatoire pour enregistrer.</p>}
                   <div className="grid grid-cols-3 gap-3">

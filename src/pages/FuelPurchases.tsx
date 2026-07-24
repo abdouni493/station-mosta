@@ -295,11 +295,7 @@ const BonsLivraisonTab = () => {
       dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Veuillez remplir tous les champs obligatoires (Fournisseur, N° BL, Date BL, au moins une cuve)" } });
       return;
     }
-    if (photos.length === 0) {
-      setScanError(true);
-      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Le scan du Bon de Livraison est obligatoire" } });
-      return;
-    }
+    // Scan is optional — no longer blocks saving.
     setIsLoading(true);
     try {
       let finalPhotos = [...photos];
@@ -576,7 +572,7 @@ const BonsLivraisonTab = () => {
                 {/* Section 3 — Mandatory Scan */}
                 <section className={cn("space-y-4 p-5 border-2 rounded-2xl", scanError ? "border-red-300 bg-red-50/30" : "border-slate-100 bg-white")}>
                   <h4 className={cn("text-[10px] font-black uppercase tracking-[0.25em] border-b pb-3 flex items-center gap-2", scanError ? "text-red-600 border-red-100" : "text-slate-400 border-slate-100")}>
-                    <Camera className="w-4 h-4" /> Scanner le Bon de Livraison *
+                    <Camera className="w-4 h-4" /> Scanner le Bon de Livraison <span className="text-slate-300 normal-case">(optionnel)</span>
                   </h4>
                   {scanError && <p className="text-[10px] font-black text-red-600 uppercase">Au moins un scan est obligatoire pour enregistrer.</p>}
                   <div className="grid grid-cols-3 gap-3">
@@ -813,12 +809,7 @@ const FacturationTab = () => {
       dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "N° Facture, date et au moins un BL sont requis" } });
       return;
     }
-    // Scan of the invoice is mandatory on creation
-    if (!invoiceImageFile && !form.invoiceImageUrl) {
-      setScanError(true);
-      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Le scan de la facture est obligatoire" } });
-      return;
-    }
+    // Scan of the invoice is optional — no longer blocks saving.
     setIsLoading(true);
     try {
       let imageUrl = form.invoiceImageUrl;
@@ -1085,7 +1076,7 @@ const FacturationTab = () => {
                 {/* Section 5 — Image (mandatory scan) */}
                 <section className={cn("space-y-4 p-5 border-2 rounded-2xl", scanError ? "border-red-300 bg-red-50/30" : "border-slate-100 bg-white")}>
                   <h4 className={cn("text-[10px] font-black uppercase tracking-[0.25em] border-b pb-3 flex items-center gap-2", scanError ? "text-red-600 border-red-100" : "text-[#003087] border-slate-100")}>
-                    <Camera className="w-4 h-4" /> 5. Scanner la facture *
+                    <Camera className="w-4 h-4" /> 5. Scanner la facture <span className="text-slate-300 normal-case">(optionnel)</span>
                   </h4>
                   {scanError && <p className="text-[10px] font-black text-red-600 uppercase">Le scan de la facture est obligatoire pour enregistrer.</p>}
                   <div className="flex items-center gap-4">
@@ -1270,12 +1261,7 @@ const PaiementsTab = () => {
       dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Le N° de reçu est requis" } });
       return;
     }
-    // Scan of the payment receipt is mandatory on creation
-    if (!receiptImageFile && !form.receiptImageUrl) {
-      setScanError(true);
-      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Le scan du reçu de paiement est obligatoire" } });
-      return;
-    }
+    // Scan of the payment receipt is optional — no longer blocks saving.
     setIsLoading(true);
     try {
       let imageUrl = form.receiptImageUrl;
@@ -1469,7 +1455,7 @@ const PaiementsTab = () => {
                 {/* Section 4 — image (mandatory scan) */}
                 <section className={cn("space-y-3 p-5 border-2 rounded-2xl", scanError ? "border-red-300 bg-red-50/30" : "border-slate-100 bg-white")}>
                   <h4 className={cn("text-[10px] font-black uppercase tracking-[0.25em] border-b pb-3 flex items-center gap-2", scanError ? "text-red-600 border-red-100" : "text-[#003087] border-slate-100")}>
-                    <Camera className="w-4 h-4" /> Scanner le reçu de paiement *
+                    <Camera className="w-4 h-4" /> Scanner le reçu de paiement <span className="text-slate-300 normal-case">(optionnel)</span>
                   </h4>
                   {scanError && <p className="text-[10px] font-black text-red-600 uppercase">Le scan du reçu est obligatoire pour enregistrer.</p>}
                   <div className="flex items-center gap-4">

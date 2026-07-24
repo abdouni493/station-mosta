@@ -1,25 +1,33 @@
 /**
- * ─── IN-MEMORY DEMO BACKEND (Supabase replacement) ─────────────────────────────
- * This module is a drop-in, 100 % offline replacement for the former Supabase
- * client. It exposes the SAME public surface (`supabase`, `db`, `signIn`,
- * `dbInsert`, `subscribeTable`, storage helpers, …) so NOTHING else in the app
- * had to change — but every read/write now targets a constant, in-memory demo
- * dataset (see `demoData.ts`). No network, no credentials, no real database.
+ * ─── SUPABASE CLIENT (live backend) ────────────────────────────────────────────
+ * Real Supabase connection for the StationPro app. It keeps the EXACT same public
+ * surface the previous offline mock exposed (`supabase`, `db`, `signIn`,
+ * `dbInsert`, `subscribeTable`, storage helpers, …), so every page, interface and
+ * button in the app talks to the live database and Storage buckets without any
+ * other file needing changes.
  *
- * Mutations made during a session persist in memory (so the UI feels live) and
- * reset back to the rich demo baseline on a full page reload.
+ * Project: ecafyqlvjqiwetkmboum   (see supabase/setup.sql for the schema)
  * ──────────────────────────────────────────────────────────────────────────────
  */
+import { createClient } from '@supabase/supabase-js';
 
-import { buildSeed, DEMO_ADMIN } from './demoData';
+// Connection — values come from Vite env when present, otherwise fall back to the
+// project this app is wired to. The anon key is public by design (RLS protects data).
+const SUPABASE_URL =
+  (import.meta as any).env?.VITE_SUPABASE_URL ||
+  'https://ecafyqlvjqiwetkmboum.supabase.co';
+const SUPABASE_ANON_KEY =
+  (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVjYWZ5cWx2anFpd2V0a21ib3VtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5MTkxNTgsImV4cCI6MjEwMDQ5NTE1OH0.NwpGCQNWnWRoAXKYhlSAbizEJArHlQtohKJasYqDvLE';
 
-// ─── Mutable in-memory store ────────────────────────────────────────────────────
-const store: Record<string, any[]> = buildSeed();
-
-function table(name: string): any[] {
-  if (!store[name]) store[name] = [];
-  return store[name];
-}
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+    storageKey: 'stationpro.auth',
+  },
+});
 
 // ─── Storage bucket names (unchanged public API) ────────────────────────────────
 export const BUCKETS = {
@@ -33,293 +41,162 @@ export const BUCKETS = {
   CLIENT_RECEIPTS: 'client-receipts',
 } as const;
 
-// ─── Query-builder mock ─────────────────────────────────────────────────────────
-// Supports the exact chain the codebase uses:
-//   .select().eq().in().match().order().limit().maybeSingle().single()
-//   .insert().update().upsert().delete()  (all thenable / awaitable)
-type Filter = { kind: 'eq' | 'in' | 'match'; col?: string; val?: any; obj?: Record<string, any> };
+// ─── Storage helpers ────────────────────────────────────────────────────────────
 
-class QueryBuilder<T = any> implements PromiseLike<{ data: any; error: any }> {
-  private _tableName: string;
-  private _op: 'select' | 'insert' | 'update' | 'upsert' | 'delete' = 'select';
-  private _rows: any[] = [];
-  private _changes: Record<string, any> = {};
-  private _filters: Filter[] = [];
-  private _order?: { col: string; ascending: boolean };
-  private _limit?: number;
-  private _single: 'none' | 'maybe' | 'one' = 'none';
-  private _returnAfterWrite = false;
+/** Build a public URL for a stored object. Pass-throughs full URLs / data-URLs. */
+export function getPublicUrl(bucket: string, path: string): string {
+  if (!path) return path;
+  if (path.startsWith('http') || path.startsWith('data:') || path.startsWith('blob:')) return path;
+  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+  return data.publicUrl;
+}
 
-  constructor(tableName: string) { this._tableName = tableName; }
+function randomName(ext = 'jpg'): string {
+  const id = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${id}.${ext}`;
+}
 
-  // ── query kind ──
-  select(_cols?: string) {
-    if (this._op !== 'select') { this._returnAfterWrite = true; return this; }
-    this._op = 'select';
-    return this;
-  }
-  insert(rows: any, _opts?: any) { this._op = 'insert'; this._rows = Array.isArray(rows) ? rows : [rows]; return this; }
-  upsert(rows: any, _opts?: any) { this._op = 'upsert'; this._rows = Array.isArray(rows) ? rows : [rows]; return this; }
-  update(changes: Record<string, any>) { this._op = 'update'; this._changes = changes; return this; }
-  delete() { this._op = 'delete'; return this; }
-
-  // ── filters ──
-  eq(col: string, val: any) { this._filters.push({ kind: 'eq', col, val }); return this; }
-  in(col: string, val: any[]) { this._filters.push({ kind: 'in', col, val }); return this; }
-  match(obj: Record<string, any>) { this._filters.push({ kind: 'match', obj }); return this; }
-  // No-op filter helpers occasionally used
-  neq(col: string, val: any) { this._filters.push({ kind: 'eq', col, val }); return this; }
-
-  order(col: string, opts?: { ascending?: boolean }) { this._order = { col, ascending: opts?.ascending ?? true }; return this; }
-  limit(n: number) { this._limit = n; return this; }
-  maybeSingle() { this._single = 'maybe'; return this; }
-  single() { this._single = 'one'; return this; }
-
-  // ── execution ──
-  private matches(row: any): boolean {
-    return this._filters.every(f => {
-      if (f.kind === 'eq')  return row[f.col!] === f.val;
-      if (f.kind === 'in')  return (f.val as any[]).includes(row[f.col!]);
-      if (f.kind === 'match') return Object.entries(f.obj!).every(([k, v]) => row[k] === v);
-      return true;
+/** Uploads a File to a bucket and returns its public URL (or null on failure). */
+export async function uploadFile(bucket: string, path: string, file: File): Promise<string | null> {
+  try {
+    const key = path && path.length ? path : randomName((file.name?.split('.').pop() || 'jpg'));
+    const { error } = await supabase.storage.from(bucket).upload(key, file, {
+      upsert: true,
+      contentType: file.type || 'image/jpeg',
     });
-  }
-
-  private run(): { data: any; error: any } {
-    const arr = table(this._tableName);
-
-    if (this._op === 'insert') {
-      for (const r of this._rows) arr.push({ ...r });
-      const data = this._single !== 'none' ? (this._rows[0] ?? null) : this._rows;
-      return { data, error: null as any };
-    }
-
-    if (this._op === 'upsert') {
-      for (const r of this._rows) {
-        const idx = arr.findIndex(x => x.id === r.id);
-        if (idx >= 0) arr[idx] = { ...arr[idx], ...r };
-        else arr.push({ ...r });
-      }
-      const data = this._single !== 'none' ? (this._rows[0] ?? null) : this._rows;
-      return { data, error: null as any };
-    }
-
-    if (this._op === 'update') {
-      const updated: any[] = [];
-      for (const row of arr) {
-        if (this.matches(row)) { Object.assign(row, this._changes); updated.push(row); }
-      }
-      const data = this._single !== 'none' ? (updated[0] ?? null) : updated;
-      return { data, error: null as any };
-    }
-
-    if (this._op === 'delete') {
-      for (let i = arr.length - 1; i >= 0; i--) {
-        if (this.matches(arr[i])) arr.splice(i, 1);
-      }
-      return { data: null, error: null as any };
-    }
-
-    // select
-    let rows = arr.filter(r => this.matches(r));
-    if (this._order) {
-      const { col, ascending } = this._order;
-      rows = [...rows].sort((a, b) => {
-        const av = a[col], bv = b[col];
-        if (av === bv) return 0;
-        if (av === undefined || av === null) return 1;
-        if (bv === undefined || bv === null) return -1;
-        return (av < bv ? -1 : 1) * (ascending ? 1 : -1);
-      });
-    }
-    if (this._limit != null) rows = rows.slice(0, this._limit);
-    if (this._single === 'maybe' || this._single === 'one') {
-      return { data: rows[0] ?? null, error: null as any };
-    }
-    return { data: rows, error: null as any };
-  }
-
-  private exec(): Promise<{ data: any; error: any }> {
-    try { return Promise.resolve(this.run()); }
-    catch (e) { return Promise.resolve({ data: null, error: null as any }); }
-  }
-
-  then<R1 = any, R2 = never>(
-    onFulfilled?: ((value: { data: any; error: any }) => R1 | PromiseLike<R1>) | null,
-    onRejected?: ((reason: any) => R2 | PromiseLike<R2>) | null
-  ): Promise<R1 | R2> {
-    return this.exec().then(onFulfilled, onRejected);
-  }
-  catch<R = never>(onRejected?: ((reason: any) => R | PromiseLike<R>) | null) {
-    return this.exec().catch(onRejected);
-  }
-  finally(onFinally?: (() => void) | null) {
-    return this.exec().finally(onFinally);
+    if (error) { console.warn('[uploadFile]', error.message); return null; }
+    return getPublicUrl(bucket, key);
+  } catch (e) {
+    console.warn('[uploadFile] failed', e);
+    return null;
   }
 }
 
-// ─── Auth mock ──────────────────────────────────────────────────────────────────
-const SESSION_KEY = 'demo.auth.session';
-
-interface DemoUser { id: string; email: string; user_metadata?: Record<string, any> }
-interface DemoSession { access_token: string; refresh_token: string; user: DemoUser }
-
-function makeSession(email = DEMO_ADMIN.email): DemoSession {
-  return {
-    access_token: 'demo-access-token',
-    refresh_token: 'demo-refresh-token',
-    user: { id: DEMO_ADMIN.id, email, user_metadata: { name: DEMO_ADMIN.name, role: 'admin' } },
-  };
-}
-
-function loadSession(): DemoSession | null {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) as DemoSession : null;
-  } catch { return null; }
-}
-function saveSession(s: DemoSession | null) {
-  try {
-    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-    else localStorage.removeItem(SESSION_KEY);
-  } catch { /* ignore */ }
-}
-
-let currentSession: DemoSession | null = loadSession();
-type AuthListener = (event: string, session: DemoSession | null) => void;
-const authListeners: AuthListener[] = [];
-function emitAuth(event: string) { authListeners.forEach(cb => { try { cb(event, currentSession); } catch { /* noop */ } }); }
-
-const authApi = {
-  getSession: async () => ({ data: { session: currentSession }, error: null as any }),
-  onAuthStateChange: (cb: AuthListener) => {
-    authListeners.push(cb);
-    return { data: { subscription: { unsubscribe: () => {
-      const i = authListeners.indexOf(cb); if (i >= 0) authListeners.splice(i, 1);
-    } } } };
-  },
-  signInWithPassword: async ({ email }: { email: string; password: string }) => {
-    currentSession = makeSession(email || DEMO_ADMIN.email);
-    saveSession(currentSession);
-    emitAuth('SIGNED_IN');
-    return { data: { user: currentSession.user, session: currentSession }, error: null as any };
-  },
-  signUp: async ({ email }: { email: string; password: string; options?: any }) => {
-    currentSession = makeSession(email || DEMO_ADMIN.email);
-    saveSession(currentSession);
-    emitAuth('SIGNED_IN');
-    return { data: { user: currentSession.user, session: currentSession }, error: null as any };
-  },
-  signOut: async () => {
-    currentSession = null;
-    saveSession(null);
-    emitAuth('SIGNED_OUT');
-    return { error: null as any };
-  },
-  updateUser: async (_attrs: any) => ({ data: { user: currentSession?.user ?? null }, error: null as any }),
-  refreshSession: async () => ({ data: { session: currentSession }, error: null as any }),
-};
-
-// ─── RPC mock ───────────────────────────────────────────────────────────────────
-async function rpc(fn: string, args?: Record<string, any>) {
-  switch (fn) {
-    case 'get_my_role':
-      return { data: 'admin', error: null as any };
-    case 'get_my_worker':
-      return { data: null, error: null as any }; // demo admin has no worker row
-    case 'provision_worker_account':
-      return { data: { ok: true, auth_user_id: `auth-${args?.p_worker_id ?? Date.now()}` }, error: null as any };
-    case 'adjust_tank_level': {
-      // Best-effort: apply the delta so cuve levels stay consistent in the demo.
-      const tankId = args?.p_tank_id ?? args?.tank_id;
-      const delta  = args?.p_delta ?? args?.delta_liters ?? 0;
-      if (tankId) {
-        const t = table('tanks').find(x => x.id === tankId);
-        if (t) t.current = Math.max(0, (+t.current || 0) + (+delta || 0));
-      }
-      return { data: null, error: null as any };
-    }
-    default:
-      return { data: null, error: null as any };
-  }
-}
-
-// ─── Storage mock ───────────────────────────────────────────────────────────────
-const storageApi = {
-  from: (_bucket: string) => ({
-    upload: async (path: string, file: File) => {
-      let publicUrl = path;
-      try { publicUrl = URL.createObjectURL(file); } catch { /* ignore */ }
-      return { data: { path: publicUrl }, error: null as any };
-    },
-    getPublicUrl: (path: string) => ({ data: { publicUrl: path } }),
-    remove: async (_paths: string[]) => ({ data: null, error: null as any }),
-  }),
-};
-
-// ─── The `supabase` client mock ─────────────────────────────────────────────────
-export const supabase = {
-  from: <T = any>(name: string) => new QueryBuilder<T>(name),
-  auth: authApi,
-  rpc,
-  storage: storageApi,
-  channel: (_name: string) => {
-    const ch: any = { on: () => ch, subscribe: () => ch, unsubscribe: () => {} };
-    return ch;
-  },
-  removeChannel: (_ch: any) => {},
-};
-
-// ─── File helpers (offline-friendly) ────────────────────────────────────────────
-export async function uploadFile(_bucket: string, _path: string, file: File): Promise<string | null> {
-  try { return URL.createObjectURL(file); } catch { return null; }
-}
-
+/** Converts a base64 / data-URL string to bytes and uploads it; returns public URL. */
 export async function uploadBase64(
-  _bucket: string,
-  _path: string,
+  bucket: string,
+  path: string,
   base64: string,
-  _mimeType = 'image/jpeg'
+  mimeType = 'image/jpeg'
 ): Promise<string | null> {
-  // A base64 data-URL is already directly usable as an <img src>, so keep it.
-  return base64 || null;
-}
+  try {
+    if (!base64) return null;
+    // Already a hosted URL — nothing to upload.
+    if (base64.startsWith('http') || base64.startsWith('blob:')) return base64;
 
-export function getPublicUrl(_bucket: string, path: string): string {
-  return path;
+    let raw = base64;
+    let mime = mimeType;
+    const m = base64.match(/^data:([^;]+);base64,(.*)$/);
+    if (m) { mime = m[1]; raw = m[2]; }
+
+    const binary = atob(raw);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const ext = (mime.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    const key = path && path.length ? path : randomName(ext);
+
+    const { error } = await supabase.storage.from(bucket).upload(key, bytes, {
+      upsert: true,
+      contentType: mime,
+    });
+    if (error) { console.warn('[uploadBase64]', error.message); return base64; }
+    return getPublicUrl(bucket, key);
+  } catch (e) {
+    console.warn('[uploadBase64] failed', e);
+    // Fall back to the original base64 so the image still renders in the UI.
+    return base64 || null;
+  }
 }
 
 // ─── Auth helpers (public API) ──────────────────────────────────────────────────
 
+const DEMO_EMAIL = 'admin@stationpro.dz';
+const DEMO_PASSWORD = 'stationpro';
+
+async function resolveRole(): Promise<string | null> {
+  try {
+    const { data } = await supabase.rpc('get_my_role');
+    return (data as string | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Demo sign-in. Any credentials succeed and log in as the demo administrator.
+ * Sign in with an email OR a username (+ password). Returns the resolved role so
+ * the login page can route the user; returns `{ error }` on failure.
  */
-export async function signIn(identifier: string, _password: string) {
-  const email = (identifier || DEMO_ADMIN.email).trim().toLowerCase();
-  await authApi.signInWithPassword({ email, password: _password });
-  return { user: currentSession!.user, session: currentSession!, role: 'admin', profile: null };
+export async function signIn(identifier: string, password: string) {
+  let email = (identifier || '').trim();
+
+  // Allow login by username: resolve it to the account email.
+  if (email && !email.includes('@')) {
+    try {
+      const { data } = await supabase.rpc('email_for_username', { p_username: email.toLowerCase() });
+      if (data) email = data as string;
+    } catch { /* fall through — will fail auth below */ }
+  }
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) return { error: error.message };
+
+  const role = await resolveRole();
+  return { user: data.user, session: data.session, role, profile: null };
 }
 
-/** One-click demo administrator login (used by the Login page button). */
+/** One-click demo administrator login (only works if that account exists). */
 export async function signInDemoAdmin() {
-  await authApi.signInWithPassword({ email: DEMO_ADMIN.email, password: 'demo' });
-  return { user: currentSession!.user, session: currentSession!, role: 'admin' as const };
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: DEMO_EMAIL,
+    password: DEMO_PASSWORD,
+  });
+  if (error) throw new Error(error.message);
+  const role = (await resolveRole()) ?? 'admin';
+  return { user: data.user, session: data.session, role: role as 'admin' };
 }
 
-export async function signUpAdmin(params: { name: string; username: string; email: string; password: string }) {
-  await authApi.signUp({ email: params.email, password: params.password });
-  return { user: currentSession!.user, session: currentSession! };
+/**
+ * Create the FIRST administrator account (from the login page's signup form).
+ * Uses a SECURITY DEFINER RPC that provisions a confirmed auth user + profile, so
+ * the new admin can log in immediately (no email-confirmation step).
+ */
+export async function signUpAdmin(params: {
+  name: string; username: string; email: string; password: string;
+}): Promise<{ user: any; session: any } | { error: string }> {
+  const { data, error } = await supabase.rpc('create_admin_account', {
+    p_name: params.name,
+    p_username: params.username,
+    p_email: params.email,
+    p_password: params.password,
+  });
+  if (error) return { error: error.message };
+  if (data && (data as any).ok === false) return { error: (data as any).error || 'Échec de la création' };
+  return { user: null, session: null };
+}
+
+/** True when at least one administrator already exists (hides the signup button). */
+export async function adminExists(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc('admin_exists');
+    if (error) return false;
+    return !!data;
+  } catch {
+    return false;
+  }
 }
 
 export async function signOut() {
-  await authApi.signOut();
+  await supabase.auth.signOut();
 }
 
 export async function getSession() {
-  return currentSession;
+  const { data } = await supabase.auth.getSession();
+  return data.session;
 }
 
-// ─── Worker account provisioning (no-op in demo) ────────────────────────────────
+// ─── Worker account provisioning ────────────────────────────────────────────────
 export type WorkerType = 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
 
 export async function provisionWorkerAccount(input: {
@@ -331,21 +208,37 @@ export async function provisionWorkerAccount(input: {
   name?: string;
   email?: string;
 }): Promise<{ ok: true; auth_user_id?: string } | { ok: false; error: string }> {
-  return { ok: true, auth_user_id: `auth-${input.workerId}` };
+  try {
+    const { data, error } = await supabase.rpc('provision_worker_account', {
+      p_action:      input.action,
+      p_worker_type: input.workerType,
+      p_worker_id:   input.workerId,
+      p_username:    input.username ?? null,
+      p_password:    input.password ?? null,
+      p_name:        input.name ?? null,
+      p_email:       input.email ?? null,
+    });
+    if (error) return { ok: false, error: error.message };
+    if (data && (data as any).ok) {
+      return { ok: true, auth_user_id: (data as any).auth_user_id };
+    }
+    return { ok: false, error: (data as any)?.error || 'Erreur inconnue' };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Erreur réseau' };
+  }
 }
 
-// ─── Generic DB helpers (operate directly on the in-memory store) ───────────────
+// ─── Generic DB helpers (real Supabase queries) ─────────────────────────────────
+
 export async function dbInsert<T extends object>(tableName: string, row: T): Promise<T> {
-  table(tableName).push({ ...(row as any) });
+  const { error } = await supabase.from(tableName).insert(row as any);
+  if (error) console.warn(`[dbInsert:${tableName}]`, error.message);
   return row;
 }
 
 export async function dbUpsert<T extends object>(tableName: string, row: T): Promise<T> {
-  const arr = table(tableName);
-  const r = row as any;
-  const idx = r.id != null ? arr.findIndex(x => x.id === r.id) : -1;
-  if (idx >= 0) arr[idx] = { ...arr[idx], ...r };
-  else arr.push({ ...r });
+  const { error } = await supabase.from(tableName).upsert(row as any);
+  if (error) console.warn(`[dbUpsert:${tableName}]`, error.message);
   return row;
 }
 
@@ -354,16 +247,14 @@ export async function dbUpdate<T extends object>(
   id: string,
   changes: Partial<T>
 ): Promise<Partial<T>> {
-  const arr = table(tableName);
-  const row = arr.find(x => x.id === id);
-  if (row) Object.assign(row, changes);
+  const { error } = await supabase.from(tableName).update(changes as any).eq('id', id);
+  if (error) console.warn(`[dbUpdate:${tableName}]`, error.message);
   return changes;
 }
 
 export async function dbDelete(tableName: string, id: string) {
-  const arr = table(tableName);
-  const idx = arr.findIndex(x => x.id === id);
-  if (idx >= 0) arr.splice(idx, 1);
+  const { error } = await supabase.from(tableName).delete().eq('id', id);
+  if (error) console.warn(`[dbDelete:${tableName}]`, error.message);
 }
 
 export async function dbSelect<T>(
@@ -371,30 +262,43 @@ export async function dbSelect<T>(
   query?: Record<string, unknown>,
   limit?: number
 ): Promise<T[]> {
-  let rows = table(tableName).slice();
+  let q = supabase.from(tableName).select('*');
   if (query) {
-    rows = rows.filter(r => Object.entries(query).every(([k, v]) => r[k] === v));
+    for (const [k, v] of Object.entries(query)) q = q.eq(k, v as any);
   }
-  rows.sort((a, b) => {
-    const av = a.created_at, bv = b.created_at;
+  const { data, error } = await q;
+  if (error) { console.warn(`[dbSelect:${tableName}]`, error.message); return []; }
+
+  // Sort newest-first by created_at when the column exists (matches prior behaviour).
+  let rows = (data as any[]) || [];
+  rows = [...rows].sort((a, b) => {
+    const av = a?.created_at, bv = b?.created_at;
     if (av === bv) return 0;
     if (av == null) return 1;
     if (bv == null) return -1;
-    return av < bv ? 1 : -1; // newest first
+    return av < bv ? 1 : -1;
   });
   if (limit) rows = rows.slice(0, limit);
   return rows as T[];
 }
 
-// ─── Specific data loaders (same shape as before) ───────────────────────────────
+// ─── Specific data loaders (same shape/signatures as before) ────────────────────
 export const db = {
   // Settings
-  getSettings: async () => table('station_settings')[0] ?? null,
+  getSettings: async () => {
+    const { data } = await supabase.from('station_settings').select('*').limit(1).maybeSingle();
+    return data ?? null;
+  },
   saveSettings: async (settings: Record<string, unknown>) => {
-    const arr = table('station_settings');
-    if (arr[0]) { Object.assign(arr[0], settings); return { data: arr[0], error: null as any }; }
-    arr.push({ id: 'settings-1', ...settings });
-    return { data: arr[0], error: null as any };
+    // Keep a single settings row (fixed id) so upserts merge instead of duplicating.
+    const existing = await supabase.from('station_settings').select('id').limit(1).maybeSingle();
+    const id = (existing.data as any)?.id || 'settings-1';
+    const { data, error } = await supabase
+      .from('station_settings')
+      .upsert({ id, ...settings })
+      .select()
+      .maybeSingle();
+    return { data, error };
   },
 
   // Tanks
@@ -522,7 +426,11 @@ export const db = {
   addShopSale:    (s: object) => dbInsert('shop_sales', s),
   updateShopSale: (id: string, s: object) => dbUpdate('shop_sales', id, s),
   deleteShopSale: (id: string) => dbDelete('shop_sales', id),
-  addShopSaleItems: (items: object[]) => { items.forEach(i => table('shop_sale_items').push({ ...i })); return Promise.resolve({ error: null as any }); },
+  addShopSaleItems: async (items: object[]) => {
+    const { error } = await supabase.from('shop_sale_items').insert(items as any);
+    if (error) console.warn('[addShopSaleItems]', error.message);
+    return { error };
+  },
   getShopSaleItems: (saleId: string) => dbSelect('shop_sale_items', { sale_id: saleId }),
 
   // Delivery Notes
@@ -540,7 +448,11 @@ export const db = {
   addPurchase:    (p: object) => dbInsert('purchases', p),
   updatePurchase: (id: string, p: object) => dbUpdate('purchases', id, p),
   deletePurchase: (id: string) => dbDelete('purchases', id),
-  addPurchaseItems:   (items: object[]) => { items.forEach(i => table('purchase_items').push({ ...i })); return Promise.resolve({ error: null as any }); },
+  addPurchaseItems: async (items: object[]) => {
+    const { error } = await supabase.from('purchase_items').insert(items as any);
+    if (error) console.warn('[addPurchaseItems]', error.message);
+    return { error };
+  },
   getPurchaseItems:   (purchaseId: string) => dbSelect('purchase_items', { purchase_id: purchaseId }),
   addPurchasePayment: (p: object) => dbInsert('purchase_payments', p),
   getPurchasePayments:(purchaseId: string) => dbSelect('purchase_payments', { purchase_id: purchaseId }),
@@ -569,11 +481,15 @@ export const db = {
 
   // Admin Profiles
   getAdminProfiles: () => dbSelect('admin_profiles'),
-  getAdminProfile: async (id: string) => table('admin_profiles').find(x => x.id === id) ?? null,
+  getAdminProfile: async (id: string) => {
+    const { data } = await supabase.from('admin_profiles').select('*').eq('id', id).maybeSingle();
+    return data ?? null;
+  },
   updateAdminProfile: (id: string, patch: Record<string, unknown>) => dbUpdate('admin_profiles', id, patch),
 
   // Activity Log
-  addActivityLog: (entry: object) => dbInsert('activity_log', { id: `log-${Date.now()}`, timestamp: new Date().toISOString(), ...entry }),
+  addActivityLog: (entry: object) =>
+    dbInsert('activity_log', { id: `log-${Date.now()}-${Math.random().toString(16).slice(2)}`, timestamp: new Date().toISOString(), ...entry }),
   getActivityLog: () => dbSelect('activity_log', undefined, 200),
 };
 
@@ -601,10 +517,21 @@ export function rowsToCamel<T extends object>(rows: Record<string, unknown>[]): 
   return rows.map(r => rowToCamel<T>(r));
 }
 
-// ─── Realtime subscription (no-op in the offline demo) ──────────────────────────
+// ─── Realtime subscription ──────────────────────────────────────────────────────
 export function subscribeTable(
-  _table: string,
-  _callback: (payload: { eventType: string; new: unknown; old: unknown }) => void
+  table: string,
+  callback: (payload: { eventType: string; new: unknown; old: unknown }) => void
 ) {
-  return () => { /* nothing to unsubscribe — realtime is disabled in demo mode */ };
+  const channel = supabase
+    .channel(`realtime:${table}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table },
+      (payload: any) => {
+        callback({ eventType: payload.eventType, new: payload.new, old: payload.old });
+      }
+    )
+    .subscribe();
+
+  return () => { supabase.removeChannel(channel); };
 }

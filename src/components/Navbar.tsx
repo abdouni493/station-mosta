@@ -4,6 +4,27 @@ import { useNavigate } from "react-router-dom";
 import { Menu, Bell, Globe, ChevronRight, Fuel, X, Search } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { useAppState } from "../store/AppContext";
+import { MODULES, ModuleKey } from "../lib/bizConfig";
+
+// ─── Titles for the new business-module routes ────────────────────────────────
+const SUB_LABELS: Record<string, string> = {
+  stock: "Gestion de stock", purchases: "Achats", production: "Production", comptoir: "Comptoir",
+  pos: "Point de vente", sales: "Ventes", clients: "Clients", suppliers: "Fournisseurs",
+  workers: "Employés", expenses: "Dépenses", caisse: "Caisse", reports: "Rapports",
+  reparations: "Réparations & Lavage", services: "Services",
+};
+const MODULE_ROUTE_TITLES: Record<string, { title: string; subtitle: string; emoji: string }> = (() => {
+  const map: Record<string, { title: string; subtitle: string; emoji: string }> = {
+    "/general-reports": { title: "Rapports Généraux", subtitle: "Bilan consolidé de toutes les activités", emoji: "📊" },
+  };
+  (Object.keys(MODULES) as ModuleKey[]).forEach(k => {
+    const cfg = MODULES[k];
+    Object.entries(SUB_LABELS).forEach(([sub, label]) => {
+      map[`${cfg.base}/${sub}`] = { title: label, subtitle: cfg.label, emoji: cfg.emoji };
+    });
+  });
+  return map;
+})();
 import {
   AlertItem,
   useDashboardAlerts,
@@ -73,7 +94,7 @@ const routeTitles: Record<string, { title: string; subtitle: string; emoji: stri
 const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const baseRoute = routeTitles[activePath] || { title: "StationPro", subtitle: "", emoji: "⛽" };
+  const baseRoute = routeTitles[activePath] || MODULE_ROUTE_TITLES[activePath] || { title: "StationPro", subtitle: "", emoji: "⛽" };
   const keys = routeKeys[activePath];
   const routeInfo = {
     emoji: baseRoute.emoji,

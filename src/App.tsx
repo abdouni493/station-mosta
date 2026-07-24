@@ -42,6 +42,62 @@ import MyPayments from "./pages/MyPayments";
 import MySettings from "./pages/MySettings";
 import ChefBrigade from "./pages/ChefBrigade";
 
+// ─── New business modules (Restaurant / Cafétéria / Lavage / Magasin) ──────────
+import { BizProvider } from "./store/BizContext";
+import { MODULES, ModuleKey } from "./lib/bizConfig";
+import ModuleStock from "./pages/modules/ModuleStock";
+import ModulePurchases from "./pages/modules/ModulePurchases";
+import ModuleProduction from "./pages/modules/ModuleProduction";
+import ModuleComptoir from "./pages/modules/ModuleComptoir";
+import ModulePOS from "./pages/modules/ModulePOS";
+import ModuleSales from "./pages/modules/ModuleSales";
+import ModuleClients from "./pages/modules/ModuleClients";
+import ModuleSuppliers from "./pages/modules/ModuleSuppliers";
+import ModuleWorkers from "./pages/modules/ModuleWorkers";
+import ModuleExpenses from "./pages/modules/ModuleExpenses";
+import ModuleCaisse from "./pages/modules/ModuleCaisse";
+import ModuleReports from "./pages/modules/ModuleReports";
+import ModuleServices from "./pages/modules/ModuleServices";
+import ModuleReparations from "./pages/modules/ModuleReparations";
+import GeneralReports from "./pages/GeneralReports";
+
+// Builds the route list for one business module based on its capabilities.
+function buildModuleRoutes(key: ModuleKey): { path: string; element: React.ReactElement }[] {
+  const cfg = MODULES[key];
+  const b = cfg.base;
+  const routes: { path: string; element: React.ReactElement }[] = [];
+  if (cfg.isService) {
+    routes.push({ path: `${b}/reparations`, element: <ModuleReparations moduleKey={key} /> });
+    routes.push({ path: `${b}/services`, element: <ModuleServices moduleKey={key} /> });
+    routes.push({ path: `${b}/stock`, element: <ModuleStock moduleKey={key} /> });
+    routes.push({ path: `${b}/purchases`, element: <ModulePurchases moduleKey={key} /> });
+    routes.push({ path: `${b}/clients`, element: <ModuleClients moduleKey={key} /> });
+    routes.push({ path: `${b}/suppliers`, element: <ModuleSuppliers moduleKey={key} /> });
+    routes.push({ path: `${b}/workers`, element: <ModuleWorkers moduleKey={key} /> });
+    routes.push({ path: `${b}/expenses`, element: <ModuleExpenses moduleKey={key} /> });
+    routes.push({ path: `${b}/caisse`, element: <ModuleCaisse moduleKey={key} /> });
+    routes.push({ path: `${b}/reports`, element: <ModuleReports moduleKey={key} /> });
+  } else {
+    routes.push({ path: `${b}/stock`, element: <ModuleStock moduleKey={key} /> });
+    routes.push({ path: `${b}/purchases`, element: <ModulePurchases moduleKey={key} /> });
+    if (cfg.hasProduction) {
+      routes.push({ path: `${b}/production`, element: <ModuleProduction moduleKey={key} /> });
+      routes.push({ path: `${b}/comptoir`, element: <ModuleComptoir moduleKey={key} /> });
+    }
+    routes.push({ path: `${b}/pos`, element: <ModulePOS moduleKey={key} /> });
+    routes.push({ path: `${b}/sales`, element: <ModuleSales moduleKey={key} /> });
+    routes.push({ path: `${b}/clients`, element: <ModuleClients moduleKey={key} /> });
+    routes.push({ path: `${b}/suppliers`, element: <ModuleSuppliers moduleKey={key} /> });
+    routes.push({ path: `${b}/workers`, element: <ModuleWorkers moduleKey={key} /> });
+    routes.push({ path: `${b}/expenses`, element: <ModuleExpenses moduleKey={key} /> });
+    routes.push({ path: `${b}/caisse`, element: <ModuleCaisse moduleKey={key} /> });
+    routes.push({ path: `${b}/reports`, element: <ModuleReports moduleKey={key} /> });
+  }
+  return routes;
+}
+
+const MODULE_ROUTES = (Object.keys(MODULES) as ModuleKey[]).flatMap(buildModuleRoutes);
+
 // ─── Route to Module Mapping ───────────────────────────────────────────────────
 /**
  * Maps route paths to permission module IDs for route-level access control.
@@ -187,11 +243,13 @@ export default function App() {
   // Authenticated — load app with Supabase-connected state
   return (
     <AppProvider>
-      <AppContent
-        userRole={auth.userRole}
-        userId={auth.userId}
-        onLogout={auth.logout}
-      />
+      <BizProvider>
+        <AppContent
+          userRole={auth.userRole}
+          userId={auth.userId}
+          onLogout={auth.logout}
+        />
+      </BizProvider>
     </AppProvider>
   );
 }
@@ -335,6 +393,10 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         {/* Analytics */}
         <Route path="/statistics"       element={<ProtectedRoute element={<Statistics />} moduleId="Statistiques" />} />
         <Route path="/reports"          element={<ProtectedRoute element={<Reports />} moduleId="Rapports" />} />
+
+        {/* New business modules (Restaurant / Cafétéria / Lavage / Magasin) */}
+        {MODULE_ROUTES.map(r => React.createElement(Route, { key: r.path, path: r.path, element: r.element }))}
+        <Route path="/general-reports"  element={<GeneralReports />} />
 
         {/* Settings & personal */}
         <Route path="/settings"         element={<Settings />} />

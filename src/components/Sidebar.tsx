@@ -6,11 +6,13 @@ import {
   LogOut, Map, Wrench, TrendingUp, FileText, CreditCard,
   Target, ChevronDown, Gauge, Receipt,
   BarChart2, Archive, UserCog, DollarSign, Building2, ChevronRight, X,
-  Wallet, CalendarCheck, Shield, UserCheck, Calendar
+  Wallet, CalendarCheck, Shield, UserCheck, Calendar,
+  FlaskConical, Beaker, ShoppingBag, Car, Utensils, Coffee, Droplets, FileBarChart
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { useAppState, UserPermissions } from "../store/AppContext";
+import { MODULES, ModuleKey } from "../lib/bizConfig";
 
 // --- Types ---
 
@@ -49,6 +51,46 @@ const roleBadge: Record<string, { label: string; bg: string; text: string }> = {
 };
 
 // --- Admin nav groups ---
+//
+// The sidebar is organised by "part" (activity): a reorganised Carburant part
+// (the original fuel-station app), then four new commerce/production parts
+// (Restaurant, Cafétéria, Lavage & Réparation, Magasin) whose pages live on the
+// self-contained BizContext store with constant demo data.
+
+// Builds a nav group for one business module from its capabilities (config).
+function buildModuleNavGroup(key: ModuleKey): NavGroup {
+  const cfg = MODULES[key];
+  const b = cfg.base;
+  const items: NavItem[] = [];
+  if (cfg.isService) {
+    items.push({ label: "Réparations & Lavage", icon: Car,         path: `${b}/reparations` });
+    items.push({ label: "Services",             icon: Wrench,      path: `${b}/services` });
+    items.push({ label: "Gestion de stock",     icon: Package,     path: `${b}/stock` });
+    items.push({ label: "Achats",               icon: ShoppingCart,path: `${b}/purchases` });
+    items.push({ label: "Clients",              icon: Users,       path: `${b}/clients` });
+    items.push({ label: "Fournisseurs",         icon: Truck,       path: `${b}/suppliers` });
+    items.push({ label: "Employés",             icon: UsersRound,  path: `${b}/workers` });
+    items.push({ label: "Dépenses",             icon: CreditCard,  path: `${b}/expenses` });
+    items.push({ label: "Caisse",               icon: Wallet,      path: `${b}/caisse` });
+    items.push({ label: "Rapports",             icon: BarChart2,   path: `${b}/reports` });
+  } else {
+    items.push({ label: "Gestion de stock",     icon: Package,     path: `${b}/stock` });
+    items.push({ label: "Achats",               icon: ShoppingCart,path: `${b}/purchases` });
+    if (cfg.hasProduction) {
+      items.push({ label: "Production",         icon: FlaskConical,path: `${b}/production` });
+      items.push({ label: "Comptoir",           icon: Beaker,      path: `${b}/comptoir` });
+    }
+    items.push({ label: "Point de vente",       icon: ShoppingBag, path: `${b}/pos` });
+    items.push({ label: "Ventes",               icon: Receipt,     path: `${b}/sales` });
+    items.push({ label: "Clients",              icon: Users,       path: `${b}/clients` });
+    items.push({ label: "Fournisseurs",         icon: Truck,       path: `${b}/suppliers` });
+    items.push({ label: "Employés",             icon: UsersRound,  path: `${b}/workers` });
+    items.push({ label: "Dépenses",             icon: CreditCard,  path: `${b}/expenses` });
+    items.push({ label: "Caisse",               icon: Wallet,      path: `${b}/caisse` });
+    items.push({ label: "Rapports",             icon: BarChart2,   path: `${b}/reports` });
+  }
+  return { id: key, label: cfg.label, items };
+}
 
 const ADMIN_NAV_GROUPS: NavGroup[] = [
   {
@@ -56,58 +98,40 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     items: [{ label: "Tableau de Bord", icon: LayoutDashboard, path: "/dashboard", moduleId: "Tableau de bord" }]
   },
   {
-    id: "ops", label: "Opérations",
+    id: "carburant", label: "Carburant",
     items: [
-      { label: "Brigades",        icon: Target,       path: "/brigades",  moduleId: "Brigades" },
-      { label: "Vente Magasin",   icon: Store,         path: "/shop-pos",  moduleId: "Magasin" },
+      { label: "Ventes Carburant",   icon: Fuel,         path: "/fuel-sales",      moduleId: "Ventes Carburant" },
+      { label: "Brigades",           icon: Target,       path: "/brigades",        moduleId: "Brigades" },
+      { label: "Cuves / Tanks",      icon: Gauge,        path: "/tanks",           moduleId: "Cuves" },
+      { label: "Pompes",             icon: Wrench,       path: "/pumps",           moduleId: "Pompes" },
+      { label: "Pistes",             icon: Map,          path: "/tracks",          moduleId: "Pistes" },
+      { label: "Livraisons",         icon: Truck,        path: "/delivery-notes",  moduleId: "Livraisons" },
+      { label: "Achats Carburant",   icon: ShoppingCart, path: "/fuel-purchases",  moduleId: "Achats Carburant" },
+      { label: "Pompistes",          icon: UsersRound,   path: "/pompistes",       moduleId: "Pompistes" },
+      { label: "Chefs de Brigade",   icon: UserCog,      path: "/brigade-chefs",   moduleId: "Chefs de Brigade" },
+      { label: "Gérants",            icon: Building2,    path: "/gerants",         moduleId: "Gérants" },
+      { label: "Clients",            icon: Users,        path: "/clients",         moduleId: "Clients" },
+      { label: "Fournisseurs",       icon: Truck,        path: "/suppliers",       moduleId: "Fournisseurs" },
+      { label: "Dépenses",           icon: CreditCard,   path: "/expenses",        moduleId: "Dépenses" },
+      { label: "Fiche Journalière",  icon: FileText,     path: "/daily-report",    moduleId: "Rapports" },
+      { label: "Statistiques",       icon: TrendingUp,   path: "/statistics",      moduleId: "Statistiques" },
+      { label: "Rapports Carburant", icon: Receipt,      path: "/reports",         moduleId: "Rapports" },
     ]
   },
+  buildModuleNavGroup("restaurant"),
+  buildModuleNavGroup("cafeteria"),
+  buildModuleNavGroup("lavage"),
+  buildModuleNavGroup("magasin"),
   {
-    id: "fuel", label: "Carburant",
+    id: "systeme", label: "Système",
     items: [
-      { label: "Cuves / Tanks",  icon: Gauge,        path: "/tanks",          moduleId: "Cuves" },
-      { label: "Pompes",         icon: Wrench,       path: "/pumps",          moduleId: "Pompes" },
-      { label: "Pistes",         icon: Map,          path: "/tracks",         moduleId: "Pistes" },
-      { label: "Achats Carburant", icon: ShoppingCart,path: "/fuel-purchases", moduleId: "Achats Carburant" },
-    ]
-  },
-  {
-    id: "magasin", label: "Magasin",
-    items: [
-      { label: "Produits",   icon: Package,     path: "/products",  moduleId: "Produits" },
-      { label: "Achats Magasin", icon: ShoppingCart,path: "/purchases", moduleId: "Achats" },
-      { label: "Inventaire", icon: Archive,     path: "/inventory", moduleId: "Inventaires" },
-    ]
-  },
-  {
-    id: "contacts", label: "Contacts",
-    items: [
-      { label: "Clients",      icon: Users, path: "/clients",   moduleId: "Clients" },
-      { label: "Fournisseurs", icon: Truck, path: "/suppliers", moduleId: "Fournisseurs" },
-    ]
-  },
-  {
-    id: "hr", label: "Personnel",
-    items: [
-      { label: "Pompistes",        icon: UsersRound, path: "/pompistes",       moduleId: "Pompistes" },
-      { label: "Chefs de Brigade", icon: UserCog,    path: "/brigade-chefs",   moduleId: "Chefs de Brigade" },
-      { label: "Gérants",          icon: Building2,  path: "/gerants",         moduleId: "Gérants" },
-      { label: "Employés Magasin", icon: Store,      path: "/magasin-workers", moduleId: "Employés Magasin" },
-      { label: "Modèles Permissions", icon: Shield,  path: "/roles-permissions", moduleId: "Paramètres" },
-    ]
-  },
-  {
-    id: "finance", label: "Finances",
-    items: [
-      { label: "Dépenses",        icon: CreditCard, path: "/expenses",     moduleId: "Dépenses" },
-      { label: "Fiche Journalière",icon: FileText,  path: "/daily-report", moduleId: "Rapports" },
-    ]
-  },
-  {
-    id: "stats", label: "Analytique",
-    items: [
-      { label: "Statistiques", icon: BarChart2, path: "/statistics", moduleId: "Statistiques" },
-      { label: "Rapports",     icon: Receipt,   path: "/reports",    moduleId: "Rapports" },
+      { label: "Rapports Généraux",    icon: FileBarChart, path: "/general-reports" },
+      { label: "Modèles Permissions",  icon: Shield,       path: "/roles-permissions", moduleId: "Paramètres" },
+      { label: "Employés Magasin",     icon: Store,        path: "/magasin-workers",   moduleId: "Employés Magasin" },
+      { label: "Produits (Station)",   icon: Package,      path: "/products",          moduleId: "Produits" },
+      { label: "Vente Magasin (Station)", icon: Store,     path: "/shop-pos",          moduleId: "Magasin" },
+      { label: "Achats Magasin (Station)", icon: ShoppingCart, path: "/purchases",     moduleId: "Achats" },
+      { label: "Inventaire (Station)", icon: Archive,      path: "/inventory",         moduleId: "Inventaires" },
     ]
   },
 ];
@@ -293,7 +317,7 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
   const isRtl = i18n.dir() === "rtl";
   const trLabel = (label: string) => (LABEL_KEYS[label] ? t(LABEL_KEYS[label]) : label);
   const trGroup = (label?: string) => (label && GROUP_KEYS[label] ? t(GROUP_KEYS[label]) : label);
-  const [expandedGroups, setExpandedGroups] = useState<string[]>(["ops", "fuel", "magasin", "dashboard"]);
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(["dashboard", "carburant"]);
 
   const { pompistes, brigadeChefs, gerants, magasinWorkers, users, settings } = useAppState();
 

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Fuel, Globe, User, Lock, ArrowRight, ShieldCheck, Zap,
@@ -6,7 +6,7 @@ import {
   CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { signIn, signUpAdmin, signOut, signInDemoAdmin } from "../lib/supabase";
+import { signIn, signUpAdmin, signOut, signInDemoAdmin, adminExists } from "../lib/supabase";
 import { useAppState } from "../store/AppContext";
 
 type UserRole = 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
@@ -51,6 +51,19 @@ const Login = ({ onLogin }: LoginProps) => {
   const [signupSuccess, setSignupSuccess]   = useState(false);
   const [signupLoading, setSignupLoading]   = useState(false);
 
+  // Whether the "Create admin account" button should be shown. It is visible only
+  // until the first administrator has been created (then it hides automatically).
+  const [canCreateAdmin, setCanCreateAdmin] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const exists = await adminExists();
+      if (alive) setCanCreateAdmin(!exists);
+    })();
+    return () => { alive = false; };
+  }, []);
+
   const toggleLanguage = () => {
     const newLang = i18n.language === "fr" ? "ar" : "fr";
     i18n.changeLanguage(newLang);
@@ -87,13 +100,18 @@ const Login = ({ onLogin }: LoginProps) => {
     onLogin(role, result.user?.id);
   };
 
-  // ── One-click demo administrator login (no database required) ─────────────
+  // ── One-click demo administrator login (requires the demo account to exist) ─
   const handleDemoLogin = async () => {
     setLoginError(null);
     setDemoLoading(true);
-    const result = await signInDemoAdmin();
-    setDemoLoading(false);
-    onLogin(result.role, result.user?.id);
+    try {
+      const result = await signInDemoAdmin();
+      setDemoLoading(false);
+      onLogin(result.role, result.user?.id);
+    } catch {
+      setDemoLoading(false);
+      setLoginError("Compte démo indisponible. Créez d'abord un compte administrateur.");
+    }
   };
 
   // ── Create admin account via Supabase auth ────────────────────────────────
@@ -121,6 +139,8 @@ const Login = ({ onLogin }: LoginProps) => {
       return;
     }
 
+    // Admin now exists → the "Create admin account" button hides for good.
+    setCanCreateAdmin(false);
     setSignupSuccess(true);
   };
 
@@ -338,6 +358,33 @@ const Login = ({ onLogin }: LoginProps) => {
                   {t('login.demo_hint')}
                 </p>
 
+                {/* ── Create administrator account (shown only until one exists) ── */}
+                {canCreateAdmin && (
+                  <>
+                    <div className="flex items-center gap-3 my-5">
+                      <div className="flex-1 h-px bg-slate-100" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">
+                        Première configuration
+                      </span>
+                      <div className="flex-1 h-px bg-slate-100" />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={switchToSignup}
+                      className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-black text-sm uppercase tracking-widest transition-all duration-200 hover:shadow-lg active:scale-[0.98] border-2"
+                      style={{ borderColor: "#003087", color: "#003087", background: "white" }}
+                    >
+                      <UserPlus className="w-4 h-4" />
+                      <span>Créer un compte administrateur</span>
+                    </button>
+
+                    <p className="text-center text-[11px] text-slate-400 mt-3 font-medium">
+                      Aucun administrateur n'existe encore. Créez le compte principal.
+                    </p>
+                  </>
+                )}
+
                 <p className="text-center text-[10px] text-slate-300 mt-4">
                   {stationName} · {t('login.secure_footer')}
                 </p>
@@ -388,7 +435,7 @@ const Login = ({ onLogin }: LoginProps) => {
                       Votre compte administrateur a été créé avec succès.
                     </p>
                     <p className="text-slate-400 text-xs mb-6">
-                      Vérifiez votre email pour confirmer votre compte, puis connectez-vous.
+                      Connectez-vous dès maintenant avec votre email et votre mot de passe.
                     </p>
                     <button onClick={switchToLogin}
                       className="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-black text-sm text-[#001f5c] transition-all"
