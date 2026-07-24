@@ -785,16 +785,22 @@ begin
 
   v_uid := gen_random_uuid();
 
+  -- The token/*_change columns MUST be '' (not NULL): the Auth server scans them
+  -- into non-nullable Go strings, and a NULL makes password login return HTTP 500.
   insert into auth.users (
     instance_id, id, aud, role, email, encrypted_password,
     email_confirmed_at, created_at, updated_at,
-    raw_app_meta_data, raw_user_meta_data, is_super_admin
+    raw_app_meta_data, raw_user_meta_data, is_super_admin,
+    confirmation_token, recovery_token, email_change,
+    email_change_token_new, email_change_token_current,
+    phone_change, phone_change_token, reauthentication_token
   ) values (
     '00000000-0000-0000-0000-000000000000', v_uid, 'authenticated', 'authenticated',
     lower(p_email), extensions.crypt(p_password, extensions.gen_salt('bf')),
     now(), now(), now(),
     '{"provider":"email","providers":["email"]}'::jsonb,
-    coalesce(p_meta, '{}'::jsonb), false
+    coalesce(p_meta, '{}'::jsonb), false,
+    '', '', '', '', '', '', '', ''
   );
 
   insert into auth.identities (
