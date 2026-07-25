@@ -365,11 +365,11 @@ const BrigadeFicheModal: React.FC<Props> = ({
   );
 
   return (
-    <div id="fiche-root" className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+    <div id="fiche-root" className="modal-shell z-[80]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={onClose}
         className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm print-hidden" />
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
-        className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col max-h-[95vh] overflow-hidden border border-slate-100">
+        className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col max-h-[var(--modal-max-h)] overflow-hidden border border-slate-100">
 
         {/* Screen Toolbar */}
         <div className="flex items-center justify-between px-6 py-3 bg-gradient-to-r from-blue-900 to-blue-800 print-hidden">

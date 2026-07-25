@@ -25,3 +25,21 @@ npm start         # → http://localhost:3000
 ```bash
 npm run dev       # hot-reload dev server
 ```
+
+## 🗄 Migration à exécuter (comptes des employés des parties)
+
+Les employés créés depuis **Restaurant / Cafétéria / Lavage & Réparation / Magasin**
+peuvent maintenant avoir un compte de connexion. Cela nécessite une table et des
+fonctions côté Supabase — à exécuter **une seule fois** :
+
+1. Supabase → **SQL Editor** → *New query*
+2. Coller le contenu de `supabase/migrations/module_workers_auth.sql`
+3. **Run**
+
+Ce script crée `module_workers` (employés + permissions), la fonction
+`provision_module_worker_account()` (création du compte dans `auth.users`),
+étend `get_my_role()` / `get_my_worker()` et crée `biz_store` (données des
+4 parties partagées entre l'administrateur et les employés).
+
+Tant que le script n'est pas exécuté, la création d'un compte affiche
+« Migration manquante … » et le reste de l'application fonctionne normalement.

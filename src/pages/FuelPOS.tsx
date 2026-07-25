@@ -63,7 +63,7 @@ const PayDebtFuelModal = ({ isOpen, sale, onClose, onPayDebt }: any) => {
     setTimeout(() => { onPayDebt(paymentAmount, paymentMode, notes); setIsLoading(false); }, 500);
   };
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+    <div className="modal-shell z-[80]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
         className="bg-white w-full max-w-sm rounded-3xl relative z-10 shadow-2xl overflow-hidden">
@@ -117,7 +117,7 @@ const PayDebtFuelModal = ({ isOpen, sale, onClose, onPayDebt }: any) => {
 const PrintTicketFuelModal = ({ isOpen, sale, onClose, pump, settings }: any) => {
   if (!isOpen || !sale) return null;
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+    <div className="modal-shell z-[80]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
         className="bg-white w-full max-w-sm rounded-3xl relative z-10 shadow-2xl overflow-hidden">
@@ -778,7 +778,7 @@ const FuelPOS = () => {
                   <div className="lg:hidden fixed inset-0 z-50 flex flex-col justify-end">
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setShowMobileSummary(false)} />
                     <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 28, stiffness: 280 }}
-                      className="relative bg-white rounded-t-[2rem] flex flex-col max-h-[90vh] overflow-hidden shadow-2xl">
+                      className="relative bg-white rounded-t-[2rem] flex flex-col max-h-[var(--modal-max-h)] overflow-hidden shadow-2xl">
                       <div className="flex justify-center pt-3 pb-1 shrink-0"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
                       <div className="px-5 py-3 flex items-center justify-between border-b border-slate-100 shrink-0 bg-gradient-to-r from-[#001f5c] to-[#003087]">
                         <span className="font-black text-sm text-white uppercase">Récapitulatif</span>
@@ -944,7 +944,7 @@ const FuelPOS = () => {
       {/* ── CREATE CLIENT MODAL ── */}
       <AnimatePresence>
         {showCreateClient && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="modal-shell z-50">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowCreateClient(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
               className="relative bg-white rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-5 z-50">
@@ -996,10 +996,10 @@ const FuelPOS = () => {
       {/* ── FILTERS MODAL ── */}
       <AnimatePresence>
         {showHistoryModal && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="modal-shell z-[70]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowHistoryModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-md rounded-3xl relative z-10 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
+              className="bg-white w-full max-w-md rounded-3xl relative z-10 shadow-2xl overflow-hidden max-h-[var(--modal-max-h)] flex flex-col">
               <div className="p-5 bg-gradient-to-r from-[#001f5c] to-[#003087] text-white flex items-center justify-between shrink-0">
                 <h3 className="font-black text-base uppercase tracking-tight italic">Filtres Avancés</h3>
                 <button onClick={() => setShowHistoryModal(false)} className="p-2 hover:bg-white/10 rounded-lg transition-all"><X className="w-5 h-5" /></button>
@@ -1085,7 +1085,7 @@ const FuelPOS = () => {
       {/* ── DELETE CONFIRM ── */}
       <AnimatePresence>
         {saleToDelete?.id && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="modal-shell z-[70]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSaleToDelete(null)} className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
               className="bg-white p-8 rounded-3xl shadow-2xl relative z-10 max-w-sm w-full text-center space-y-5">

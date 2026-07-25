@@ -905,7 +905,7 @@ const Purchases = () => {
       {/* Create / Edit Purchase Modal in Brigade Style */}
       <AnimatePresence>
         {showCreateModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -917,7 +917,7 @@ const Purchases = () => {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-2xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-[90vh] shadow-2xl border border-slate-100 text-left"
+              className="bg-white w-full max-w-2xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-[var(--modal-max-h)] shadow-2xl border border-slate-100 text-left"
             >
               {/* Header with sidebar colors */}
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
@@ -1452,7 +1452,7 @@ const Purchases = () => {
       {/* Pay Debt Modal */}
       <AnimatePresence>
         {showPayModal && selectedPurchase && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1596,7 +1596,7 @@ const Purchases = () => {
       {/* Detail Modal View */}
       <AnimatePresence>
         {showDetailModal && selectedPurchase && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1757,7 +1757,7 @@ const Purchases = () => {
       {/* Print prompt after creating a bon de commande */}
       <AnimatePresence>
         {printPrompt && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <div className="modal-shell z-[80]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setPrintPrompt(null)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-md rounded-3xl relative z-10 shadow-2xl border border-slate-100 p-7 space-y-5 text-center">
               <div className="w-16 h-16 mx-auto rounded-2xl flex items-center justify-center" style={{ backgroundColor: "#003087" }}>

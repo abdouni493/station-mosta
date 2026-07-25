@@ -228,6 +228,116 @@ export async function provisionWorkerAccount(input: {
   }
 }
 
+// ─── Business-part worker accounts (Restaurant / Cafétéria / Lavage / Magasin) ──
+// These employees live in the BizContext store, so they need their own auth
+// provisioning path (see supabase/migrations/module_workers_auth.sql).
+
+export type BizModuleKey = 'restaurant' | 'cafeteria' | 'lavage' | 'magasin';
+
+export interface ModuleWorkerRow {
+  id: string;
+  module_key: BizModuleKey;
+  name: string;
+  role_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  username?: string | null;
+  auth_user_id?: string | null;
+  has_account: boolean;
+  permissions: Record<string, boolean>;
+}
+
+export async function provisionModuleWorkerAccount(input: {
+  action: 'create' | 'update_password' | 'delete';
+  moduleKey: BizModuleKey;
+  workerId: string;
+  username?: string;
+  password?: string;
+  name?: string;
+  email?: string;
+  roleName?: string;
+  phone?: string;
+  permissions?: Record<string, boolean>;
+}): Promise<{ ok: boolean; auth_user_id?: string; error?: string }> {
+  try {
+    const { data, error } = await supabase.rpc('provision_module_worker_account', {
+      p_action:      input.action,
+      p_module_key:  input.moduleKey,
+      p_worker_id:   input.workerId,
+      p_username:    input.username ?? null,
+      p_password:    input.password ?? null,
+      p_name:        input.name ?? null,
+      p_email:       input.email ?? null,
+      p_role_name:   input.roleName ?? null,
+      p_phone:       input.phone ?? null,
+      p_permissions: input.permissions ?? {},
+    });
+    if (error) {
+      // The RPC is missing until the migration is run — surface a clear message.
+      const hint = /function .* does not exist|schema cache/i.test(error.message)
+        ? "Migration manquante : exécutez supabase/migrations/module_workers_auth.sql dans Supabase → SQL Editor."
+        : error.message;
+      return { ok: false, error: hint };
+    }
+    if (data && (data as any).ok) return { ok: true, auth_user_id: (data as any).auth_user_id };
+    return { ok: false, error: (data as any)?.error || 'Erreur inconnue' };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Erreur réseau' };
+  }
+}
+
+/** Persists a part-employee's permissions server-side (so they apply at login). */
+export async function saveModuleWorkerPermissions(
+  workerId: string,
+  permissions: Record<string, boolean>,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { data, error } = await supabase.rpc('save_module_worker_permissions', {
+      p_worker_id: workerId,
+      p_permissions: permissions,
+    });
+    if (error) return { ok: false, error: error.message };
+    if (data && (data as any).ok === false) return { ok: false, error: (data as any).error };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Erreur réseau' };
+  }
+}
+
+/** Resolves the connected part-employee (module_key + permissions), or null. */
+export async function getMyModuleWorker(): Promise<ModuleWorkerRow | null> {
+  try {
+    const { data, error } = await supabase.rpc('get_my_module_worker');
+    if (error || !data) return null;
+    return data as ModuleWorkerRow;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Shared business-parts state (single JSON row) ──────────────────────────────
+// Keeps Restaurant / Cafétéria / Lavage / Magasin data identical for the admin
+// and for every part-employee who logs in, instead of being browser-local only.
+const BIZ_STORE_ID = 'biz-v1';
+
+export async function loadBizStore(): Promise<any | null> {
+  try {
+    const { data, error } = await supabase
+      .from('biz_store').select('state').eq('id', BIZ_STORE_ID).maybeSingle();
+    if (error || !data) return null;
+    return (data as any).state ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveBizStore(state: unknown): Promise<void> {
+  try {
+    await supabase.from('biz_store')
+      .upsert({ id: BIZ_STORE_ID, state, updated_at: new Date().toISOString() });
+  } catch { /* offline / table missing — localStorage keeps the data */ }
+}
+
 // ─── Generic DB helpers (real Supabase queries) ─────────────────────────────────
 
 export async function dbInsert<T extends object>(tableName: string, row: T): Promise<T> {

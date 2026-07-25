@@ -4,6 +4,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizService } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, SearchInput, CardGrid, GlassCard, EmptyState,
   RowActions, ActionBtn, Edit2, Trash2, Confirm, Modal, Field, Input, Textarea, money,
@@ -12,6 +13,7 @@ import {
 export default function ModuleServices({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'services');
   const { services } = biz.state;
   const [search, setSearch] = useState('');
   const [form, setForm] = useState<BizService | null | 'new'>(null);
@@ -23,7 +25,7 @@ export default function ModuleServices({ moduleKey }: { moduleKey: ModuleKey }) 
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Wrench} title="Services" subtitle={`${cfg.label} — prestations proposées`}
-        actions={<button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouveau service</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouveau service</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard icon={Wrench} label="Services" value={services.length} tone="blue" />
@@ -33,7 +35,7 @@ export default function ModuleServices({ moduleKey }: { moduleKey: ModuleKey }) 
 
       <div className="card-glass p-4"><SearchInput value={search} onChange={setSearch} placeholder="Nom du service…" /></div>
 
-      {filtered.length === 0 ? <EmptyState icon={Wrench} title="Aucun service" action={<button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouveau service</button>} /> : (
+      {filtered.length === 0 ? <EmptyState icon={Wrench} title="Aucun service" action={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouveau service</button> : undefined} /> : (
         <CardGrid>
           {filtered.map(s => (
             <GlassCard key={s.id}>
@@ -43,8 +45,8 @@ export default function ModuleServices({ moduleKey }: { moduleKey: ModuleKey }) 
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
                 <span className="font-black text-[#002d87] tabular-nums text-lg">{money(s.price)}</span>
                 <RowActions>
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(s)} />
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(s)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />}
                 </RowActions>
               </div>
             </GlassCard>

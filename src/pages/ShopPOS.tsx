@@ -1659,7 +1659,7 @@ const ShopPOS = () => {
             <motion.div
               initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
               transition={{ type: "spring", damping: 28, stiffness: 280 }}
-              className="relative bg-white rounded-t-[2rem] flex flex-col max-h-[92vh] overflow-hidden shadow-2xl"
+              className="relative bg-white rounded-t-[2rem] flex flex-col max-h-[var(--modal-max-h)] overflow-hidden shadow-2xl"
             >
               {/* Sheet handle */}
               <div className="flex justify-center pt-3 pb-1 shrink-0">
@@ -1932,13 +1932,13 @@ const ShopPOS = () => {
       {/* --- MODAL 1: Standardized Client Creation Modal (Exact Parity with Clients.tsx) --- */}
       <AnimatePresence>
         {showClientModal && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[70] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowClientModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} 
               animate={{ opacity: 1, scale: 1, y: 0 }} 
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-4xl rounded-[3rem] relative z-10 flex flex-col max-h-[90vh] overflow-hidden shadow-2xl border border-blue-200"
+              className="bg-white w-full max-w-4xl rounded-[3rem] relative z-10 flex flex-col max-h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-blue-200"
             >
               {/* Header */}
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 border-b border-blue-900/10">
@@ -2180,7 +2180,7 @@ const ShopPOS = () => {
       {/* --- MODAL: Detail-sale quantity prompt --- */}
       <AnimatePresence>
         {detailModalProduct && detailModalProduct.detailCapacity && (
-          <div className="fixed inset-0 z-[75] flex items-center justify-center p-4">
+          <div className="modal-shell z-[75]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setDetailModalProduct(null)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-3xl relative z-10 shadow-2xl border border-slate-100 p-6 space-y-4 text-left">
               <div className="flex items-center justify-between">
@@ -2219,7 +2219,7 @@ const ShopPOS = () => {
       {/* --- MODAL 3: Printable Receipt ticket Modal --- */}
       <AnimatePresence>
         {showReceipt && receiptSale && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => { setShowReceipt(false); setCart([]); }} />
              <motion.div 
                initial={{ opacity: 0, y: 30 }} 
@@ -2329,7 +2329,7 @@ const ShopPOS = () => {
       {/* --- MODAL 4: Detailed items view --- */}
       <AnimatePresence>
         {selectedHistorySale && (
-          <div className="lg:hidden fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="lg:hidden modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -2387,7 +2387,7 @@ const ShopPOS = () => {
       {/* --- MODAL 5: Pay Debt Form (Inside History) --- */}
       <AnimatePresence>
         {showPayDebtModal && debtSale && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -2460,7 +2460,7 @@ const ShopPOS = () => {
       {/* --- MODAL 6: Edit Sale Modal --- */}
       <AnimatePresence>
         {editSale && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -2572,7 +2572,7 @@ const ShopPOS = () => {
       {/* --- MODAL 7: Delete Confirmation Modal --- */}
       <AnimatePresence>
         {showConfirmDeleteId && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}

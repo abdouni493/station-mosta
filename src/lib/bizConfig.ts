@@ -110,6 +110,8 @@ export interface BizWorkerPayment { id: string; period: string; amount: number; 
 
 export interface BizWorker {
   id: string;
+  /** Supabase auth user id — set once the login account is provisioned. */
+  authUserId?: string;
   name: string;
   birthday?: string;
   cin?: string;
@@ -364,3 +366,23 @@ export const MODULE_INTERFACES: { id: string; label: string }[] = [
 ];
 
 export const INTERFACE_ACTIONS = ['voir', 'creer', 'modifier', 'supprimer'] as const;
+
+/**
+ * Interfaces that actually exist for one part — the permissions editor and the
+ * employee sidebar must never offer a screen the part does not have (a Lavage
+ * employee has no "Production", a Restaurant employee has no "Réparations").
+ * Mirrors `buildModuleRoutes` in App.tsx.
+ */
+export function interfacesForModule(key: ModuleKey): { id: string; label: string }[] {
+  const cfg = MODULES[key];
+  const ids = cfg.isService
+    ? ['reparations', 'services', 'stock', 'purchases', 'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports']
+    : [
+        'stock', 'purchases',
+        ...(cfg.hasProduction ? ['production', 'comptoir'] : []),
+        'pos', 'sales', 'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports',
+      ];
+  return ids
+    .map(id => MODULE_INTERFACES.find(i => i.id === id))
+    .filter((i): i is { id: string; label: string } => !!i);
+}

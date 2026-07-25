@@ -602,13 +602,13 @@ const Suppliers = () => {
       {/* Modal Nouveau/Modifier Fournisseur (Same design as Create New Brigade) */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[70] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} 
               animate={{ opacity: 1, scale: 1, y: 0 }} 
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-2xl rounded-[3rem] relative z-10 flex flex-col max-h-[90vh] overflow-hidden shadow-2xl border border-blue-200"
+              className="bg-white w-full max-w-2xl rounded-[3rem] relative z-10 flex flex-col max-h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-blue-200"
             >
               {/* Premium Gradient Header */}
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 border-b border-blue-900/10">
@@ -764,13 +764,13 @@ const Suppliers = () => {
       {/* Details View Modal */}
       <AnimatePresence>
         {showDetail && selectedSupplier && supplierDetails && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[70] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetail(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} 
               animate={{ opacity: 1, scale: 1, y: 0 }} 
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-6xl rounded-[3rem] relative z-10 flex flex-col h-[90vh] overflow-hidden shadow-2xl border border-blue-200"
+              className="bg-white w-full max-w-6xl rounded-[3rem] relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-blue-200"
             >
               {/* Details Header Banner */}
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 border-b border-blue-900/10">
@@ -1144,13 +1144,13 @@ const Suppliers = () => {
       {/* Modal Règlement Dette (Payer la dette) */}
       <AnimatePresence>
         {showPaymentModal && selectedDeliveryNote && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[80] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowPaymentModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }} 
               animate={{ opacity: 1, scale: 1 }} 
               exit={{ opacity: 0, scale: 0.95 }} 
-              className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[90vh] border border-blue-200"
+              className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-blue-200"
             >
               {/* Header */}
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0">

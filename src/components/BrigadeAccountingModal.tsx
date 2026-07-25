@@ -372,10 +372,10 @@ const BrigadeAccountingModal: React.FC<Props> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic text-left">
+    <div className="modal-shell z-[70] italic text-left">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm" />
       <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col max-h-[94vh] overflow-hidden border border-slate-100">
+        className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col max-h-[var(--modal-max-h)] overflow-hidden border border-slate-100">
 
         {/* Header */}
         <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white px-6 py-5 flex items-center justify-between shrink-0">
@@ -1029,7 +1029,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       {/* Create-new-client mini-modal */}
       <AnimatePresence>
         {showCreateClientModal && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <div className="modal-shell z-[80]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               onClick={() => setShowCreateClientModal(false)}
               className="absolute inset-0 bg-slate-900/70 backdrop-blur-sm" />

@@ -59,7 +59,7 @@ const PermissionsModal: React.FC<PermissionsModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="modal-shell z-[100]">
       <motion.div
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         onClick={onClose}
@@ -70,7 +70,7 @@ const PermissionsModal: React.FC<PermissionsModalProps> = ({
         initial={{ opacity: 0, scale: 0.97, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.97, y: 10 }}
-        className="relative z-10 w-full max-w-5xl h-[90vh] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
+        className="relative z-10 w-full max-w-5xl h-[var(--modal-max-h)] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
       >
         {/* Header — Settings-style */}
         <div className="flex items-center justify-between px-8 py-5 border-b border-slate-100 bg-white shrink-0">

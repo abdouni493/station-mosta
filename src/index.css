@@ -301,10 +301,89 @@ body {
 .table-cell { padding: 0.875rem 1rem; font-size: 0.875rem; border-top: 1px solid rgb(248 250 252); color: rgb(30 41 59); transition: background 0.15s; }
 tr:hover .table-cell { background: rgba(0,48,135,0.025); }
 
-/* Modals */
-.modal-overlay { position: fixed; inset: 0; backdrop-filter: blur(6px); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 1rem; background: rgba(1,9,38,0.55); animation: fadeIn 0.2s ease; }
-.modal-box { border-radius: 1.5rem; width: 100%; max-width: 32rem; max-height: 90vh; overflow-y: auto; background: white; box-shadow: var(--shadow-xl); animation: scaleIn 0.25s ease; }
-.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 1.5rem 1.75rem; border-bottom: 1px solid rgb(241 245 249); position: sticky; top: 0; z-index: 10; border-radius: 1.5rem 1.5rem 0 0; background: white; }
+/* ============================
+   MODALS
+   All dialogs open TOP-CENTERED (never vertically centred) and sit above the
+   sticky navbar (z-30), so nothing is ever hidden behind it. `--modal-top`
+   is the gap left under the navbar; `--modal-max-h` is what remains usable.
+============================ */
+:root {
+  --navbar-height: 4rem;
+  --modal-top: 5rem;      /* navbar height + 1rem breathing room */
+  --modal-max-h: calc(100vh - 7rem);
+}
+
+/* Shared shell for the hand-rolled modals across the app (same geometry as
+   .modal-overlay, but transparent so each page keeps its own backdrop). */
+.modal-shell {
+  position: fixed; inset: 0;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: var(--modal-top) 1rem 2rem;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+@media (max-width: 640px) {
+  .modal-shell { padding: 4.5rem 0.75rem 1.5rem; }
+  :root { --modal-max-h: calc(100vh - 6rem); }
+}
+/* Backdrops inside a scrollable shell must stay pinned to the viewport,
+   otherwise they scroll away with the dialog and uncover the page. */
+.modal-shell > .absolute.inset-0 { position: fixed; }
+
+.modal-overlay {
+  position: fixed; inset: 0;
+  backdrop-filter: blur(6px);
+  z-index: 60;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: var(--modal-top) 1rem 2rem;
+  overflow-y: auto; overscroll-behavior: contain;
+  background: rgba(0,18,51,0.62);
+  animation: fadeIn 0.2s ease;
+}
+.modal-box {
+  border-radius: 1.5rem;
+  width: 100%; max-width: 32rem;
+  max-height: var(--modal-max-h);
+  overflow-y: auto; overflow-x: hidden;
+  background: white;
+  border: 1px solid rgba(0,48,135,0.10);
+  box-shadow: 0 32px 80px rgba(0,18,51,0.35), 0 0 0 1px rgba(255,255,255,0.6) inset;
+  animation: modalDrop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modalDrop { from { opacity: 0; transform: translateY(-18px) scale(0.97); } to { opacity: 1; transform: none; } }
+
+/* Navy header with the sidebar's gradient + yellow accent */
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 1.125rem 1.5rem;
+  position: sticky; top: 0; z-index: 10;
+  border-radius: 1.5rem 1.5rem 0 0;
+  background: linear-gradient(120deg, #001233 0%, #001f5c 45%, #003087 100%);
+  border-bottom: 2px solid rgba(255,184,0,0.55);
+  color: white;
+}
+.modal-header h3, .modal-header .modal-title { color: #fff; }
+.modal-header .modal-subtitle { color: rgba(191,219,254,0.8); }
+.modal-title-icon {
+  width: 2.25rem; height: 2.25rem; border-radius: 0.75rem;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  background: linear-gradient(135deg, #FFB800, #e6a000);
+  color: #001f5c;
+  box-shadow: 0 4px 14px rgba(255,184,0,0.4);
+}
+.modal-close {
+  padding: 0.4rem; border-radius: 0.65rem; color: rgba(255,255,255,0.7);
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+  transition: all 0.18s; cursor: pointer;
+}
+.modal-close:hover { background: rgba(255,255,255,0.18); color: #fff; }
+.modal-footer {
+  display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  position: sticky; bottom: 0;
+  background: linear-gradient(180deg, rgba(248,250,252,0.85), #f8fafc);
+  border-top: 1px solid rgb(226 232 240);
+  border-radius: 0 0 1.5rem 1.5rem;
+}
 
 /* Scrollbar */
 .custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }

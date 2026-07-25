@@ -3,6 +3,7 @@ import { Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Pr
 import { toast } from 'react-hot-toast';
 import { ModuleKey, MODULES, BizProduct } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, Select, ViewToggle, CardGrid, GlassCard,
   Table, EmptyState, RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, money, formatDate,
@@ -12,6 +13,7 @@ import { ProductModal, printBarcode } from './_shared';
 export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'stock');
   const { products, categories, marques } = biz.state;
 
   const [search, setSearch] = useState('');
@@ -50,7 +52,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Package} title="Gestion de stock" subtitle={`${cfg.label} — catalogue & inventaire`}
-        actions={<button className="btn-primary" onClick={openNew}><Plus className="w-4 h-4" /> Nouveau produit</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={openNew}><Plus className="w-4 h-4" /> Nouveau produit</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Boxes} label="Produits" value={stats.total} tone="blue" />
@@ -74,7 +76,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
 
       {filtered.length === 0 ? (
         <EmptyState icon={Package} title="Aucun produit" message="Ajoutez votre premier produit au catalogue."
-          action={<button className="btn-primary" onClick={openNew}><Plus className="w-4 h-4" /> Nouveau produit</button>} />
+          action={perm.creer ? <button className="btn-primary" onClick={openNew}><Plus className="w-4 h-4" /> Nouveau produit</button> : undefined} />
       ) : view === 'grid' ? (
         <CardGrid>
           {filtered.map(p => (
@@ -113,8 +115,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 <span className="text-[11px] text-slate-400">Créé le {formatDate(p.createdAt)}</span>
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </div>
             </GlassCard>
@@ -138,8 +140,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
               <td className="table-cell">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </td>
             </tr>
@@ -176,7 +178,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
             )}
             <div className="flex justify-end gap-2">
               <button className="btn-outline" onClick={() => printBarcode(viewing)} disabled={!viewing.barcode}><Printer className="w-4 h-4" /> Imprimer code-barres</button>
-              <button className="btn-secondary" onClick={() => { setViewing(null); openEdit(viewing); }}><Edit2 className="w-4 h-4" /> Modifier</button>
+              {perm.modifier && <button className="btn-secondary" onClick={() => { setViewing(null); openEdit(viewing); }}><Edit2 className="w-4 h-4" /> Modifier</button>}
             </div>
           </div>
         )}

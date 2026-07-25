@@ -83,32 +83,31 @@ export function Modal({
       {open && (
         <div className="modal-overlay" onClick={onClose}>
           <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 12 }}
+            initial={{ opacity: 0, scale: 0.97, y: -16 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.96, y: 8 }}
-            transition={{ duration: 0.2 }}
+            exit={{ opacity: 0, scale: 0.97, y: -10 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
             className={cn('modal-box', modalSizes[size])}
             onClick={e => e.stopPropagation()}
           >
             <div className="modal-header">
               <div className="flex items-center gap-3 min-w-0">
                 {Icon && (
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                    style={{ background: 'linear-gradient(135deg, #001f5c, #003087)' }}>
-                    <Icon className="w-4 h-4 text-[#FFB800]" />
+                  <div className="modal-title-icon">
+                    <Icon className="w-4 h-4" />
                   </div>
                 )}
                 <div className="min-w-0">
-                  <h3 className="text-base font-black text-[#002d87] truncate">{title}</h3>
-                  {subtitle && <p className="text-xs text-slate-400 truncate">{subtitle}</p>}
+                  <h3 className="modal-title text-base font-black truncate">{title}</h3>
+                  {subtitle && <p className="modal-subtitle text-xs truncate">{subtitle}</p>}
                 </div>
               </div>
-              <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors">
-                <X className="w-5 h-5" />
+              <button onClick={onClose} className="modal-close" aria-label="Fermer">
+                <X className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} />
               </button>
             </div>
             <div className="p-6">{children}</div>
-            {footer && <div className="px-6 pb-6 pt-0 flex items-center justify-end gap-3">{footer}</div>}
+            {footer && <div className="modal-footer">{footer}</div>}
           </motion.div>
         </div>
       )}
@@ -122,8 +121,8 @@ export function Confirm({
 }: { open: boolean; title: string; message: string; onConfirm: () => void; onCancel: () => void; confirmLabel?: string; danger?: boolean }) {
   if (!open) return null;
   return (
-    <div className="modal-overlay" onClick={onCancel} style={{ zIndex: 60 }}>
-      <motion.div initial={{ opacity: 0, scale: 0.9, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+    <div className="modal-overlay" onClick={onCancel} style={{ zIndex: 70 }}>
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: -12 }} animate={{ opacity: 1, scale: 1, y: 0 }}
         className="modal-box max-w-sm" onClick={e => e.stopPropagation()}>
         <div className="p-6">
           <div className={cn('w-12 h-12 rounded-2xl flex items-center justify-center mb-4', danger ? 'bg-red-100' : 'bg-amber-100')}>

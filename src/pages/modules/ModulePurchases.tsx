@@ -6,6 +6,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
@@ -16,6 +17,7 @@ import { ProductModal, ContactModal, PayDebtModal, printInvoice } from './_share
 export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'purchases');
   const { settings } = useAppState();
   const { purchases, products, suppliers } = biz.state;
 
@@ -54,7 +56,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={ShoppingCart} title="Achats" subtitle={`${cfg.label} — factures fournisseurs`}
-        actions={<button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouvel achat</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Receipt} label="Achats" value={stats.count} tone="blue" />
@@ -70,7 +72,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
 
       {filtered.length === 0 ? (
         <EmptyState icon={ShoppingCart} title="Aucun achat" message="Créez votre première facture d'achat."
-          action={<button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouvel achat</button>} />
+          action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
       ) : view === 'grid' ? (
         <CardGrid>
           {filtered.map(p => (
@@ -91,15 +93,15 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />
-                  {p.rest > 0 && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />}
+                  {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
                   <ActionBtn icon={Receipt} tone="slate" title="Imprimer" onClick={() => printInvoice({
                     title: 'Facture d\'achat', ref: p.ref, date: p.date, store: settings?.stationName,
                     party: { label: 'Fournisseur', name: p.supplierName },
                     items: p.items.map(i => ({ name: i.productName, qty: i.qty, unitPrice: i.unitPrice, total: i.qty * i.unitPrice })),
                     total: p.total, paid: p.paid, rest: p.rest,
                   })} />
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </div>
             </GlassCard>
@@ -123,9 +125,9 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
               <td className="table-cell">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />
-                  {p.rest > 0 && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />}
+                  {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </td>
             </tr>

@@ -168,10 +168,10 @@ const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes }: any) => {
   }, [tank.id, brigades, deliveryNotes]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="modal-shell z-[60]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white w-full max-w-2xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col max-h-[90vh] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
+        className="bg-white w-full max-w-2xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
         <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
           <div>
             <h3 className="font-black text-xs uppercase tracking-widest italic flex items-center gap-2">
@@ -258,10 +258,10 @@ const TankModal = ({ tank, onClose, onSave, settings }: any) => {
   const effectiveLiters = autoAvailable && !manualCurrent ? computedLiters : form.current;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="modal-shell z-[60]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white w-full max-w-2xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col max-h-[90vh] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
+        className="bg-white w-full max-w-2xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
           <div>
@@ -405,7 +405,7 @@ const GplCalculatorModal = ({ tank, onClose, onApply }: any) => {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="modal-shell z-[60]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
@@ -492,10 +492,10 @@ const ConverterModal = ({ tank, settings, onClose }: any) => {
   const liters = litersFromDegrees(conversionTable, degrees);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="modal-shell z-[60]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white w-full max-w-sm rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col max-h-[90vh] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
+        className="bg-white w-full max-w-sm rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
         <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
           <div>
             <h3 className="font-black text-xs uppercase tracking-widest italic flex items-center gap-2">

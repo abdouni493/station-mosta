@@ -288,7 +288,7 @@ const Pumps = () => {
       {/* Add/Edit Modal */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div 
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               onClick={() => setShowModal(false)}
@@ -296,7 +296,7 @@ const Pumps = () => {
             />
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[90vh] border border-slate-100"
+              className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-slate-100"
             >
               {/* Header with sidebar colors */}
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
@@ -393,7 +393,7 @@ const Pumps = () => {
 
       <AnimatePresence>
         {showDeleteConfirm && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 text-center">
+          <div className="modal-shell z-[70] text-center">
             <motion.div 
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
@@ -468,7 +468,7 @@ const Pumps = () => {
           ];
 
           return (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="modal-shell z-[60]">
               <motion.div
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 onClick={() => setShowDetail(false)}
@@ -476,7 +476,7 @@ const Pumps = () => {
               />
               <motion.div
                 initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col overflow-hidden max-h-[92vh] border border-slate-100"
+                className="bg-white w-full max-w-5xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col overflow-hidden max-h-[var(--modal-max-h)] border border-slate-100"
               >
                 {/* Header */}
                 <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white px-6 py-5 flex items-center justify-between shrink-0">
@@ -850,10 +850,10 @@ const Pumps = () => {
           };
 
           return (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="modal-shell z-[60]">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowNozzleModal(false)} className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
               <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[90vh] border border-slate-100"
+                className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-slate-100"
               >
                 <div className="p-6 bg-gradient-to-r from-purple-900 via-purple-800 to-purple-900 text-white flex justify-between items-center shrink-0">
                   <div>

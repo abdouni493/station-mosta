@@ -6,7 +6,10 @@ import { supabase, signOut } from '../lib/supabase';
 export interface User { id: string; email?: string; user_metadata?: Record<string, any> }
 export interface Session { access_token: string; refresh_token?: string; user: User }
 
-export type UserRole = 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
+export type UserRole =
+  | 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'
+  /** Employee of a business part: Restaurant / Cafétéria / Lavage / Magasin. */
+  | 'module_worker';
 
 export interface AuthState {
   session:         Session | null;
@@ -108,6 +111,10 @@ export function useAuth() {
           const mag = await supabase.from('magasin_workers').select('id').eq('auth_user_id', _userId).maybeSingle();
           if (mag.data) return 'magasin';
         } catch (e) {}
+        try {
+          const mod = await supabase.from('module_workers').select('id').eq('auth_user_id', _userId).maybeSingle();
+          if (mod.data) return 'module_worker';
+        } catch (e) {}
 
         // As a last resort, do NOT default to admin — treat as no-access worker
         return 'pompiste';
@@ -138,6 +145,8 @@ export function useAuth() {
       if (ger.data) return 'gerant';
       const mag = await supabase.from('magasin_workers').select('id').eq('auth_user_id', _userId).maybeSingle();
       if (mag.data) return 'magasin';
+      const mod = await supabase.from('module_workers').select('id').eq('auth_user_id', _userId).maybeSingle();
+      if (mod.data) return 'module_worker';
 
       return 'pompiste'; // unknown — deny admin access
     } catch (err) {
@@ -152,6 +161,8 @@ export function useAuth() {
         if (ger.data) return 'gerant';
         const mag = await supabase.from('magasin_workers').select('id').eq('auth_user_id', _userId).maybeSingle();
         if (mag.data) return 'magasin';
+        const mod = await supabase.from('module_workers').select('id').eq('auth_user_id', _userId).maybeSingle();
+        if (mod.data) return 'module_worker';
       } catch (e) {
         console.error('[useAuth] fallback worker lookup failed:', e);
       }

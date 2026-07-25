@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard, Users, Fuel, ShoppingCart, Store, Truck,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
-import { useAppState, UserPermissions } from "../store/AppContext";
+import { useAppState, UserPermissions, ModuleWorkerSession, AppUserRole } from "../store/AppContext";
 import { MODULES, ModuleKey } from "../lib/bizConfig";
 
 // --- Types ---
@@ -35,9 +35,10 @@ interface SidebarProps {
   activePath: string;
   onNavigate: (path: string) => void;
   onLogout?: () => void;
-  userRole: 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
+  userRole: AppUserRole;
   userId?: string;
   userPermissions?: UserPermissions;
+  moduleWorker?: ModuleWorkerSession;
 }
 
 // --- Role badge styles ---
@@ -48,6 +49,7 @@ const roleBadge: Record<string, { label: string; bg: string; text: string }> = {
   chef_brigade: { label: "Chef Brigade",    bg: "rgba(168,85,247,0.18)",text: "#a855f7" },
   gerant:       { label: "Gérant",          bg: "rgba(59,130,246,0.18)",text: "#3b82f6" },
   magasin:      { label: "Employé Magasin", bg: "rgba(236,72,153,0.18)",text: "#ec4899" },
+  module_worker:{ label: "Employé",         bg: "rgba(20,184,166,0.18)",text: "#2dd4bf" },
 };
 
 // --- Admin nav groups ---
@@ -123,15 +125,12 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
   buildModuleNavGroup("lavage"),
   buildModuleNavGroup("magasin"),
   {
+    // Système keeps a single entry: the consolidated cross-activity report.
+    // Every other former "(Station)" screen now lives inside its own part
+    // (Magasin employees are managed from the Magasin part → Employés).
     id: "systeme", label: "Système",
     items: [
       { label: "Rapports Généraux",    icon: FileBarChart, path: "/general-reports" },
-      { label: "Modèles Permissions",  icon: Shield,       path: "/roles-permissions", moduleId: "Paramètres" },
-      { label: "Employés Magasin",     icon: Store,        path: "/magasin-workers",   moduleId: "Employés Magasin" },
-      { label: "Produits (Station)",   icon: Package,      path: "/products",          moduleId: "Produits" },
-      { label: "Vente Magasin (Station)", icon: Store,     path: "/shop-pos",          moduleId: "Magasin" },
-      { label: "Achats Magasin (Station)", icon: ShoppingCart, path: "/purchases",     moduleId: "Achats" },
-      { label: "Inventaire (Station)", icon: Archive,      path: "/inventory",         moduleId: "Inventaires" },
     ]
   },
 ];
@@ -239,11 +238,57 @@ function buildWorkerNav(role: string, permissions?: UserPermissions): NavGroup[]
   return groups;
 }
 
+// --- Business-part employee nav (Restaurant / Cafétéria / Lavage / Magasin) ---
+//
+// A part employee only ever sees interfaces of THEIR part, and only those the
+// admin ticked "voir" on in the employee's Permissions modal. The item list is
+// the same one the admin's part group is built from, filtered by grants.
+
+/** Sidebar entry for one interface id of a part (same ids as MODULE_INTERFACES). */
+const PART_IFACE_NAV: Record<string, { label: string; icon: React.ElementType }> = {
+  reparations: { label: "Réparations & Lavage", icon: Car },
+  services:    { label: "Services",             icon: Wrench },
+  stock:       { label: "Gestion de stock",     icon: Package },
+  purchases:   { label: "Achats",               icon: ShoppingCart },
+  production:  { label: "Production",           icon: FlaskConical },
+  comptoir:    { label: "Comptoir",             icon: Beaker },
+  pos:         { label: "Point de vente",       icon: ShoppingBag },
+  sales:       { label: "Ventes",               icon: Receipt },
+  clients:     { label: "Clients",              icon: Users },
+  suppliers:   { label: "Fournisseurs",         icon: Truck },
+  workers:     { label: "Employés",             icon: UsersRound },
+  expenses:    { label: "Dépenses",             icon: CreditCard },
+  caisse:      { label: "Caisse",               icon: Wallet },
+  reports:     { label: "Rapports",             icon: BarChart2 },
+};
+
+function buildModuleWorkerNav(worker?: ModuleWorkerSession): NavGroup[] {
+  const groups: NavGroup[] = [{ id: "dashboard", items: [DASHBOARD_ITEM] }];
+  if (!worker) return groups;
+
+  const cfg = MODULES[worker.moduleKey];
+  if (!cfg) return groups;
+
+  // Only the interfaces that exist for this part, in the admin's order.
+  const available = buildModuleNavGroup(worker.moduleKey).items;
+  const items: NavItem[] = [];
+  for (const nav of available) {
+    const iface = nav.path.slice(cfg.base.length + 1);   // "/restaurant/stock" → "stock"
+    if (!worker.permissions?.[`${iface}.voir`]) continue;
+    const def = PART_IFACE_NAV[iface];
+    items.push({ label: def?.label ?? nav.label, icon: def?.icon ?? nav.icon, path: nav.path });
+  }
+
+  if (items.length > 0) groups.push({ id: worker.moduleKey, label: cfg.label, items });
+  return groups;
+}
+
 // --- Nav builder function ---
 
 function getNavGroups(
   role: string,
-  permissions?: UserPermissions
+  permissions?: UserPermissions,
+  moduleWorker?: ModuleWorkerSession
 ): NavGroup[] {
   switch (role) {
     case 'pompiste':
@@ -251,6 +296,9 @@ function getNavGroups(
     case 'magasin':
     case 'gerant':
       return buildWorkerNav(role, permissions);
+
+    case 'module_worker':
+      return buildModuleWorkerNav(moduleWorker);
 
     case 'admin':
     default:
@@ -308,11 +356,12 @@ const SETTINGS_PATH: Record<string, string> = {
   chef_brigade: "/my-settings",
   gerant:       "/my-settings",
   magasin:      "/my-settings",
+  module_worker:"/my-settings",
 };
 
 // --- Component ---
 
-const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, userId, userPermissions }: SidebarProps) => {
+const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, userId, userPermissions, moduleWorker }: SidebarProps) => {
   const { t, i18n } = useTranslation();
   const isRtl = i18n.dir() === "rtl";
   const trLabel = (label: string) => (LABEL_KEYS[label] ? t(LABEL_KEYS[label]) : label);
@@ -328,14 +377,22 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
     if (userRole === 'chef_brigade') return (brigadeChefs || []).find(c => c.id === userId) ?? null;
     if (userRole === 'gerant')       return (gerants || []).find(g => g.id === userId) ?? null;
     if (userRole === 'magasin')      return (magasinWorkers || []).find(m => m.id === userId) ?? null;
+    if (userRole === 'module_worker')return moduleWorker ? { name: moduleWorker.name } : null;
     if (userRole === 'admin')        return users.find(u => u.id === userId) ?? null;
     return null;
-  }, [userId, userRole, pompistes, brigadeChefs, gerants, magasinWorkers, users]);
+  }, [userId, userRole, pompistes, brigadeChefs, gerants, magasinWorkers, users, moduleWorker]);
 
   const navGroups = useMemo(
-    () => getNavGroups(userRole, userPermissions),
-    [userRole, userPermissions]
+    () => getNavGroups(userRole, userPermissions, moduleWorker),
+    [userRole, userPermissions, moduleWorker]
   );
+
+  // A part employee has a single section — open it as soon as it resolves,
+  // otherwise their whole menu would look empty behind a collapsed header.
+  useEffect(() => {
+    if (!moduleWorker) return;
+    setExpandedGroups(prev => prev.includes(moduleWorker.moduleKey) ? prev : [...prev, moduleWorker.moduleKey]);
+  }, [moduleWorker]);
 
   const settingsPath = SETTINGS_PATH[userRole] ?? "/settings";
   const badge = roleBadge[userRole] ?? roleBadge.admin;

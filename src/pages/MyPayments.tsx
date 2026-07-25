@@ -582,12 +582,12 @@ const MyPayments = () => {
       {/* Printable Payslip Modal */}
       <AnimatePresence>
         {showPayslipModal && activePaymentRecord && workerProfile && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm no-print">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm no-print">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]"
+              className="bg-white rounded-3xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[var(--modal-max-h)]"
             >
               {/* Modal header */}
               <div className="px-6 py-4 bg-[#001f5c] text-white flex items-center justify-between">

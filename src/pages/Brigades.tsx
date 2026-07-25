@@ -1356,9 +1356,9 @@ const Brigades = () => {
       {/* Edit Brigade Modal */}
       <AnimatePresence>
         {showEditModal && editingBrigade && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowEditModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-auto shadow-2xl border border-blue-200 max-h-[90vh]">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-auto shadow-2xl border border-blue-200 max-h-[var(--modal-max-h)]">
               {/* Header - Blue gradient matching create modal */}
               <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white p-6 flex justify-between items-center">
                 <div>
@@ -1561,9 +1561,9 @@ const Brigades = () => {
                             step === 7 ? allPaymentsFilled : true;
 
           return (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="modal-shell z-[60]">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-[92vh] shadow-2xl border border-slate-100">
+              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-[var(--modal-max-h)] shadow-2xl border border-slate-100">
                 {/* Header */}
                 <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
                   <div>

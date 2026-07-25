@@ -42,6 +42,7 @@ const resources = {
         chef_brigade: "Chef Brigade",
         gerant: "Gérant",
         magasin: "Employé Magasin",
+        module_worker: "Employé",
         user: "Utilisateur",
       },
 
@@ -173,6 +174,7 @@ const resources = {
         chef_brigade: "رئيس فرقة",
         gerant: "مدير",
         magasin: "موظف متجر",
+        module_worker: "موظف",
         user: "مستخدم",
       },
 

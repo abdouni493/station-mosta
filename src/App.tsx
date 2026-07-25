@@ -10,7 +10,7 @@ import Layout from "./components/Layout";
 import { AppProvider, useAppState, useAppDispatch, UserPermissions } from "./store/AppContext";
 import { ToastContainer } from "./components/Toast";
 import { useAuth } from "./hooks/useAuth";
-import { db, supabase, BUCKETS, getPublicUrl } from "./lib/supabase";
+import { db, supabase, BUCKETS, getPublicUrl, getMyModuleWorker } from "./lib/supabase";
 import { installAutoTranslate, sweep } from "./lib/autoTranslate";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -62,36 +62,43 @@ import ModuleReparations from "./pages/modules/ModuleReparations";
 import GeneralReports from "./pages/GeneralReports";
 
 // Builds the route list for one business module based on its capabilities.
-function buildModuleRoutes(key: ModuleKey): { path: string; element: React.ReactElement }[] {
+// `iface` is the permission interface id (see MODULE_INTERFACES) used to gate
+// the route for employees of that part.
+interface ModuleRoute { path: string; iface: string; moduleKey: ModuleKey; element: React.ReactElement }
+
+function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
   const cfg = MODULES[key];
   const b = cfg.base;
-  const routes: { path: string; element: React.ReactElement }[] = [];
+  const routes: ModuleRoute[] = [];
+  const add = (sub: string, element: React.ReactElement) =>
+    routes.push({ path: `${b}/${sub}`, iface: sub, moduleKey: key, element });
+
   if (cfg.isService) {
-    routes.push({ path: `${b}/reparations`, element: <ModuleReparations moduleKey={key} /> });
-    routes.push({ path: `${b}/services`, element: <ModuleServices moduleKey={key} /> });
-    routes.push({ path: `${b}/stock`, element: <ModuleStock moduleKey={key} /> });
-    routes.push({ path: `${b}/purchases`, element: <ModulePurchases moduleKey={key} /> });
-    routes.push({ path: `${b}/clients`, element: <ModuleClients moduleKey={key} /> });
-    routes.push({ path: `${b}/suppliers`, element: <ModuleSuppliers moduleKey={key} /> });
-    routes.push({ path: `${b}/workers`, element: <ModuleWorkers moduleKey={key} /> });
-    routes.push({ path: `${b}/expenses`, element: <ModuleExpenses moduleKey={key} /> });
-    routes.push({ path: `${b}/caisse`, element: <ModuleCaisse moduleKey={key} /> });
-    routes.push({ path: `${b}/reports`, element: <ModuleReports moduleKey={key} /> });
+    add('reparations', <ModuleReparations moduleKey={key} />);
+    add('services', <ModuleServices moduleKey={key} />);
+    add('stock', <ModuleStock moduleKey={key} />);
+    add('purchases', <ModulePurchases moduleKey={key} />);
+    add('clients', <ModuleClients moduleKey={key} />);
+    add('suppliers', <ModuleSuppliers moduleKey={key} />);
+    add('workers', <ModuleWorkers moduleKey={key} />);
+    add('expenses', <ModuleExpenses moduleKey={key} />);
+    add('caisse', <ModuleCaisse moduleKey={key} />);
+    add('reports', <ModuleReports moduleKey={key} />);
   } else {
-    routes.push({ path: `${b}/stock`, element: <ModuleStock moduleKey={key} /> });
-    routes.push({ path: `${b}/purchases`, element: <ModulePurchases moduleKey={key} /> });
+    add('stock', <ModuleStock moduleKey={key} />);
+    add('purchases', <ModulePurchases moduleKey={key} />);
     if (cfg.hasProduction) {
-      routes.push({ path: `${b}/production`, element: <ModuleProduction moduleKey={key} /> });
-      routes.push({ path: `${b}/comptoir`, element: <ModuleComptoir moduleKey={key} /> });
+      add('production', <ModuleProduction moduleKey={key} />);
+      add('comptoir', <ModuleComptoir moduleKey={key} />);
     }
-    routes.push({ path: `${b}/pos`, element: <ModulePOS moduleKey={key} /> });
-    routes.push({ path: `${b}/sales`, element: <ModuleSales moduleKey={key} /> });
-    routes.push({ path: `${b}/clients`, element: <ModuleClients moduleKey={key} /> });
-    routes.push({ path: `${b}/suppliers`, element: <ModuleSuppliers moduleKey={key} /> });
-    routes.push({ path: `${b}/workers`, element: <ModuleWorkers moduleKey={key} /> });
-    routes.push({ path: `${b}/expenses`, element: <ModuleExpenses moduleKey={key} /> });
-    routes.push({ path: `${b}/caisse`, element: <ModuleCaisse moduleKey={key} /> });
-    routes.push({ path: `${b}/reports`, element: <ModuleReports moduleKey={key} /> });
+    add('pos', <ModulePOS moduleKey={key} />);
+    add('sales', <ModuleSales moduleKey={key} />);
+    add('clients', <ModuleClients moduleKey={key} />);
+    add('suppliers', <ModuleSuppliers moduleKey={key} />);
+    add('workers', <ModuleWorkers moduleKey={key} />);
+    add('expenses', <ModuleExpenses moduleKey={key} />);
+    add('caisse', <ModuleCaisse moduleKey={key} />);
+    add('reports', <ModuleReports moduleKey={key} />);
   }
   return routes;
 }
@@ -183,6 +190,50 @@ function ProtectedRoute({ element, moduleId }: ProtectedRouteProps): React.React
     return <Navigate to="/dashboard" replace />;
   }
 
+  return element;
+}
+
+// ─── Admin-only route ─────────────────────────────────────────────────────────
+/** Cross-activity screens (e.g. Rapports Généraux) stay reserved to admins. */
+function AdminOnlyRoute({ element }: { element: React.ReactElement }): React.ReactElement {
+  const { currentUserRole } = useAppState();
+  if (currentUserRole === 'module_worker') return <Navigate to="/dashboard" replace />;
+  return element;
+}
+
+// ─── Business-part route guard ────────────────────────────────────────────────
+/**
+ * Gates a Restaurant / Cafétéria / Lavage / Magasin page. Employees of a part
+ * only reach an interface they were granted "voir" on, and never a page of
+ * another part. Everyone else (admin) passes through.
+ */
+function ModuleRouteGuard({
+  moduleKey, iface, element,
+}: { moduleKey: string; iface: string; element: React.ReactElement }): React.ReactElement {
+  const navigate = useNavigate();
+  const { currentUserRole, currentModuleWorker } = useAppState();
+  const dispatch = useAppDispatch();
+
+  const allowed =
+    currentUserRole !== 'module_worker' ||
+    (!!currentModuleWorker &&
+      currentModuleWorker.moduleKey === moduleKey &&
+      !!currentModuleWorker.permissions?.[`${iface}.voir`]);
+
+  // Session not resolved yet — hold instead of leaking or bouncing.
+  const pending = currentUserRole === 'module_worker' && !currentModuleWorker;
+
+  useEffect(() => {
+    if (pending || allowed) return;
+    dispatch({
+      type: 'ADD_TOAST',
+      payload: { type: 'error', title: 'Accès refusé', message: "Vous n'avez pas accès à cette interface.", duration: 3 },
+    });
+    navigate('/dashboard', { replace: true });
+  }, [pending, allowed, dispatch, navigate]);
+
+  if (pending) return <></>;
+  if (!allowed) return <Navigate to="/dashboard" replace />;
   return element;
 }
 
@@ -295,6 +346,28 @@ function AppContent({
               payload: { role: userRole as any, id: userId, name: profile.name, avatarUrl },
             });
           }
+        } else if (userRole === 'module_worker') {
+          // Employee of a business part (Restaurant / Cafétéria / Lavage /
+          // Magasin): their identity, part and grants live in module_workers.
+          const mw = await getMyModuleWorker();
+          if (mw) {
+            dispatch({
+              type: 'SET_CURRENT_USER',
+              payload: {
+                role: 'module_worker',
+                id: mw.id,
+                name: mw.name,
+                permissions: {},
+                moduleWorker: {
+                  id: mw.id,
+                  moduleKey: mw.module_key,
+                  name: mw.name,
+                  roleName: mw.role_name ?? undefined,
+                  permissions: (mw.permissions || {}) as Record<string, boolean>,
+                },
+              },
+            });
+          }
         } else {
           // Worker: resolve via RPC
           const { data: workerRow } = await supabase.rpc('get_my_worker');
@@ -395,11 +468,15 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/reports"          element={<ProtectedRoute element={<Reports />} moduleId="Rapports" />} />
 
         {/* New business modules (Restaurant / Cafétéria / Lavage / Magasin) */}
-        {MODULE_ROUTES.map(r => React.createElement(Route, { key: r.path, path: r.path, element: r.element }))}
-        <Route path="/general-reports"  element={<GeneralReports />} />
+        {MODULE_ROUTES.map(r => React.createElement(Route, {
+          key: r.path,
+          path: r.path,
+          element: <ModuleRouteGuard moduleKey={r.moduleKey} iface={r.iface} element={r.element} />,
+        }))}
+        <Route path="/general-reports"  element={<AdminOnlyRoute element={<GeneralReports />} />} />
 
         {/* Settings & personal */}
-        <Route path="/settings"         element={<Settings />} />
+        <Route path="/settings"         element={<AdminOnlyRoute element={<Settings />} />} />
         <Route path="/my-brigade"       element={<MyBrigade />} />
         <Route path="/my-payments"      element={<MyPayments />} />
         <Route path="/my-settings"      element={<MySettings />} />

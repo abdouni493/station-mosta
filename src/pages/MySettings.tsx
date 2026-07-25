@@ -6,17 +6,27 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import { useAppState, useAppDispatch } from "../store/AppContext";
+import { supabase } from "../lib/supabase";
 
 const MySettings = () => {
   const { t } = useTranslation();
-  const { 
+  const {
     pompistes, brigadeChefs, gerants, magasinWorkers, users,
-    currentUserRole, currentUserId 
+    currentUserRole, currentUserId, currentModuleWorker
   } = useAppState();
   const dispatch = useAppDispatch();
 
+  const isModuleWorker = currentUserRole === 'module_worker';
+
   // Resolve connected worker details
   const workerProfile = useMemo(() => {
+    // Employees of a business part are not in the fuel-station tables — their
+    // profile comes from the session resolved at login (module_workers row).
+    if (isModuleWorker) {
+      return currentModuleWorker
+        ? { name: currentModuleWorker.name, username: undefined as string | undefined, password: undefined as string | undefined }
+        : null;
+    }
     if (!currentUserId) return null;
     if (currentUserRole === 'pompiste')     return pompistes.find(p => p.id === currentUserId) ?? null;
     if (currentUserRole === 'chef_brigade') return brigadeChefs.find(c => c.id === currentUserId) ?? null;
@@ -24,7 +34,7 @@ const MySettings = () => {
     if (currentUserRole === 'magasin')      return magasinWorkers.find(m => m.id === currentUserId) ?? null;
     if (currentUserRole === 'admin')        return users.find(u => u.id === currentUserId) ?? null;
     return null;
-  }, [currentUserId, currentUserRole, pompistes, brigadeChefs, gerants, magasinWorkers, users]);
+  }, [currentUserId, currentUserRole, isModuleWorker, currentModuleWorker, pompistes, brigadeChefs, gerants, magasinWorkers, users]);
 
   // Form State
   const [username, setUsername] = useState(workerProfile?.username || "");
@@ -33,11 +43,47 @@ const MySettings = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [formError, setFormError] = useState("");
 
-  const isUsernameEditable = currentUserRole !== "pompiste"; // pompistes cannot change username
+  // Pompistes cannot change their username; part employees keep the one the
+  // admin assigned (it is what their auth account is keyed on).
+  const isUsernameEditable = currentUserRole !== "pompiste" && !isModuleWorker;
+
+  /** Password change for a part employee — goes through Supabase Auth, with the
+   *  current password verified by a re-authentication round-trip. */
+  const saveModuleWorkerPassword = async () => {
+    if (!newPassword) { setFormError("Le nouveau mot de passe ne peut pas être vide."); return; }
+    if (newPassword !== confirmPassword) {
+      setFormError("Le nouveau mot de passe et sa confirmation ne correspondent pas.");
+      return;
+    }
+    if (newPassword.length < 6) { setFormError("Le mot de passe doit contenir au moins 6 caractères."); return; }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    const email = user?.email;
+    if (!email) { setFormError("Session introuvable, reconnectez-vous."); return; }
+
+    const { error: reauthError } = await supabase.auth.signInWithPassword({ email, password: currentPassword });
+    if (reauthError) {
+      setFormError("Le mot de passe actuel est incorrect.");
+      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Mot de passe actuel incorrect." } });
+      return;
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setFormError(error.message);
+      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: error.message } });
+      return;
+    }
+
+    dispatch({ type: "ADD_TOAST", payload: { type: "success", message: "Mot de passe mis à jour avec succès !" } });
+    setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+  };
 
   const handleSave = (e?: React.FormEvent) => {
     e?.preventDefault();
     setFormError("");
+
+    if (isModuleWorker) { saveModuleWorkerPassword(); return; }
 
     if (!workerProfile) {
       setFormError("Profil introuvable.");
@@ -113,6 +159,7 @@ const MySettings = () => {
       case "chef_brigade": return "Chef de Brigade";
       case "gerant": return "Gérant de Station";
       case "magasin": return "Employé Magasin / Caisse";
+      case "module_worker": return "Employé";
       default: return role;
     }
   };

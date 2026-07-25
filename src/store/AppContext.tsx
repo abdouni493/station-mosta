@@ -622,6 +622,21 @@ export interface UserPermissions {
   [moduleId: string]: UserPermission;
 }
 
+/** Every role the app can be signed in as. `module_worker` is an employee of one
+ *  of the business parts (Restaurant / Cafétéria / Lavage / Magasin). */
+export type AppUserRole =
+  | 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin' | 'module_worker';
+
+/** Connected employee of a business part, resolved at login from Supabase. */
+export interface ModuleWorkerSession {
+  id: string;
+  moduleKey: 'restaurant' | 'cafeteria' | 'lavage' | 'magasin';
+  name: string;
+  roleName?: string;
+  /** Flat map keyed `"<interface>.<action>"`, e.g. `"stock.voir"`. */
+  permissions: Record<string, boolean>;
+}
+
 /** A reusable, named set of permissions the admin can save per role and apply
  *  to any worker with one click (see the Template Manager page). */
 export interface PermissionTemplate {
@@ -727,11 +742,14 @@ export interface AppState {
   magasinWorkers: MagasinWorker[];
   productBrands: ProductBrand[];
   drivers: Driver[];
-  currentUserRole: 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
+  currentUserRole: AppUserRole;
   currentUserId?: string;
   currentUserName?: string;
   currentUserAvatarUrl?: string;
   currentUserPermissions?: UserPermissions;
+  /** Set only for `module_worker` sessions — the employee of a business part
+   *  (Restaurant / Cafétéria / Lavage / Magasin) and their `iface.action` grants. */
+  currentModuleWorker?: ModuleWorkerSession;
   isLoading: boolean;
 }
 
@@ -862,7 +880,7 @@ type AppAction =
   | { type: 'ADD_PERMISSION_TEMPLATE'; payload: PermissionTemplate }
   | { type: 'UPDATE_PERMISSION_TEMPLATE'; payload: PermissionTemplate }
   | { type: 'DELETE_PERMISSION_TEMPLATE'; payload: string }
-  | { type: 'SET_CURRENT_USER'; payload: { role: 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; id?: string; name?: string; avatarUrl?: string; permissions?: UserPermissions } }
+  | { type: 'SET_CURRENT_USER'; payload: { role: AppUserRole; id?: string; name?: string; avatarUrl?: string; permissions?: UserPermissions; moduleWorker?: ModuleWorkerSession } }
   | { type: 'ADD_BRIGADE_ACCOUNTING'; payload: BrigadeAccounting }
   | { type: 'UPDATE_BRIGADE_ACCOUNTING'; payload: BrigadeAccounting }
   | { type: 'ADD_TPE_TRANSACTION'; payload: TpeTransaction }
@@ -898,6 +916,10 @@ function appReducer(state: AppState, action: AppAction): AppState {
           action.payload.permissions !== undefined
             ? action.payload.permissions
             : state.currentUserPermissions,
+        currentModuleWorker:
+          action.payload.moduleWorker !== undefined
+            ? action.payload.moduleWorker
+            : state.currentModuleWorker,
       };
 
     case 'ADD_TANK':    return { ...state, tanks: [...state.tanks, action.payload] };
@@ -2745,6 +2767,37 @@ export function useModulePermission(moduleId: string): UserPermission {
     if (currentUserRole === 'admin') return ALL_ALLOWED;
     return currentUserPermissions?.[moduleId] ?? NONE_ALLOWED;
   }, [currentUserRole, currentUserPermissions, moduleId]);
+}
+
+// ─── useBizPermission: per-interface gating inside a business part ────────────
+export interface BizPermission {
+  voir: boolean; creer: boolean; modifier: boolean; supprimer: boolean;
+}
+const BIZ_ALL: BizPermission  = { voir: true,  creer: true,  modifier: true,  supprimer: true };
+const BIZ_NONE: BizPermission = { voir: false, creer: false, modifier: false, supprimer: false };
+
+/**
+ * Permission flags of the connected user for one interface of a business part
+ * (Restaurant / Cafétéria / Lavage / Magasin).
+ *
+ *   const perm = useBizPermission('restaurant', 'stock');
+ *   {perm.creer && <button>Nouveau produit</button>}
+ *
+ * Admins (and the fuel-station roles, which never reach these pages) get full
+ * access; a part employee gets exactly what the admin ticked in the employee's
+ * Permissions modal — and only inside their own part.
+ */
+export function useBizPermission(moduleKey: string, interfaceId: string): BizPermission {
+  const { currentUserRole, currentModuleWorker } = useAppState();
+  return useMemo(() => {
+    if (currentUserRole !== 'module_worker') return BIZ_ALL;
+    if (!currentModuleWorker || currentModuleWorker.moduleKey !== moduleKey) return BIZ_NONE;
+    const p = currentModuleWorker.permissions || {};
+    const can = (a: string) => !!p[`${interfaceId}.${a}`];
+    // Actions are meaningless without "voir" — the page is not reachable anyway.
+    if (!can('voir')) return BIZ_NONE;
+    return { voir: true, creer: can('creer'), modifier: can('modifier'), supprimer: can('supprimer') };
+  }, [currentUserRole, currentModuleWorker, moduleKey, interfaceId]);
 }
 
 // ─── useSupabaseDispatch: alias for useAppDispatch (already synced) ───────────

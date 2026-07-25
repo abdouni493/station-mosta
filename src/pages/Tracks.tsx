@@ -216,7 +216,7 @@ const Tracks = () => {
 
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: 20 }}
@@ -279,7 +279,7 @@ const Tracks = () => {
         )}
 
         {showConfirmDelete && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="modal-shell z-[70]">
              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
              <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="bg-white p-10 rounded-[2.5rem] shadow-2xl relative z-10 max-w-sm w-full text-center space-y-6">
                 <div className="w-20 h-20 bg-red-50 text-red-500 rounded-[2rem] flex items-center justify-center mx-auto"><Trash2 className="w-10 h-10" /></div>
@@ -299,11 +299,11 @@ const Tracks = () => {
       {/* Detail View Modal */}
       <AnimatePresence>
         {showDetail && selectedTrack && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetail(false)} className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, x: 100 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 100 }}
-              className="bg-white w-full max-w-4xl h-[95vh] rounded-[3rem] shadow-2xl relative z-10 flex flex-col overflow-hidden"
+              className="bg-white w-full max-w-4xl h-[var(--modal-max-h)] rounded-[3rem] shadow-2xl relative z-10 flex flex-col overflow-hidden"
             >
                <div className="p-10 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-6">

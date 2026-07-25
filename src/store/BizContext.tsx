@@ -9,9 +9,10 @@
  *   biz.state.products; biz.add('products', {...}); biz.update('sales', {...}); …
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { createContext, useContext, useEffect, useMemo, useReducer } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { BizState, ModuleKey, ModuleState, BizCollection } from '../lib/bizConfig';
 import { buildSeed } from '../lib/bizSeed';
+import { loadBizStore, saveBizStore } from '../lib/supabase';
 
 const STORAGE_KEY = 'stationpro_biz_v1';
 
@@ -22,6 +23,7 @@ type Action =
   | { type: 'DELETE'; module: ModuleKey; coll: BizCollection; id: string }
   | { type: 'SET'; module: ModuleKey; coll: BizCollection; items: any[] }
   | { type: 'PATCH'; module: ModuleKey; patch: Partial<ModuleState> }
+  | { type: 'HYDRATE'; state: BizState }
   | { type: 'RESET' };
 
 function reducer(state: BizState, action: Action): BizState {
@@ -61,11 +63,17 @@ function reducer(state: BizState, action: Action): BizState {
       const mod = state[action.module];
       return { ...state, [action.module]: { ...mod, ...action.patch } };
     }
+    case 'HYDRATE':
+      return action.state;
     case 'RESET':
       return buildSeed();
     default:
       return state;
   }
+}
+
+function isValidState(v: any): v is BizState {
+  return !!v && !!v.restaurant && !!v.cafeteria && !!v.lavage && !!v.magasin;
 }
 
 function loadInitial(): BizState {
@@ -91,9 +99,33 @@ const Ctx = createContext<BizContextValue | null>(null);
 
 export function BizProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, loadInitial);
+  // Skip the very first save: it would push the local/seed state over the
+  // server copy before the initial fetch has had a chance to hydrate.
+  const hydratedRef = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Pull the shared state once at mount so every user (admin and part
+  // employees) works on the same Restaurant / Cafétéria / Lavage / Magasin data.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const remote = await loadBizStore();
+      if (cancelled) return;
+      if (isValidState(remote)) dispatch({ type: 'HYDRATE', state: remote });
+      else saveBizStore(state);   // first run — seed the shared row
+      hydratedRef.current = true;
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
+
+    if (!hydratedRef.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { saveBizStore(state); }, 800);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [state]);
 
   const value = useMemo(() => ({ state, dispatch }), [state]);

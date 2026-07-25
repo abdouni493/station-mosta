@@ -566,9 +566,9 @@ const Gerants = () => {
       {/* Edit/Create Modal */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col h-[90vh] overflow-hidden">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden">
               <div className="p-8 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 bg-[#FFB800] rounded-2xl flex items-center justify-center text-[#002d87] font-black"><Building2 className="w-6 h-6" /></div>
@@ -672,7 +672,7 @@ const Gerants = () => {
       {/* Detail Modal */}
       <AnimatePresence>
         {showDetailModal && selectedGerant && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl relative z-10 overflow-hidden">
               <div className="p-8 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between shrink-0">
@@ -780,7 +780,7 @@ const Gerants = () => {
       {/* Advance Modal */}
       <AnimatePresence>
         {showAdvanceModal && selectedGerant && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowAdvanceModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-6 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between">
@@ -817,7 +817,7 @@ const Gerants = () => {
       {/* Absence Modal */}
       <AnimatePresence>
         {showAbsenceModal && selectedGerant && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowAbsenceModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-6 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between">
@@ -854,13 +854,13 @@ const Gerants = () => {
       {/* Payment Modal */}
       <AnimatePresence>
         {showPaymentModal && selectedGerant && paymentCalc && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70] p-4 text-left">
+          <div className="modal-shell z-[70] bg-black/40 text-left">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col relative z-10 border border-slate-100"
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[var(--modal-max-h)] overflow-hidden flex flex-col relative z-10 border border-slate-100"
             >
               {/* Header */}
               <div className="p-8 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between">
@@ -1046,7 +1046,7 @@ const Gerants = () => {
       {/* History Modal */}
       <AnimatePresence>
         {showHistoryModal && selectedGerant && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowHistoryModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-8 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between">
@@ -1203,7 +1203,7 @@ const Gerants = () => {
       {/* Activate Account Modal */}
       <AnimatePresence>
         {showActivateModal && activatingGerant && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="modal-shell z-[70]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowActivateModal(false); setActivatePassword(""); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-6 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">

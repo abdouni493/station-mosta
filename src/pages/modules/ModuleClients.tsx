@@ -3,6 +3,7 @@ import { Users, Plus, Phone, MapPin, History, Wallet, TrendingUp, CircleDollarSi
 import { toast } from 'react-hot-toast';
 import { ModuleKey, MODULES, BizContact } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState, Table,
   RowActions, ActionBtn, Edit2, Trash2, Confirm, Modal, money, formatDate,
@@ -12,6 +13,7 @@ import { ContactModal } from './_shared';
 export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'clients');
   const { clients, sales, reparations } = biz.state;
 
   const [search, setSearch] = useState('');
@@ -36,7 +38,7 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Users} title="Clients" subtitle={`${cfg.label} — base clients`}
-        actions={<button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouveau client</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouveau client</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard icon={Users} label="Clients" value={clients.length} tone="blue" />
@@ -46,7 +48,7 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
 
       <div className="card-glass p-4"><SearchInput value={search} onChange={setSearch} placeholder="Nom ou téléphone…" /></div>
 
-      {filtered.length === 0 ? <EmptyState icon={Users} title="Aucun client" action={<button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau client</button>} /> : (
+      {filtered.length === 0 ? <EmptyState icon={Users} title="Aucun client" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau client</button> : undefined} /> : (
         <CardGrid>
           {filtered.map(c => {
             const st = clientStats(c.id);
@@ -66,8 +68,8 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
                   <button className="btn-ghost !px-2 !py-1.5 text-xs" onClick={() => setHistory(c)}><History className="w-4 h-4" /> Historique</button>
                   <RowActions>
-                    <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(c); setShowForm(true); }} />
-                    <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(c)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(c); setShowForm(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(c)} />}
                   </RowActions>
                 </div>
               </GlassCard>

@@ -390,9 +390,9 @@ const Dashboard = () => {
       {/* Décalage settings modal */}
       <AnimatePresence>
         {showDecalageSettings && (
-          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <div className="modal-shell z-[80]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDecalageSettings(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2rem] relative z-10 overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[92vh]">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2rem] relative z-10 overflow-hidden shadow-2xl border border-slate-100 flex flex-col max-h-[var(--modal-max-h)]">
               {/* Header */}
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
                 <div>

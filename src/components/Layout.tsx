@@ -8,7 +8,7 @@ const Layout = ({ children, onRouteChange, onLogout }: { children: React.ReactNo
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentUserRole, currentUserId, currentUserPermissions } = useAppState();
+  const { currentUserRole, currentUserId, currentUserPermissions, currentModuleWorker } = useAppState();
 
   // Save the current route whenever it changes
   useEffect(() => {
@@ -24,6 +24,7 @@ const Layout = ({ children, onRouteChange, onLogout }: { children: React.ReactNo
     userRole: currentUserRole,
     userId: currentUserId,
     userPermissions: currentUserPermissions,
+    moduleWorker: currentModuleWorker,
   };
 
   return (

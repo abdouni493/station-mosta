@@ -1137,12 +1137,12 @@ const ChefBrigade = () => {
       {/* 1. ACTIVATE SHIFT MODAL */}
       <AnimatePresence>
         {showActivateModal && activeBrigadeForAction && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-100 italic"
+              className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-slate-100 italic"
             >
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-4">
@@ -1283,12 +1283,12 @@ const ChefBrigade = () => {
       {/* 2. CLOSE SHIFT MODAL */}
       <AnimatePresence>
         {showCloseModal && activeBrigadeForAction && closingCalculations && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-100 italic"
+              className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-slate-100 italic"
             >
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-4">
@@ -1581,12 +1581,12 @@ const ChefBrigade = () => {
       {/* 3. REPORT PRINT MODAL (FICHE DE JOURNÉE) */}
       <AnimatePresence>
         {showPrintModal && selectedHistoryBrigade && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm no-print">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm no-print">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl shadow-xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh]"
+              className="bg-white rounded-3xl shadow-xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[var(--modal-max-h)]"
             >
               <div className="px-6 py-4 bg-[#001f5c] text-white flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -1777,7 +1777,7 @@ const ChefBrigade = () => {
       {/* 4. HISTORY DETAILS INSPECTION MODAL */}
       <AnimatePresence>
         {showHistoryDetailModal && selectedHistoryBrigade && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -1957,7 +1957,7 @@ const ChefBrigade = () => {
       {/* 5. ADD/EDIT EXPENSE MODAL */}
       <AnimatePresence>
         {showExpenseModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -2104,7 +2104,7 @@ const ChefBrigade = () => {
       {/* 6. DELETE EXPENSE CONFIRMATION DIALOG */}
       <AnimatePresence>
         {showDeleteConfirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="modal-shell z-50 bg-black/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}

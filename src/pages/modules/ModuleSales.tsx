@@ -3,6 +3,7 @@ import { Receipt, Wallet, TrendingUp, CircleDollarSign, User, ShoppingBag } from
 import { toast } from 'react-hot-toast';
 import { ModuleKey, MODULES, BizSale } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
@@ -14,6 +15,7 @@ import { PayDebtModal, printInvoice } from './_shared';
 export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'sales');
   const { settings } = useAppState();
   const { sales, clients } = biz.state;
 
@@ -86,9 +88,9 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
               <div className="flex items-center justify-end mt-3 pt-3 border-t border-slate-100">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(s)} />
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(s)} />
-                  {s.rest > 0 && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(s)} />}
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(s)} />}
+                  {s.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(s)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />}
                 </RowActions>
               </div>
             </GlassCard>
@@ -108,9 +110,9 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
               <td className="table-cell">{s.rest > 0 ? <Badge tone="danger">Crédit</Badge> : <Badge tone="success">Payée</Badge>}</td>
               <td className="table-cell"><RowActions>
                 <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(s)} />
-                <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(s)} />
-                {s.rest > 0 && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(s)} />}
-                <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />
+                {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(s)} />}
+                {s.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(s)} />}
+                {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />}
               </RowActions></td>
             </tr>
           ))}

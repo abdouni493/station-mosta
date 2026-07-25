@@ -6,6 +6,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizSale, BizLineItem } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import { PageHeader, Badge, Select, Input, money } from '@/src/components/biz/Kit';
 import { ContactModal } from './_shared';
 
@@ -14,6 +15,7 @@ interface CartLine { id: string; name: string; unitPrice: number; qty: number; m
 export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'pos');
   const { comptoir, products, clients } = biz.state;
   const useComptoir = cfg.hasComptoir;
 
@@ -146,7 +148,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
               <div><label className="text-[11px] font-bold uppercase text-slate-400">Payé</label><input type="number" value={paidStr} onChange={e => setPaidStr(e.target.value)} placeholder={String(total)} className="input-field mt-1" /></div>
               <div><label className="text-[11px] font-bold uppercase text-slate-400">Reste</label><div className="mt-1 h-[46px] rounded-xl bg-red-50 flex items-center px-3 font-black tabular-nums text-red-600">{money(rest)}</div></div>
             </div>
-            <button className="btn-primary w-full" onClick={checkout}><Check className="w-4 h-4" /> Valider la vente</button>
+            <button className="btn-primary w-full" onClick={checkout} disabled={!perm.creer} title={perm.creer ? undefined : "Vous n'avez pas le droit d'enregistrer une vente"}><Check className="w-4 h-4" /> Valider la vente</button>
           </div>
         </div>
       </div>

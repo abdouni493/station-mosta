@@ -1319,13 +1319,13 @@ const POS = () => {
       {/* --- MODAL 1: Standardized Client Creation Modal (Exposed from Clients.tsx) --- */}
       <AnimatePresence>
         {showClientModal && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[70] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowClientModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} 
               animate={{ opacity: 1, scale: 1, y: 0 }} 
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-4xl rounded-[3rem] relative z-10 flex flex-col max-h-[90vh] overflow-hidden shadow-2xl border border-blue-200"
+              className="bg-white w-full max-w-4xl rounded-[3rem] relative z-10 flex flex-col max-h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-blue-200"
             >
               {/* Header */}
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 border-b border-blue-900/10">
@@ -1567,7 +1567,7 @@ const POS = () => {
       {/* --- MODAL 2: Receipt print dialog --- */}
       <AnimatePresence>
         {showReceipt && receiptSale && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => { setShowReceipt(false); }} />
             <motion.div 
               initial={{ opacity: 0, y: 30 }} 
@@ -1655,7 +1655,7 @@ const POS = () => {
       {/* --- MODAL 3: Fuel Sale Details Modal --- */}
       <AnimatePresence>
         {selectedHistorySale && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -1734,7 +1734,7 @@ const POS = () => {
       {/* --- MODAL 4: Fuel Sale Edit Modal --- */}
       <AnimatePresence>
         {editSale && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -1855,7 +1855,7 @@ const POS = () => {
       {/* --- MODAL 5: Delete Confirmation Modal --- */}
       <AnimatePresence>
         {showConfirmDeleteId && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="modal-shell z-[70] bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}

@@ -4,6 +4,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizComptoirItem, BizDestruction } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, Select, CardGrid, GlassCard, EmptyState, Tabs, Table,
   ActionBtn, Confirm, Modal, Field, Input, money, formatDate,
@@ -12,6 +13,7 @@ import {
 export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'comptoir');
   const { comptoir, destructions } = biz.state;
   const [tab, setTab] = useState<'avail' | 'destroy'>('avail');
   const [search, setSearch] = useState('');
@@ -88,9 +90,10 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
                   <div className="flex items-center justify-between mt-3">
                     <span className="text-sm text-slate-400">Valeur stock</span><span className="font-black text-[#002d87] tabular-nums">{money(c.qty * c.unitPrice)}</span>
                   </div>
+                  {perm.supprimer && (
                   <button className="w-full mt-3 !py-2 rounded-xl bg-red-50 text-red-600 font-bold text-sm flex items-center justify-center gap-1.5 hover:bg-red-100 transition-colors" onClick={() => setDestroying(c)}>
                     <Flame className="w-4 h-4" /> Destruction
-                  </button>
+                  </button>)}
                 </GlassCard>
               ))}
             </CardGrid>
@@ -102,8 +105,8 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
             <div className="card-glass p-3 flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-500">{selected.length} sélectionné(s)</span>
               <div className="ml-auto flex gap-2">
-                <button className="btn-outline !py-1.5" onClick={() => setConfirmBulk('recover')}><RotateCcw className="w-4 h-4" /> Récupérer</button>
-                <button className="!py-1.5 px-4 rounded-xl bg-red-600 text-white font-bold text-xs flex items-center gap-1.5" onClick={() => setConfirmBulk('delete')}><Trash className="w-4 h-4" /> Supprimer</button>
+                {perm.modifier && <button className="btn-outline !py-1.5" onClick={() => setConfirmBulk('recover')}><RotateCcw className="w-4 h-4" /> Récupérer</button>}
+                {perm.supprimer && <button className="!py-1.5 px-4 rounded-xl bg-red-600 text-white font-bold text-xs flex items-center gap-1.5" onClick={() => setConfirmBulk('delete')}><Trash className="w-4 h-4" /> Supprimer</button>}
               </div>
             </div>
           )}
@@ -126,7 +129,7 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
                   <td className="table-cell">
                     <div className="flex items-center gap-1.5 justify-end">
                       {!d.recovered && <ActionBtn icon={RotateCcw} tone="green" title="Récupérer" onClick={() => recover(d)} />}
-                      <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => biz.remove('destructions', d.id)} />
+                      {perm.supprimer && <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => biz.remove('destructions', d.id)} />}
                     </div>
                   </td>
                 </tr>

@@ -494,13 +494,13 @@ const DeliveryNotes = () => {
       {/* Create / Edit Modal */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 text-left">
+          <div className="modal-shell z-[60] text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowModal(false); setSelectedBL(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 flex flex-col h-[92vh] overflow-hidden shadow-2xl border border-slate-100"
+              className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-slate-100"
             >
               <div className="p-6 bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] text-white flex items-center justify-between shrink-0">
                 <h3 className="font-black text-lg uppercase tracking-tighter flex items-center gap-2">
@@ -644,9 +644,9 @@ const DeliveryNotes = () => {
       {/* Detail Modal */}
       <AnimatePresence>
         {showDetail && selectedBL && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 text-left">
+          <div className="modal-shell z-[60] text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowDetail(false); setSelectedBL(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 50 }} className="bg-white w-full max-w-4xl rounded-[3rem] relative z-10 flex flex-col h-[90vh] overflow-hidden shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 50 }} className="bg-white w-full max-w-4xl rounded-[3rem] relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-slate-100">
               <div className="p-8 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/50">
                 <div className="flex items-center gap-6">
                   <div className="w-16 h-16 rounded-[1.8rem] flex items-center justify-center shrink-0 shadow-xl bg-[#001f5c] text-[#FFB800]">

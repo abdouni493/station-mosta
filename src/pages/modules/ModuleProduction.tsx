@@ -7,6 +7,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizProduction, BizFiche, BizIngredient, BizProduct } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, Select, CardGrid, GlassCard, EmptyState, Tabs,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Switch, InlineCreate, money, formatDate, inPeriod, Period,
@@ -15,6 +16,7 @@ import {
 export default function ModuleProduction({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'production');
   const { productions, fiches } = biz.state;
   const [tab, setTab] = useState<'prod' | 'fiche'>('prod');
 
@@ -31,6 +33,8 @@ export default function ModuleProduction({ moduleKey }: { moduleKey: ModuleKey }
 
 function TabAction({ tab, moduleKey }: { tab: 'prod' | 'fiche'; moduleKey: ModuleKey }) {
   const [open, setOpen] = useState(false);
+  const perm = useBizPermission(moduleKey, 'production');
+  if (!perm.creer) return null;
   return (
     <>
       <button className="btn-primary" onClick={() => setOpen(true)}>
@@ -45,6 +49,7 @@ function TabAction({ tab, moduleKey }: { tab: 'prod' | 'fiche'; moduleKey: Modul
 // ─── Productions tab ────────────────────────────────────────────────────────────
 function ProductionsTab({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'production');
   const { productions } = biz.state;
   const [search, setSearch] = useState('');
   const [period, setPeriod] = useState<Period>('all');
@@ -118,7 +123,7 @@ function ProductionsTab({ moduleKey }: { moduleKey: ModuleKey }) {
                 <div className="flex items-center justify-end mt-3 pt-3 border-t border-slate-100">
                   <RowActions>
                     <ActionBtn icon={Eye} tone="blue" title="Détails" onClick={() => setViewing(p)} />
-                    <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />
+                    {perm.supprimer && <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                   </RowActions>
                 </div>
               </GlassCard>
@@ -342,6 +347,7 @@ function ProductionForm({ moduleKey, onClose }: { moduleKey: ModuleKey; onClose:
 // ─── Fiches tab ─────────────────────────────────────────────────────────────────
 function FichesTab({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'production');
   const { fiches } = biz.state;
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<BizFiche | null>(null);
@@ -373,7 +379,7 @@ function FichesTab({ moduleKey }: { moduleKey: ModuleKey }) {
               <div className="flex items-center justify-end mt-3 pt-3 border-t border-slate-100">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="amber" title="Modifier" onClick={() => setEditing(f)} />
-                  <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => setToDelete(f)} />
+                  {perm.supprimer && <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => setToDelete(f)} />}
                 </RowActions>
               </div>
             </GlassCard>

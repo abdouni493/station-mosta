@@ -435,9 +435,9 @@ const BonsLivraisonTab = () => {
       {/* Create / Edit Modal */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowModal(false); setSelectedBL(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 flex flex-col h-[92vh] overflow-hidden shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-slate-100">
               <div className="p-6 bg-[#003087] text-white flex items-center justify-between shrink-0">
                 <h3 className="font-black text-lg uppercase tracking-tighter flex items-center gap-2">
                   <FileText className="w-5 h-5 text-[#FFB800]" />
@@ -614,9 +614,9 @@ const BonsLivraisonTab = () => {
       {/* Detail Modal */}
       <AnimatePresence>
         {showDetail && selectedBL && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowDetail(false); setSelectedBL(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 30 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 30 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 max-h-[var(--modal-max-h)] overflow-y-auto shadow-2xl border border-slate-100">
               <div className="p-6 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white">
                 <h3 className="font-black text-lg text-[#003087] uppercase tracking-tighter">{selectedBL.blNumber || `BL #${selectedBL.id.slice(0, 8)}`}</h3>
                 <div className="flex items-center gap-2">
@@ -948,9 +948,9 @@ const FacturationTab = () => {
       {/* Create / Edit modal */}
       <AnimatePresence>
         {showCreateModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowCreateModal(false); resetForm(); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-4xl rounded-3xl relative z-10 flex flex-col h-[92vh] overflow-hidden shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-4xl rounded-3xl relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-slate-100">
               <div className="p-6 bg-[#003087] text-white flex items-center justify-between shrink-0">
                 <h3 className="font-black text-lg uppercase tracking-tighter flex items-center gap-2"><FileText className="w-5 h-5 text-[#FFB800]" /> {editingId ? "Modifier la Facture" : "Nouvelle Facture"}</h3>
                 <button onClick={() => { setShowCreateModal(false); resetForm(); }} className="p-3 hover:bg-white/10 rounded-2xl"><X className="w-6 h-6" /></button>
@@ -1107,9 +1107,9 @@ const FacturationTab = () => {
       {/* Detail modal */}
       <AnimatePresence>
         {showDetailModal && selectedInvoice && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 30 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 30 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 max-h-[var(--modal-max-h)] overflow-y-auto shadow-2xl border border-slate-100">
               <div className="p-6 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white">
                 <h3 className="font-black text-lg text-[#003087] uppercase tracking-tighter">Facture {selectedInvoice.invoiceNumber}</h3>
                 <button onClick={() => setShowDetailModal(false)} className="p-2 hover:bg-slate-100 rounded-xl"><X className="w-5 h-5" /></button>
@@ -1386,9 +1386,9 @@ const PaiementsTab = () => {
       {/* Create / Edit modal */}
       <AnimatePresence>
         {showCreateModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowCreateModal(false); resetForm(); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 flex flex-col h-[92vh] overflow-hidden shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-3xl relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-slate-100">
               <div className="p-6 bg-[#003087] text-white flex items-center justify-between shrink-0">
                 <h3 className="font-black text-lg uppercase tracking-tighter flex items-center gap-2"><CreditCard className="w-5 h-5 text-[#FFB800]" /> {editingId ? "Modifier le Reçu" : "Nouveau Reçu"}</h3>
                 <button onClick={() => { setShowCreateModal(false); resetForm(); }} className="p-3 hover:bg-white/10 rounded-2xl"><X className="w-6 h-6" /></button>
@@ -1488,7 +1488,7 @@ const PaiementsTab = () => {
       {/* Pay rest modal */}
       <AnimatePresence>
         {payRestReceipt && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="modal-shell z-[70]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setPayRestReceipt(null)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-md rounded-3xl relative z-10 shadow-2xl border border-slate-100 p-6 space-y-4">
               <h3 className="font-black text-lg text-[#003087] uppercase tracking-tighter">Payer le reste</h3>
@@ -1506,9 +1506,9 @@ const PaiementsTab = () => {
       {/* Detail modal */}
       <AnimatePresence>
         {showDetailModal && selectedReceipt && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="modal-shell z-[60]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 30 }} className="bg-white w-full max-w-2xl rounded-3xl relative z-10 max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-100">
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 30 }} className="bg-white w-full max-w-2xl rounded-3xl relative z-10 max-h-[var(--modal-max-h)] overflow-y-auto shadow-2xl border border-slate-100">
               <div className="p-6 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white">
                 <h3 className="font-black text-lg text-[#003087] uppercase tracking-tighter">Reçu {selectedReceipt.receiptNumber}</h3>
                 <button onClick={() => setShowDetailModal(false)} className="p-2 hover:bg-slate-100 rounded-xl"><X className="w-5 h-5" /></button>

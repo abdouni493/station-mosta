@@ -7,6 +7,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizCaisseTx } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
   money, formatDate, PeriodFilter, Period, inPeriod,
@@ -15,6 +16,7 @@ import {
 export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'caisse');
   const { caisse, sales, purchases, expenses, workers, products, comptoir } = biz.state;
 
   const [period, setPeriod] = useState<Period>('month');
@@ -66,7 +68,7 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Wallet} title="Caisse" subtitle={`${cfg.label} — trésorerie & mouvements`}
-        actions={<button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Dépôt / Retrait</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Dépôt / Retrait</button> : undefined} />
 
       {/* Hero banners */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -129,8 +131,8 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
                   <p className="text-xs text-slate-400">{formatDate(tx.date)} {tx.category && <>• <Badge tone="neutral">{tx.category}</Badge></>}</p></div>
                 <span className={`font-black tabular-nums ${tx.type === 'deposit' ? 'text-emerald-600' : 'text-red-600'}`}>{tx.type === 'deposit' ? '+' : '−'}{money(tx.amount)}</span>
                 <div className="flex items-center gap-1">
-                  <button onClick={() => setForm(tx)} className="w-8 h-8 rounded-lg text-amber-600 hover:bg-amber-50 flex items-center justify-center"><Edit2 className="w-4 h-4" /></button>
-                  <button onClick={() => setToDelete(tx)} className="w-8 h-8 rounded-lg text-red-600 hover:bg-red-50 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>
+                  {perm.modifier && <button onClick={() => setForm(tx)} className="w-8 h-8 rounded-lg text-amber-600 hover:bg-amber-50 flex items-center justify-center"><Edit2 className="w-4 h-4" /></button>}
+                  {perm.supprimer && <button onClick={() => setToDelete(tx)} className="w-8 h-8 rounded-lg text-red-600 hover:bg-red-50 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>}
                 </div>
               </div>
             ))}

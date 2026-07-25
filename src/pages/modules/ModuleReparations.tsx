@@ -7,6 +7,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizReparation, BizService, BizCar, BizLineItem } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Select, money, formatDate,
@@ -28,6 +29,7 @@ const STATUS_META: Record<string, { label: string; tone: any }> = {
 export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'reparations');
   const { reparations, clients } = biz.state;
 
   const [search, setSearch] = useState('');
@@ -66,11 +68,11 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Car} title="Réparations & Lavage" subtitle={`${cfg.label} — atelier & rendez-vous`}
-        actions={<div className="flex gap-2">
+        actions={perm.creer ? <div className="flex gap-2">
           <button className="btn-outline !py-2" onClick={() => setCreating('appointment')}><CalendarClock className="w-4 h-4" /> Rendez-vous</button>
           <button className="btn-secondary" onClick={() => setCreating('lavage')}><Droplets className="w-4 h-4" /> Lavage</button>
           <button className="btn-primary" onClick={() => setCreating('reparation')}><Wrench className="w-4 h-4" /> Réparation</button>
-        </div>} />
+        </div> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Car} label="Interventions" value={stats.total} tone="blue" />
@@ -115,12 +117,12 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                 </div>
                 {r.kind === 'appointment' && r.comingDate && <p className="text-[11px] text-blue-500 mt-2 flex items-center gap-1"><CalendarClock className="w-3 h-3" /> Entrée: {new Date(r.comingDate).toLocaleString('fr-DZ')}</p>}
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
-                  {r.status === 'pending' ? <button className="btn-secondary !px-2.5 !py-1.5 text-xs" onClick={() => setFinalizing(r)}><CheckCircle2 className="w-4 h-4" /> Finaliser</button> : <span />}
+                  {r.status === 'pending' && perm.modifier ? <button className="btn-secondary !px-2.5 !py-1.5 text-xs" onClick={() => setFinalizing(r)}><CheckCircle2 className="w-4 h-4" /> Finaliser</button> : <span />}
                   <RowActions>
                     <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
-                    <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(r)} />
-                    {r.rest > 0 && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
-                    <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(r)} />}
+                    {r.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
                   </RowActions>
                 </div>
               </GlassCard>

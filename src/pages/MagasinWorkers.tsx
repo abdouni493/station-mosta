@@ -579,9 +579,9 @@ const MagasinWorkers = () => {
       {/* Edit/Create Modal */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 flex flex-col h-[90vh] overflow-hidden border border-slate-100">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden border border-slate-100">
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 bg-white/10 backdrop-blur-sm text-yellow-400 rounded-2xl flex items-center justify-center shadow-inner"><Store className="w-6 h-6" /></div>
@@ -686,7 +686,7 @@ const MagasinWorkers = () => {
       {/* Detail Modal */}
       <AnimatePresence>
         {showDetailModal && selectedWorker && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
@@ -739,7 +739,7 @@ const MagasinWorkers = () => {
       {/* Advance Modal */}
       <AnimatePresence>
         {showAdvanceModal && selectedWorker && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowAdvanceModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between">
@@ -776,7 +776,7 @@ const MagasinWorkers = () => {
       {/* Absence Modal */}
       <AnimatePresence>
         {showAbsenceModal && selectedWorker && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowAbsenceModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between">
@@ -813,9 +813,9 @@ const MagasinWorkers = () => {
       {/* Payment Modal */}
       <AnimatePresence>
         {showPaymentModal && selectedWorker && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowPaymentModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-4xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[95vh] border border-slate-100">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-4xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-slate-100">
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-4">
                   <div className="w-14 h-14 bg-white/10 backdrop-blur-sm text-yellow-400 rounded-2xl flex items-center justify-center shadow-inner">
@@ -985,7 +985,7 @@ const MagasinWorkers = () => {
       {/* History Modal */}
       <AnimatePresence>
         {showHistoryModal && selectedWorker && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[70] p-4">
+          <div className="modal-shell z-[70] bg-black/40">
             <motion.div
               initial={{ opacity: 0, x: 50, scale: 0.95 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
@@ -1217,7 +1217,7 @@ const MagasinWorkers = () => {
       {/* Activate Account Modal */}
       <AnimatePresence>
         {showActivateModal && activatingWorker && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="modal-shell z-[70]">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowActivateModal(false); setActivatePassword(""); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
               <div className="p-6 bg-gradient-to-r from-amber-500 to-amber-600 text-white flex items-center justify-between">

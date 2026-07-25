@@ -4,6 +4,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizExpense } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
   RowActions, ActionBtn, Edit2, Trash2, Confirm, Modal, Field, Input, Textarea, Select,
@@ -13,6 +14,7 @@ import {
 export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'expenses');
   const { expenses } = biz.state;
   const [search, setSearch] = useState('');
   const [period, setPeriod] = useState<Period>('all');
@@ -30,7 +32,7 @@ export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) 
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={CreditCard} title="Dépenses" subtitle={`${cfg.label} — charges & dépenses`}
-        actions={<button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvelle dépense</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvelle dépense</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard icon={TrendingDown} label="Dépenses" value={filtered.length} tone="blue" />
@@ -43,7 +45,7 @@ export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) 
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
       </div>
 
-      {filtered.length === 0 ? <EmptyState icon={CreditCard} title="Aucune dépense" action={<button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvelle dépense</button>} /> : (
+      {filtered.length === 0 ? <EmptyState icon={CreditCard} title="Aucune dépense" action={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvelle dépense</button> : undefined} /> : (
         <CardGrid>
           {filtered.map(e => (
             <GlassCard key={e.id}>
@@ -55,8 +57,8 @@ export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) 
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
                 <span className="text-[11px] text-slate-400 flex items-center gap-1"><Calendar className="w-3 h-3" />{formatDate(e.date)}</span>
                 <RowActions>
-                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(e)} />
-                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(e)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(e)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(e)} />}
                 </RowActions>
               </div>
             </GlassCard>

@@ -3,6 +3,7 @@ import { Truck, Plus, Phone, MapPin, ShoppingCart, CircleDollarSign, Wallet, Tre
 import { toast } from 'react-hot-toast';
 import { ModuleKey, MODULES, BizContact } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
+import { useBizPermission } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState, Table,
   RowActions, ActionBtn, Edit2, Trash2, Confirm, Modal, money, formatDate,
@@ -12,6 +13,7 @@ import { ContactModal } from './_shared';
 export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'suppliers');
   const { suppliers, purchases } = biz.state;
 
   const [search, setSearch] = useState('');
@@ -34,7 +36,7 @@ export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey })
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Truck} title="Fournisseurs" subtitle={`${cfg.label} — gestion des fournisseurs`}
-        actions={<button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouveau fournisseur</button>} />
+        actions={perm.creer ? <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouveau fournisseur</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard icon={Truck} label="Fournisseurs" value={suppliers.length} tone="blue" />
@@ -44,7 +46,7 @@ export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey })
 
       <div className="card-glass p-4"><SearchInput value={search} onChange={setSearch} placeholder="Nom ou téléphone…" /></div>
 
-      {filtered.length === 0 ? <EmptyState icon={Truck} title="Aucun fournisseur" action={<button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau fournisseur</button>} /> : (
+      {filtered.length === 0 ? <EmptyState icon={Truck} title="Aucun fournisseur" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau fournisseur</button> : undefined} /> : (
         <CardGrid>
           {filtered.map(s => {
             const st = supStats(s.id);
@@ -63,8 +65,8 @@ export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey })
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
                   <button className="btn-ghost !px-2 !py-1.5 text-xs" onClick={() => setHistory(s)}><ShoppingCart className="w-4 h-4" /> Achats</button>
                   <RowActions>
-                    <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(s); setShowForm(true); }} />
-                    <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(s); setShowForm(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />}
                   </RowActions>
                 </div>
               </GlassCard>

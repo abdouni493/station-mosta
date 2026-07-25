@@ -266,7 +266,7 @@ const StockAdjustmentModal = ({ isOpen, product, onClose, onAdjust }: any) => {
   if (!isOpen || !product) return null;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic">
+    <div className="modal-shell z-[70] italic">
       <motion.div 
         initial={{ opacity: 0 }} 
         animate={{ opacity: 1 }} 
@@ -408,7 +408,7 @@ const ProductDetailsModal = ({ isOpen, product, onClose }: any) => {
   ];
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 italic">
+    <div className="modal-shell z-[70] italic">
       <motion.div 
         initial={{ opacity: 0 }} 
         animate={{ opacity: 1 }} 
@@ -420,7 +420,7 @@ const ProductDetailsModal = ({ isOpen, product, onClose }: any) => {
         initial={{ opacity: 0, scale: 0.95 }} 
         animate={{ opacity: 1, scale: 1 }} 
         exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white w-full max-w-3xl rounded-[3rem] relative z-10 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col border border-blue-200"
+        className="bg-white w-full max-w-3xl rounded-[3rem] relative z-10 shadow-2xl overflow-hidden max-h-[var(--modal-max-h)] flex flex-col border border-blue-200"
       >
         <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 italic border-b border-blue-900/10">
           <div className="flex items-center gap-4">
@@ -1287,13 +1287,13 @@ const Products = () => {
       {/* Create / Edit Modal (Nouvel Article Boutique) */}
       <AnimatePresence>
         {showModal && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 italic text-left">
+          <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} 
               animate={{ opacity: 1, scale: 1, y: 0 }} 
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-2xl rounded-[3rem] relative z-10 flex flex-col h-[90vh] overflow-hidden shadow-2xl border border-blue-200"
+              className="bg-white w-full max-w-2xl rounded-[3rem] relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-blue-200"
             >
               {/* Header - Blue gradient matching create new brigade */}
               <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 italic border-b border-blue-950/20">
