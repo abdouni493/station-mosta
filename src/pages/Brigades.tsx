@@ -387,7 +387,7 @@ const Brigades = () => {
     });
   }, [presentAssignments, pompistePumps, pumps, pumpNozzles, tanks, wizEndNozzleIndices, settings, retourCuveByTank, pompistes, editingBrigade]);
 
-  const handleStartBrigade = () => {
+  const handleStartBrigade = (forcedStatus?: 'Clôturée' | 'En attente') => {
     setIsSubmitting(true);
     setTimeout(() => {
       const chef = brigadeChefs.find(c => c.id === chefId);
@@ -501,16 +501,17 @@ const Brigades = () => {
       const hasAnyCash = presentAssignments.some(a =>
         pompistePayments[a.pompisteId] !== undefined || (versements[a.pompisteId] || []).length > 0);
 
-      // ── Create / update the brigade (Clôturée) ────────────────────────────
+      // Determine explicit status or fallback to cash heuristic
+      const finalStatus: 'Clôturée' | 'En attente' = forcedStatus || (hasAnyCash ? 'Clôturée' : 'En attente');
+
+      // ── Create / update the brigade ────────────────────────────
       const newBrigade: Brigade = {
         ...(isEdit ? editingBrigade! : {} as Brigade),
         id: brigadeId,
         date: sDate,
         shift: sType,
         chefId: chefId || undefined,
-        // No cash entered anywhere ⇒ the brigade stays "En attente"; it becomes
-        // "Clôturée" as soon as an amount (typed or versement) is recorded.
-        status: hasAnyCash ? 'Clôturée' : 'En attente',
+        status: finalStatus,
         isActive: false,
         startDatetime,
         endDatetime,
@@ -542,7 +543,7 @@ const Brigades = () => {
       };
       dispatch({ type: isEdit ? 'UPDATE_BRIGADE' : 'ADD_BRIGADE', payload: newBrigade });
 
-      // 5. Create / update the linked accounting record (status completed)
+      // 5. Create / update the linked accounting record
       const accounting: BrigadeAccounting = {
         id: accountingId,
         brigadeId,
@@ -607,7 +608,7 @@ const Brigades = () => {
         restAssignedAmount: existingAccounting?.restAssignedAmount || 0,
         restAssignedWorkerType: existingAccounting?.restAssignedWorkerType,
         restAssignedWorkerId: existingAccounting?.restAssignedWorkerId,
-        status: 'completed',
+        status: finalStatus === 'Clôturée' ? 'completed' : 'draft',
         createdBy: currentUserName || existingAccounting?.createdBy,
         justifications: accJustifications,
       };
@@ -1260,6 +1261,8 @@ const Brigades = () => {
                               "px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-tighter whitespace-nowrap",
                               b.status === "Clôturée"
                                 ? "bg-blue-900 text-yellow-400 border border-blue-700"
+                                : b.status === "En attente"
+                                ? "bg-amber-100 text-amber-900 border border-amber-300 font-black"
                                 : "bg-slate-100 text-slate-500 border border-slate-200"
                             )}
                           >
@@ -1622,8 +1625,7 @@ const Brigades = () => {
             { num: 3, label: 'Planning',     icon: Calendar },
             { num: 4, label: 'Départ',       icon: Database },
             { num: 5, label: 'Index fin',    icon: Droplets },
-            { num: 6, label: 'Comparaison',  icon: TrendingUp },
-            { num: 7, label: 'Comptabilité', icon: DollarSign },
+            { num: 6, label: 'Comptabilité', icon: DollarSign },
           ];
 
           // Pompes and pistolets are always walked from the first created to the
@@ -1647,8 +1649,7 @@ const Brigades = () => {
                             step === 2 ? step2Valid :
                             step === 3 ? (!!startDate && !!endDate) :
                             step === 4 ? true :
-                            step === 5 ? !hasStep5Errors :
-                            step === 6 ? true : true;
+                            step === 5 ? !hasStep5Errors : true;
 
           return (
             <div className="modal-shell z-[60]">
@@ -1980,24 +1981,16 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
-                  {/* STEP 5: Index de fin des pistolets
-                      Les niveaux de cuve ne sont plus saisis ici : seuls les index
-                      des pistolets le sont, groupés par pompe — de la première
-                      pompe créée à la dernière. La touche Entrée fait passer au
-                      pistolet suivant. */}
+                  {/* STEP 5: Index de fin des pistolets */}
                   {step === 5 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-                      <div className="p-3 bg-[#eef3fc] rounded-xl border border-[#003087]/15 text-[11px] font-bold text-[#002d87]">
-                        Saisissez uniquement les index de fin des pistolets, pompe par pompe. Appuyez sur
-                        <span className="mx-1 px-1.5 py-0.5 bg-white border border-[#003087]/20 rounded">Entrée</span>
-                        pour passer automatiquement au pistolet suivant.
+                      <div className="p-4 bg-[#eef3fc] rounded-2xl border border-[#003087]/15 text-[11px] font-bold text-[#002d87]">
+                        Saisissez les index de fin de chaque pistolet. La différence avec l'index de départ (volume débité en litres) est calculée en temps réel sur la même interface.
+                        Appuyez sur <span className="mx-1 px-1.5 py-0.5 bg-white border border-[#003087]/20 rounded font-black">Entrée</span> pour passer au pistolet suivant.
                       </div>
 
-                      <div className="space-y-3">
+                      <div className="space-y-4">
                         {(() => {
-                          // One group per pompe, from the first created to the last, with
-                          // its pistolets in creation order. `ordered` is the flat list the
-                          // Enter key walks, so the focus follows exactly what is on screen.
                           const ordered: string[] = [];
                           const groups = orderedPumps.map(pump => {
                             const list = orderedNozzlesOfPump(pump.id).filter(n => n.status === 'Actif');
@@ -2005,7 +1998,6 @@ const Brigades = () => {
                             return { pump, list };
                           }).filter(g => g.list.length > 0);
 
-                          // Pistolets attached to no known pompe — never silently dropped.
                           const knownPumpIds = new Set(pumps.map(p => p.id));
                           const orphans = nozzlesInCreationOrder(
                             pumpNozzles.filter(n => n.status === 'Actif' && !knownPumpIds.has(n.pumpId)));
@@ -2024,33 +2016,102 @@ const Brigades = () => {
                             const err = nozzleEndError(n.id);
                             const val = wizEndNozzleIndices[n.id];
                             const startIdx = startNozzleIdx(n);
-                            const tankName = tanks.find(t => t.id === nozzleTankId(n, pumps))?.name;
-                            const sold = typeof val === 'number' && val >= startIdx ? val - startIdx : null;
+                            const tank = tanks.find(t => t.id === nozzleTankId(n, pumps));
+                            const tankName = tank?.name;
+                            const fuelType = tank?.type;
+                            const hasValue = typeof val === 'number' && !isNaN(val);
+                            const diff = hasValue ? val - startIdx : 0;
+
                             return (
-                              <div key={n.id} className={cn("p-2.5 bg-white rounded-lg border transition-colors", err ? "border-red-300" : "border-slate-100")}>
-                                <div className="flex items-center gap-3">
-                                  <div className="flex-1 min-w-0">
-                                    <motion.p
-                                      animate={err ? { x: [0, -5, 5, -5, 5, -3, 3, 0], color: '#dc2626' } : { x: 0, color: '#1e293b' }}
-                                      transition={{ duration: 0.45 }}
-                                      className="text-xs font-black truncate"
-                                    >
-                                      {n.name}
-                                    </motion.p>
-                                    <p className="text-[9px] text-slate-400 truncate">
-                                      {tankName ? `${tankName} · ` : ''}Début: {startIdx.toLocaleString('fr-FR')}
-                                      {sold !== null && <span className="text-[#002d87] font-bold"> · {sold.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</span>}
-                                    </p>
+                              <div
+                                key={n.id}
+                                className={cn(
+                                  "p-4 bg-white rounded-2xl border-2 transition-all shadow-sm",
+                                  err
+                                    ? "border-red-400 bg-red-50/30"
+                                    : hasValue && diff >= 0
+                                    ? "border-blue-200 hover:border-blue-300"
+                                    : "border-slate-200 hover:border-slate-300"
+                                )}
+                              >
+                                {/* Pistolet Name & Tank/Fuel Header */}
+                                <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-slate-100">
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#001f5c] to-[#003087] text-[#FFB800] flex items-center justify-center font-black text-xs shrink-0 shadow-sm">
+                                      <Droplets className="w-4 h-4" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <h5 className="text-xs font-black text-slate-800 truncate" title={n.name}>
+                                        Pistolet: {n.name}
+                                      </h5>
+                                      {tankName && (
+                                        <p className="text-[10px] text-slate-500 font-bold truncate">
+                                          Cuve: {tankName}
+                                        </p>
+                                      )}
+                                    </div>
                                   </div>
-                                  <input
-                                    id={`nozzle-idx-${n.id}`}
-                                    type="number" step="0.01" min={startIdx} placeholder="Index fin"
-                                    className={cn("w-32 input-field h-10 font-black text-right transition-colors", err && "border-red-400 text-red-600 bg-red-50")}
-                                    value={val ?? ''}
-                                    onChange={e => setWizEndNozzleIndices(prev => ({ ...prev, [n.id]: e.target.value === '' ? undefined as any : parseFloat(e.target.value) }))}
-                                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); focusNext(n.id); } }}
-                                  />
+                                  {fuelType && (
+                                    <span className="px-2.5 py-1 bg-blue-50 text-blue-900 border border-blue-200 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0">
+                                      {fuelType}
+                                    </span>
+                                  )}
                                 </div>
+
+                                {/* Three Column Row: Index Départ, Index Fin, Différence */}
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+                                  {/* Index Départ */}
+                                  <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
+                                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
+                                      Index Départ
+                                    </span>
+                                    <span className="text-sm font-black text-slate-700 tabular-nums">
+                                      {startIdx.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </span>
+                                  </div>
+
+                                  {/* Index Fin Input */}
+                                  <div>
+                                    <label className="text-[9px] font-black text-[#002d87] uppercase tracking-widest block mb-0.5">
+                                      Index Fin
+                                    </label>
+                                    <input
+                                      id={`nozzle-idx-${n.id}`}
+                                      type="number"
+                                      step="0.01"
+                                      min={startIdx}
+                                      placeholder="Index fin..."
+                                      className={cn(
+                                        "w-full input-field h-10 font-black text-right transition-all text-sm",
+                                        err
+                                          ? "border-red-400 text-red-600 bg-red-50 focus:ring-red-200"
+                                          : "border-blue-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40"
+                                      )}
+                                      value={val ?? ''}
+                                      onChange={e => setWizEndNozzleIndices(prev => ({ ...prev, [n.id]: e.target.value === '' ? undefined as any : parseFloat(e.target.value) }))}
+                                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); focusNext(n.id); } }}
+                                    />
+                                  </div>
+
+                                  {/* Différence (Fin - Départ) */}
+                                  <div className={cn(
+                                    "p-2.5 rounded-xl border transition-all flex flex-col justify-center",
+                                    err
+                                      ? "bg-red-100 border-red-300 text-red-800"
+                                      : hasValue && diff >= 0
+                                      ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                                      : "bg-slate-50 border-slate-200 text-slate-400"
+                                  )}>
+                                    <span className="text-[9px] font-black uppercase tracking-widest block mb-0.5">
+                                      Différence (Litres)
+                                    </span>
+                                    <span className="text-sm font-black tabular-nums">
+                                      {hasValue ? `${diff >= 0 ? '+' : ''}${diff.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} L` : '0.00 L'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Error message */}
                                 <AnimatePresence>
                                   {err && (
                                     <motion.p
@@ -2058,9 +2119,10 @@ const Brigades = () => {
                                       animate={{ opacity: 1, height: 'auto', x: [-8, 4, -2, 0] }}
                                       exit={{ opacity: 0, height: 0 }}
                                       transition={{ duration: 0.3 }}
-                                      className="text-[10px] text-red-600 font-bold mt-1 overflow-hidden"
+                                      className="text-[10px] text-red-600 font-bold mt-2 overflow-hidden flex items-center gap-1"
                                     >
-                                      L'index de fin ne peut pas être inférieur à l'index de début ({startIdx.toLocaleString('fr-FR')})
+                                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                      L'index de fin ne peut pas être inférieur à l'index de départ ({startIdx.toLocaleString('fr-FR')})
                                     </motion.p>
                                   )}
                                 </AnimatePresence>
@@ -2084,27 +2146,27 @@ const Brigades = () => {
                                   .map(id => tanks.find(t => t.id === id)?.name).filter(Boolean).join(', ');
                                 return (
                                   <div key={pump.id} className="rounded-2xl border-2 border-slate-100 bg-slate-50/60 overflow-hidden">
-                                    <div className="flex items-center gap-2.5 px-3 py-2.5 bg-white border-b border-slate-100">
-                                      <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[10px] font-black shrink-0">
+                                    <div className="flex items-center gap-2.5 px-4 py-3 bg-white border-b border-slate-100">
+                                      <span className="w-7 h-7 rounded-xl bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-xs font-black shrink-0">
                                         {pumpIdx + 1}
                                       </span>
                                       <div className="min-w-0 flex-1">
-                                        <p className="text-xs font-black text-slate-800 truncate">Pompe {pump.number} · {pump.name}</p>
-                                        <p className="text-[9px] text-slate-400 truncate">{cuves || 'aucune cuve'}</p>
+                                        <p className="text-sm font-black text-slate-800 truncate">Pompe {pump.number} · {pump.name}</p>
+                                        <p className="text-[10px] text-slate-400 font-bold truncate">{cuves || 'aucune cuve'}</p>
                                       </div>
-                                      <span className={cn("text-[9px] font-black px-2 py-1 rounded-full shrink-0",
+                                      <span className={cn("text-[10px] font-black px-2.5 py-1 rounded-full shrink-0",
                                         filled === list.length ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500")}>
-                                        {filled}/{list.length}
+                                        {filled}/{list.length} renseigné(s)
                                       </span>
                                     </div>
-                                    <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">{list.map(renderNozzle)}</div>
+                                    <div className="p-4 space-y-3">{list.map(renderNozzle)}</div>
                                   </div>
                                 );
                               })}
                               {orphans.length > 0 && (
-                                <div className="p-3 rounded-2xl border-2 border-amber-200 bg-amber-50/50">
-                                  <p className="text-[10px] font-black text-amber-700 uppercase mb-2">Pistolets sans pompe — à corriger dans « Pompes »</p>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{orphans.map(renderNozzle)}</div>
+                                <div className="p-4 rounded-2xl border-2 border-amber-200 bg-amber-50/50 space-y-3">
+                                  <p className="text-[10px] font-black text-amber-700 uppercase">Pistolets sans pompe — à corriger dans « Pompes »</p>
+                                  <div className="space-y-3">{orphans.map(renderNozzle)}</div>
                                 </div>
                               )}
                             </>
@@ -2114,49 +2176,8 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
+                  {/* STEP 6: Comptabilité */}
                   {step === 6 && (
-                    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] font-bold text-slate-600">
-                        Ces alertes seront enregistrées dans le tableau de bord administrateur.
-                      </div>
-                      {decalageAlerts.map(a => {
-                        const price = settings.fuelPrices[(tanks.find(t => t.id === a.tankId)?.type) || 'DIESEL'] || 0;
-                        if (a.type === 'CORRECT' && a.suppressed) {
-                          return (
-                            <div key={a.tankId} className="p-4 rounded-2xl border-2 border-slate-100 bg-slate-50/60 opacity-70 flex items-center justify-between">
-                              <p className="text-sm font-black text-slate-500">{a.tankName}</p>
-                              <p className="text-[11px] font-bold text-slate-400">✓ Écart dans les limites acceptées</p>
-                            </div>
-                          );
-                        }
-                        if (a.type === 'CORRECT') {
-                          return (
-                            <div key={a.tankId} className="p-4 rounded-2xl border-2 border-green-200 bg-green-50 flex items-center justify-between">
-                              <p className="text-sm font-black text-green-800">{a.tankName}</p>
-                              <p className="text-[11px] font-black text-green-600 flex items-center gap-1"><CheckCircle className="w-4 h-4" /> Correct</p>
-                            </div>
-                          );
-                        }
-                        const isRetour = a.type === 'RETOUR_CUVE';
-                        return (
-                          <div key={a.tankId} className={cn("p-4 rounded-2xl border-2", isRetour ? "border-orange-300 bg-orange-50" : "border-red-300 bg-red-50")}>
-                            <div className="flex items-center justify-between mb-2">
-                              <p className={cn("text-sm font-black", isRetour ? "text-orange-800" : "text-red-800")}>{a.tankName}</p>
-                              <span className={cn("text-[9px] font-black px-2 py-1 rounded-full uppercase", isRetour ? "bg-orange-200 text-orange-800" : "bg-red-200 text-red-800")}>{a.type}</span>
-                            </div>
-                            <p className={cn("text-[11px] font-bold", isRetour ? "text-orange-700" : "text-red-700")}>
-                              {isRetour
-                                ? `Les pistolets ont débité plus que ce qu'indique la cuve. Quantité: ${Math.abs(a.difference).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} litres (${a.amount.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD). Est-ce un retour cuve non enregistré ?`
-                                : `La cuve a diminué plus que les pistolets n'ont débité. Quantité: ${Math.abs(a.difference).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} litres (${a.amount.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD). Vente directe depuis la cuve ?`}
-                            </p>
-                          </div>
-                        );
-                      })}
-                    </motion.div>
-                  )}
-
-                  {/* STEP 7: Comptabilité */}
-                  {step === 7 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
                       {/* SUB-SECTION A: Résumé des ventes par piste */}
                       <div className="space-y-2">
@@ -2491,11 +2512,9 @@ const Brigades = () => {
                       Retour
                     </button>
                   )}
-                  <button
-                    onClick={() => {
-                      if (step === 7) {
-                        handleStartBrigade();
-                      } else {
+                  {step < 6 ? (
+                    <button
+                      onClick={() => {
                         if (step === 2) {
                           // initialize presence for chef's pompistes if not set
                           const chef2 = brigadeChefs.find(c => c.id === chefId);
@@ -2507,14 +2526,53 @@ const Brigades = () => {
                           });
                         }
                         setStep(s => s + 1);
-                      }
-                    }}
-                    disabled={isSubmitting || !canGoNext}
-                    className="btn-primary min-w-[13rem] text-[11px]"
-                  >
-                    {isSubmitting ? (<><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>) : step < 7 ? (<>Suivant <ArrowRight className="w-4 h-4" /></>) : (editingBrigade ? 'Mettre à jour' : 'Créer la Brigade')}
-                  </button>
+                      }}
+                      disabled={isSubmitting || !canGoNext}
+                      className="btn-primary min-w-[13rem] text-[11px]"
+                    >
+                      {isSubmitting ? (<><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>) : (<>Suivant <ArrowRight className="w-4 h-4" /></>)}
+                    </button>
+                  ) : (
+                    <>
+                      {/* Button: Save as Pending */}
+                      <button
+                        onClick={() => handleStartBrigade('En attente')}
+                        disabled={isSubmitting || !canGoNext}
+                        className="px-4 py-2.5 rounded-xl border-2 border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-950 font-black text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all shadow-sm disabled:opacity-50"
+                      >
+                        {isSubmitting ? (
+                          <LoaderCircle className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Clock className="w-4 h-4 text-amber-600" />
+                            {editingBrigade ? 'Enregistrer (En attente)' : 'Créer (En attente)'}
+                          </>
+                        )}
+                      </button>
+
+                      {/* Button: Clôturer Brigade */}
+                      <button
+                        onClick={() => handleStartBrigade('Clôturée')}
+                        disabled={isSubmitting || !canGoNext}
+                        className="btn-primary min-w-[13rem] text-[11px] flex items-center justify-center gap-2"
+                      >
+                        {isSubmitting ? (
+                          <><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-4 h-4 text-[#FFB800]" />
+                            {editingBrigade?.status === 'En attente'
+                              ? '✓ Clôturer la Brigade'
+                              : editingBrigade
+                              ? 'Mettre à jour & Clôturer'
+                              : 'Créer & Clôturer'}
+                          </>
+                        )}
+                      </button>
+                    </>
+                  )}
                 </div>
+
               </motion.div>
             </div>
           );
