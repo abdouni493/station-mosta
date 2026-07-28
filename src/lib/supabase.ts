@@ -566,6 +566,24 @@ export const db = {
   getPurchaseItems:   (purchaseId: string) => dbSelect('purchase_items', { purchase_id: purchaseId }),
   addPurchasePayment: (p: object) => dbInsert('purchase_payments', p),
   getPurchasePayments:(purchaseId: string) => dbSelect('purchase_payments', { purchase_id: purchaseId }),
+  /** Editing a purchase rewrites its lines: the old rows are dropped first, so
+   *  cuve lines and payment methods added while editing are actually saved. */
+  deletePurchaseItems: async (purchaseId: string) => {
+    const { error } = await supabase.from('purchase_items').delete().eq('purchase_id', purchaseId);
+    if (error) console.warn('[deletePurchaseItems]', error.message);
+    return { error };
+  },
+  deletePurchasePayments: async (purchaseId: string) => {
+    const { error } = await supabase.from('purchase_payments').delete().eq('purchase_id', purchaseId);
+    if (error) console.warn('[deletePurchasePayments]', error.message);
+    return { error };
+  },
+  addPurchasePayments: async (rows: object[]) => {
+    if (!rows.length) return { error: null };
+    const { error } = await supabase.from('purchase_payments').insert(rows as any);
+    if (error) console.warn('[addPurchasePayments]', error.message);
+    return { error };
+  },
 
   // Bank accounts + treasury ledger (general caisse & bank movements)
   getBankAccounts:   () => dbSelect('bank_accounts'),

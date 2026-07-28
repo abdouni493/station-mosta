@@ -14,6 +14,7 @@ import {
 import { useAppState, useAppDispatch } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import AlertsWidget, { useDismissedAlerts, useDashboardAlerts } from "../components/AlertsWidget";
+import PaymentAppointmentsBanner from "../components/PaymentAppointmentsBanner";
 
 /* ─── Animated counter ─── */
 const AnimatedCounter = ({ value, suffix = "" }: { value: number; suffix?: string }) => {
@@ -343,7 +344,7 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const {
     tanks, products, brigades, clients, fuelSales, shopSales,
-    pompistes, pumps, expenses, brigadeChefs, suppliers,
+    pompistes, pumps, expenses, brigadeChefs, suppliers, purchases,
     gerants, magasinWorkers, currentUserRole, currentUserId, settings, fuelInvoices,
     brigadeDecalageAlerts = []
   } = useAppState();
@@ -411,7 +412,7 @@ const Dashboard = () => {
   const dashboardAlerts = useDashboardAlerts(
     suppliers, products, tanks,
     pompistes, brigadeChefs, gerants, magasinWorkers,
-    dismissedIds, fuelInvoices
+    dismissedIds, fuelInvoices, purchases
   );
 
   /* global active brigade (admin/gerant header badge) */
@@ -489,6 +490,9 @@ const Dashboard = () => {
         brigadeChefs={brigadeChefs}
         showBrigadeBadge={showFull || isChef}
       />
+
+      {/* Rappel des rendez-vous de paiement fournisseur (achats carburant) */}
+      <PaymentAppointmentsBanner purchases={purchases} suppliers={suppliers} />
 
       {/* Niveaux des cuves — cartes avec alertes */}
       <TankLevelCards tanks={tanks} delay={0.12} />

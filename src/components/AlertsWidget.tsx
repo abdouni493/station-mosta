@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
-import { FuelInvoice } from '../store/AppContext';
+import { FuelInvoice, Purchase } from '../store/AppContext';
+import { pendingAppointments } from '../lib/paymentAppointments';
 
 export interface AlertItem {
   id: string;
@@ -229,7 +230,8 @@ export function useDashboardAlerts(
   gerants?: any[],
   magasinWorkers?: any[],
   dismissedIds?: string[],
-  fuelInvoices?: FuelInvoice[]
+  fuelInvoices?: FuelInvoice[],
+  purchases?: Purchase[]
 ): AlertItem[] {
   return useMemo(() => {
     const alerts: AlertItem[] = [];
@@ -344,6 +346,26 @@ export function useDashboardAlerts(
       }
     });
 
+    // 6bis. Rendez-vous de paiement programmés sur un achat carburant.
+    //       Même source que le bandeau du tableau de bord, pour qu'ils ne
+    //       puissent pas se contredire.
+    pendingAppointments(purchases || []).forEach(a => {
+      const id = `purchase-appt-${a.purchaseId}`;
+      if (dismissedIds?.includes(id)) return;
+      const who = suppliers?.find(s => s.id === a.supplierId)?.name || 'Fournisseur';
+      const ref = a.invoiceNumber ? `Facture ${a.invoiceNumber}` : a.blNumber ? `BL ${a.blNumber}` : 'Achat carburant';
+      alerts.push({
+        id,
+        type: a.urgency === 'overdue' ? 'critical' : 'warning',
+        icon: 'Calendar',
+        message: a.daysLeft < 0
+          ? `${who} — ${ref} : paiement en retard de ${Math.abs(a.daysLeft)} jour(s) (${a.amount.toLocaleString('fr-DZ')} DA)`
+          : `${who} — ${ref} : rendez-vous de paiement le ${a.date} (${a.amount.toLocaleString('fr-DZ')} DA)`,
+        link: '/fuel-purchases',
+        date: new Date(a.date),
+      });
+    });
+
     // 7. Alerte Factures carburant — Non payées créées il y a plus de 30 jours
     const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
     fuelInvoices?.filter(f =>
@@ -364,7 +386,7 @@ export function useDashboardAlerts(
     });
 
     return alerts;
-  }, [suppliers, products, tanks, pompistes, brigadeChefs, gerants, magasinWorkers, dismissedIds, fuelInvoices]);
+  }, [suppliers, products, tanks, pompistes, brigadeChefs, gerants, magasinWorkers, dismissedIds, fuelInvoices, purchases]);
 }
 
 /**

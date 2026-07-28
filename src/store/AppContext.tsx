@@ -707,6 +707,22 @@ export interface Purchase {
   /** Sous-total hors remise et hors TVA. */
   subtotal?: number;
   tvaAmount?: number;
+
+  // ── Rendez-vous de paiement ────────────────────────────────────────────────
+  /**
+   * Quand il est activé à la création de l'achat, un rappel est affiché en haut
+   * du tableau de bord jusqu'à ce que la dette soit réglée : le fournisseur doit
+   * être payé à `appointmentDate`.
+   */
+  appointmentActive?: boolean;
+  /** Date à laquelle le paiement est attendu (YYYY-MM-DD). */
+  appointmentDate?: string;
+  /** Montant attendu ce jour-là ; vide ⇒ le reste dû. */
+  appointmentAmount?: number;
+  appointmentNotes?: string;
+  /** Passe à `true` dès que la dette est soldée (ou manuellement). */
+  appointmentPaid?: boolean;
+  appointmentPaidAt?: string;
 }
 
 export interface FuelSale {
@@ -1589,7 +1605,11 @@ function mapPurchase(r: any): Purchase {
   return { id: r.id, date: r.date, supplierId: r.supplier_id, invoiceNumber: r.invoice_number, dueDate: r.due_date, driverId: r.driver_id, items: [], total: +r.total, amountPaid: +r.amount_paid, rest: +r.rest, status: r.status, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, linkedDeliveryNoteId: r.linked_delivery_note_id, payments: [], notes: r.notes, type: r.type, tvaRate: +(r.tva_rate ?? 0), tvaActive: r.tva_active, tankId: r.tank_id, receiptPhoto: r.receipt_photo_url,
     blNumber: r.bl_number ?? undefined, discountType: r.discount_type ?? undefined, discountValue: r.discount_value != null ? +r.discount_value : undefined,
     discountAmount: r.discount_amount != null ? +r.discount_amount : undefined, subtotal: r.subtotal != null ? +r.subtotal : undefined,
-    tvaAmount: r.tva_amount != null ? +r.tva_amount : undefined };
+    tvaAmount: r.tva_amount != null ? +r.tva_amount : undefined,
+    appointmentActive: r.appointment_active ?? undefined, appointmentDate: r.appointment_date ?? undefined,
+    appointmentAmount: r.appointment_amount != null ? +r.appointment_amount : undefined,
+    appointmentNotes: r.appointment_notes ?? undefined, appointmentPaid: r.appointment_paid ?? undefined,
+    appointmentPaidAt: r.appointment_paid_at ?? undefined };
 }
 function mapExpense(r: any): Expense {
   return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by };
@@ -2111,13 +2131,23 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'ADD_PURCHASE': {
         const p = action.payload;
-        await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0 });
+        await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0, appointment_active: p.appointmentActive ?? false, appointment_date: nz(p.appointmentDate), appointment_amount: p.appointmentAmount ?? null, appointment_notes: nz(p.appointmentNotes), appointment_paid: p.appointmentPaid ?? false, appointment_paid_at: nz(p.appointmentPaidAt) });
         if (p.items?.length) await db.addPurchaseItems(p.items.map(i => ({ purchase_id: p.id, product_id: nz(i.productId), product_name: i.productName, quantity: i.quantity, buy_price: i.buyPrice, selling_price: i.sellingPrice, min_stock: i.minStock, unit: i.unit, total: i.total, tank_id: nz(i.tankId), tva_active: i.tvaActive ?? false, tva_rate: i.tvaRate ?? 0 })));
         if (p.payments?.length) for (const pay of p.payments) await db.addPurchasePayment({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, bordereau_number: nz(pay.bordereauNumber), account_id: nz(pay.accountId), notes: pay.notes });
         break;
       }
       case 'UPDATE_PURCHASE':
-        await db.updatePurchase(action.payload.id, { date: action.payload.date, supplier_id: nz(action.payload.supplierId), invoice_number: action.payload.invoiceNumber, total: action.payload.total, amount_paid: action.payload.amountPaid, rest: action.payload.rest, status: action.payload.status, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, notes: action.payload.notes, receipt_photo_url: action.payload.receiptPhoto, bl_number: nz(action.payload.blNumber), discount_type: nz(action.payload.discountType), discount_value: action.payload.discountValue ?? 0, discount_amount: action.payload.discountAmount ?? 0, subtotal: action.payload.subtotal ?? 0, tva_amount: action.payload.tvaAmount ?? 0, tva_active: action.payload.tvaActive ?? false, tva_rate: action.payload.tvaRate ?? 0 });
+        {
+          const p = action.payload;
+          await db.updatePurchase(p.id, { date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, notes: p.notes, receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0, tva_active: p.tvaActive ?? false, tva_rate: p.tvaRate ?? 0, appointment_active: p.appointmentActive ?? false, appointment_date: nz(p.appointmentDate), appointment_amount: p.appointmentAmount ?? null, appointment_notes: nz(p.appointmentNotes), appointment_paid: p.appointmentPaid ?? false, appointment_paid_at: nz(p.appointmentPaidAt) });
+          // Lines and payment methods are rewritten wholesale: without this an
+          // edit kept the ORIGINAL rows in Supabase, so any payment method or
+          // cuve line added while editing disappeared on the next reload.
+          await db.deletePurchaseItems(p.id);
+          if (p.items?.length) await db.addPurchaseItems(p.items.map(i => ({ purchase_id: p.id, product_id: nz(i.productId), product_name: i.productName, quantity: i.quantity, buy_price: i.buyPrice, selling_price: i.sellingPrice, min_stock: i.minStock, unit: i.unit, total: i.total, tank_id: nz(i.tankId), tva_active: i.tvaActive ?? false, tva_rate: i.tvaRate ?? 0 })));
+          await db.deletePurchasePayments(p.id);
+          if (p.payments?.length) await db.addPurchasePayments(p.payments.map(pay => ({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, bordereau_number: nz(pay.bordereauNumber), account_id: nz(pay.accountId), notes: pay.notes })));
+        }
         break;
       case 'DELETE_PURCHASE': await db.deletePurchase(action.payload); break;
       case 'ADD_EXPENSE':
@@ -3335,7 +3365,7 @@ export function useSupabaseDispatch() {
         // ── Purchases ──────────────────────────────────────────────────────
         case 'ADD_PURCHASE': {
           const p = action.payload;
-          await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0 });
+          await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0, appointment_active: p.appointmentActive ?? false, appointment_date: nz(p.appointmentDate), appointment_amount: p.appointmentAmount ?? null, appointment_notes: nz(p.appointmentNotes), appointment_paid: p.appointmentPaid ?? false, appointment_paid_at: nz(p.appointmentPaidAt) });
           if (p.items?.length) {
             await db.addPurchaseItems(p.items.map(i => ({ purchase_id: p.id, product_id: nz(i.productId), product_name: i.productName, quantity: i.quantity, buy_price: i.buyPrice, selling_price: i.sellingPrice, min_stock: i.minStock, unit: i.unit, total: i.total, tank_id: nz(i.tankId), tva_active: i.tvaActive ?? false, tva_rate: i.tvaRate ?? 0 })));
           }
@@ -3347,7 +3377,17 @@ export function useSupabaseDispatch() {
           break;
         }
         case 'UPDATE_PURCHASE':
-          await db.updatePurchase(action.payload.id, { date: action.payload.date, supplier_id: nz(action.payload.supplierId), invoice_number: action.payload.invoiceNumber, total: action.payload.total, amount_paid: action.payload.amountPaid, rest: action.payload.rest, status: action.payload.status, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, notes: action.payload.notes, receipt_photo_url: action.payload.receiptPhoto, bl_number: nz(action.payload.blNumber), discount_type: nz(action.payload.discountType), discount_value: action.payload.discountValue ?? 0, discount_amount: action.payload.discountAmount ?? 0, subtotal: action.payload.subtotal ?? 0, tva_amount: action.payload.tvaAmount ?? 0, tva_active: action.payload.tvaActive ?? false, tva_rate: action.payload.tvaRate ?? 0 });
+          {
+            const p = action.payload;
+            await db.updatePurchase(p.id, { date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, notes: p.notes, receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0, tva_active: p.tvaActive ?? false, tva_rate: p.tvaRate ?? 0, appointment_active: p.appointmentActive ?? false, appointment_date: nz(p.appointmentDate), appointment_amount: p.appointmentAmount ?? null, appointment_notes: nz(p.appointmentNotes), appointment_paid: p.appointmentPaid ?? false, appointment_paid_at: nz(p.appointmentPaidAt) });
+            // Lines and payment methods are rewritten wholesale: without this an
+            // edit kept the ORIGINAL rows in Supabase, so any payment method or
+            // cuve line added while editing disappeared on the next reload.
+            await db.deletePurchaseItems(p.id);
+            if (p.items?.length) await db.addPurchaseItems(p.items.map(i => ({ purchase_id: p.id, product_id: nz(i.productId), product_name: i.productName, quantity: i.quantity, buy_price: i.buyPrice, selling_price: i.sellingPrice, min_stock: i.minStock, unit: i.unit, total: i.total, tank_id: nz(i.tankId), tva_active: i.tvaActive ?? false, tva_rate: i.tvaRate ?? 0 })));
+            await db.deletePurchasePayments(p.id);
+            if (p.payments?.length) await db.addPurchasePayments(p.payments.map(pay => ({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, bordereau_number: nz(pay.bordereauNumber), account_id: nz(pay.accountId), notes: pay.notes })));
+          }
           break;
         case 'DELETE_PURCHASE':
           await db.deletePurchase(action.payload);
