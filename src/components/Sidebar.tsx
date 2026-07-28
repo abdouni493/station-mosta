@@ -7,7 +7,8 @@ import {
   Target, ChevronDown, Gauge, Receipt,
   BarChart2, Archive, UserCog, DollarSign, Building2, ChevronRight, X,
   Wallet, CalendarCheck, Shield, UserCheck, Calendar,
-  FlaskConical, Beaker, ShoppingBag, Car, Utensils, Coffee, Droplets, FileBarChart
+  FlaskConical, Beaker, ShoppingBag, Car, Utensils, Coffee, Droplets, FileBarChart,
+  BellRing, Landmark, PiggyBank
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -66,7 +67,9 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
   const items: NavItem[] = [];
   if (cfg.isService) {
     items.push({ label: "Réparations & Lavage", icon: Car,         path: `${b}/reparations` });
-    items.push({ label: "Services",             icon: Wrench,      path: `${b}/services` });
+    items.push({ label: "Demandes d'encaissement", icon: BellRing, path: `${b}/encaissements` });
+    items.push({ label: "Point de vente",       icon: ShoppingBag, path: `${b}/pos` });
+    items.push({ label: "Ventes",               icon: Receipt,     path: `${b}/sales` });
     items.push({ label: "Gestion de stock",     icon: Package,     path: `${b}/stock` });
     items.push({ label: "Achats",               icon: ShoppingCart,path: `${b}/purchases` });
     items.push({ label: "Clients",              icon: Users,       path: `${b}/clients` });
@@ -102,15 +105,11 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
   {
     id: "carburant", label: "Carburant",
     items: [
-      { label: "Ventes Carburant",   icon: Fuel,         path: "/fuel-sales",      moduleId: "Ventes Carburant" },
       { label: "Brigades",           icon: Target,       path: "/brigades",        moduleId: "Brigades" },
       { label: "Cuves / Tanks",      icon: Gauge,        path: "/tanks",           moduleId: "Cuves" },
       { label: "Pompes",             icon: Wrench,       path: "/pumps",           moduleId: "Pompes" },
-      { label: "Pistes",             icon: Map,          path: "/tracks",          moduleId: "Pistes" },
-      { label: "Livraisons",         icon: Truck,        path: "/delivery-notes",  moduleId: "Livraisons" },
       { label: "Achats Carburant",   icon: ShoppingCart, path: "/fuel-purchases",  moduleId: "Achats Carburant" },
       { label: "Pompistes",          icon: UsersRound,   path: "/pompistes",       moduleId: "Pompistes" },
-      { label: "Chefs de Brigade",   icon: UserCog,      path: "/brigade-chefs",   moduleId: "Chefs de Brigade" },
       { label: "Gérants",            icon: Building2,    path: "/gerants",         moduleId: "Gérants" },
       { label: "Clients",            icon: Users,        path: "/clients",         moduleId: "Clients" },
       { label: "Fournisseurs",       icon: Truck,        path: "/suppliers",       moduleId: "Fournisseurs" },
@@ -120,16 +119,15 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
       { label: "Rapports Carburant", icon: Receipt,      path: "/reports",         moduleId: "Rapports" },
     ]
   },
-  buildModuleNavGroup("restaurant"),
   buildModuleNavGroup("cafeteria"),
   buildModuleNavGroup("lavage"),
-  buildModuleNavGroup("magasin"),
   {
-    // Système keeps a single entry: the consolidated cross-activity report.
-    // Every other former "(Station)" screen now lives inside its own part
-    // (Magasin employees are managed from the Magasin part → Employés).
+    // Système = cross-activity treasury + the consolidated report. Every other
+    // former "(Station)" screen lives inside its own part.
     id: "systeme", label: "Système",
     items: [
+      { label: "Caisse Générale",      icon: PiggyBank,    path: "/caisse-generale",  moduleId: "Caisse Générale" },
+      { label: "Comptes Bancaires",    icon: Landmark,     path: "/bank-accounts",    moduleId: "Comptes Bancaires" },
       { label: "Rapports Généraux",    icon: FileBarChart, path: "/general-reports" },
     ]
   },
@@ -150,28 +148,23 @@ const WORKER_MODULE_NAV: Record<string, ModuleNavDef> = {
   // Opérations
   "Ma Brigade":        { label: "Ma Brigade",        icon: Target,       path: "/my-brigade",      group: "ops" },
   "Brigades":          { label: "Brigades",          icon: Target,       path: "/brigades",        group: "ops" },
-  "Ventes Carburant":  { label: "Ventes Carburant",  icon: Fuel,         path: "/fuel-sales",      group: "ops" },
-  "Magasin":           { label: "Vente Magasin",     icon: Store,        path: "/shop-pos",        group: "ops" },
   // Carburant
   "Cuves":             { label: "Cuves / Tanks",     icon: Gauge,        path: "/tanks",           group: "fuel" },
   "Pompes":            { label: "Pompes",            icon: Wrench,       path: "/pumps",           group: "fuel" },
-  "Pistes":            { label: "Pistes",            icon: Map,          path: "/tracks",          group: "fuel" },
   "Achats Carburant":  { label: "Achats Carburant",  icon: ShoppingCart, path: "/fuel-purchases",  group: "fuel" },
-  // Magasin
-  "Produits":          { label: "Produits",          icon: Package,      path: "/products",        group: "magasin" },
-  "Achats":            { label: "Achats Magasin",    icon: ShoppingCart, path: "/purchases",       group: "magasin" },
-  "Inventaires":       { label: "Inventaire",        icon: Archive,      path: "/inventory",       group: "magasin" },
+  "Inventaires":       { label: "Inventaire",        icon: Archive,      path: "/inventory",       group: "fuel" },
   // Contacts
   "Clients":           { label: "Clients",           icon: Users,        path: "/clients",         group: "contacts" },
   "Fournisseurs":      { label: "Fournisseurs",      icon: Truck,        path: "/suppliers",       group: "contacts" },
   // Personnel (RH)
   "Pompistes":         { label: "Pompistes",         icon: UsersRound,   path: "/pompistes",       group: "hr" },
-  "Chefs de Brigade":  { label: "Chefs de Brigade",  icon: UserCog,      path: "/brigade-chefs",   group: "hr" },
   "Gérants":           { label: "Gérants",           icon: Building2,    path: "/gerants",         group: "hr" },
   "Employés Magasin":  { label: "Employés Magasin",  icon: Store,        path: "/magasin-workers", group: "hr" },
   // Finances
   "Dépenses":          { label: "Dépenses",          icon: CreditCard,   path: "/expenses",        group: "finance" },
   "Fiche Journalière": { label: "Fiche Journalière", icon: FileText,     path: "/daily-report",    group: "finance" },
+  "Caisse Générale":   { label: "Caisse Générale",   icon: PiggyBank,    path: "/caisse-generale", group: "finance" },
+  "Comptes Bancaires": { label: "Comptes Bancaires", icon: Landmark,     path: "/bank-accounts",   group: "finance" },
   // Analytique
   "Statistiques":      { label: "Statistiques",      icon: BarChart2,    path: "/statistics",      group: "stats" },
   "Rapports":          { label: "Rapports",          icon: Receipt,      path: "/reports",         group: "stats" },
@@ -183,7 +176,6 @@ const WORKER_MODULE_NAV: Record<string, ModuleNavDef> = {
 const WORKER_GROUP_ORDER: { id: string; label?: string }[] = [
   { id: "ops",      label: "Mon Travail" },
   { id: "fuel",     label: "Carburant" },
-  { id: "magasin",  label: "Magasin" },
   { id: "contacts", label: "Contacts" },
   { id: "hr",       label: "Personnel" },
   { id: "finance",  label: "Finances" },
@@ -192,12 +184,7 @@ const WORKER_GROUP_ORDER: { id: string; label?: string }[] = [
 ];
 
 // Per-role label/path overrides for modules that resolve to a role-specific page.
-// e.g. a chef's "Brigades" grant opens *their* brigades page, not the admin one.
-const WORKER_NAV_OVERRIDES: Record<string, Record<string, { label?: string; path?: string }>> = {
-  chef_brigade: {
-    "Brigades": { label: "Mes Brigades", path: "/chef-brigade" },
-  },
-};
+const WORKER_NAV_OVERRIDES: Record<string, Record<string, { label?: string; path?: string }>> = {};
 
 const DASHBOARD_ITEM: NavItem = { label: "Tableau de Bord", icon: LayoutDashboard, path: "/dashboard", moduleId: "Tableau de bord" };
 
@@ -246,8 +233,8 @@ function buildWorkerNav(role: string, permissions?: UserPermissions): NavGroup[]
 
 /** Sidebar entry for one interface id of a part (same ids as MODULE_INTERFACES). */
 const PART_IFACE_NAV: Record<string, { label: string; icon: React.ElementType }> = {
-  reparations: { label: "Réparations & Lavage", icon: Car },
-  services:    { label: "Services",             icon: Wrench },
+  reparations:   { label: "Réparations & Lavage",    icon: Car },
+  encaissements: { label: "Demandes d'encaissement", icon: BellRing },
   stock:       { label: "Gestion de stock",     icon: Package },
   purchases:   { label: "Achats",               icon: ShoppingCart },
   production:  { label: "Production",           icon: FlaskConical },
@@ -312,21 +299,14 @@ function getNavGroups(
 const LABEL_KEYS: Record<string, string> = {
   "Tableau de Bord": "nav.dashboard",
   "Brigades": "nav.brigades",
-  "Mes Brigades": "nav.my_brigades",
   "Ma Brigade": "nav.my_brigade",
-  "Vente Magasin": "nav.shop_sale",
-  "Ventes Carburant": "nav.fuel_sales",
   "Cuves / Tanks": "nav.tanks",
   "Pompes": "nav.pumps",
-  "Pistes": "nav.tracks",
   "Achats Carburant": "nav.fuel_purchases",
-  "Produits": "nav.products",
-  "Achats Magasin": "nav.shop_purchases",
   "Inventaire": "nav.inventory",
   "Clients": "nav.clients",
   "Fournisseurs": "nav.suppliers",
   "Pompistes": "nav.pompistes",
-  "Chefs de Brigade": "nav.brigade_chefs",
   "Gérants": "nav.gerants",
   "Employés Magasin": "nav.magasin_workers",
   "Modèles Permissions": "nav.permission_templates",

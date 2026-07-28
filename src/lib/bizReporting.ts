@@ -107,7 +107,7 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   };
 
   const salesInRange = st.sales.filter(s => within(s.date, from, to));
-  const repsInRange = (st.reparations || []).filter(r => within(r.date, from, to) && r.kind !== 'appointment');
+  const repsInRange = (st.reparations || []).filter(r => within(r.date, from, to));
   const purchasesInRange = st.purchases.filter(p => within(p.date, from, to));
   const expensesInRange = st.expenses.filter(e => within(e.date, from, to));
   const productionsInRange = (st.productions || []).filter(p => within(p.date, from, to));
@@ -124,7 +124,9 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
       id: r.id, ref: r.ref, kind: r.kind === 'lavage' ? 'Lavage' : 'Réparation', date: r.date, client: r.clientName,
       total: r.total, paid: r.paid, rest: r.rest,
       items: [
-        ...r.services.map(sv => ({ name: sv.name, qty: 1, unitPrice: sv.price, total: sv.price })),
+        ...(r.serviceTotal > 0
+          ? [{ name: "Main d'œuvre", qty: 1, unitPrice: r.serviceTotal, total: r.serviceTotal }]
+          : []),
         ...(r.usedProducts || []).map(it => ({ name: it.productName, qty: it.qty, unitPrice: it.unitPrice, total: it.total ?? it.qty * it.unitPrice })),
       ],
     })),
@@ -147,8 +149,8 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
     bp[k].cost += costOfItem(it);
   }));
   // Reparation services as a pure-margin line
-  const servicesRevenue = repsInRange.reduce((s, r) => s + r.services.reduce((a, sv) => a + sv.price, 0), 0);
-  if (servicesRevenue > 0) bp['Prestations / Services'] = { qty: repsInRange.reduce((s, r) => s + r.services.length, 0), revenue: servicesRevenue, cost: 0, unit: 'service' };
+  const servicesRevenue = repsInRange.reduce((s, r) => s + (r.serviceTotal || 0), 0);
+  if (servicesRevenue > 0) bp['Prestations / Services'] = { qty: repsInRange.filter(r => (r.serviceTotal || 0) > 0).length, revenue: servicesRevenue, cost: 0, unit: 'service' };
 
   const salesByProduct: ProductGain[] = Object.entries(bp)
     .map(([name, v]) => ({ name, qty: v.qty, unit: v.unit, revenue: v.revenue, cost: v.cost, gain: v.revenue - v.cost }))

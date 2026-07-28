@@ -246,18 +246,29 @@ function ProductionForm({ moduleKey, onClose }: { moduleKey: ModuleKey; onClose:
     const production: BizProduction = {
       id: newId(), name: `${selectedFiche.name}`, categoryName: selectedFiche.categoryName, ficheId: selectedFiche.id,
       date: new Date().toISOString(), createdBy: 'Admin', ingredients: scaledIngredients,
-      outputQuantity: outputQty, expectedQuantity: expectedQty, sentToComptoir: 0, unit: selectedFiche.sellUnit || 'unité',
+      // The whole output goes straight to the comptoir: there is no separate
+      // "combien mettre au comptoir" step anymore — a production is immediately
+      // sellable from the point de vente.
+      outputQuantity: outputQty, expectedQuantity: expectedQty, sentToComptoir: outputQty,
+      unit: selectedFiche.sellUnit || 'unité',
       unitPrice: selectedFiche.unitPrice, totalCost: +totalCost.toFixed(2), totalValue: +totalValue.toFixed(2), costPerUnit: +costPerUnit.toFixed(2),
       hasLoss, lossQuantity: lossQty, lossValue: +(lossQty * costPerUnit).toFixed(2), lossReason: hasLoss ? lossReason : undefined,
     };
     biz.add('productions', production);
+    if (outputQty > 0) {
+      biz.add('comptoir', {
+        id: newId(), productName: production.name, categoryName: production.categoryName,
+        qty: outputQty, unit: production.unit, unitPrice: production.unitPrice,
+        purchasePrice: production.costPerUnit, date: production.date, sourceProductionId: production.id,
+      });
+    }
     // Deduct raw stock
     scaledIngredients.forEach(ig => {
       if (ig.sourceType === 'fiche') return;
       const prod = products.find(p => p.id === ig.productId);
       if (prod) biz.update('products', { ...prod, currentQty: Math.max(0, prod.currentQty - ig.quantityUsed) });
     });
-    toast.success('Production enregistrée, stock déduit');
+    toast.success('Production enregistrée — envoyée au comptoir et stock déduit');
     onClose();
   };
 
@@ -403,6 +414,7 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
   const [description, setDescription] = useState(initial?.description || '');
   const [sellUnit, setSellUnit] = useState(initial?.sellUnit || 'part');
   const [usableInProduction, setUsable] = useState(!!initial?.usableInProduction);
+  const [directSale, setDirectSale] = useState(!!initial?.directSale);
   const [outputQuantity, setOutput] = useState(initial?.outputQuantity || 1);
   const [unitPrice, setUnitPrice] = useState(initial?.unitPrice || 0);
   const [ingredients, setIngredients] = useState<BizIngredient[]>(initial?.ingredients || []);
@@ -434,7 +446,7 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
     if (!name.trim()) { toast.error('Nom requis'); return; }
     const fiche: BizFiche = {
       id: initial?.id || newId(), name: name.trim(), categoryId, categoryName: categories.find(c => c.id === categoryId)?.name,
-      description, ingredients, sellByUnit: true, sellUnit, usableInProduction, productUnit: sellUnit,
+      description, ingredients, sellByUnit: true, sellUnit, usableInProduction, productUnit: sellUnit, directSale,
       outputQuantity, unitPrice, totalCost: +totalCost.toFixed(2), costPerUnit: +costPerUnit.toFixed(2),
       totalValue: +totalValue.toFixed(2), gainsPerUnit: +(unitPrice - costPerUnit).toFixed(2), totalGains: +(totalValue - totalCost).toFixed(2),
       createdAt: initial?.createdAt || new Date().toISOString(),
@@ -463,6 +475,15 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
           <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
             <div><p className="text-sm font-bold text-slate-700">Réutilisable en production</p><p className="text-xs text-slate-400">Comme ingrédient semi-fini</p></div>
             <Switch checked={usableInProduction} onChange={setUsable} />
+          </div>
+          {/* Vente rapide : la fiche s'affiche directement au point de vente et
+              ses ingrédients sont déduits du stock à la vente — sans production. */}
+          <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+            <div>
+              <p className="text-sm font-bold text-slate-700">Vente directe au comptoir</p>
+              <p className="text-xs text-slate-400">Affichée au point de vente (ex: café au lait) — stock déduit à la vente</p>
+            </div>
+            <Switch checked={directSale} onChange={setDirectSale} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Unité de vente"><Select value={sellUnit} onChange={e => setSellUnit(e.target.value)}>{['part', 'unité', 'kg', 'L', 'tasse', 'flacon', 'bidon'].map(u => <option key={u}>{u}</option>)}</Select></Field>

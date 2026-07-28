@@ -118,6 +118,123 @@ const KpiCard = ({ label, value, suffix, icon: Icon, color, trend, trendPos, del
   </motion.div>
 );
 
+/* ─── Cuve level cards (one card per cuve, with its alert state) ─── */
+/**
+ * Live niveau of every cuve, as cards. A cuve below its `alertThreshold` turns
+ * red ("Niveau critique"); one below 1.5× the threshold turns amber ("Niveau
+ * bas"). GPL cuves show a percentage, the others their degrees.
+ */
+const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number }) => {
+  if (!tanks || tanks.length === 0) return null;
+
+  const alerts = tanks.filter(t => (t.current || 0) < (t.alertThreshold || 0));
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay }} className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "rgba(255,184,0,0.15)" }}>
+            <Fuel className="w-4 h-4" style={{ color: "#FFB800" }} />
+          </div>
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>
+              Niveaux des Cuves
+            </h3>
+            <p className="text-[10px] text-slate-400">{tanks.length} cuve(s) • mise à jour en direct</p>
+          </div>
+        </div>
+        {alerts.length > 0 && (
+          <span className="px-3 py-1.5 rounded-full text-[10px] font-black uppercase bg-red-100 text-red-700 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            {alerts.length} cuve(s) en alerte
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        {tanks.map((t, i) => {
+          const capacity = Number(t.capacity) || 0;
+          const current = Number(t.current) || 0;
+          const threshold = Number(t.alertThreshold) || 0;
+          const pct = capacity > 0 ? Math.min(100, (current / capacity) * 100) : 0;
+          const critical = current < threshold;
+          const low = !critical && threshold > 0 && current < threshold * 1.5;
+          const color = critical ? "#ef4444" : low ? "#f59e0b" : "#22c55e";
+          const available = Math.max(0, capacity - current);
+
+          return (
+            <motion.div
+              key={t.id}
+              initial={{ opacity: 0, scale: 0.97 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: delay + i * 0.04 }}
+              className="card-glass relative overflow-hidden p-5"
+              style={critical ? { boxShadow: "0 0 0 2px rgba(239,68,68,0.25)" } : undefined}
+            >
+              <div className="h-1 absolute top-0 left-0 right-0" style={{ background: color }} />
+
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h4 className="font-black text-slate-800 truncate">{t.name}</h4>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{t.type}</p>
+                </div>
+                <span className="px-2 py-1 rounded-full text-[9px] font-black uppercase whitespace-nowrap"
+                  style={{ background: color + "1a", color }}>
+                  {critical ? "Critique" : low ? "Bas" : "OK"}
+                </span>
+              </div>
+
+              <p className="text-2xl font-black tabular-nums mt-3 leading-none" style={{ color: "var(--naftal-blue-700)" }}>
+                {current.toLocaleString("fr-FR", { maximumFractionDigits: 0 })}
+                <span className="text-sm font-bold text-slate-400"> L</span>
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                sur {capacity.toLocaleString("fr-FR")} L • {pct.toFixed(1)}%
+              </p>
+
+              <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden mt-3">
+                <motion.div initial={{ width: 0 }} animate={{ width: `${pct}%` }}
+                  transition={{ duration: 0.8, delay: delay + 0.15 }}
+                  className="h-full rounded-full" style={{ backgroundColor: color }} />
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 mt-3">
+                <div className="rounded-lg bg-slate-50 p-2">
+                  <p className="text-[9px] uppercase font-bold text-slate-400">Disponible</p>
+                  <p className="text-xs font-black text-slate-700 tabular-nums">{available.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} L</p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-2">
+                  <p className="text-[9px] uppercase font-bold text-slate-400">Seuil</p>
+                  <p className="text-xs font-black text-slate-700 tabular-nums">{threshold.toLocaleString("fr-FR")} L</p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-2">
+                  <p className="text-[9px] uppercase font-bold text-slate-400">{t.type === "GPL" ? "Jauge" : "Degrés"}</p>
+                  <p className="text-xs font-black text-slate-700 tabular-nums">
+                    {Number(t.degrees || 0).toLocaleString("fr-FR", { maximumFractionDigits: 1 })}{t.type === "GPL" ? " %" : " °"}
+                  </p>
+                </div>
+              </div>
+
+              {critical && (
+                <div className="mt-3 flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-bold text-red-700">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  Niveau sous le seuil d'alerte — réapprovisionnement requis
+                </div>
+              )}
+              {low && (
+                <div className="mt-3 flex items-center gap-1.5 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-700">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  Niveau bas — prévoir une livraison
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+};
+
 /* ─── Tanks panel (shared across worker roles) ─── */
 const TanksPanel = ({ tanks, delay = 0.2 }: { tanks: any[]; delay?: number }) => (
   <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay }}
@@ -372,6 +489,9 @@ const Dashboard = () => {
         brigadeChefs={brigadeChefs}
         showBrigadeBadge={showFull || isChef}
       />
+
+      {/* Niveaux des cuves — cartes avec alertes */}
+      <TankLevelCards tanks={tanks} delay={0.12} />
 
       {/* Toolbar — décalage acceptance settings */}
       {isAdmin && (

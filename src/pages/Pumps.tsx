@@ -21,12 +21,12 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, orNull } from "@/src/lib/utils";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
-import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType, pumpTankIds, nozzleTankId } from "../store/AppContext";
 import toast from "react-hot-toast";
 
 const Pumps = () => {
   const { t } = useTranslation();
-  const { pumps, tanks, tracks, pumpNozzles = [], brigades = [] } = useAppState();
+  const { pumps, tanks, pumpNozzles = [], brigades = [] } = useAppState();
   const dispatch = useAppDispatch();
   const perm = useModulePermission('Pompes');
 
@@ -39,18 +39,35 @@ const Pumps = () => {
   // Nozzle management state
   const [showNozzleModal, setShowNozzleModal] = useState(false);
   const [nozzlePump, setNozzlePump] = useState<Pump | null>(null);
-  const [nozzleForm, setNozzleForm] = useState({ name: '', lastIndex: 0 });
+  const [nozzleForm, setNozzleForm] = useState<{ name: string; lastIndex: number; tankId: string }>({ name: '', lastIndex: 0, tankId: '' });
   const [editingNozzle, setEditingNozzle] = useState<PumpNozzle | null>(null);
   const [detailTab, setDetailTab] = useState('overview');
 
   const [formData, setFormData] = useState<Partial<Pump>>({
     number: "",
     name: "",
-    tankId: "",
-    trackId: "",
-    type: "SUPER",
     status: "Actif"
   });
+
+  // A pump has no hand-picked fuel type anymore: the cuve is chosen per pistolet,
+  // so the pump's cuve/type simply mirror its pistolets.
+  const tankLabel = (id?: string) => tanks.find(t => t.id === id)?.name || "—";
+  const pumpTanks = (pumpId: string) => pumpTankIds(pumpId, pumpNozzles, pumps)
+    .map(id => tanks.find(t => t.id === id))
+    .filter((t): t is typeof tanks[number] => !!t);
+
+  /** Keeps `pump.tankId` / `pump.type` aligned with the pistolets of that pump. */
+  const syncPumpFromNozzles = (pumpId: string, nozzles: PumpNozzle[]) => {
+    const pump = pumps.find(p => p.id === pumpId);
+    if (!pump) return;
+    const firstTankId = nozzles
+      .filter(n => n.pumpId === pumpId)
+      .map(n => n.tankId || nozzleTankId(n, pumps))
+      .find(Boolean);
+    if (!firstTankId || firstTankId === pump.tankId) return;
+    const tank = tanks.find(t => t.id === firstTankId);
+    dispatch({ type: 'UPDATE_PUMP', payload: { ...pump, tankId: firstTankId, type: tank?.type } });
+  };
 
   const filteredPumps = pumps.filter(p => 
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -62,9 +79,6 @@ const Pumps = () => {
     setFormData({
       number: `P${(pumps.length + 1).toString().padStart(2, '0')}`,
       name: "",
-      tankId: tanks[0]?.id || null,
-      trackId: null,
-      type: tanks[0]?.type || "SUPER",
       status: "Actif"
     });
     setShowModal(true);
@@ -74,15 +88,6 @@ const Pumps = () => {
     setSelectedPump(pump);
     setFormData(pump);
     setShowModal(true);
-  };
-
-  const handleTankChange = (tankId: string) => {
-    const tank = tanks.find(t => t.id === tankId);
-    setFormData({
-      ...formData,
-      tankId,
-      type: tank ? tank.type : formData.type
-    });
   };
 
   const handleSave = (e: React.FormEvent) => {
@@ -156,8 +161,7 @@ const Pumps = () => {
       {filteredPumps.length > 0 ? (
         <motion.div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredPumps.map((pump, index) => {
-            const tank = tanks.find(t => t.id === pump.tankId);
-            const track = tracks.find(t => t.id === pump.trackId);
+            const cuves = pumpTanks(pump.id);
             return (
               <motion.div
                 key={pump.id}
@@ -175,13 +179,6 @@ const Pumps = () => {
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="text-lg font-black text-primary uppercase">{pump.number}</h3>
-                        <span className={cn(
-                          "px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tight",
-                          pump.type === "SUPER" || pump.type === "ESSENCE" ? "bg-blue-100 text-blue-700" :
-                          pump.type === "DIESEL" || pump.type === "GASOIL" ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"
-                        )}>
-                          {pump.type}
-                        </span>
                       </div>
                       <p className="text-sm text-slate-600 font-bold">{pump.name}</p>
                     </div>
@@ -195,19 +192,20 @@ const Pumps = () => {
 
                   {/* Information Grid */}
                   <div className="space-y-3 pt-2 border-t border-slate-100">
-                    {/* Tank Info */}
+                    {/* Cuves served — derived from the pistolets of this pump */}
                     <div className="p-3 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border border-blue-100">
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">🪣 Cuve Associée</p>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-primary">{tank?.name || "N/A"}</span>
-                        <span className="text-[10px] text-slate-500 italic">{tank?.type}</span>
-                      </div>
-                    </div>
-
-                    {/* Track Info */}
-                    <div className="p-3 bg-gradient-to-br from-cyan-50 to-blue-50 rounded-2xl border border-cyan-100">
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">🛣️ Piste Assignée</p>
-                      <p className="text-sm font-bold text-primary">{track?.name || "N/A"}</p>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">🪣 Cuves desservies</p>
+                      {cuves.length === 0 ? (
+                        <p className="text-sm font-bold text-slate-400">Aucune — définissez-la sur les pistolets</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {cuves.map(c => (
+                            <span key={c.id} className="px-2 py-0.5 rounded-full bg-white border border-blue-200 text-[10px] font-bold text-primary">
+                              {c.name} <span className="text-slate-400 italic">{c.type}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     {/* Per-nozzle indexes */}
@@ -227,6 +225,7 @@ const Pumps = () => {
                                 <div className="flex items-center gap-1.5 min-w-0">
                                   <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
                                   <span className="text-[10px] font-bold text-slate-700 truncate">{n.name}</span>
+                                  <span className="text-[9px] text-slate-400 truncate">· {tankLabel(nozzleTankId(n, pumps))}</span>
                                 </div>
                                 <span className="text-[11px] font-black text-purple-700 tabular-nums ml-2 flex-shrink-0">
                                   {n.lastIndex.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} L
@@ -249,7 +248,7 @@ const Pumps = () => {
                     </button>
                     {perm.modifier && (
                       <button
-                        onClick={() => { setNozzlePump(pump); setNozzleForm({ name: '', lastIndex: 0 }); setEditingNozzle(null); setShowNozzleModal(true); }}
+                        onClick={() => { setNozzlePump(pump); setNozzleForm({ name: '', lastIndex: 0, tankId: pump.tankId || tanks[0]?.id || '' }); setEditingNozzle(null); setShowNozzleModal(true); }}
                         className="flex-1 py-2.5 rounded-xl font-bold text-[9px] uppercase tracking-widest bg-purple-50 text-purple-600 hover:bg-purple-100 transition-colors"
                         title="Gérer les pistolets"
                       >
@@ -330,47 +329,37 @@ const Pumps = () => {
                   </div>
                 </div>
 
-                {/* Tank Section */}
-                <div className="space-y-3">
-                  <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">🌍 Emplacement</p>
-                  <div className="space-y-2 p-4 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border border-blue-100">
-                    <label className="text-[10px] font-bold text-blue-700 uppercase tracking-widest block">🪣 Cuve Associée</label>
-                    <select 
-                      required
-                      className="w-full px-3 py-2 bg-white border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-400 focus:border-transparent outline-none font-medium text-sm"
-                      value={formData.tankId}
-                      onChange={e => handleTankChange(e.target.value)}
-                    >
-                      <option value="">Choisir une cuve</option>
-                      {tanks.map(t => (
-                        <option key={t.id} value={t.id}>{t.name} ({t.type})</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Status & Type Section */}
+                {/* Configuration — a pump has no fuel type: it comes from the
+                    cuve chosen on each of its pistolets. */}
                 <div className="space-y-3">
                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">⚙️ Configuration</p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100">
-                      <label className="text-[10px] font-bold text-green-700 uppercase tracking-widest block">✅ Statut</label>
-                      <select 
-                        className="w-full px-3 py-2 bg-white border border-green-200 rounded-lg focus:ring-2 focus:ring-green-400 focus:border-transparent outline-none font-medium text-sm"
-                        value={formData.status}
-                        onChange={e => setFormData({...formData, status: e.target.value as any})}
-                      >
-                        <option>Actif</option>
-                        <option>Maintenance</option>
-                        <option>Hors service</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2 p-4 bg-gradient-to-br from-orange-50 to-yellow-50 rounded-2xl border border-orange-100">
-                      <label className="text-[10px] font-bold text-orange-700 uppercase tracking-widest block">⛽ Type</label>
-                      <div className="w-full px-3 py-2 bg-white border border-orange-200 rounded-lg font-medium text-sm text-slate-700">
-                        {formData.type}
+                  <div className="space-y-2 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100">
+                    <label className="text-[10px] font-bold text-green-700 uppercase tracking-widest block">✅ Statut</label>
+                    <select
+                      className="w-full px-3 py-2 bg-white border border-green-200 rounded-lg focus:ring-2 focus:ring-green-400 focus:border-transparent outline-none font-medium text-sm"
+                      value={formData.status}
+                      onChange={e => setFormData({...formData, status: e.target.value as any})}
+                    >
+                      <option>Actif</option>
+                      <option>Maintenance</option>
+                      <option>Hors service</option>
+                    </select>
+                  </div>
+                  <div className="p-4 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border border-blue-100">
+                    <p className="text-[10px] font-bold text-blue-700 uppercase tracking-widest">🪣 Cuves</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      La cuve se choisit sur chaque pistolet de la pompe
+                      {selectedPump ? " (bouton « Pistolets »)." : ", après la création de la pompe."}
+                    </p>
+                    {selectedPump && (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {pumpTanks(selectedPump.id).map(c => (
+                          <span key={c.id} className="px-2 py-0.5 rounded-full bg-white border border-blue-200 text-[10px] font-bold text-primary">
+                            {c.name} <span className="text-slate-400 italic">{c.type}</span>
+                          </span>
+                        ))}
                       </div>
-                    </div>
+                    )}
                   </div>
                 </div>
 
@@ -430,15 +419,16 @@ const Pumps = () => {
       {/* Detail View Modal */}
       <AnimatePresence>
         {showDetail && selectedPump && (() => {
-          const tank = tanks.find(t => t.id === selectedPump.tankId);
-          const track = tracks.find(t => t.id === selectedPump.trackId);
           const nozzles = pumpNozzles.filter(n => n.pumpId === selectedPump.id);
-          const tankFill = tank ? Math.min(Math.round((tank.current / tank.capacity) * 100), 100) : 0;
+          const cuves = pumpTanks(selectedPump.id);
+          const tank = cuves[0];
+          const fuelType = tank?.type;
+          const tankFill = tank && tank.capacity > 0 ? Math.min(Math.round((tank.current / tank.capacity) * 100), 100) : 0;
 
-          const fuelBg = selectedPump.type === 'SUPER' || selectedPump.type === 'ESSENCE' ? 'bg-blue-100' :
-                         selectedPump.type === 'DIESEL' || selectedPump.type === 'GASOIL' ? 'bg-green-100' : 'bg-orange-100';
-          const fuelText = selectedPump.type === 'SUPER' || selectedPump.type === 'ESSENCE' ? 'text-blue-700' :
-                           selectedPump.type === 'DIESEL' || selectedPump.type === 'GASOIL' ? 'text-green-700' : 'text-orange-700';
+          const fuelBg = fuelType === 'SUPER' || fuelType === 'ESSENCE' ? 'bg-blue-100' :
+                         fuelType === 'DIESEL' || fuelType === 'GASOIL' ? 'bg-green-100' : 'bg-orange-100';
+          const fuelText = fuelType === 'SUPER' || fuelType === 'ESSENCE' ? 'text-blue-700' :
+                           fuelType === 'DIESEL' || fuelType === 'GASOIL' ? 'text-green-700' : 'text-orange-700';
 
           const pumpHistory = brigades
             .filter(b =>
@@ -487,7 +477,7 @@ const Pumps = () => {
                     </div>
                     <div>
                       <h3 className="font-black text-sm uppercase tracking-widest italic leading-none">{selectedPump.name}</h3>
-                      <p className="text-[10px] text-blue-200 font-bold mt-1">{selectedPump.number} · {selectedPump.type} · {selectedPump.status}</p>
+                      <p className="text-[10px] text-blue-200 font-bold mt-1">{selectedPump.number} · {cuves.map(c => c.name).join(', ') || 'Aucune cuve'} · {selectedPump.status}</p>
                     </div>
                   </div>
                   <button onClick={() => setShowDetail(false)} className="hover:bg-white/20 p-2 rounded-lg transition-all"><X className="w-5 h-5" /></button>
@@ -559,7 +549,7 @@ const Pumps = () => {
                             </div>
                             <div className={cn("rounded-2xl border p-4 shadow-sm", fuelBg, 'border-current/20')}>
                               <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">Carburant</p>
-                              <p className={cn("text-2xl font-black leading-none", fuelText)}>{selectedPump.type}</p>
+                              <p className={cn("text-2xl font-black leading-none", fuelText)}>{fuelType || '—'}</p>
                               <p className="text-[10px] text-slate-500 font-bold mt-1">{nozzles.length} pistolet{nozzles.length !== 1 ? 's' : ''}</p>
                             </div>
                             <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
@@ -626,26 +616,6 @@ const Pumps = () => {
                             </div>
                           </div>
 
-                          {/* Track card */}
-                          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                            <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 px-5 py-3 flex items-center gap-3">
-                              <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                                   style={{ background: 'rgba(255,184,0,0.2)', border: '1px solid rgba(255,184,0,0.3)' }}>
-                                <span className="text-yellow-400 text-xs">🛣️</span>
-                              </div>
-                              <p className="text-white font-black text-xs uppercase tracking-widest">Piste Assignée</p>
-                            </div>
-                            <div className="p-5">
-                              {track ? (
-                                <div className="flex items-center justify-between">
-                                  <p className="font-black text-blue-900 text-lg">{track.name}</p>
-                                  <span className="px-3 py-1 rounded-full text-[9px] font-black uppercase bg-cyan-100 text-cyan-700">Active</span>
-                                </div>
-                              ) : (
-                                <p className="text-slate-400 text-sm font-medium text-center py-4">Aucune piste assignée</p>
-                              )}
-                            </div>
-                          </div>
                         </motion.div>
                       )}
 
@@ -837,15 +807,23 @@ const Pumps = () => {
 
           const handleSaveNozzle = () => {
             if (!nozzleForm.name.trim()) { toast.error('Le nom du pistolet est requis.'); return; }
+            if (!nozzleForm.tankId) { toast.error('Choisissez la cuve de ce pistolet.'); return; }
+            let next: PumpNozzle[];
             if (editingNozzle) {
-              dispatch({ type: 'UPDATE_NOZZLE', payload: { ...editingNozzle, name: nozzleForm.name, lastIndex: nozzleForm.lastIndex } });
+              const updated = { ...editingNozzle, name: nozzleForm.name, tankId: nozzleForm.tankId, lastIndex: nozzleForm.lastIndex };
+              dispatch({ type: 'UPDATE_NOZZLE', payload: updated });
+              next = pumpNozzles.map(n => n.id === updated.id ? updated : n);
               toast.success('Pistolet mis à jour ✓');
             } else {
-              const n: PumpNozzle = { id: newId(), pumpId: nozzlePump.id, name: nozzleForm.name, lastIndex: nozzleForm.lastIndex, startIndex: nozzleForm.lastIndex, status: 'Actif' };
+              const n: PumpNozzle = { id: newId(), pumpId: nozzlePump.id, name: nozzleForm.name, tankId: nozzleForm.tankId, lastIndex: nozzleForm.lastIndex, startIndex: nozzleForm.lastIndex, status: 'Actif' };
               dispatch({ type: 'ADD_NOZZLE', payload: n });
+              next = [...pumpNozzles, n];
               toast.success('Pistolet ajouté ✓');
             }
-            setNozzleForm({ name: '', lastIndex: 0 });
+            // The pump itself follows its pistolets so every per-cuve report
+            // (brigades, fiche journalière, rapports) stays attributable.
+            syncPumpFromNozzles(nozzlePump.id, next);
+            setNozzleForm({ name: '', lastIndex: 0, tankId: nozzleForm.tankId });
             setEditingNozzle(null);
           };
 
@@ -861,7 +839,7 @@ const Pumps = () => {
                       <Zap className="w-4 h-4 text-yellow-400" />
                       Pistolets — {nozzlePump.name}
                     </h3>
-                    <p className="text-[10px] text-purple-200 font-bold mt-1">{nozzlePump.type} • {nozzles.length} pistolet{nozzles.length !== 1 ? 's' : ''}</p>
+                    <p className="text-[10px] text-purple-200 font-bold mt-1">{nozzles.length} pistolet{nozzles.length !== 1 ? 's' : ''} • une cuve par pistolet</p>
                   </div>
                   <button onClick={() => setShowNozzleModal(false)} className="hover:bg-white/20 p-2 rounded-lg transition-all"><X className="w-6 h-6" /></button>
                 </div>
@@ -875,7 +853,9 @@ const Pumps = () => {
                           <div className={cn("w-2 h-8 rounded-full flex-shrink-0", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
                           <div className="flex-1 min-w-0">
                             <p className="font-black text-sm text-slate-800 truncate">{n.name}</p>
-                            <p className="text-[10px] text-slate-400 font-bold">Index: {n.lastIndex.toLocaleString()} L</p>
+                            <p className="text-[10px] text-slate-400 font-bold">
+                              Cuve: {tankLabel(nozzleTankId(n, pumps))} • Index: {n.lastIndex.toLocaleString()} L
+                            </p>
                           </div>
                           <button
                             onClick={() => dispatch({ type: 'UPDATE_NOZZLE', payload: { ...n, status: n.status === 'Actif' ? 'Inactif' : 'Actif' } })}
@@ -885,7 +865,7 @@ const Pumps = () => {
                             {n.status === 'Actif' ? <ToggleRight className="w-5 h-5" /> : <ToggleLeft className="w-5 h-5" />}
                           </button>
                           <button
-                            onClick={() => { setEditingNozzle(n); setNozzleForm({ name: n.name, lastIndex: n.lastIndex }); }}
+                            onClick={() => { setEditingNozzle(n); setNozzleForm({ name: n.name, lastIndex: n.lastIndex, tankId: nozzleTankId(n, pumps) || '' }); }}
                             className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-500 transition-colors"
                           >
                             <Edit2 className="w-4 h-4" />
@@ -927,10 +907,22 @@ const Pumps = () => {
                           onChange={e => setNozzleForm(f => ({ ...f, lastIndex: parseFloat(e.target.value) || 0 }))}
                         />
                       </div>
+                      {/* The cuve is chosen here, per pistolet — not on the pump. */}
+                      <div className="col-span-2">
+                        <label className="text-[9px] font-bold text-slate-400 uppercase block mb-1">🪣 Cuve liée à ce pistolet</label>
+                        <select
+                          className="w-full px-3 py-2 bg-white border border-purple-200 rounded-xl text-sm font-semibold focus:outline-none focus:border-purple-500"
+                          value={nozzleForm.tankId}
+                          onChange={e => setNozzleForm(f => ({ ...f, tankId: e.target.value }))}
+                        >
+                          <option value="">Choisir une cuve</option>
+                          {tanks.map(t => <option key={t.id} value={t.id}>{t.name} ({t.type})</option>)}
+                        </select>
+                      </div>
                     </div>
                     <div className="flex gap-3">
                       {editingNozzle && (
-                        <button onClick={() => { setEditingNozzle(null); setNozzleForm({ name: '', lastIndex: 0 }); }} className="flex-1 py-2.5 text-[10px] font-black uppercase text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">
+                        <button onClick={() => { setEditingNozzle(null); setNozzleForm({ name: '', lastIndex: 0, tankId: nozzlePump.tankId || tanks[0]?.id || '' }); }} className="flex-1 py-2.5 text-[10px] font-black uppercase text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">
                           Annuler
                         </button>
                       )}

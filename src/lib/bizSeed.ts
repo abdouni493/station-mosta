@@ -1,7 +1,7 @@
 /**
  * ─── Constant seed data for the business modules ───────────────────────────────
- * Rich demo data so every new interface (Restaurant / Cafétéria / Lavage /
- * Magasin) is populated out of the box. Everything is deterministic (stable ids)
+ * Rich demo data so every interface of the Cafétéria and Lavage & Réparation
+ * parts is populated out of the box. Everything is deterministic (stable ids)
  * so localStorage rehydration and cross-references stay consistent.
  * ──────────────────────────────────────────────────────────────────────────────
  */
@@ -24,7 +24,8 @@ const future = (d: number): string => {
 const emptyModule = (): ModuleState => ({
   categories: [], marques: [], roles: [], products: [], purchases: [], sales: [],
   clients: [], suppliers: [], workers: [], expenses: [], caisse: [], productions: [],
-  fiches: [], comptoir: [], destructions: [], services: [], reparations: [],
+  fiches: [], comptoir: [], destructions: [], reparations: [],
+  sessions: [], payRequests: [],
 });
 
 // Small helpers to build entities compactly.
@@ -47,77 +48,6 @@ function product(
     hasExpiration: hasExp, expirationDate: hasExp ? future(expDays) : undefined,
     createdAt: daysAgo(40 - i),
   };
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// RESTAURANT
-// ════════════════════════════════════════════════════════════════════════════
-function seedRestaurant(): ModuleState {
-  const m = 'restaurant';
-  const s = emptyModule();
-  s.categories = [cat(m, 0, 'Viandes'), cat(m, 1, 'Légumes'), cat(m, 2, 'Épicerie'), cat(m, 3, 'Boissons'), cat(m, 4, 'Plats préparés')];
-  s.marques = [marque(m, 0, 'Local'), marque(m, 1, 'Cévital'), marque(m, 2, 'Ramy'), marque(m, 3, 'Sans marque')];
-  s.roles = [role(m, 0, 'Chef cuisinier'), role(m, 1, 'Serveur'), role(m, 2, 'Caissier'), role(m, 3, 'Plongeur')];
-
-  s.products = [
-    product(m, 1, 'Viande hachée', 'Viandes', 'Local', 1200, 1600, 40, 18, 5, 'kg', 0, 0, true, 5),
-    product(m, 2, 'Poulet entier', 'Viandes', 'Local', 480, 650, 60, 32, 8, 'kg', 0, 0, true, 4),
-    product(m, 3, 'Pommes de terre', 'Légumes', 'Local', 60, 90, 200, 120, 20, 'kg', 1, 0),
-    product(m, 4, 'Tomates', 'Légumes', 'Local', 90, 140, 80, 24, 15, 'kg', 1, 0, true, 3),
-    product(m, 5, 'Huile de table', 'Épicerie', 'Cévital', 620, 780, 48, 30, 10, 'L', 2, 1),
-    product(m, 6, 'Semoule', 'Épicerie', 'Sans marque', 75, 110, 100, 65, 20, 'kg', 2, 3),
-    product(m, 7, 'Coca-Cola 1L', 'Boissons', 'Ramy', 90, 140, 120, 70, 24, 'unité', 3, 2),
-    product(m, 8, 'Eau minérale 1.5L', 'Boissons', 'Ramy', 30, 50, 240, 150, 48, 'unité', 3, 2),
-  ];
-
-  s.clients = [
-    { id: `${m}-cli-1`, name: 'Karim Benali', phone: '0550112233', address: 'Cité 20 Août, Alger', createdAt: daysAgo(30) },
-    { id: `${m}-cli-2`, name: 'Société Numidia', phone: '0661445566', address: 'Zone Industrielle', createdAt: daysAgo(20) },
-    { id: `${m}-cli-3`, name: 'Amine Cherif', phone: '0770998877', createdAt: daysAgo(12) },
-  ];
-  s.suppliers = [
-    { id: `${m}-sup-1`, name: 'Boucherie El Baraka', phone: '0551223344', address: 'Marché de gros', createdAt: daysAgo(50) },
-    { id: `${m}-sup-2`, name: 'Primeur Rahmani', phone: '0662334455', address: 'Marché Semmar', createdAt: daysAgo(45) },
-    { id: `${m}-sup-3`, name: 'Grossiste Cévital', phone: '0555667788', address: 'Béjaïa', createdAt: daysAgo(60) },
-  ];
-  s.workers = [
-    worker(m, 1, 'Yacine Meddour', 'Chef cuisinier', 'mois', 60000, daysAgo(400)),
-    worker(m, 2, 'Sofiane Belaid', 'Serveur', 'jour', 2200, daysAgo(200)),
-    worker(m, 3, 'Nadia Hamdi', 'Caissier', 'mois', 45000, daysAgo(150)),
-  ];
-  s.services = [];
-  s.fiches = [
-    fiche(m, 1, 'Couscous royal', 'Plats préparés',
-      [ing(`${m}-prod-2`, 'Poulet entier', 0.4, 480, 'kg'), ing(`${m}-prod-6`, 'Semoule', 0.3, 75, 'kg'), ing(`${m}-prod-3`, 'Pommes de terre', 0.2, 60, 'kg')],
-      1, 850),
-    fiche(m, 2, 'Burger maison', 'Plats préparés',
-      [ing(`${m}-prod-1`, 'Viande hachée', 0.15, 1200, 'kg'), ing(`${m}-prod-4`, 'Tomates', 0.05, 90, 'kg')],
-      1, 450),
-  ];
-  s.productions = [
-    production(m, 1, 'Couscous royal (Lot midi)', 'Plats préparés',
-      [ing(`${m}-prod-2`, 'Poulet entier', 8, 480, 'kg'), ing(`${m}-prod-6`, 'Semoule', 6, 75, 'kg')],
-      20, 850, 12, 'part', false),
-    production(m, 2, 'Burger maison (Lot soir)', 'Plats préparés',
-      [ing(`${m}-prod-1`, 'Viande hachée', 4.5, 1200, 'kg'), ing(`${m}-prod-4`, 'Tomates', 1.5, 90, 'kg')],
-      30, 450, 20, 'part', true, 28),
-  ];
-  s.comptoir = [
-    comptoir(m, 1, 'Couscous royal', 'Plats préparés', 8, 'part', 850, 165, `${m}-prod-1`),
-    comptoir(m, 2, 'Burger maison', 'Plats préparés', 10, 'part', 450, 195, `${m}-prod-2`),
-    comptoir(m, 3, 'Coca-Cola 1L', 'Boissons', 40, 'unité', 140, 90),
-  ];
-  s.destructions = [
-    { id: `${m}-dst-1`, productName: 'Burger maison', qty: 2, unitPrice: 450, value: 900, reason: 'Invendu fin de service', date: daysAgo(2), createdBy: 'Admin', recovered: false },
-  ];
-  s.expenses = [
-    expense(m, 1, 'Gaz de ville', 'Facture mensuelle', 8500, 6, 'Charges'),
-    expense(m, 2, 'Électricité', 'Facture Sonelgaz', 14200, 10, 'Charges'),
-    expense(m, 3, 'Produits d\'entretien', 'Nettoyage cuisine', 3200, 3, 'Divers'),
-  ];
-  seedCommerce(s, m, ['Couscous royal', 'Burger maison', 'Coca-Cola 1L', 'Eau minérale 1.5L']);
-  seedCaisse(s, m);
-  return s;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -154,7 +84,7 @@ function seedCafeteria(): ModuleState {
   s.fiches = [
     fiche(m, 1, 'Café au lait', 'Café & Thé',
       [ing(`${m}-prod-1`, 'Café en grains', 0.012, 1400, 'kg'), ing(`${m}-prod-2`, 'Lait', 0.1, 90, 'L'), ing(`${m}-prod-3`, 'Sucre', 0.01, 110, 'kg')],
-      1, 80),
+      1, 80, true),
     fiche(m, 2, 'Gâteau maison', 'Viennoiseries',
       [ing(`${m}-prod-4`, 'Farine', 0.25, 65, 'kg'), ing(`${m}-prod-3`, 'Sucre', 0.15, 110, 'kg'), ing(`${m}-prod-2`, 'Lait', 0.2, 90, 'L')],
       8, 120),
@@ -213,36 +143,30 @@ function seedLavage(): ModuleState {
   ];
   s.workers = [
     worker(m, 1, 'Rachid Benmoussa', 'Mécanicien', 'mois', 55000, daysAgo(500)),
-    worker(m, 2, 'Karim Ould Ali', 'Laveur', 'jour', 1800, daysAgo(100)),
-  ];
-  s.services = [
-    { id: `${m}-srv-1`, name: 'Lavage complet', description: 'Extérieur + intérieur', price: 800 },
-    { id: `${m}-srv-2`, name: 'Lavage extérieur', description: 'Carrosserie uniquement', price: 400 },
-    { id: `${m}-srv-3`, name: 'Vidange moteur', description: 'Huile + filtre', price: 1500 },
-    { id: `${m}-srv-4`, name: 'Changement plaquettes', description: 'Avant ou arrière', price: 2000 },
-    { id: `${m}-srv-5`, name: 'Diagnostic', description: 'Contrôle électronique', price: 1000 },
+    worker(m, 2, 'Karim Ould Ali', 'Laveur', 'pourcentage', 0, daysAgo(100), 20),
   ];
   s.reparations = [
     {
-      id: `${m}-rep-1`, ref: 'RDV-0001', kind: 'appointment', clientId: `${m}-cli-1`, clientName: 'Mohamed Ziani',
+      id: `${m}-rep-1`, ref: 'REP-0001', clientId: `${m}-cli-1`, clientName: 'Mohamed Ziani',
+      kind: 'reparation',
       car: { name: 'Clio 4', marque: 'Renault', color: 'Gris', year: '2018', immatriculation: '00123-116-16' },
-      services: [{ id: `${m}-srv-3`, name: 'Vidange moteur', price: 1500 }, { id: `${m}-srv-1`, name: 'Lavage complet', price: 800 }],
+      serviceTotal: 2300,
       usedProducts: [{ productId: `${m}-prod-2`, productName: 'Huile moteur 5W40', qty: 4, unitPrice: 2400, total: 9600 }],
-      problem: 'Entretien périodique 20 000 km', total: 2300, paid: 1000, rest: 1300, status: 'pending',
-      comingDate: future(1) + 'T09:00', outDate: future(1) + 'T12:00', date: daysAgo(1), workers: [`${m}-wrk-1`], createdBy: 'Admin',
+      problem: 'Entretien périodique 20 000 km', total: 11900, paid: 5000, rest: 6900, status: 'pending',
+      date: daysAgo(1), workers: [`${m}-wrk-1`], createdBy: 'Admin',
     },
     {
       id: `${m}-rep-2`, ref: 'REP-0002', kind: 'reparation', clientId: `${m}-cli-2`, clientName: 'Transport Express',
       car: { name: 'Master', marque: 'Renault', color: 'Blanc', year: '2020', immatriculation: '04521-116-16' },
-      services: [{ id: `${m}-srv-4`, name: 'Changement plaquettes', price: 2000 }],
+      serviceTotal: 2000,
       usedProducts: [{ productId: `${m}-prod-5`, productName: 'Plaquettes de frein', qty: 1, unitPrice: 3200, total: 3200 }],
       problem: 'Freins avant usés', total: 5200, paid: 5200, rest: 0, status: 'finalized',
       date: daysAgo(3), workers: [`${m}-wrk-1`], createdBy: 'Admin',
     },
     {
-      id: `${m}-rep-3`, ref: 'LAV-0003', kind: 'lavage', clientId: `${m}-cli-3`, clientName: 'Fatima Larbi',
+      id: `${m}-rep-3`, ref: 'LAV-0003', kind: 'lavage', clientName: 'Client de passage',
       car: { name: 'Symbol', marque: 'Renault', color: 'Rouge', immatriculation: '01998-116-16' },
-      services: [{ id: `${m}-srv-2`, name: 'Lavage extérieur', price: 400 }],
+      serviceTotal: 400,
       usedProducts: [], problem: '', total: 400, paid: 400, rest: 0, status: 'finalized',
       date: daysAgo(1), workers: [`${m}-wrk-2`], createdBy: 'Admin',
     },
@@ -251,61 +175,32 @@ function seedLavage(): ModuleState {
     expense(m, 1, 'Eau (lavage)', 'Facture SEAAL', 9200, 7, 'Charges'),
     expense(m, 2, 'Électricité', 'Compresseur & éclairage', 7600, 9, 'Charges'),
   ];
+  // The point-de-vente / ventes screens of the removed Magasin part now live in
+  // this part, so it also carries retail products and sale invoices.
+  s.products.push(
+    product(m, 7, 'Huile moteur en vrac 50L', 'Lubrifiants', 'Total', 60000, 90000, 4, 3, 1, 'bidon', 2, 1),
+    product(m, 8, 'Lingettes auto', 'Consommables', 'Local', 160, 260, 80, 35, 20, 'unité', 0, 0),
+    product(m, 9, 'Eau minérale 1.5L', 'Consommables', 'Local', 30, 50, 300, 160, 60, 'unité', 0, 0),
+  );
+  // The 50 L drum is sold au détail, litre by litre.
+  const drum = s.products.find(p => p.id === `${m}-prod-7`);
+  if (drum) { drum.sellByDetail = true; drum.detailCapacity = 50; drum.detailUnit = 'L'; drum.detailSalePrice = 2000; }
+  seedCommerce(s, m, ['Lingettes auto', 'Eau minérale 1.5L', 'Liquide lave-glace', 'Filtre à huile']);
   seedCaisse(s, m);
   return s;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// MAGASIN (retail)
-// ════════════════════════════════════════════════════════════════════════════
-function seedMagasin(): ModuleState {
-  const m = 'magasin';
-  const s = emptyModule();
-  s.categories = [cat(m, 0, 'Alimentaire'), cat(m, 1, 'Hygiène'), cat(m, 2, 'Entretien'), cat(m, 3, 'Accessoires auto'), cat(m, 4, 'Boissons')];
-  s.marques = [marque(m, 0, 'Cévital'), marque(m, 1, 'Ramy'), marque(m, 2, 'Henkel'), marque(m, 3, 'Sans marque')];
-  s.roles = [role(m, 0, 'Vendeur'), role(m, 1, 'Caissier'), role(m, 2, 'Gérant magasin')];
-
-  s.products = [
-    product(m, 1, 'Huile Fleurial 5L', 'Alimentaire', 'Cévital', 1250, 1550, 60, 24, 12, 'unité', 0, 0),
-    product(m, 2, 'Sucre 1kg', 'Alimentaire', 'Cévital', 105, 140, 200, 88, 40, 'unité', 0, 0),
-    product(m, 3, 'Savon liquide', 'Hygiène', 'Henkel', 220, 320, 90, 40, 20, 'unité', 1, 2),
-    product(m, 4, 'Détergent Isis', 'Entretien', 'Henkel', 380, 520, 70, 30, 15, 'unité', 2, 2),
-    product(m, 5, 'Huile moteur 1L', 'Accessoires auto', 'Sans marque', 550, 780, 50, 18, 10, 'unité', 3, 3),
-    product(m, 6, 'Coca-Cola 2L', 'Boissons', 'Ramy', 130, 190, 150, 72, 36, 'unité', 4, 1),
-    product(m, 7, 'Eau minérale 1.5L', 'Boissons', 'Ramy', 30, 50, 300, 160, 60, 'unité', 4, 1),
-    product(m, 8, 'Lingettes auto', 'Accessoires auto', 'Sans marque', 160, 260, 80, 35, 20, 'unité', 3, 3),
-  ];
-  s.clients = [
-    { id: `${m}-cli-1`, name: 'Bilal Toumi', phone: '0551009988', address: 'Cité 500 logements', createdAt: daysAgo(22) },
-    { id: `${m}-cli-2`, name: 'Épicerie Ennour', phone: '0662118877', address: 'Rue du marché', createdAt: daysAgo(16) },
-    { id: `${m}-cli-3`, name: 'Samir Aouad', phone: '0770227766', createdAt: daysAgo(9) },
-  ];
-  s.suppliers = [
-    { id: `${m}-sup-1`, name: 'Grossiste Cévital', phone: '0553220099', address: 'Béjaïa', createdAt: daysAgo(65) },
-    { id: `${m}-sup-2`, name: 'Distrib. Ramy', phone: '0664331100', address: 'Blida', createdAt: daysAgo(48) },
-    { id: `${m}-sup-3`, name: 'Henkel Algérie', phone: '0555442211', address: 'Alger', createdAt: daysAgo(70) },
-  ];
-  s.workers = [
-    worker(m, 1, 'Hakim Slimani', 'Gérant magasin', 'mois', 58000, daysAgo(600)),
-    worker(m, 2, 'Ines Belkacem', 'Caissier', 'mois', 40000, daysAgo(180)),
-    worker(m, 3, 'Omar Fellah', 'Vendeur', 'jour', 2000, daysAgo(90)),
-  ];
-  s.expenses = [
-    expense(m, 1, 'Loyer magasin', 'Mensuel', 35000, 5, 'Loyer'),
-    expense(m, 2, 'Électricité', 'Facture Sonelgaz', 11200, 9, 'Charges'),
-    expense(m, 3, 'Sacs & emballages', 'Consommables', 4200, 4, 'Divers'),
-  ];
-  seedCommerce(s, m, ['Huile Fleurial 5L', 'Sucre 1kg', 'Coca-Cola 2L', 'Détergent Isis', 'Eau minérale 1.5L']);
-  seedCaisse(s, m);
-  return s;
-}
 
 // ─── Shared builders ────────────────────────────────────────────────────────────
 
-function worker(m: string, i: number, name: string, roleName: string, salaryType: 'jour' | 'mois', salaryAmount: number, startDate: string) {
+function worker(
+  m: string, i: number, name: string, roleName: string,
+  salaryType: 'jour' | 'mois' | 'pourcentage', salaryAmount: number, startDate: string,
+  percentage?: number,
+) {
   return {
     id: `${m}-wrk-${i}`, name, phone: `055${i}00${i}0${i}${i}`, roleName,
-    paid: true, salaryType, salaryAmount, hasAccount: false, startDate,
+    paid: true, salaryType, salaryAmount, percentage, hasAccount: false, startDate,
     permissions: {}, acomptes: [
       { id: `${m}-acp-${i}`, date: daysAgo(10), amount: salaryType === 'mois' ? 10000 : 3000, description: 'Avance', paid: false },
     ], absences: [], payments: [], createdAt: startDate,
@@ -320,13 +215,14 @@ function ing(productId: string, productName: string, quantityUsed: number, unitC
   return { productId, productName, quantityUsed, unitCost, lineCost: +(quantityUsed * unitCost).toFixed(2), unit, sourceType: 'stock' as const };
 }
 
-function fiche(m: string, i: number, name: string, categoryName: string, ingredients: ReturnType<typeof ing>[], outputQuantity: number, unitPrice: number) {
+function fiche(m: string, i: number, name: string, categoryName: string, ingredients: ReturnType<typeof ing>[], outputQuantity: number, unitPrice: number, directSale = false) {
   const totalCost = +ingredients.reduce((sum, x) => sum + x.lineCost, 0).toFixed(2);
   const costPerUnit = outputQuantity > 0 ? +(totalCost / outputQuantity).toFixed(2) : 0;
   const totalValue = +(outputQuantity * unitPrice).toFixed(2);
   return {
     id: `${m}-fic-${i}`, name, categoryName, categoryId: `${m}-cat-4`, ingredients,
     sellByUnit: true, sellUnit: 'part', usableInProduction: false, productUnit: 'part',
+    directSale,
     outputQuantity, unitPrice, totalCost, costPerUnit, totalValue,
     gainsPerUnit: +(unitPrice - costPerUnit).toFixed(2), totalGains: +(totalValue - totalCost).toFixed(2),
     createdAt: daysAgo(30 - i),
@@ -412,10 +308,8 @@ function seedCaisse(s: ModuleState, m: string) {
 // ─── Public factory ─────────────────────────────────────────────────────────────
 export function buildSeed(): BizState {
   return {
-    restaurant: seedRestaurant(),
     cafeteria: seedCafeteria(),
     lavage: seedLavage(),
-    magasin: seedMagasin(),
   };
 }
 

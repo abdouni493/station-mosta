@@ -18,10 +18,8 @@ type ActiveKey = 'global' | 'carburant' | ModuleKey;
 const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType }[] = [
   { id: 'global', label: 'Vue globale', icon: Globe2 },
   { id: 'carburant', label: 'Carburant', icon: Fuel },
-  { id: 'restaurant', label: 'Restaurant', icon: UtensilsCrossed },
   { id: 'cafeteria', label: 'Cafétéria', icon: Coffee },
   { id: 'lavage', label: 'Lavage & Réparation', icon: Wrench },
-  { id: 'magasin', label: 'Magasin', icon: Store },
 ];
 
 export default function GeneralReports() {
@@ -39,14 +37,12 @@ export default function GeneralReports() {
 
   const reports = useMemo(() => ({
     carburant: computeCarburantReport(app, range.from, range.to),
-    restaurant: computeModuleReport(biz.restaurant, 'restaurant', range.from, range.to),
     cafeteria: computeModuleReport(biz.cafeteria, 'cafeteria', range.from, range.to),
     lavage: computeModuleReport(biz.lavage, 'lavage', range.from, range.to),
-    magasin: computeModuleReport(biz.magasin, 'magasin', range.from, range.to),
   }), [biz, app, range]);
 
   const global: GlobalReport = useMemo(
-    () => consolidate([reports.carburant, reports.restaurant, reports.cafeteria, reports.lavage, reports.magasin], range.from, range.to),
+    () => consolidate([reports.carburant, reports.cafeteria, reports.lavage], range.from, range.to),
     [reports, range],
   );
 
@@ -63,7 +59,7 @@ export default function GeneralReports() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-4xl font-black text-blue-900 uppercase italic tracking-tighter leading-none">Rapports Généraux</h1>
-          <p className="text-slate-500 font-medium mt-2 italic leading-relaxed">Bilan consolidé et détaillé de toutes les activités : carburant, restaurant, cafétéria, lavage et magasin.</p>
+          <p className="text-slate-500 font-medium mt-2 italic leading-relaxed">Bilan consolidé et détaillé de toutes les activités : carburant, cafétéria et lavage & réparation.</p>
         </div>
         <button onClick={handlePrint} className="btn-primary h-14 px-10 text-[11px] uppercase tracking-[0.25em] italic font-black flex items-center gap-3 shrink-0">
           <Printer className="w-4 h-4" /> Imprimer {active === 'global' ? 'la fiche globale' : 'la fiche'}

@@ -16,18 +16,11 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Tanks from "./pages/Tanks";
 import Pumps from "./pages/Pumps";
-import Tracks from "./pages/Tracks";
 import Pompistes from "./pages/Pompistes";
-import BrigadeChefs from "./pages/BrigadeChefs";
 import Brigades from "./pages/Brigades";
-import FuelPOS from "./pages/POS";
 import Suppliers from "./pages/Suppliers";
-import DeliveryNotes from "./pages/DeliveryNotes";
-import Products from "./pages/Products";
-import Purchases from "./pages/Purchases";
 import FuelPurchases from "./pages/FuelPurchases";
 import Clients from "./pages/Clients";
-import ShopPOS from "./pages/ShopPOS";
 import DailyReport from "./pages/DailyReport";
 import Expenses from "./pages/Expenses";
 import Permissions from "./pages/Permissions";
@@ -40,9 +33,10 @@ import MagasinWorkers from "./pages/MagasinWorkers";
 import MyBrigade from "./pages/MyBrigade";
 import MyPayments from "./pages/MyPayments";
 import MySettings from "./pages/MySettings";
-import ChefBrigade from "./pages/ChefBrigade";
+import CaisseGenerale from "./pages/CaisseGenerale";
+import BankAccounts from "./pages/BankAccounts";
 
-// ─── New business modules (Restaurant / Cafétéria / Lavage / Magasin) ──────────
+// ─── Business modules (Cafétéria / Lavage & Réparation) ───────────────────────
 import { BizProvider } from "./store/BizContext";
 import { MODULES, ModuleKey } from "./lib/bizConfig";
 import ModuleStock from "./pages/modules/ModuleStock";
@@ -57,8 +51,8 @@ import ModuleWorkers from "./pages/modules/ModuleWorkers";
 import ModuleExpenses from "./pages/modules/ModuleExpenses";
 import ModuleCaisse from "./pages/modules/ModuleCaisse";
 import ModuleReports from "./pages/modules/ModuleReports";
-import ModuleServices from "./pages/modules/ModuleServices";
 import ModuleReparations from "./pages/modules/ModuleReparations";
+import ModuleEncaissements from "./pages/modules/ModuleEncaissements";
 import GeneralReports from "./pages/GeneralReports";
 
 // Builds the route list for one business module based on its capabilities.
@@ -75,7 +69,10 @@ function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
 
   if (cfg.isService) {
     add('reparations', <ModuleReparations moduleKey={key} />);
-    add('services', <ModuleServices moduleKey={key} />);
+    add('encaissements', <ModuleEncaissements moduleKey={key} />);
+    // Point de vente + Ventes moved here when the Magasin part was removed.
+    add('pos', <ModulePOS moduleKey={key} />);
+    add('sales', <ModuleSales moduleKey={key} />);
     add('stock', <ModuleStock moduleKey={key} />);
     add('purchases', <ModulePurchases moduleKey={key} />);
     add('clients', <ModuleClients moduleKey={key} />);
@@ -112,20 +109,13 @@ const MODULE_ROUTES = (Object.keys(MODULES) as ModuleKey[]).flatMap(buildModuleR
  */
 const ROUTE_TO_MODULE: Record<string, string> = {
   "/brigades":         "Brigades",
-  "/fuel-sales":       "Ventes Carburant",
   "/tanks":            "Cuves",
   "/pumps":            "Pompes",
-  "/tracks":           "Pistes",
-  "/delivery-notes":   "Livraisons",
   "/fuel-purchases":   "Achats Carburant",
-  "/products":         "Produits",
-  "/shop-pos":         "Magasin",
-  "/purchases":        "Achats",
   "/inventory":        "Inventaires",
   "/clients":          "Clients",
   "/suppliers":        "Fournisseurs",
   "/pompistes":        "Pompistes",
-  "/brigade-chefs":    "Chefs de Brigade",
   "/gerants":          "Gérants",
   "/magasin-workers":  "Employés Magasin",
   "/roles-permissions": "Paramètres",
@@ -133,6 +123,8 @@ const ROUTE_TO_MODULE: Record<string, string> = {
   "/daily-report":     "Fiche Journalière",
   "/statistics":       "Statistiques",
   "/reports":          "Rapports",
+  "/caisse-generale":  "Caisse Générale",
+  "/bank-accounts":    "Comptes Bancaires",
 };
 
 // ─── ProtectedRoute Component ─────────────────────────────────────────────────
@@ -432,20 +424,11 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/dashboard"        element={<Dashboard />} />
 
         <Route path="/brigades"         element={<ProtectedRoute element={<Brigades />} moduleId="Brigades" />} />
-        <Route path="/fuel-sales"       element={<ProtectedRoute element={<FuelPOS />} moduleId="Ventes Carburant" />} />
-        <Route path="/pos"              element={<Navigate to="/fuel-sales" replace />} />
 
         {/* Fuel */}
         <Route path="/tanks"            element={<ProtectedRoute element={<Tanks />} moduleId="Cuves" />} />
         <Route path="/pumps"            element={<ProtectedRoute element={<Pumps />} moduleId="Pompes" />} />
-        <Route path="/tracks"           element={<ProtectedRoute element={<Tracks />} moduleId="Pistes" />} />
-        <Route path="/delivery-notes"   element={<ProtectedRoute element={<DeliveryNotes />} moduleId="Livraisons" />} />
         <Route path="/fuel-purchases"   element={<ProtectedRoute element={<FuelPurchases />} moduleId="Achats Carburant" />} />
-
-        {/* Magasin */}
-        <Route path="/products"         element={<ProtectedRoute element={<Products />} moduleId="Produits" />} />
-        <Route path="/shop-pos"         element={<ProtectedRoute element={<ShopPOS />} moduleId="Magasin" />} />
-        <Route path="/purchases"        element={<ProtectedRoute element={<Purchases />} moduleId="Achats" />} />
         <Route path="/inventory"        element={<ProtectedRoute element={<Inventory />} moduleId="Inventaires" />} />
 
         {/* Clients / Suppliers */}
@@ -454,7 +437,6 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
 
         {/* Personnel */}
         <Route path="/pompistes"        element={<ProtectedRoute element={<Pompistes />} moduleId="Pompistes" />} />
-        <Route path="/brigade-chefs"    element={<ProtectedRoute element={<BrigadeChefs />} moduleId="Chefs de Brigade" />} />
         <Route path="/gerants"          element={<ProtectedRoute element={<Gerants />} moduleId="Gérants" />} />
         <Route path="/magasin-workers"  element={<ProtectedRoute element={<MagasinWorkers />} moduleId="Employés Magasin" />} />
         <Route path="/roles-permissions" element={<ProtectedRoute element={<Permissions />} moduleId="Paramètres" />} />
@@ -463,11 +445,15 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/expenses"         element={<ProtectedRoute element={<Expenses />} moduleId="Dépenses" />} />
         <Route path="/daily-report"     element={<ProtectedRoute element={<DailyReport />} moduleId="Fiche Journalière" />} />
 
+        {/* Système — trésorerie */}
+        <Route path="/caisse-generale"  element={<ProtectedRoute element={<CaisseGenerale />} moduleId="Caisse Générale" />} />
+        <Route path="/bank-accounts"    element={<ProtectedRoute element={<BankAccounts />} moduleId="Comptes Bancaires" />} />
+
         {/* Analytics */}
         <Route path="/statistics"       element={<ProtectedRoute element={<Statistics />} moduleId="Statistiques" />} />
         <Route path="/reports"          element={<ProtectedRoute element={<Reports />} moduleId="Rapports" />} />
 
-        {/* New business modules (Restaurant / Cafétéria / Lavage / Magasin) */}
+        {/* Business modules (Cafétéria / Lavage & Réparation) */}
         {MODULE_ROUTES.map(r => React.createElement(Route, {
           key: r.path,
           path: r.path,
@@ -480,7 +466,6 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/my-brigade"       element={<MyBrigade />} />
         <Route path="/my-payments"      element={<MyPayments />} />
         <Route path="/my-settings"      element={<MySettings />} />
-        <Route path="/chef-brigade"     element={<ChefBrigade />} />
 
         {/* Default */}
         <Route path="*"                 element={<Navigate to="/dashboard" replace />} />

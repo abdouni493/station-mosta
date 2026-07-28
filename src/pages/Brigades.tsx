@@ -34,10 +34,12 @@ import {
   Trash2,
   LoaderCircle,
   Search
+,
+  Wrench as WrenchIcon,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
@@ -49,7 +51,7 @@ import BrigadeFicheModal from "../components/BrigadeFicheModal";
 const Brigades = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [] } = useAppState();
+  const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [], bankAccounts = [], treasuryTransactions = [] } = useAppState();
   const perm = useModulePermission('Brigades');
   const dispatch = useAppDispatch();
 
@@ -82,7 +84,14 @@ const Brigades = () => {
 
   // Creation wizard extra state
   const [pompistePresence, setPompistePresence] = useState<Record<string, 'present' | 'absent'>>({});
-  const [pisteOverrides, setPisteOverrides] = useState<Record<string, string>>({});
+  // Which pompes each pompiste holds during this brigade (several per pompiste).
+  const [pompistePumps, setPompistePumps] = useState<Record<string, string[]>>({});
+  // Pompistes retained for this brigade (the chef no longer drives the list).
+  const [wizPompisteIds, setWizPompisteIds] = useState<string[]>([]);
+  // Cash instalments ("versements espèce") per pompiste, timed to the minute.
+  const [versements, setVersements] = useState<Record<string, Array<{
+    id: string; amount: number; at: string; notes?: string;
+  }>>>({});
   const [chefAsPompiste, setChefAsPompiste] = useState(false);
   const [chefPisteId, setChefPisteId] = useState('');
   const [canReactivate, setCanReactivate] = useState(false);
@@ -170,6 +179,8 @@ const Brigades = () => {
   const [pompisteJustifications, setPompisteJustifications] = useState<Record<string, Array<{
     id: string;
     type: 'TAG' | 'TPE' | 'CLIENT_CREDIT' | 'CLIENT_AVANCE';
+    /** Pour un TPE : le compte bancaire du terminal, crédité à l'enregistrement. */
+    bankAccountId?: string;
     description: string;
     liters: number;
     amount: number;
@@ -229,20 +240,25 @@ const Brigades = () => {
 
   // ─── Wizard derived data ──────────────────────────────────────────────────
   // Brigade pompiste assignments built from the current wizard selections.
-  const wizAssignments = useMemo<NonNullable<Brigade['pompisteAssignments']>>(() => {
-    const chef = brigadeChefs.find(c => c.id === chefId);
-    const chefPompisteIds = chef?.pompisteIds || [];
-    const a: NonNullable<Brigade['pompisteAssignments']> = chefPompisteIds.map(pid => ({
+  // The brigade now starts from the pompistes themselves: each selected pompiste
+  // holds one or more pompes. `trackId` is kept empty for backward compatibility
+  // with brigades recorded before the pistes were removed.
+  const wizAssignments = useMemo<NonNullable<Brigade['pompisteAssignments']>>(() =>
+    wizPompisteIds.map(pid => ({
       pompisteId: pid,
-      trackId: pisteOverrides[pid] || pompistes.find(p => p.id === pid)?.trackId || '',
+      trackId: '',
       present: (pompistePresence[pid] || 'present') === 'present',
       chefActingAsPompiste: false,
-    }));
-    if (chefAsPompiste && chefId) {
-      a.push({ pompisteId: chefId, trackId: chefPisteId, present: true, chefActingAsPompiste: true });
-    }
-    return a;
-  }, [chefId, brigadeChefs, pompistes, pisteOverrides, pompistePresence, chefAsPompiste, chefPisteId]);
+    })),
+    [wizPompisteIds, pompistePresence]);
+
+  /** Pompes held by one pompiste on this brigade. */
+  const pumpsOf = (pompisteId: string) => pompistePumps[pompisteId] || [];
+  /** Active pistolets of the pompes held by one pompiste. */
+  const nozzlesOf = (pompisteId: string) => {
+    const ids = new Set(pumpsOf(pompisteId));
+    return pumpNozzles.filter(n => n.status === 'Actif' && ids.has(n.pumpId));
+  };
 
   const presentAssignments = useMemo(() => wizAssignments.filter(a => a.present), [wizAssignments]);
 
@@ -279,16 +295,21 @@ const Brigades = () => {
     return tanks.map(tank => {
       const startLiters = startTankLiters(tank);
       const endDeg = wizEndTankLevels[tank.id];
-      const endLiters = endDeg !== undefined ? tankLevelToLiters(tank.id, endDeg) : startLiters;
+      // The cuve level is no longer part of the brigade wizard. Without a real
+      // end reading there is NOTHING to compare, so the cuve reading must not be
+      // read as "0 litre sorti" — that would turn every litre sold into a bogus
+      // retour-cuve and wipe the pompistes' theoretical takings.
+      const hasCuveReading = endDeg !== undefined && endDeg !== null;
+      const endLiters = hasCuveReading ? tankLevelToLiters(tank.id, endDeg) : startLiters;
       const cuveDecalage = startLiters - endLiters; // liters that left the tank per cuve measurement
-      const tankPumps = pumps.filter(p => p.tankId === tank.id);
-      const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && tankPumps.some(p => p.id === n.pumpId));
+      // A pistolet belongs to a cuve directly (the pompe no longer carries one).
+      const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === tank.id);
       const nozzleDecalage = tankNozzles.reduce((s, n) => s + ((wizEndNozzleIndices[n.id] ?? startNozzleIdx(n)) - startNozzleIdx(n)), 0);
-      const difference = nozzleDecalage - cuveDecalage;
+      const difference = hasCuveReading ? nozzleDecalage - cuveDecalage : 0;
       const price = settings.fuelPrices[tank.type] || 0;
       const amount = Math.abs(difference) * price;
       let type: 'CORRECT' | 'RETOUR_CUVE' | 'VENTE_DIRECTE' = 'CORRECT';
-      let suppressed = false;
+      let suppressed = !hasCuveReading;
       if (difference > 0) {
         // pistolets ont débité plus que la cuve n'a baissé → possible retour cuve
         if (retourCuveActif && difference >= (negSeuil || 0.000001)) { type = 'RETOUR_CUVE'; suppressed = false; }
@@ -314,26 +335,24 @@ const Brigades = () => {
     // total active-nozzle throughput per tank (for proportional retour-cuve attribution)
     const tankThroughput: Record<string, number> = {};
     tanks.forEach(tank => {
-      const tankPumps = pumps.filter(p => p.tankId === tank.id);
-      const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && tankPumps.some(p => p.id === n.pumpId));
+      const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === tank.id);
       tankThroughput[tank.id] = tankNozzles.reduce((s, n) => s + Math.max(0, (wizEndNozzleIndices[n.id] ?? startNozzleIdx(n)) - startNozzleIdx(n)), 0);
     });
     return presentAssignments.map(a => {
-      const track = tracks.find(t => t.id === a.trackId);
-      const trackPumps = pumps.filter(p => p.trackId === a.trackId);
-      const trackNozzles = pumpNozzles.filter(n => n.status === 'Actif' && trackPumps.some(p => p.id === n.pumpId));
-      // Each nozzle is priced with its OWN pump's carburant price so a piste
-      // serving several fuel types is computed exactly per type.
+      const myPumpIds = pumpsOf(a.pompisteId);
+      const myPumps = pumps.filter(p => myPumpIds.includes(p.id));
+      const myNozzles = nozzlesOf(a.pompisteId);
+      // Each pistolet is priced with the carburant of ITS OWN cuve, so a pompiste
+      // holding pompes of several fuel types is computed exactly per type.
       let litersSold = 0;
       let theoretical = 0;
       const byFuel: Record<string, { liters: number; price: number; amount: number }> = {};
-      trackNozzles.forEach(n => {
-        const pump = trackPumps.find(p => p.id === n.pumpId);
-        const fuel = (pump?.type || 'DIESEL') as Tank['type'];
+      myNozzles.forEach(n => {
+        const tankId = nozzleTankId(n, pumps);
+        const fuel = (tanks.find(t => t.id === tankId)?.type || 'DIESEL') as Tank['type'];
         const price = settings.fuelPrices[fuel] || 0;
         let nLiters = Math.max(0, (wizEndNozzleIndices[n.id] ?? startNozzleIdx(n)) - startNozzleIdx(n));
         // subtract proportional retour-cuve share for this nozzle's tank
-        const tankId = pump?.tankId;
         if (tankId && retourCuveByTank[tankId] && tankThroughput[tankId] > 0) {
           nLiters -= retourCuveByTank[tankId] * (nLiters / tankThroughput[tankId]);
         }
@@ -345,19 +364,18 @@ const Brigades = () => {
         byFuel[fuel].amount += nLiters * price;
       });
       const fuelKeys = Object.keys(byFuel);
-      const primaryFuel = (fuelKeys[0] || trackPumps[0]?.type || 'DIESEL') as Tank['type'];
+      const primaryFuel = (fuelKeys[0] || 'DIESEL') as Tank['type'];
       const mixedFuel = fuelKeys.length > 1;
       const pricePerLiter = !mixedFuel
         ? (byFuel[primaryFuel]?.price ?? settings.fuelPrices[primaryFuel] ?? 0)
         : (litersSold > 0 ? theoretical / litersSold : 0); // weighted avg for display only
-      const pompisteName = a.chefActingAsPompiste
-        ? (brigadeChefs.find(c => c.id === a.pompisteId)?.name || 'Chef')
-        : (pompistes.find(p => p.id === a.pompisteId)?.name || '—');
+      const pompisteName = pompistes.find(p => p.id === a.pompisteId)?.name || '—';
       return {
         pompisteId: a.pompisteId,
         name: pompisteName,
-        trackId: a.trackId,
-        trackName: track?.name || a.trackId,
+        trackId: '',
+        trackName: myPumps.map(p => p.name || p.number).join(', ') || '—',
+        pumpNames: myPumps.map(p => p.name || p.number),
         fuelType: fuelKeys.length ? fuelKeys.join(' + ') : primaryFuel,
         primaryFuel,
         byFuel,
@@ -367,7 +385,7 @@ const Brigades = () => {
         theoretical,
       };
     });
-  }, [presentAssignments, pumps, pumpNozzles, tanks, tracks, wizEndNozzleIndices, settings, retourCuveByTank, pompistes, brigadeChefs, editingBrigade]);
+  }, [presentAssignments, pompistePumps, pumps, pumpNozzles, tanks, wizEndNozzleIndices, settings, retourCuveByTank, pompistes, editingBrigade]);
 
   const handleStartBrigade = () => {
     setIsSubmitting(true);
@@ -417,12 +435,17 @@ const Brigades = () => {
       const decalageSummary: Record<string, any> = {};
       const accJustifications: BrigadeAccountingJustification[] = [];
       const accountingId = existingAccounting?.id || newId();
+      const tpeCredits: Array<{ accountId: string; amount: number; pompisteId: string }> = [];
       let totalTheoretical = 0;
       let totalCash = 0;
       let totalJustif = 0;
 
       pompisteSales.forEach(s => {
-        const cash = pompistePayments[s.pompisteId] || 0;
+        // Cash handed over = the single amount typed, PLUS every "versement
+        // espèce" recorded for that pompiste (each one timed to the minute).
+        const versed = (versements[s.pompisteId] || []).reduce((sum, v) => sum + (v.amount || 0), 0);
+        const typed = pompistePayments[s.pompisteId];
+        const cash = (typed || 0) + versed;
         const justifs = pompisteJustifications[s.pompisteId] || [];
         const justifTotal = justifs.reduce((sum, j) => sum + (j.amount || 0), 0);
         const ecartRestant = s.theoretical - cash - justifTotal;
@@ -456,7 +479,12 @@ const Brigades = () => {
               justificationType: j.type, clientName: j.description || j.clientName,
               notes: j.description, fuelType: jFuel, liters: jLiters, pricePerLiter: jPrice,
               trackId: s.trackId, pompisteId: s.pompisteId,
+              bankAccountId: j.bankAccountId,
             });
+            // A TPE justification credits the bank account of THAT terminal.
+            if (j.type === 'TPE' && j.bankAccountId && j.amount > 0) {
+              tpeCredits.push({ accountId: j.bankAccountId, amount: j.amount, pompisteId: s.pompisteId });
+            }
           } else {
             accJustifications.push({
               id: j.id, accountingId, clientId: j.clientId || '', amount: j.amount,
@@ -469,6 +497,9 @@ const Brigades = () => {
       });
 
       const totalRest = totalTheoretical - totalCash - totalJustif;
+      // "A-t-on saisi de l'argent ?" — un montant tapé OU au moins un versement.
+      const hasAnyCash = presentAssignments.some(a =>
+        pompistePayments[a.pompisteId] !== undefined || (versements[a.pompisteId] || []).length > 0);
 
       // ── Create / update the brigade (Clôturée) ────────────────────────────
       const newBrigade: Brigade = {
@@ -477,7 +508,9 @@ const Brigades = () => {
         date: sDate,
         shift: sType,
         chefId: chefId || undefined,
-        status: 'Clôturée',
+        // No cash entered anywhere ⇒ the brigade stays "En attente"; it becomes
+        // "Clôturée" as soon as an amount (typed or versement) is recorded.
+        status: hasAnyCash ? 'Clôturée' : 'En attente',
         isActive: false,
         startDatetime,
         endDatetime,
@@ -487,6 +520,15 @@ const Brigades = () => {
         endTime: `${endHour.padStart(2, '0')}:${endMinute.padStart(2, '0')}`,
         pompisteIds: presentIds,
         pompisteAssignments: assignments,
+        // Which pompes each pompiste held (several per pompiste are allowed).
+        pompistePumpAssignments: presentAssignments.map(a => ({
+          pompisteId: a.pompisteId, pumpIds: pumpsOf(a.pompisteId),
+        })),
+        // Versements espèce horodatés à la minute, conservés sur la brigade.
+        versements: presentAssignments.flatMap(a =>
+          (versements[a.pompisteId] || []).map(v => ({
+            id: v.id, pompisteId: a.pompisteId, amount: v.amount, at: v.at, notes: v.notes,
+          }))),
         startIndices: {},
         endIndices: {},
         startTankLevels,
@@ -570,6 +612,42 @@ const Brigades = () => {
         justifications: accJustifications,
       };
       dispatch({ type: (isEdit && existingAccounting) ? 'UPDATE_BRIGADE_ACCOUNTING' : 'ADD_BRIGADE_ACCOUNTING', payload: accounting });
+
+      // ── TPE : l'argent justifié entre sur le compte bancaire de CE terminal ──
+      // Les lignes de la brigade sont réécrites à chaque enregistrement pour que
+      // les soldes restent exacts même après modification.
+      treasuryTransactions
+        .filter(t => t.refType === 'brigade' && t.refId === brigadeId)
+        .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
+      tpeCredits.forEach(credit => {
+        const pompisteName = pompistes.find(x => x.id === credit.pompisteId)?.name || 'Pompiste';
+        const tx: TreasuryTransaction = {
+          id: newId(),
+          date: endDatetime,
+          kind: 'TPE',
+          amount: credit.amount,
+          description: `TPE brigade du ${sDate} — ${pompisteName}`,
+          accountTo: credit.accountId,
+          part: 'carburant',
+          refType: 'brigade', refId: brigadeId,
+          createdBy: currentUserName,
+          createdAt: new Date().toISOString(),
+        };
+        dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
+      });
+      // Les espèces réellement remises alimentent la caisse générale.
+      if (totalCash > 0) {
+        dispatch({
+          type: 'ADD_TREASURY_TX',
+          payload: {
+            id: newId(), date: endDatetime, kind: 'BRIGADE', amount: totalCash,
+            description: `Encaissement brigade du ${sDate}`,
+            accountTo: CAISSE_ID, part: 'carburant',
+            refType: 'brigade', refId: brigadeId,
+            createdBy: currentUserName, createdAt: new Date().toISOString(),
+          },
+        });
+      }
 
       // 10. Décalage alerts (non-suppressed) for admin dashboard.
       // On edit, clear the brigade's previous alerts first so they don't pile up.
@@ -665,21 +743,23 @@ const Brigades = () => {
     setEditingBrigade(b);
     setChefId(b.chefId || "");
 
-    // presence + piste overrides from stored assignments
+    // Pompistes retained + presence, from the stored assignments.
     const presence: Record<string, 'present' | 'absent'> = {};
-    const overrides: Record<string, string> = {};
-    let chefActing = false; let chefPiste = '';
+    const ids: string[] = [];
     (b.pompisteAssignments || []).forEach(a => {
-      if (a.chefActingAsPompiste) { chefActing = true; chefPiste = a.trackId || ''; return; }
       presence[a.pompisteId] = a.present ? 'present' : 'absent';
-      if (a.trackId) overrides[a.pompisteId] = a.trackId;
+      ids.push(a.pompisteId);
     });
-    const chef = brigadeChefs.find(c => c.id === b.chefId);
-    (chef?.pompisteIds || []).forEach(pid => { if (!presence[pid]) presence[pid] = 'present'; });
+    (b.pompisteIds || []).forEach(pid => { if (!presence[pid]) { presence[pid] = 'present'; ids.push(pid); } });
     setPompistePresence(presence);
-    setPisteOverrides(overrides);
-    setChefAsPompiste(chefActing);
-    setChefPisteId(chefPiste);
+    setWizPompisteIds(Array.from(new Set(ids)));
+    // Pompes held by each pompiste (empty for brigades recorded before the change).
+    const pumpMap: Record<string, string[]> = {};
+    ((b as any).pompistePumpAssignments || []).forEach((x: any) => {
+      if (x?.pompisteId) pumpMap[x.pompisteId] = x.pumpIds || [];
+    });
+    setPompistePumps(pumpMap);
+    setVersements({});
 
     // datetimes (string-split to avoid timezone drift)
     const splitDT = (iso?: string) => {
@@ -751,9 +831,9 @@ const Brigades = () => {
     setActivateStep(1);
     setDeactivateStep(1);
     setPompistePresence({});
-    setPisteOverrides({});
-    setChefAsPompiste(false);
-    setChefPisteId('');
+    setPompistePumps({});
+    setWizPompisteIds([]);
+    setVersements({});
     setCanReactivate(false);
     // New 7-step wizard resets
     const today = new Date().toISOString().split('T')[0];
@@ -1534,31 +1614,35 @@ const Brigades = () => {
             .filter(b => b.endTime)
             .sort((a, b) => new Date(b.endTimestamp || b.date).getTime() - new Date(a.endTimestamp || a.date).getTime())[0];
 
+          // The chef de brigade is no longer selected: a brigade starts from the
+          // pompistes and the pompes each of them holds.
           const STEPS = [
-            { num: 1, label: 'Chef',        icon: UserCog },
-            { num: 2, label: 'Pompistes',   icon: Users },
-            { num: 3, label: 'Planning',    icon: Calendar },
-            { num: 4, label: 'Niveaux',     icon: Database },
-            { num: 5, label: 'Fin',         icon: Droplets },
-            { num: 6, label: 'Comparaison', icon: TrendingUp },
+            { num: 1, label: 'Pompistes',    icon: Users },
+            { num: 2, label: 'Pompes',       icon: WrenchIcon },
+            { num: 3, label: 'Planning',     icon: Calendar },
+            { num: 4, label: 'Références',   icon: Database },
+            { num: 5, label: 'Index fin',    icon: Droplets },
+            { num: 6, label: 'Comparaison',  icon: TrendingUp },
             { num: 7, label: 'Comptabilité', icon: DollarSign },
           ];
 
-          // Step 2 piste validation: every present pompiste needs a piste & no two may share one
-          const presentTrackUsage: Record<string, number> = {};
-          presentAssignments.forEach(a => { if (a.trackId) presentTrackUsage[a.trackId] = (presentTrackUsage[a.trackId] || 0) + 1; });
-          const step2MissingPiste = presentAssignments.some(a => !a.trackId);
-          const step2DuplicatePiste = Object.values(presentTrackUsage).some(n => n > 1);
-          const step2Valid = presentAssignments.length > 0 && !step2MissingPiste && !step2DuplicatePiste;
+          // A pompe may not be held by two pompistes at once.
+          const pumpUsage: Record<string, number> = {};
+          presentAssignments.forEach(a => pumpsOf(a.pompisteId).forEach(id => { pumpUsage[id] = (pumpUsage[id] || 0) + 1; }));
+          const step2MissingPump = presentAssignments.some(a => pumpsOf(a.pompisteId).length === 0);
+          const step2DuplicatePump = Object.values(pumpUsage).some(n => n > 1);
+          const step2Valid = presentAssignments.length > 0 && !step2MissingPump && !step2DuplicatePump;
 
-          const allPaymentsFilled = presentAssignments.length > 0 && presentAssignments.every(a => pompistePayments[a.pompisteId] !== undefined);
-          const canGoNext = step === 1 ? !!chefId :
+          // A brigade can be saved WITHOUT the cash each pompiste handed over: it
+          // is then kept "En attente" until the amounts are entered.
+          const anyPaymentFilled = presentAssignments.some(a => pompistePayments[a.pompisteId] !== undefined)
+            || presentAssignments.some(a => (versements[a.pompisteId] || []).length > 0);
+          const canGoNext = step === 1 ? presentAssignments.length > 0 :
                             step === 2 ? step2Valid :
                             step === 3 ? (!!startDate && !!endDate) :
                             step === 4 ? true :
                             step === 5 ? !hasStep5Errors :
-                            step === 6 ? true :
-                            step === 7 ? allPaymentsFilled : true;
+                            step === 6 ? true : true;
 
           return (
             <div className="modal-shell z-[60]">
@@ -1608,153 +1692,147 @@ const Brigades = () => {
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
 
-                  {/* STEP 1: Chef */}
+                  {/* STEP 1: Pompistes de la brigade */}
                   {step === 1 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                      <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">📋 Chefs de Brigade Disponibles</label>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {brigadeChefs.filter(c => c.status === 'Actif' || c.status === 'En service').map(c => (
-                          <motion.button
-                            key={c.id}
-                            onClick={() => { setChefId(c.id); setPompistePresence({}); }}
-                            whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                            className={cn("p-4 rounded-2xl border-2 transition-all text-left", chefId === c.id ? "border-yellow-400 bg-gradient-to-br from-yellow-50 to-yellow-100 shadow-md" : "border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50")}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={cn("w-11 h-11 rounded-full flex items-center justify-center font-black text-lg flex-shrink-0", chefId === c.id ? "bg-gradient-to-br from-yellow-500 to-yellow-600 text-white" : "bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-300")}>
-                                {c.name[0]}
-                              </div>
-                              <div className="flex-1">
-                                <p className={cn("text-sm font-black", chefId === c.id ? "text-yellow-900" : "text-slate-800")}>{c.name}</p>
-                                <p className="text-[10px] text-slate-500">Tél: {c.phone || 'N/A'}</p>
-                                <span className="text-[9px] font-bold px-2 py-0.5 bg-green-100 text-green-700 rounded-full inline-block mt-1">✓ {c.status}</span>
-                              </div>
-                              {chefId === c.id && <CheckCircle className="w-5 h-5 text-yellow-500 flex-shrink-0" />}
-                            </div>
-                          </motion.button>
-                        ))}
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">
+                          Pompistes travaillant sur cette brigade
+                        </label>
+                        <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-black">
+                          {presentAssignments.length} sélectionné(s)
+                        </span>
                       </div>
-                      {brigadeChefs.filter(c => c.status === 'Actif' || c.status === 'En service').length === 0 && (
+
+                      {presentAssignments.length === 0 && (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[11px] font-bold text-amber-700">
+                          Sélectionnez au moins un pompiste pour continuer.
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {pompistes.filter(p => p.status === 'Actif').map(p => {
+                          const on = wizPompisteIds.includes(p.id);
+                          return (
+                            <motion.button
+                              key={p.id}
+                              whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+                              onClick={() => setWizPompisteIds(prev => on ? prev.filter(x => x !== p.id) : [...prev, p.id])}
+                              className={cn("p-4 rounded-2xl border-2 transition-all text-left",
+                                on ? "border-yellow-400 bg-gradient-to-br from-yellow-50 to-yellow-100 shadow-md" : "border-slate-200 hover:border-yellow-400 bg-white")}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className={cn("w-11 h-11 rounded-full flex items-center justify-center font-black text-lg flex-shrink-0",
+                                  on ? "bg-gradient-to-br from-yellow-500 to-yellow-600 text-white" : "bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-300")}>
+                                  {p.name[0]}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className={cn("text-sm font-black truncate", on ? "text-yellow-900" : "text-slate-800")}>{p.name}</p>
+                                  <p className="text-[10px] text-slate-500">Tel: {p.phone || 'N/A'}</p>
+                                  {on && (
+                                    <p className="text-[10px] font-bold text-blue-700 mt-0.5">
+                                      {pumpsOf(p.id).length} pompe(s) affectée(s)
+                                    </p>
+                                  )}
+                                </div>
+                                {on && <CheckCircle className="w-5 h-5 text-yellow-500 flex-shrink-0" />}
+                              </div>
+                            </motion.button>
+                          );
+                        })}
+                      </div>
+
+                      {pompistes.filter(p => p.status === 'Actif').length === 0 && (
                         <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                          <p className="text-sm text-slate-400 italic">Aucun chef disponible</p>
+                          <p className="text-sm text-slate-400 italic">Aucun pompiste actif</p>
                         </div>
                       )}
                     </motion.div>
                   )}
 
-                  {/* STEP 2: Pompistes — Présent/Absent + Piste override */}
+                  {/* STEP 2: Pompes tenues par chaque pompiste (plusieurs possibles) */}
                   {step === 2 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Pompistes de {chef?.name}</label>
-                        <div className="flex gap-2 text-[10px] font-black">
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full">{presentCount} présent(s)</span>
-                          {absentCount > 0 && <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full">{absentCount} absent(s)</span>}
-                        </div>
-                      </div>
+                      <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">
+                        Pompes de chaque pompiste
+                      </label>
 
                       {!step2Valid && (
                         <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] font-bold text-red-700">
-                          {presentAssignments.length === 0
-                            ? "⚠️ Au moins un pompiste présent (avec une piste) est requis pour continuer."
-                            : step2MissingPiste
-                              ? "⚠️ Chaque pompiste présent doit avoir une piste assignée."
-                              : "⚠️ Deux pompistes ne peuvent pas partager la même piste."}
+                          {step2MissingPump
+                            ? "Chaque pompiste doit tenir au moins une pompe."
+                            : "Une même pompe ne peut pas etre tenue par deux pompistes."}
                         </div>
                       )}
 
-                      {chefPompistes.length === 0 ? (
-                        <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                          <p className="text-sm text-slate-400 italic">Aucun pompiste assigné à ce chef</p>
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {chefPompistes.map(p => {
-                            const presence = pompistePresence[p.id] || 'present';
-                            const isAbsent = presence === 'absent';
-                            const defaultTrack = tracks.find(t => t.id === p.trackId);
-                            return (
-                              <div key={p.id} className={cn("p-4 rounded-2xl border-2 transition-all", isAbsent ? "border-red-200 bg-red-50/50 opacity-75" : "border-slate-200 bg-white")}>
-                                <div className="flex items-center gap-3 mb-3">
-                                  <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-black text-white flex-shrink-0", isAbsent ? "bg-red-400" : "bg-gradient-to-br from-blue-700 to-blue-900")}>
-                                    {p.name[0]}
-                                  </div>
-                                  <div className="flex-1">
-                                    <p className="text-sm font-black text-slate-800">{p.name}</p>
-                                    <p className="text-[10px] text-slate-500">Piste par défaut: {defaultTrack?.name || 'N/A'}</p>
-                                  </div>
-                                  {/* Présent/Absent toggle */}
-                                  <div className="flex gap-1">
-                                    <button
-                                      onClick={() => setPompistePresence(prev => ({ ...prev, [p.id]: 'present' }))}
-                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", presence === 'present' ? "bg-green-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-green-100")}
-                                    >Présent</button>
-                                    <button
-                                      onClick={() => setPompistePresence(prev => ({ ...prev, [p.id]: 'absent' }))}
-                                      className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all", presence === 'absent' ? "bg-red-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-red-100")}
-                                    >Absent</button>
-                                  </div>
+                      <div className="space-y-3">
+                        {wizPompisteIds.map(pid => {
+                          const pompiste = pompistes.find(x => x.id === pid);
+                          const mine = pumpsOf(pid);
+                          const presence = pompistePresence[pid] || 'present';
+                          const isAbsent = presence === 'absent';
+                          return (
+                            <div key={pid} className={cn("p-4 rounded-2xl border-2", isAbsent ? "border-red-200 bg-red-50/50 opacity-75" : "border-slate-200 bg-white")}>
+                              <div className="flex items-center gap-3 mb-3">
+                                <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-black text-white flex-shrink-0",
+                                  isAbsent ? "bg-red-400" : "bg-gradient-to-br from-blue-700 to-blue-900")}>
+                                  {pompiste?.name?.[0] || '?'}
                                 </div>
-                                {/* Piste override (only if present) */}
-                                {!isAbsent && (() => {
-                                  const effTrack = pisteOverrides[p.id] || p.trackId || '';
-                                  const missing = !effTrack;
-                                  const duplicate = !!effTrack && presentTrackUsage[effTrack] > 1;
-                                  return (
-                                  <div className="mt-2">
-                                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Piste pour cette brigade</label>
-                                    <select
-                                      value={effTrack}
-                                      onChange={e => setPisteOverrides(prev => ({ ...prev, [p.id]: e.target.value }))}
-                                      className={cn("w-full px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2", (missing || duplicate) ? "bg-red-50 border-2 border-red-400 focus:ring-red-300" : "bg-slate-50 border border-slate-200 focus:ring-blue-400")}
-                                    >
-                                      <option value="">— Sélectionner une piste —</option>
-                                      {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                    </select>
-                                    {missing && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Veuillez sélectionner une piste pour ce pompiste</p>}
-                                    {duplicate && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Cette piste est déjà assignée à un autre pompiste</p>}
-                                  </div>
-                                  );
-                                })()}
+                                <div className="flex-1">
+                                  <p className="text-sm font-black text-slate-800">{pompiste?.name || '—'}</p>
+                                  <p className="text-[10px] text-slate-500">{mine.length} pompe(s) - {nozzlesOf(pid).length} pistolet(s)</p>
+                                </div>
+                                <div className="flex gap-1">
+                                  <button onClick={() => setPompistePresence(prev => ({ ...prev, [pid]: 'present' }))}
+                                    className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all",
+                                      presence === 'present' ? "bg-green-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-green-100")}>Présent</button>
+                                  <button onClick={() => setPompistePresence(prev => ({ ...prev, [pid]: 'absent' }))}
+                                    className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all",
+                                      presence === 'absent' ? "bg-red-500 text-white shadow-sm" : "bg-slate-100 text-slate-400 hover:bg-red-100")}>Absent</button>
+                                </div>
                               </div>
-                            );
-                          })}
-                        </div>
-                      )}
 
-                      {/* Chef as pompiste option */}
-                      {anyAbsent && (
-                        <div className="p-4 bg-blue-50 rounded-2xl border-2 border-blue-200">
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={chefAsPompiste}
-                              onChange={e => { setChefAsPompiste(e.target.checked); if (!e.target.checked) setChefPisteId(''); }}
-                              className="w-4 h-4 accent-blue-700"
-                            />
-                            <span className="text-sm font-black text-blue-900">Le chef de brigade travaille comme pompiste</span>
-                          </label>
-                          {chefAsPompiste && (() => {
-                            const missing = !chefPisteId;
-                            const duplicate = !!chefPisteId && presentTrackUsage[chefPisteId] > 1;
-                            return (
-                            <div className="mt-3">
-                              <label className="text-[9px] font-black text-blue-700 uppercase tracking-widest mb-1 block">Piste du chef</label>
-                              <select
-                                value={chefPisteId}
-                                onChange={e => setChefPisteId(e.target.value)}
-                                className={cn("w-full px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2", (missing || duplicate) ? "bg-red-50 border-2 border-red-400 focus:ring-red-300" : "bg-white border border-blue-300 focus:ring-blue-400")}
-                              >
-                                <option value="">Sélectionner une piste...</option>
-                                {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                              </select>
-                              {missing && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Veuillez sélectionner une piste pour le chef</p>}
-                              {duplicate && <p className="text-[10px] text-red-600 font-bold mt-1">⚠️ Cette piste est déjà assignée à un autre pompiste</p>}
+                              {!isAbsent && (
+                                <div>
+                                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
+                                    Pompes tenues (plusieurs possibles)
+                                  </label>
+                                  <div className="flex flex-wrap gap-2">
+                                    {pumps.map(pump => {
+                                      const on = mine.includes(pump.id);
+                                      const takenByOther = !on && Object.keys(pompistePumps)
+                                        .some(other => other !== pid && (pompistePumps[other] || []).includes(pump.id));
+                                      const cuves = pumpTankIds(pump.id, pumpNozzles, pumps)
+                                        .map(id => tanks.find(t => t.id === id)?.name).filter(Boolean).join(', ');
+                                      return (
+                                        <button
+                                          key={pump.id}
+                                          disabled={takenByOther}
+                                          onClick={() => setPompistePumps(prev => ({
+                                            ...prev,
+                                            [pid]: on ? mine.filter(x => x !== pump.id) : [...mine, pump.id],
+                                          }))}
+                                          className={cn("px-3 py-2 rounded-xl text-xs font-bold border-2 transition-all text-left",
+                                            on ? "bg-blue-900 text-white border-blue-900"
+                                               : takenByOther ? "bg-slate-100 text-slate-300 border-slate-100 cursor-not-allowed"
+                                               : "bg-white text-slate-600 border-slate-200 hover:border-blue-400")}
+                                          title={takenByOther ? "Déjà tenue par un autre pompiste" : undefined}
+                                        >
+                                          {pump.number} · {pump.name}
+                                          <span className={cn("block text-[9px] font-medium", on ? "text-blue-200" : "text-slate-400")}>
+                                            {cuves || 'aucune cuve'}
+                                          </span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  {pumps.length === 0 && <p className="text-xs text-slate-400 italic">Aucune pompe configurée.</p>}
+                                </div>
+                              )}
                             </div>
-                            );
-                          })()}
-                        </div>
-                      )}
+                          );
+                        })}
+                      </div>
                     </motion.div>
                   )}
 
@@ -1872,102 +1950,113 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
-                  {/* STEP 5: Niveaux de fin (input + validation) */}
+                  {/* STEP 5: Index de fin des pistolets
+                      Les niveaux de cuve ne sont plus saisis ici : seuls les index
+                      des pistolets le sont, groupés par cuve. La touche Entrée fait
+                      passer au pistolet suivant. */}
                   {step === 5 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-                      {/* Section A — End tank levels */}
-                      <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Niveaux de fin des cuves</h4>
-                        {tanks.map(t => {
-                          const deg = wizEndTankLevels[t.id];
-                          const isGpl = t.type === 'GPL';
-                          const startLit = startTankLiters(t);
-                          const liters = deg !== undefined ? tankLevelToLiters(t.id, deg) : undefined;
-                          const startPct = t.capacity > 0 ? Math.min(100, (startLit / t.capacity) * 100) : 0;
-                          const err = tankEndError(t.id);
-                          return (
-                            <div key={t.id} className={cn("p-4 rounded-2xl border-2 bg-white", err ? "border-red-400" : isGpl ? "border-orange-200" : "border-slate-200")}>
-                              <div className="flex items-center justify-between mb-2">
-                                <p className="text-sm font-black text-slate-800">{t.name} {isGpl && <span className="text-[9px] font-black px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full uppercase">GPL</span>}</p>
-                                <p className="text-[9px] text-slate-400 font-bold">Début: {isGpl ? `${startPct.toFixed(1)} %` : `${startTankDegrees(t)}°`} · {startLit.toLocaleString('fr-FR')} L</p>
-                              </div>
-                              <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                  <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">{isGpl ? 'Pourcentage de fin (%)' : 'Degrés de fin'}</label>
-                                  <input type="number" step={isGpl ? '0.1' : '0.1'} min={0} max={isGpl ? 100 : undefined} className={cn("input-field h-11 font-black", err && "border-red-400 text-red-600")} value={deg ?? ''} onChange={e => setWizEndTankLevels(prev => ({ ...prev, [t.id]: e.target.value === '' ? undefined as any : parseFloat(e.target.value) }))} />
-                                </div>
-                                <div>
-                                  <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Litres (auto)</label>
-                                  <div className="h-11 flex items-center px-3 bg-slate-50 rounded-xl font-black text-blue-700 text-sm">{liters !== undefined ? `${liters.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L` : '—'}</div>
-                                </div>
-                              </div>
-                              {err && <p className="text-[10px] text-red-600 font-bold mt-2">⚠️ Niveau de fin supérieur au niveau actuel — vérifiez si un approvisionnement n'a pas été enregistré</p>}
-                            </div>
-                          );
-                        })}
+                      <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] font-bold text-blue-700">
+                        Saisissez uniquement les index de fin des pistolets. Appuyez sur
+                        <span className="mx-1 px-1.5 py-0.5 bg-white border border-blue-200 rounded">Entrée</span>
+                        pour passer automatiquement au pistolet suivant.
                       </div>
 
-                      {/* Section B — End nozzle indices */}
                       <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Index de fin des pistolets</h4>
-                        {tracks.map(track => {
-                          const trackPumps = pumps.filter(p => p.trackId === track.id);
-                          const trackActiveNozzles = pumpNozzles.filter(n => n.status === 'Actif' && trackPumps.some(p => p.id === n.pumpId));
-                          if (trackActiveNozzles.length === 0) return null;
-                          return (
-                            <div key={track.id} className="p-3 rounded-2xl border-2 border-slate-100 bg-slate-50/50">
-                              <p className="text-[10px] font-black text-slate-600 uppercase mb-2">🛣 {track.name}</p>
-                              <div className="space-y-2">
-                                {trackPumps.map(pump => pumpNozzles.filter(n => n.pumpId === pump.id && n.status === 'Actif').map(n => {
-                                  const err = nozzleEndError(n.id);
-                                  const val = wizEndNozzleIndices[n.id];
-                                  const startIdx = startNozzleIdx(n);
-                                  return (
-                                    <div key={n.id} className={cn("p-2.5 bg-white rounded-lg border transition-colors", err ? "border-red-300" : "border-slate-100")}>
-                                      <div className="flex items-center gap-3">
-                                        <div className="flex-1">
-                                          {/* Animated label — shakes & turns red when the end index is below the start */}
-                                          <motion.p
-                                            animate={err ? { x: [0, -5, 5, -5, 5, -3, 3, 0], color: '#dc2626' } : { x: 0, color: '#1e293b' }}
-                                            transition={{ duration: 0.45 }}
-                                            className="text-xs font-black"
-                                          >
-                                            {n.name}
-                                          </motion.p>
-                                          <p className="text-[9px] text-slate-400">{pump.name} · Début: {startIdx.toLocaleString('fr-FR')}</p>
-                                        </div>
-                                        <input
-                                          type="number" step="0.01" min={startIdx} placeholder="Index fin"
-                                          className={cn("w-32 input-field h-10 font-black text-right transition-colors", err && "border-red-400 text-red-600 bg-red-50")}
-                                          value={val ?? ''}
-                                          onChange={e => setWizEndNozzleIndices(prev => ({ ...prev, [n.id]: e.target.value === '' ? undefined as any : parseFloat(e.target.value) }))}
-                                        />
-                                      </div>
-                                      <AnimatePresence>
-                                        {err && (
-                                          <motion.p
-                                            initial={{ opacity: 0, height: 0, x: -8 }}
-                                            animate={{ opacity: 1, height: 'auto', x: [-8, 4, -2, 0] }}
-                                            exit={{ opacity: 0, height: 0 }}
-                                            transition={{ duration: 0.3 }}
-                                            className="text-[10px] text-red-600 font-bold mt-1 overflow-hidden"
-                                          >
-                                            ⚠️ L'index de fin ne peut pas être inférieur à l'index de début ({startIdx.toLocaleString('fr-FR')})
-                                          </motion.p>
-                                        )}
-                                      </AnimatePresence>
-                                    </div>
-                                  );
-                                }))}
+                        {(() => {
+                          // Flat, ordered list of the inputs so Enter can jump to the next one.
+                          const ordered: string[] = [];
+                          const groups = tanks.map(tank => {
+                            const list = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === tank.id);
+                            list.forEach(n => ordered.push(n.id));
+                            return { tank, list };
+                          }).filter(g => g.list.length > 0);
+
+                          const orphans = pumpNozzles.filter(n => n.status === 'Actif' && !nozzleTankId(n, pumps));
+                          orphans.forEach(n => ordered.push(n.id));
+
+                          const focusNext = (nozzleId: string) => {
+                            const idx = ordered.indexOf(nozzleId);
+                            const nextId = ordered[idx + 1];
+                            if (!nextId) return;
+                            const el = document.getElementById(`nozzle-idx-${nextId}`) as HTMLInputElement | null;
+                            el?.focus();
+                            el?.select();
+                          };
+
+                          const renderNozzle = (n: typeof pumpNozzles[number]) => {
+                            const err = nozzleEndError(n.id);
+                            const val = wizEndNozzleIndices[n.id];
+                            const startIdx = startNozzleIdx(n);
+                            const pump = pumps.find(pp => pp.id === n.pumpId);
+                            return (
+                              <div key={n.id} className={cn("p-2.5 bg-white rounded-lg border transition-colors", err ? "border-red-300" : "border-slate-100")}>
+                                <div className="flex items-center gap-3">
+                                  <div className="flex-1 min-w-0">
+                                    <motion.p
+                                      animate={err ? { x: [0, -5, 5, -5, 5, -3, 3, 0], color: '#dc2626' } : { x: 0, color: '#1e293b' }}
+                                      transition={{ duration: 0.45 }}
+                                      className="text-xs font-black truncate"
+                                    >
+                                      {n.name}
+                                    </motion.p>
+                                    <p className="text-[9px] text-slate-400">{pump?.name || pump?.number || '—'} · Début: {startIdx.toLocaleString('fr-FR')}</p>
+                                  </div>
+                                  <input
+                                    id={`nozzle-idx-${n.id}`}
+                                    type="number" step="0.01" min={startIdx} placeholder="Index fin"
+                                    className={cn("w-32 input-field h-10 font-black text-right transition-colors", err && "border-red-400 text-red-600 bg-red-50")}
+                                    value={val ?? ''}
+                                    onChange={e => setWizEndNozzleIndices(prev => ({ ...prev, [n.id]: e.target.value === '' ? undefined as any : parseFloat(e.target.value) }))}
+                                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); focusNext(n.id); } }}
+                                  />
+                                </div>
+                                <AnimatePresence>
+                                  {err && (
+                                    <motion.p
+                                      initial={{ opacity: 0, height: 0, x: -8 }}
+                                      animate={{ opacity: 1, height: 'auto', x: [-8, 4, -2, 0] }}
+                                      exit={{ opacity: 0, height: 0 }}
+                                      transition={{ duration: 0.3 }}
+                                      className="text-[10px] text-red-600 font-bold mt-1 overflow-hidden"
+                                    >
+                                      L'index de fin ne peut pas être inférieur à l'index de début ({startIdx.toLocaleString('fr-FR')})
+                                    </motion.p>
+                                  )}
+                                </AnimatePresence>
                               </div>
-                            </div>
+                            );
+                          };
+
+                          if (groups.length === 0 && orphans.length === 0) {
+                            return (
+                              <div className="p-6 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+                                <p className="text-sm text-slate-400 italic">Aucun pistolet actif — configurez-les depuis « Pompes ».</p>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <>
+                              {groups.map(({ tank, list }) => (
+                                <div key={tank.id} className="p-3 rounded-2xl border-2 border-slate-100 bg-slate-50/50">
+                                  <p className="text-[10px] font-black text-slate-600 uppercase mb-2">{tank.name} · {tank.type}</p>
+                                  <div className="space-y-2">{list.map(renderNozzle)}</div>
+                                </div>
+                              ))}
+                              {orphans.length > 0 && (
+                                <div className="p-3 rounded-2xl border-2 border-amber-200 bg-amber-50/50">
+                                  <p className="text-[10px] font-black text-amber-700 uppercase mb-2">Pistolets sans cuve — à corriger dans « Pompes »</p>
+                                  <div className="space-y-2">{orphans.map(renderNozzle)}</div>
+                                </div>
+                              )}
+                            </>
                           );
-                        })}
+                        })()}
                       </div>
                     </motion.div>
                   )}
 
-                  {/* STEP 6: Comparaison & Alertes */}
                   {step === 6 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
                       <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-[11px] font-bold text-slate-600">
@@ -2047,10 +2136,29 @@ const Brigades = () => {
                       <div className="space-y-3">
                         <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Saisie des encaissements par pompiste</h4>
                         {pompisteSales.map(s => {
-                          const cash = pompistePayments[s.pompisteId] ?? 0;
+                          const myVersements = versements[s.pompisteId] || [];
+                          const versedTotal = myVersements.reduce((sum, v) => sum + (v.amount || 0), 0);
+                          const cash = (pompistePayments[s.pompisteId] ?? 0) + versedTotal;
                           const justifs = pompisteJustifications[s.pompisteId] || [];
                           const justifTotal = justifs.reduce((sum, j) => sum + (j.amount || 0), 0);
                           const ecartRestant = s.theoretical - cash - justifTotal;
+                          const addVersement = () => setVersements(prev => ({
+                            ...prev,
+                            [s.pompisteId]: [...(prev[s.pompisteId] || []), {
+                              id: newId(), amount: 0,
+                              // Horodate a la minute pres.
+                              at: new Date().toISOString().slice(0, 16),
+                            }],
+                          }));
+                          const setVersement = (vid: string, patch: Partial<{ amount: number; at: string; notes: string }>) =>
+                            setVersements(prev => ({
+                              ...prev,
+                              [s.pompisteId]: (prev[s.pompisteId] || []).map(v => v.id === vid ? { ...v, ...patch } : v),
+                            }));
+                          const rmVersement = (vid: string) => setVersements(prev => ({
+                            ...prev,
+                            [s.pompisteId]: (prev[s.pompisteId] || []).filter(v => v.id !== vid),
+                          }));
                           const searchVal = justifClientSearch[s.pompisteId] || '';
                           const addJustif = (j: any) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: [...(prev[s.pompisteId] || []), j] }));
                           const removeJustif = (jid: string) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: (prev[s.pompisteId] || []).filter(x => x.id !== jid) }));
@@ -2064,10 +2172,24 @@ const Brigades = () => {
                                 <p className="text-[10px] font-black text-blue-700">Théorique: {s.theoretical.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               </div>
 
-                              <div className="grid grid-cols-2 gap-3">
+                              <div className="grid grid-cols-3 gap-3">
                                 <div>
-                                  <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Espèces remises</label>
-                                  <input type="number" className="input-field h-10 font-black" value={pompistePayments[s.pompisteId] ?? ''} onChange={e => setPompistePayments(prev => ({ ...prev, [s.pompisteId]: parseFloat(e.target.value) || 0 }))} />
+                                  <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Espèces remises (optionnel)</label>
+                                  <input type="number" placeholder="Vide = brigade en attente"
+                                    className="input-field h-10 font-black"
+                                    value={pompistePayments[s.pompisteId] ?? ''}
+                                    onChange={e => setPompistePayments(prev => {
+                                      const next = { ...prev };
+                                      if (e.target.value === '') delete next[s.pompisteId];
+                                      else next[s.pompisteId] = parseFloat(e.target.value) || 0;
+                                      return next;
+                                    })} />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Total versements</label>
+                                  <div className="h-10 flex items-center px-3 rounded-xl bg-emerald-50 text-emerald-700 font-black text-sm">
+                                    {versedTotal.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD
+                                  </div>
                                 </div>
                                 <div>
                                   <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Écart</label>
@@ -2075,10 +2197,60 @@ const Brigades = () => {
                                 </div>
                               </div>
 
+                              {/* Versements espèce — plusieurs par pompiste, horodatés à la minute.
+                                  Ils s'ajoutent aux espèces remises et justifient d'autant l'écart. */}
+                              <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest">Versements espèce</p>
+                                  <button onClick={addVersement}
+                                    className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase hover:bg-emerald-700">
+                                    + Versement
+                                  </button>
+                                </div>
+                                {myVersements.length === 0 ? (
+                                  <p className="text-[10px] text-emerald-700/70 italic">Aucun versement — l'écart restera à justifier.</p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {myVersements.map(v => (
+                                      <div key={v.id} className="grid grid-cols-12 gap-2 items-center">
+                                        <input type="number" placeholder="Montant"
+                                          className="col-span-3 input-field h-9 font-black text-right"
+                                          value={v.amount || ''}
+                                          onChange={e => setVersement(v.id, { amount: parseFloat(e.target.value) || 0 })} />
+                                        <input type="datetime-local"
+                                          className="col-span-4 input-field h-9 font-bold text-xs"
+                                          value={v.at}
+                                          onChange={e => setVersement(v.id, { at: e.target.value })} />
+                                        <input placeholder="Note (optionnel)"
+                                          className="col-span-4 input-field h-9 text-xs"
+                                          value={v.notes || ''}
+                                          onChange={e => setVersement(v.id, { notes: e.target.value })} />
+                                        <button onClick={() => rmVersement(v.id)}
+                                          className="col-span-1 h-9 rounded-lg text-red-500 hover:bg-red-50 flex items-center justify-center">
+                                          <X className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
                               {/* Justification buttons */}
                               <div className="flex flex-wrap gap-2">
                                 <button onClick={() => addJustif({ id: newId(), type: 'TAG', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel })} className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700 text-[10px] font-black uppercase hover:bg-purple-200">+ TAG</button>
-                                <button onClick={() => addJustif({ id: newId(), type: 'TPE', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel })} className="px-3 py-1.5 rounded-lg bg-cyan-100 text-cyan-700 text-[10px] font-black uppercase hover:bg-cyan-200">+ TPE</button>
+                                {/* Un TPE par compte bancaire : l'argent justifié part vers CE compte. */}
+                                {bankAccounts.length === 0 ? (
+                                  <span className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-[10px] font-black uppercase"
+                                    title="Créez un compte bancaire dans Système → Comptes Bancaires">
+                                    TPE — aucun compte bancaire
+                                  </span>
+                                ) : bankAccounts.map(acc => (
+                                  <button key={acc.id}
+                                    onClick={() => addJustif({ id: newId(), type: 'TPE', description: 'TPE ' + acc.name, liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, bankAccountId: acc.id })}
+                                    className="px-3 py-1.5 rounded-lg bg-cyan-100 text-cyan-700 text-[10px] font-black uppercase hover:bg-cyan-200">
+                                    + TPE {acc.name}
+                                  </button>
+                                ))}
                                 <button onClick={() => setShowNewClientForm(showNewClientForm === `credit-${s.pompisteId}` ? null : `credit-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-orange-100 text-orange-700 text-[10px] font-black uppercase hover:bg-orange-200">+ Crédit Client</button>
                                 <button onClick={() => setShowNewClientForm(showNewClientForm === `avance-${s.pompisteId}` ? null : `avance-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-teal-100 text-teal-700 text-[10px] font-black uppercase hover:bg-teal-200">+ Avance Client</button>
                               </div>

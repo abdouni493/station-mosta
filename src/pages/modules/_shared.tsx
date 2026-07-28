@@ -45,8 +45,12 @@ export function emptyProduct(): Partial<BizProduct> {
     name: '', description: '', barcode: '', marqueId: '', categoryId: '',
     principalQty: 0, currentQty: 0, minQty: 5, purchasePrice: 0, salePrice: 0,
     unit: 'unité', hasExpiration: false, expirationDate: '',
+    sellByDetail: false, detailCapacity: 0, detailUnit: 'L', detailSalePrice: 0,
   };
 }
+
+/** Units a packaged product can be split into when sold au détail. */
+export const DETAIL_UNITS = ['L', 'ml', 'kg', 'g', 'm', 'cm', 'unité'];
 
 // ─── ProductModal ───────────────────────────────────────────────────────────────
 export function ProductModal({
@@ -83,6 +87,12 @@ export function ProductModal({
       unit: form.unit || 'unité',
       hasExpiration: !!form.hasExpiration,
       expirationDate: form.hasExpiration ? form.expirationDate : undefined,
+      sellByDetail: !!form.sellByDetail,
+      detailCapacity: form.sellByDetail ? Number(form.detailCapacity) || 0 : undefined,
+      detailUnit: form.sellByDetail ? (form.detailUnit || 'L') : undefined,
+      // Left empty ⇒ the POS falls back to salePrice / detailCapacity.
+      detailSalePrice: form.sellByDetail && Number(form.detailSalePrice) > 0
+        ? Number(form.detailSalePrice) : undefined,
       createdAt: form.createdAt || new Date().toISOString(),
     };
     if (isEdit) biz.update('products', product); else biz.add('products', product);
@@ -195,6 +205,35 @@ export function ProductModal({
             </Field>
           </div>
         )}
+
+        {/* ── Vente au détail ───────────────────────────────────────────────
+            One packaged unit (a 50 L drum, a 25 kg sack…) can be sold litre by
+            litre. The POS then deducts the fraction actually sold from stock. */}
+        <div className="sm:col-span-2 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+          <div>
+            <p className="text-sm font-bold text-slate-700">Vente au détail</p>
+            <p className="text-xs text-slate-400">Vendre une fraction d'une unité (ex: 1 L sur un bidon de 50 L)</p>
+          </div>
+          <Switch checked={!!form.sellByDetail} onChange={v => set('sellByDetail', v)} />
+        </div>
+        {form.sellByDetail && (
+          <>
+            <Field label="Contenance d'une unité" required hint="Ex: 50 pour un bidon de 50 litres">
+              <Input type="number" value={form.detailCapacity ?? 0} onChange={e => set('detailCapacity', e.target.value)} />
+            </Field>
+            <Field label="Unité de détail">
+              <Select value={form.detailUnit || 'L'} onChange={e => set('detailUnit', e.target.value)}>
+                {DETAIL_UNITS.map(u => <option key={u}>{u}</option>)}
+              </Select>
+            </Field>
+            <div className="sm:col-span-2">
+              <Field label={`Prix de vente d'un ${form.detailUnit || 'L'} (DA)`}
+                hint={`Laissez à 0 pour utiliser ${Number(form.salePrice) || 0} ÷ ${Number(form.detailCapacity) || 0} automatiquement.`}>
+                <Input type="number" value={form.detailSalePrice ?? 0} onChange={e => set('detailSalePrice', e.target.value)} />
+              </Field>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );
@@ -286,50 +325,196 @@ export function PayDebtModal({
 }
 
 // ─── Invoice print helper ───────────────────────────────────────────────────────
-export function printInvoice(opts: {
-  title: string; ref: string; date: string; store?: string;
+
+/** Identity of the station, printed in the header of every document. */
+export interface PrintStation {
+  name?: string;
+  logoUrl?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  fiscalId?: string;
+  rc?: string;
+}
+
+export interface PrintPaymentLine {
+  label: string;      // "Espèces", "BNA — chèque 445221"…
+  amount: number;
+  reference?: string;
+}
+
+export interface PrintInvoiceOptions {
+  title: string;
+  ref: string;
+  date: string;
+  station?: PrintStation;
+  /** @deprecated pass `station` instead — kept so old call sites keep compiling. */
+  store?: string;
   party?: { label: string; name: string; phone?: string; address?: string };
-  items: { name: string; qty: number; unitPrice: number; total: number }[];
-  total: number; paid: number; rest: number;
-}) {
+  /** Free-form blocks printed under the party (vehicle, session, worker…). */
+  info?: { label: string; value: string }[];
+  items: { name: string; qty: number | string; unitPrice: number; total: number }[];
+  subtotal?: number;
+  reduction?: number;
+  tva?: number;
+  total: number;
+  paid: number;
+  rest: number;
+  payments?: PrintPaymentLine[];
+  notes?: string;
+  footerNote?: string;
+}
+
+const esc = (v: unknown) => String(v ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const dz = (n: number) => (Number.isFinite(n) ? n : 0).toFixed(2);
+
+export function printInvoice(opts: PrintInvoiceOptions) {
+  const st = opts.station || {};
+  const stationName = st.name || opts.store || 'altech station';
+
   const rows = opts.items.map(it => `<tr>
-      <td style="padding:8px;border-bottom:1px solid #eee">${it.name}</td>
-      <td style="padding:8px;border-bottom:1px solid #eee;text-align:center">${it.qty}</td>
-      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${it.unitPrice.toFixed(2)}</td>
-      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${it.total.toFixed(2)}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee">${esc(it.name)}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;text-align:center">${esc(it.qty)}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${dz(it.unitPrice)}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right">${dz(it.total)}</td>
     </tr>`).join('');
-  const win = window.open('', '_blank', 'width=800,height=900');
+
+  const totalLine = (label: string, value: string, color = '#1e293b', border = '') =>
+    `<div style="display:flex;justify-content:space-between;padding:6px 0;color:${color};${border}">
+       <span>${esc(label)}</span><strong>${value} DA</strong></div>`;
+
+  const infoBlocks = (opts.info || []).filter(i => i.value).map(i => `
+    <div style="background:#f8fafc;border-radius:10px;padding:10px 14px">
+      <p style="margin:0;font-size:10px;text-transform:uppercase;color:#94a3b8;font-weight:700">${esc(i.label)}</p>
+      <p style="margin:3px 0 0;font-weight:700;font-size:13px">${esc(i.value)}</p>
+    </div>`).join('');
+
+  const paymentRows = (opts.payments || []).filter(p => p.amount > 0).map(p => `<tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee">${esc(p.label)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#64748b">${esc(p.reference || '—')}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right"><strong>${dz(p.amount)} DA</strong></td>
+    </tr>`).join('');
+
+  const win = window.open('', '_blank', 'width=820,height=920');
   if (!win) return;
-  win.document.write(`<html><head><title>${opts.title} ${opts.ref}</title></head>
-    <body style="font-family:Arial,sans-serif;color:#1e293b;padding:32px;max-width:720px;margin:auto">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #003087;padding-bottom:16px;margin-bottom:20px">
-        <div><h1 style="margin:0;color:#003087;font-size:22px">${opts.store || 'altech station'}</h1>
-          <p style="margin:4px 0 0;color:#64748b;font-size:13px">Naftal System</p></div>
-        <div style="text-align:right"><h2 style="margin:0;color:#FFB800;font-size:20px">${opts.title}</h2>
-          <p style="margin:4px 0 0;font-weight:700">${opts.ref}</p>
-          <p style="margin:2px 0 0;color:#64748b;font-size:13px">${new Date(opts.date).toLocaleString('fr-DZ')}</p></div>
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(opts.title)} ${esc(opts.ref)}</title></head>
+    <body style="font-family:Arial,Helvetica,sans-serif;color:#1e293b;padding:32px;max-width:760px;margin:auto">
+
+      <!-- Header: station identity + document -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #003087;padding-bottom:16px;margin-bottom:18px;gap:16px">
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          ${st.logoUrl ? `<img src="${esc(st.logoUrl)}" alt="" style="width:58px;height:58px;object-fit:cover;border-radius:12px">` : ''}
+          <div>
+            <h1 style="margin:0;color:#003087;font-size:21px">${esc(stationName)}</h1>
+            ${st.address ? `<p style="margin:3px 0 0;color:#64748b;font-size:12px">${esc(st.address)}</p>` : ''}
+            ${st.phone ? `<p style="margin:2px 0 0;color:#64748b;font-size:12px">Tél: ${esc(st.phone)}</p>` : ''}
+            ${st.email ? `<p style="margin:2px 0 0;color:#64748b;font-size:12px">${esc(st.email)}</p>` : ''}
+            ${(st.fiscalId || st.rc) ? `<p style="margin:2px 0 0;color:#94a3b8;font-size:11px">
+              ${st.fiscalId ? `NIF: ${esc(st.fiscalId)}` : ''}${st.fiscalId && st.rc ? ' • ' : ''}${st.rc ? `RC: ${esc(st.rc)}` : ''}</p>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <h2 style="margin:0;color:#FFB800;font-size:19px">${esc(opts.title)}</h2>
+          <p style="margin:4px 0 0;font-weight:700">${esc(opts.ref)}</p>
+          <p style="margin:2px 0 0;color:#64748b;font-size:12px">${new Date(opts.date).toLocaleString('fr-DZ')}</p>
+        </div>
       </div>
-      ${opts.party ? `<div style="background:#f8fafc;border-radius:10px;padding:14px;margin-bottom:18px">
-        <p style="margin:0;font-size:11px;text-transform:uppercase;color:#94a3b8;font-weight:700">${opts.party.label}</p>
-        <p style="margin:4px 0 0;font-weight:700;font-size:15px">${opts.party.name}</p>
-        ${opts.party.phone ? `<p style="margin:2px 0 0;color:#64748b;font-size:13px">Tél: ${opts.party.phone}</p>` : ''}
-        ${opts.party.address ? `<p style="margin:2px 0 0;color:#64748b;font-size:13px">${opts.party.address}</p>` : ''}
+
+      ${opts.party ? `<div style="background:#f8fafc;border-radius:10px;padding:14px;margin-bottom:12px">
+        <p style="margin:0;font-size:11px;text-transform:uppercase;color:#94a3b8;font-weight:700">${esc(opts.party.label)}</p>
+        <p style="margin:4px 0 0;font-weight:700;font-size:15px">${esc(opts.party.name)}</p>
+        ${opts.party.phone ? `<p style="margin:2px 0 0;color:#64748b;font-size:13px">Tél: ${esc(opts.party.phone)}</p>` : ''}
+        ${opts.party.address ? `<p style="margin:2px 0 0;color:#64748b;font-size:13px">${esc(opts.party.address)}</p>` : ''}
       </div>` : ''}
-      <table style="width:100%;border-collapse:collapse;font-size:14px">
+
+      ${infoBlocks ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:16px">${infoBlocks}</div>` : ''}
+
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="background:#003087;color:#fff">
           <th style="padding:10px;text-align:left">Désignation</th><th style="padding:10px">Qté</th>
           <th style="padding:10px;text-align:right">P.U (DA)</th><th style="padding:10px;text-align:right">Total (DA)</th>
-        </tr></thead><tbody>${rows}</tbody></table>
-      <div style="margin-top:18px;margin-left:auto;width:260px">
-        <div style="display:flex;justify-content:space-between;padding:6px 0"><span>Total</span><strong>${opts.total.toFixed(2)} DA</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;color:#059669"><span>Payé</span><strong>${opts.paid.toFixed(2)} DA</strong></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;color:#dc2626;border-top:2px solid #003087"><span>Reste</span><strong>${opts.rest.toFixed(2)} DA</strong></div>
+        </tr></thead><tbody>${rows || '<tr><td colspan="4" style="padding:12px;color:#94a3b8">Aucune ligne</td></tr>'}</tbody></table>
+
+      <div style="margin-top:16px;margin-left:auto;width:280px;font-size:13px">
+        ${opts.subtotal !== undefined ? totalLine('Sous-total', dz(opts.subtotal)) : ''}
+        ${opts.reduction ? totalLine('Remise', `- ${dz(opts.reduction)}`, '#b45309') : ''}
+        ${opts.tva ? totalLine('TVA', dz(opts.tva)) : ''}
+        ${totalLine('Total', dz(opts.total), '#003087', 'border-top:2px solid #003087;font-size:15px')}
+        ${totalLine('Payé', dz(opts.paid), '#059669')}
+        ${totalLine('Reste', dz(opts.rest), '#dc2626')}
       </div>
-      <div style="display:flex;justify-content:space-between;margin-top:60px">
+
+      ${paymentRows ? `<div style="margin-top:22px">
+        <p style="margin:0 0 6px;font-size:11px;text-transform:uppercase;color:#94a3b8;font-weight:700">Détail du paiement</p>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#f1f5f9;color:#475569">
+            <th style="padding:6px 8px;text-align:left">Mode</th>
+            <th style="padding:6px 8px;text-align:left">Référence</th>
+            <th style="padding:6px 8px;text-align:right">Montant</th>
+          </tr></thead><tbody>${paymentRows}</tbody></table>
+      </div>` : ''}
+
+      ${opts.notes ? `<div style="margin-top:18px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px">
+        <p style="margin:0;font-size:11px;text-transform:uppercase;color:#b45309;font-weight:700">Observations</p>
+        <p style="margin:4px 0 0;font-size:13px">${esc(opts.notes)}</p></div>` : ''}
+
+      <div style="display:flex;justify-content:space-between;margin-top:56px">
         <div style="text-align:center"><div style="border-top:1px solid #94a3b8;width:180px;padding-top:6px;font-size:12px;color:#64748b">Signature Client</div></div>
-        <div style="text-align:center"><div style="border-top:1px solid #94a3b8;width:180px;padding-top:6px;font-size:12px;color:#64748b">Cachet & Signature</div></div>
+        <div style="text-align:center"><div style="border-top:1px solid #94a3b8;width:180px;padding-top:6px;font-size:12px;color:#64748b">Cachet &amp; Signature</div></div>
       </div>
+      <p style="margin-top:26px;text-align:center;color:#94a3b8;font-size:11px">
+        ${esc(opts.footerNote || `${stationName} — Merci de votre confiance.`)}</p>
+
       <script>window.onload=()=>window.print()</script>
     </body></html>`);
   win.document.close();
+}
+
+// ─── "Imprimer la facture ?" prompt ─────────────────────────────────────────────
+/**
+ * Small confirmation shown right after a sale / lavage / réparation is saved, so
+ * the user decides whether the document is printed.
+ */
+export function AskPrintModal({
+  open, title = 'Imprimer la facture ?', message, onPrint, onSkip,
+}: {
+  open: boolean; title?: string; message?: string;
+  onPrint: () => void; onSkip: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="modal-overlay" style={{ zIndex: 80 }} onClick={onSkip}>
+      <div className="modal-box max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="p-6">
+          <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center mb-4">
+            <Printer className="w-6 h-6 text-[#003087]" />
+          </div>
+          <h3 className="text-base font-black text-[#002d87] mb-2">{title}</h3>
+          <p className="text-sm text-slate-500">
+            {message || 'Le document reprend les informations de la station, du client et du paiement.'}
+          </p>
+        </div>
+        <div className="p-6 pt-0 flex gap-3">
+          <button onClick={onSkip} className="btn-ghost flex-1">Non, merci</button>
+          <button onClick={onPrint} className="btn-primary flex-1">
+            <Printer className="w-4 h-4" /> Imprimer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Maps the app's station settings onto the print header shape. */
+export function stationFromSettings(settings: any): PrintStation {
+  return {
+    name: settings?.stationName || settings?.name,
+    logoUrl: settings?.logoUrl || settings?.logo,
+    address: settings?.address,
+    phone: settings?.phone,
+    email: settings?.email,
+    fiscalId: settings?.fiscalId,
+    rc: settings?.rc,
+  };
 }

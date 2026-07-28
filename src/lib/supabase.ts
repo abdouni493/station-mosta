@@ -232,7 +232,7 @@ export async function provisionWorkerAccount(input: {
 // These employees live in the BizContext store, so they need their own auth
 // provisioning path (see supabase/migrations/module_workers_auth.sql).
 
-export type BizModuleKey = 'restaurant' | 'cafeteria' | 'lavage' | 'magasin';
+export type BizModuleKey = 'cafeteria' | 'lavage';
 
 export interface ModuleWorkerRow {
   id: string;
@@ -566,6 +566,23 @@ export const db = {
   getPurchaseItems:   (purchaseId: string) => dbSelect('purchase_items', { purchase_id: purchaseId }),
   addPurchasePayment: (p: object) => dbInsert('purchase_payments', p),
   getPurchasePayments:(purchaseId: string) => dbSelect('purchase_payments', { purchase_id: purchaseId }),
+
+  // Bank accounts + treasury ledger (general caisse & bank movements)
+  getBankAccounts:   () => dbSelect('bank_accounts'),
+  addBankAccount:    (b: object) => dbInsert('bank_accounts', b),
+  updateBankAccount: (id: string, b: object) => dbUpdate('bank_accounts', id, b),
+  deleteBankAccount: (id: string) => dbDelete('bank_accounts', id),
+
+  getTreasuryTransactions: async (limit = 2000) => {
+    const { data, error } = await supabase
+      .from('treasury_transactions').select('*')
+      .order('date', { ascending: false }).limit(limit);
+    if (error) { console.warn('[getTreasuryTransactions]', error.message); return []; }
+    return data ?? [];
+  },
+  addTreasuryTransaction:    (t: object) => dbInsert('treasury_transactions', t),
+  updateTreasuryTransaction: (id: string, t: object) => dbUpdate('treasury_transactions', id, t),
+  deleteTreasuryTransaction: (id: string) => dbDelete('treasury_transactions', id),
 
   // Expenses
   getExpenses:   () => dbSelect('expenses'),

@@ -36,9 +36,17 @@ export interface Pump {
   id: string;
   number: string;
   name: string;
-  tankId: string;
-  trackId: string;
-  type: FuelType;
+  /**
+   * Primary cuve of the pump. It is no longer chosen by hand: the cuve now lives
+   * on each pistolet, and this field mirrors the first pistolet's cuve so the
+   * historical per-cuve accounting (brigades, fiche journalière, rapports)
+   * keeps working unchanged.
+   */
+  tankId?: string;
+  /** @deprecated Pistes were removed from the application. */
+  trackId?: string;
+  /** Derived from `tankId` — pumps no longer carry a hand-picked fuel type. */
+  type?: FuelType;
   lastIndex: number;
   status: 'Actif' | 'Maintenance' | 'Hors service';
   currentBrigadeStartIndex?: number;
@@ -48,9 +56,27 @@ export interface PumpNozzle {
   id: string;
   pumpId: string;
   name: string;
+  /** Cuve this pistolet draws from — chosen when the pistolet is created. */
+  tankId?: string;
   lastIndex: number;
   startIndex: number;
   status: 'Actif' | 'Inactif';
+}
+
+/** Cuve of a pistolet, falling back to its pump's cuve for legacy rows. */
+export function nozzleTankId(nozzle: PumpNozzle, pumps: Pump[]): string | undefined {
+  return nozzle.tankId || pumps.find(p => p.id === nozzle.pumpId)?.tankId;
+}
+
+/** Distinct cuves a pump serves, derived from its pistolets. */
+export function pumpTankIds(pumpId: string, nozzles: PumpNozzle[], pumps: Pump[]): string[] {
+  const ids = nozzles
+    .filter(n => n.pumpId === pumpId)
+    .map(n => nozzleTankId(n, pumps))
+    .filter((v): v is string => !!v);
+  const fallback = pumps.find(p => p.id === pumpId)?.tankId;
+  if (ids.length === 0 && fallback) return [fallback];
+  return Array.from(new Set(ids));
 }
 
 export interface Track {
@@ -242,11 +268,21 @@ export interface Brigade {
   endNozzleIndices?: Record<string, number>;
   activeNozzleIds?: string[];
   canReactivate?: boolean;
+  /** Pompes held by each pompiste on this brigade (several per pompiste). */
+  pompistePumpAssignments?: Array<{ pompisteId: string; pumpIds: string[] }>;
+  /**
+   * Cash instalments handed over during the brigade, timed to the minute. They
+   * add up to what the pompiste actually gave and justify the décalage against
+   * the theoretical takings.
+   */
+  versements?: Array<{ id: string; pompisteId: string; amount: number; at: string; notes?: string }>;
 }
 
 export interface BrigadeAccountingJustification {
   id: string;
   accountingId: string;
+  /** For a TPE justification: the bank account of that terminal, credited on save. */
+  bankAccountId?: string;
   clientId: string;
   amount: number;
   clientType?: string;
@@ -426,6 +462,82 @@ export interface Expense {
   createdBy?: string;
 }
 
+// ─── Treasury: general cash box + bank accounts ────────────────────────────────
+
+/** A bank account of the station. `balance` is the live solde. */
+export interface BankAccount {
+  id: string;
+  name: string;             // bank name, e.g. "BNA — Mostaganem"
+  accountNumber?: string;
+  initialBalance: number;   // solde at creation
+  balance: number;          // current solde (maintained by the ledger)
+  notes?: string;
+  createdAt: string;
+}
+
+/** Pseudo-account id of the general cash box in the treasury ledger. */
+export const CAISSE_ID = 'CAISSE' as const;
+
+/**
+ * The nature of a treasury movement. `DEPOSIT` / `WITHDRAW` are manual cash
+ * operations on the general caisse; `TRANSFER` moves money between the caisse
+ * and a bank account (or between two bank accounts); the remaining kinds are
+ * written automatically by the business screens so the ledger tells the whole
+ * story of the station's money.
+ */
+export type TreasuryKind =
+  | 'DEPOSIT' | 'WITHDRAW' | 'TRANSFER'
+  | 'PURCHASE' | 'SALE' | 'EXPENSE' | 'BRIGADE' | 'TPE' | 'SALARY' | 'ADJUST';
+
+/** Which activity of the station the movement belongs to. */
+export type TreasuryPart = 'carburant' | 'cafeteria' | 'lavage' | 'systeme';
+
+/**
+ * One line of the station's money ledger. `accountFrom` / `accountTo` hold
+ * either `CAISSE_ID` (the general cash box), a `BankAccount.id`, or `undefined`
+ * when the money comes from / goes to the outside world (a client, a supplier…).
+ */
+export interface TreasuryTransaction {
+  id: string;
+  date: string;
+  kind: TreasuryKind;
+  amount: number;
+  description?: string;
+  accountFrom?: string;
+  accountTo?: string;
+  part: TreasuryPart;
+  /** Origin document, e.g. `{ refType: 'purchase', refId: 'pur-12' }`. */
+  refType?: string;
+  refId?: string;
+  chequeNumber?: string;
+  bordereauNumber?: string;
+  createdBy?: string;
+  createdAt: string;
+}
+
+/** Net effect of the ledger on one account id (`CAISSE_ID` or a bank id). */
+export function ledgerNetFor(accountId: string, txs: TreasuryTransaction[]): number {
+  let net = 0;
+  for (const t of txs) {
+    if (t.accountTo === accountId) net += t.amount;
+    if (t.accountFrom === accountId) net -= t.amount;
+  }
+  return net;
+}
+
+/** Live solde of a bank account: its opening balance plus every movement. */
+export function bankBalanceOf(
+  account: Pick<BankAccount, 'id' | 'initialBalance'>,
+  txs: TreasuryTransaction[],
+): number {
+  return account.initialBalance + ledgerNetFor(account.id, txs);
+}
+
+/** Live solde of the general cash box (pure ledger, no opening balance). */
+export function caisseBalanceOf(txs: TreasuryTransaction[]): number {
+  return ledgerNetFor(CAISSE_ID, txs);
+}
+
 export interface DeliveryNote {
   id: string;
   date: string;
@@ -521,6 +633,13 @@ export interface PurchasePayment {
   amount: number;
   mode: 'ESPECES' | 'CHEQUE' | 'VIREMENT';
   chequeNumber?: string;
+  /** Numéro de bordereau (optional, printed on the invoice). */
+  bordereauNumber?: string;
+  /**
+   * Where the money came from: `CAISSE_ID` for cash, or a `BankAccount.id`.
+   * Bank payments are subtracted from that account through the treasury ledger.
+   */
+  accountId?: string;
   notes?: string;
 }
 
@@ -547,6 +666,16 @@ export interface Purchase {
   tvaActive?: boolean;
   tankId?: string;
   receiptPhoto?: string;
+  /** Numéro du bon de livraison saisi sur l'achat carburant. */
+  blNumber?: string;
+  /** Remise: en pourcentage du sous-total ou en montant fixe. */
+  discountType?: 'percent' | 'amount';
+  discountValue?: number;
+  /** Montant de la remise réellement déduit du sous-total. */
+  discountAmount?: number;
+  /** Sous-total hors remise et hors TVA. */
+  subtotal?: number;
+  tvaAmount?: number;
 }
 
 export interface FuelSale {
@@ -630,7 +759,7 @@ export type AppUserRole =
 /** Connected employee of a business part, resolved at login from Supabase. */
 export interface ModuleWorkerSession {
   id: string;
-  moduleKey: 'restaurant' | 'cafeteria' | 'lavage' | 'magasin';
+  moduleKey: 'cafeteria' | 'lavage';
   name: string;
   roleName?: string;
   /** Flat map keyed `"<interface>.<action>"`, e.g. `"stock.voir"`. */
@@ -724,6 +853,8 @@ export interface AppState {
   suppliers: Supplier[];
   products: Product[];
   expenses: Expense[];
+  bankAccounts: BankAccount[];
+  treasuryTransactions: TreasuryTransaction[];
   deliveryNotes: DeliveryNote[];
   fuelInvoices: FuelInvoice[];
   fuelReceipts: FuelReceipt[];
@@ -770,7 +901,9 @@ const initialState: AppState = {
   tanks: [], pumps: [], pumpNozzles: [], tracks: [], pompistes: [], brigadeChefs: [], brigades: [], brigadeAccountings: [],
   brigadeDecalageAlerts: [],
   tpeTransactions: [],
-  clients: [], suppliers: [], products: [], expenses: [], deliveryNotes: [],
+  clients: [], suppliers: [], products: [], expenses: [],
+  bankAccounts: [], treasuryTransactions: [],
+  deliveryNotes: [],
   fuelInvoices: [], fuelReceipts: [],
   purchases: [], fuelSales: [], shopSales: [], inventories: [], dailyReports: [],
   settings: emptySettings,
@@ -835,6 +968,12 @@ type AppAction =
   | { type: 'ADD_EXPENSE'; payload: Expense }
   | { type: 'UPDATE_EXPENSE'; payload: Expense }
   | { type: 'DELETE_EXPENSE'; payload: string }
+  | { type: 'ADD_BANK_ACCOUNT'; payload: BankAccount }
+  | { type: 'UPDATE_BANK_ACCOUNT'; payload: BankAccount }
+  | { type: 'DELETE_BANK_ACCOUNT'; payload: string }
+  | { type: 'ADD_TREASURY_TX'; payload: TreasuryTransaction }
+  | { type: 'UPDATE_TREASURY_TX'; payload: TreasuryTransaction }
+  | { type: 'DELETE_TREASURY_TX'; payload: string }
   | { type: 'UPDATE_USER_PERMISSIONS'; payload: { userId: string; permissions: UserPermissions } }
   | { type: 'ADD_USER'; payload: User }
   | { type: 'UPDATE_USER'; payload: User }
@@ -1007,6 +1146,28 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'ADD_EXPENSE':    return { ...state, expenses: [...state.expenses, action.payload] };
     case 'UPDATE_EXPENSE': return { ...state, expenses: state.expenses.map(e => e.id === action.payload.id ? action.payload : e) };
     case 'DELETE_EXPENSE': return { ...state, expenses: state.expenses.filter(e => e.id !== action.payload) };
+
+    // ── Treasury: bank accounts & money ledger ────────────────────────────
+    // A bank account's `balance` is never edited directly by a movement: it is
+    // recomputed from `initialBalance` + every ledger line touching it, so the
+    // cards, the history and the accounting can never disagree.
+    case 'ADD_BANK_ACCOUNT':
+      return { ...state, bankAccounts: [...state.bankAccounts, action.payload] };
+    case 'UPDATE_BANK_ACCOUNT':
+      return { ...state, bankAccounts: state.bankAccounts.map(b => b.id === action.payload.id ? action.payload : b) };
+    case 'DELETE_BANK_ACCOUNT':
+      return {
+        ...state,
+        bankAccounts: state.bankAccounts.filter(b => b.id !== action.payload),
+        treasuryTransactions: state.treasuryTransactions.filter(
+          t => t.accountFrom !== action.payload && t.accountTo !== action.payload),
+      };
+    case 'ADD_TREASURY_TX':
+      return { ...state, treasuryTransactions: [action.payload, ...state.treasuryTransactions] };
+    case 'UPDATE_TREASURY_TX':
+      return { ...state, treasuryTransactions: state.treasuryTransactions.map(t => t.id === action.payload.id ? action.payload : t) };
+    case 'DELETE_TREASURY_TX':
+      return { ...state, treasuryTransactions: state.treasuryTransactions.filter(t => t.id !== action.payload) };
 
     case 'ADD_USER':    return { ...state, users: [...state.users, action.payload] };
     case 'UPDATE_USER': return { ...state, users: state.users.map(u => u.id === action.payload.id ? action.payload : u) };
@@ -1228,7 +1389,7 @@ function mapMagasinWorker(r: any): MagasinWorker {
   return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [] };
 }
 function mapBrigade(r: any): Brigade {
-  return { id: r.id, date: r.date, shift: r.shift, chefId: r.chef_id, status: r.status, startTimestamp: r.start_timestamp, endTimestamp: r.end_timestamp, startTime: r.start_time, endTime: r.end_time, startDatetime: r.start_datetime, endDatetime: r.end_datetime, isActive: r.is_active, notes: r.notes, printedAt: r.printed_at, pompisteIds: [], startIndices: r.start_indices || {}, endIndices: r.end_indices || {}, startTankLevels: r.start_tank_levels || {}, endTankLevels: r.end_tank_levels || {}, pompisteData: r.pompiste_data || {}, pompisteAssignments: r.pompiste_assignments || [], startNozzleIndices: r.start_nozzle_indices || {}, endNozzleIndices: r.end_nozzle_indices || {}, activeNozzleIds: r.active_nozzle_ids || [], canReactivate: r.can_reactivate ?? false };
+  return { id: r.id, date: r.date, shift: r.shift, chefId: r.chef_id, status: r.status, startTimestamp: r.start_timestamp, endTimestamp: r.end_timestamp, startTime: r.start_time, endTime: r.end_time, startDatetime: r.start_datetime, endDatetime: r.end_datetime, isActive: r.is_active, notes: r.notes, printedAt: r.printed_at, pompisteIds: [], startIndices: r.start_indices || {}, endIndices: r.end_indices || {}, startTankLevels: r.start_tank_levels || {}, endTankLevels: r.end_tank_levels || {}, pompisteData: r.pompiste_data || {}, pompisteAssignments: r.pompiste_assignments || [], startNozzleIndices: r.start_nozzle_indices || {}, endNozzleIndices: r.end_nozzle_indices || {}, activeNozzleIds: r.active_nozzle_ids || [], canReactivate: r.can_reactivate ?? false, pompistePumpAssignments: r.pompiste_pump_assignments || [], versements: r.versements || [] };
 }
 function mapBrigadeAccounting(r: any): BrigadeAccounting {
   return {
@@ -1258,7 +1419,7 @@ async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccoun
       acct.justifications.push({
         id: jr.id, accountingId: jr.accounting_id, clientId: jr.client_id || '',
         amount: +jr.amount || 0, clientType: jr.client_type, paymentMode: jr.payment_mode,
-        notes: jr.notes, justificationType: jr.justification_type || 'CLIENT',
+        notes: jr.notes, justificationType: jr.justification_type || 'CLIENT', bankAccountId: jr.bank_account_id ?? undefined,
         clientName: jr.client_name, fuelType: jr.fuel_type, liters: +jr.liters || 0,
         pricePerLiter: +jr.price_per_liter || 0, trackId: jr.track_id, pompisteId: jr.pompiste_id,
       });
@@ -1394,10 +1555,39 @@ function mapDeliveryNoteItem(r: any): DeliveryNoteItem {
   return { id: r.id, deliveryNoteId: r.delivery_note_id, tankId: r.tank_id, liters: +r.liters, pricePerLiter: +r.price_per_liter, total: +r.total };
 }
 function mapPurchase(r: any): Purchase {
-  return { id: r.id, date: r.date, supplierId: r.supplier_id, invoiceNumber: r.invoice_number, dueDate: r.due_date, driverId: r.driver_id, items: [], total: +r.total, amountPaid: +r.amount_paid, rest: +r.rest, status: r.status, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, linkedDeliveryNoteId: r.linked_delivery_note_id, payments: [], notes: r.notes, type: r.type, tvaRate: +(r.tva_rate ?? 0), tvaActive: r.tva_active, tankId: r.tank_id, receiptPhoto: r.receipt_photo_url };
+  return { id: r.id, date: r.date, supplierId: r.supplier_id, invoiceNumber: r.invoice_number, dueDate: r.due_date, driverId: r.driver_id, items: [], total: +r.total, amountPaid: +r.amount_paid, rest: +r.rest, status: r.status, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, linkedDeliveryNoteId: r.linked_delivery_note_id, payments: [], notes: r.notes, type: r.type, tvaRate: +(r.tva_rate ?? 0), tvaActive: r.tva_active, tankId: r.tank_id, receiptPhoto: r.receipt_photo_url,
+    blNumber: r.bl_number ?? undefined, discountType: r.discount_type ?? undefined, discountValue: r.discount_value != null ? +r.discount_value : undefined,
+    discountAmount: r.discount_amount != null ? +r.discount_amount : undefined, subtotal: r.subtotal != null ? +r.subtotal : undefined,
+    tvaAmount: r.tva_amount != null ? +r.tva_amount : undefined };
 }
 function mapExpense(r: any): Expense {
   return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by };
+}
+function mapBankAccount(r: any): BankAccount {
+  return {
+    id: r.id, name: r.name, accountNumber: r.account_number,
+    initialBalance: +(r.initial_balance ?? 0), balance: +(r.balance ?? 0),
+    notes: r.notes, createdAt: r.created_at,
+  };
+}
+function mapTreasuryTx(r: any): TreasuryTransaction {
+  return {
+    id: r.id, date: r.date, kind: r.kind, amount: +(r.amount ?? 0),
+    description: r.description, accountFrom: r.account_from ?? undefined,
+    accountTo: r.account_to ?? undefined, part: r.part || 'systeme',
+    refType: r.ref_type ?? undefined, refId: r.ref_id ?? undefined,
+    chequeNumber: r.cheque_number ?? undefined, bordereauNumber: r.bordereau_number ?? undefined,
+    createdBy: r.created_by ?? undefined, createdAt: r.created_at,
+  };
+}
+function treasuryTxToRow(t: TreasuryTransaction) {
+  return {
+    id: t.id, date: t.date, kind: t.kind, amount: t.amount, description: t.description ?? null,
+    account_from: t.accountFrom ?? null, account_to: t.accountTo ?? null, part: t.part,
+    ref_type: t.refType ?? null, ref_id: t.refId ?? null,
+    cheque_number: t.chequeNumber ?? null, bordereau_number: t.bordereauNumber ?? null,
+    created_by: t.createdBy ?? null,
+  };
 }
 function mapInventory(r: any): Inventory {
   return { id: r.id, name: r.name, description: r.description, date: r.date, user: r.user_name, type: r.type, status: r.status, fuelGaps: r.fuel_gaps || [], pumpIndexGaps: r.pump_index_gaps || [], productGaps: r.product_gaps || [], adjustmentReason: r.adjustment_reason, adjustedAt: r.adjusted_at };
@@ -1406,7 +1596,7 @@ function mapDailyReport(r: any): DailyReport {
   return { id: r.id, date: r.date, fuelRevenue: +r.fuel_revenue, shopRevenue: +r.shop_revenue, totalExpenses: +r.total_expenses, cashToDeposit: +r.cash_to_deposit, tankVariations: r.tank_variations || [], brigadeIds: r.brigade_ids || [] };
 }
 function mapNozzle(r: any): PumpNozzle {
-  return { id: r.id, pumpId: r.pump_id, name: r.name, lastIndex: +r.last_index, startIndex: +r.start_index, status: r.status || 'Actif' };
+  return { id: r.id, pumpId: r.pump_id, name: r.name, tankId: r.tank_id ?? undefined, lastIndex: +r.last_index, startIndex: +r.start_index, status: r.status || 'Actif' };
 }
 function mapSettings(r: any): StationSettings {
   return { name: r.name, logo: r.logo_url, logoUrl: r.logo_url, address: r.address, phone: r.phone, email: r.email, fiscalId: r.fiscal_id, rc: r.rc, fuelPrices: r.fuel_prices || emptySettings.fuelPrices, fuelBuyPrices: r.fuel_buy_prices || emptySettings.fuelBuyPrices, conversionTables: r.conversion_tables || {}, productCategories: r.product_categories || emptySettings.productCategories, expenseCategories: r.expense_categories || emptySettings.expenseCategories, productUnits: r.product_units || DEFAULT_PRODUCT_UNITS, decalagePositifActif: r.decalage_positif_actif, decalageNegatifActif: r.decalage_negatif_actif, decalagePositifSeuil: +(r.decalage_positif_seuil ?? 0), decalageNegatifSeuil: +(r.decalage_negatif_seuil ?? 0) };
@@ -1481,10 +1671,10 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'DELETE_PUMP': await db.deletePump(action.payload); break;
       case 'ADD_NOZZLE':
-        await db.addNozzle({ id: action.payload.id, pump_id: action.payload.pumpId, name: action.payload.name, last_index: action.payload.lastIndex, start_index: action.payload.startIndex, status: action.payload.status });
+        await db.addNozzle({ id: action.payload.id, pump_id: action.payload.pumpId, name: action.payload.name, tank_id: nz(action.payload.tankId), last_index: action.payload.lastIndex, start_index: action.payload.startIndex, status: action.payload.status });
         break;
       case 'UPDATE_NOZZLE':
-        await db.updateNozzle(action.payload.id, { name: action.payload.name, last_index: action.payload.lastIndex, status: action.payload.status });
+        await db.updateNozzle(action.payload.id, { name: action.payload.name, tank_id: nz(action.payload.tankId), last_index: action.payload.lastIndex, status: action.payload.status });
         break;
       case 'DELETE_NOZZLE': await db.deleteNozzle(action.payload); break;
       case 'ADD_SUPPLIER':
@@ -1543,13 +1733,13 @@ async function syncToSupabase(action: AppAction): Promise<void> {
       case 'DELETE_MAGASIN_WORKER': await db.deleteMagasinWorker(action.payload); break;
       case 'ADD_BRIGADE': {
         const b = action.payload;
-        await db.addBrigade({ id: b.id, date: b.date, shift: b.shift, chef_id: nz(b.chefId), status: b.status, start_timestamp: b.startTimestamp, end_timestamp: b.endTimestamp, start_time: b.startTime, end_time: b.endTime, start_datetime: nz(b.startDatetime), end_datetime: nz(b.endDatetime), is_active: b.isActive, notes: b.notes, start_indices: b.startIndices || {}, end_indices: b.endIndices || {}, start_tank_levels: b.startTankLevels || {}, end_tank_levels: b.endTankLevels || {}, pompiste_data: b.pompisteData || {}, pompiste_assignments: b.pompisteAssignments || [], start_nozzle_indices: b.startNozzleIndices || {}, end_nozzle_indices: b.endNozzleIndices || {}, active_nozzle_ids: b.activeNozzleIds || [], can_reactivate: b.canReactivate ?? false });
+        await db.addBrigade({ id: b.id, date: b.date, shift: b.shift, chef_id: nz(b.chefId), status: b.status, start_timestamp: b.startTimestamp, end_timestamp: b.endTimestamp, start_time: b.startTime, end_time: b.endTime, start_datetime: nz(b.startDatetime), end_datetime: nz(b.endDatetime), is_active: b.isActive, notes: b.notes, start_indices: b.startIndices || {}, end_indices: b.endIndices || {}, start_tank_levels: b.startTankLevels || {}, end_tank_levels: b.endTankLevels || {}, pompiste_data: b.pompisteData || {}, pompiste_assignments: b.pompisteAssignments || [], start_nozzle_indices: b.startNozzleIndices || {}, end_nozzle_indices: b.endNozzleIndices || {}, active_nozzle_ids: b.activeNozzleIds || [], can_reactivate: b.canReactivate ?? false, pompiste_pump_assignments: b.pompistePumpAssignments || [], versements: b.versements || [] });
         if (b.pompisteIds?.length) await supabase.from('brigade_pompiste_assignments').insert(b.pompisteIds.map(pid => ({ brigade_id: b.id, pompiste_id: pid })));
         break;
       }
       case 'UPDATE_BRIGADE': {
         const b = action.payload;
-        await db.updateBrigade(b.id, { date: b.date, shift: b.shift, chef_id: nz(b.chefId), status: b.status, start_timestamp: b.startTimestamp, end_timestamp: b.endTimestamp, start_time: b.startTime, end_time: b.endTime, start_datetime: nz(b.startDatetime), end_datetime: nz(b.endDatetime), is_active: b.isActive, notes: b.notes, printed_at: b.printedAt, start_indices: b.startIndices || {}, end_indices: b.endIndices || {}, start_tank_levels: b.startTankLevels || {}, end_tank_levels: b.endTankLevels || {}, pompiste_data: b.pompisteData || {}, pompiste_assignments: b.pompisteAssignments || [], start_nozzle_indices: b.startNozzleIndices || {}, end_nozzle_indices: b.endNozzleIndices || {}, active_nozzle_ids: b.activeNozzleIds || [], can_reactivate: b.canReactivate ?? false });
+        await db.updateBrigade(b.id, { date: b.date, shift: b.shift, chef_id: nz(b.chefId), status: b.status, start_timestamp: b.startTimestamp, end_timestamp: b.endTimestamp, start_time: b.startTime, end_time: b.endTime, start_datetime: nz(b.startDatetime), end_datetime: nz(b.endDatetime), is_active: b.isActive, notes: b.notes, printed_at: b.printedAt, start_indices: b.startIndices || {}, end_indices: b.endIndices || {}, start_tank_levels: b.startTankLevels || {}, end_tank_levels: b.endTankLevels || {}, pompiste_data: b.pompisteData || {}, pompiste_assignments: b.pompisteAssignments || [], start_nozzle_indices: b.startNozzleIndices || {}, end_nozzle_indices: b.endNozzleIndices || {}, active_nozzle_ids: b.activeNozzleIds || [], can_reactivate: b.canReactivate ?? false, pompiste_pump_assignments: b.pompistePumpAssignments || [], versements: b.versements || [] });
         if (b.pompisteIds) { await supabase.from('brigade_pompiste_assignments').delete().eq('brigade_id', b.id); if (b.pompisteIds.length) await supabase.from('brigade_pompiste_assignments').insert(b.pompisteIds.map(pid => ({ brigade_id: b.id, pompiste_id: pid }))); }
         break;
       }
@@ -1605,7 +1795,7 @@ async function syncToSupabase(action: AppAction): Promise<void> {
             client_type: j.clientType,
             payment_mode: j.paymentMode,
             notes: j.notes,
-            justification_type: j.justificationType || 'CLIENT',
+            justification_type: j.justificationType || 'CLIENT', bank_account_id: nz(j.bankAccountId),
             client_name: nz(j.clientName),
             fuel_type: nz(j.fuelType),
             liters: j.liters || 0,
@@ -1683,7 +1873,7 @@ async function syncToSupabase(action: AppAction): Promise<void> {
             client_type: j.clientType,
             payment_mode: j.paymentMode,
             notes: j.notes,
-            justification_type: j.justificationType || 'CLIENT',
+            justification_type: j.justificationType || 'CLIENT', bank_account_id: nz(j.bankAccountId),
             client_name: nz(j.clientName),
             fuel_type: nz(j.fuelType),
             liters: j.liters || 0,
@@ -1867,13 +2057,13 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'ADD_PURCHASE': {
         const p = action.payload;
-        await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto });
+        await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0 });
         if (p.items?.length) await db.addPurchaseItems(p.items.map(i => ({ purchase_id: p.id, product_id: nz(i.productId), product_name: i.productName, quantity: i.quantity, buy_price: i.buyPrice, selling_price: i.sellingPrice, min_stock: i.minStock, unit: i.unit, total: i.total, tank_id: nz(i.tankId), tva_active: i.tvaActive ?? false, tva_rate: i.tvaRate ?? 0 })));
-        if (p.payments?.length) for (const pay of p.payments) await db.addPurchasePayment({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, notes: pay.notes });
+        if (p.payments?.length) for (const pay of p.payments) await db.addPurchasePayment({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, bordereau_number: nz(pay.bordereauNumber), account_id: nz(pay.accountId), notes: pay.notes });
         break;
       }
       case 'UPDATE_PURCHASE':
-        await db.updatePurchase(action.payload.id, { total: action.payload.total, amount_paid: action.payload.amountPaid, rest: action.payload.rest, status: action.payload.status, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, notes: action.payload.notes, receipt_photo_url: action.payload.receiptPhoto });
+        await db.updatePurchase(action.payload.id, { date: action.payload.date, supplier_id: nz(action.payload.supplierId), invoice_number: action.payload.invoiceNumber, total: action.payload.total, amount_paid: action.payload.amountPaid, rest: action.payload.rest, status: action.payload.status, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, notes: action.payload.notes, receipt_photo_url: action.payload.receiptPhoto, bl_number: nz(action.payload.blNumber), discount_type: nz(action.payload.discountType), discount_value: action.payload.discountValue ?? 0, discount_amount: action.payload.discountAmount ?? 0, subtotal: action.payload.subtotal ?? 0, tva_amount: action.payload.tvaAmount ?? 0, tva_active: action.payload.tvaActive ?? false, tva_rate: action.payload.tvaRate ?? 0 });
         break;
       case 'DELETE_PURCHASE': await db.deletePurchase(action.payload); break;
       case 'ADD_EXPENSE':
@@ -1883,6 +2073,35 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl });
         break;
       case 'DELETE_EXPENSE': await db.deleteExpense(action.payload); break;
+
+      // ── Treasury ──────────────────────────────────────────────────────
+      case 'ADD_BANK_ACCOUNT': {
+        const b = action.payload;
+        await db.addBankAccount({ id: b.id, name: b.name, account_number: nz(b.accountNumber), initial_balance: b.initialBalance, balance: b.balance, notes: nz(b.notes) });
+        break;
+      }
+      case 'UPDATE_BANK_ACCOUNT': {
+        const b = action.payload;
+        await db.updateBankAccount(b.id, { name: b.name, account_number: nz(b.accountNumber), initial_balance: b.initialBalance, balance: b.balance, notes: nz(b.notes) });
+        break;
+      }
+      case 'DELETE_BANK_ACCOUNT':
+        // Ledger lines referencing the account go with it (see ON DELETE CASCADE
+        // in the migration); the reducer already dropped them locally.
+        await db.deleteBankAccount(action.payload);
+        break;
+      case 'ADD_TREASURY_TX':
+        await db.addTreasuryTransaction(treasuryTxToRow(action.payload));
+        break;
+      case 'UPDATE_TREASURY_TX': {
+        const { id, ...rest } = treasuryTxToRow(action.payload);
+        await db.updateTreasuryTransaction(id, rest);
+        break;
+      }
+      case 'DELETE_TREASURY_TX':
+        await db.deleteTreasuryTransaction(action.payload);
+        break;
+
       case 'ADD_INVENTORY':
       case 'SAVE_INVENTORY':
         await db.addInventory({ id: action.payload.id, name: action.payload.name, description: action.payload.description, date: action.payload.date, user_name: action.payload.user, type: action.payload.type, status: action.payload.status, fuel_gaps: action.payload.fuelGaps, pump_index_gaps: action.payload.pumpIndexGaps || [], product_gaps: action.payload.productGaps, adjustment_reason: action.payload.adjustmentReason, adjusted_at: nz(action.payload.adjustedAt) });
@@ -2134,7 +2353,7 @@ async function refetchEntityAfterAction(
           const purchases = (purchasesData as any[]).map(p => {
             const m = mapPurchase(p);
             m.items    = ((itemsData ?? []) as any[]).filter((i: any) => i.purchase_id === p.id).map((i: any) => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, buyPrice: +i.buy_price, sellingPrice: +i.selling_price, minStock: i.min_stock ? +i.min_stock : undefined, unit: i.unit, total: +i.total, tankId: i.tank_id, tvaActive: i.tva_active, tvaRate: +(i.tva_rate ?? 0) }));
-            m.payments = ((paymentsData ?? []) as any[]).filter((pay: any) => pay.purchase_id === p.id).map((pay: any) => ({ id: pay.id, date: pay.date, amount: +pay.amount, mode: pay.mode, chequeNumber: pay.cheque_number, notes: pay.notes }));
+            m.payments = ((paymentsData ?? []) as any[]).filter((pay: any) => pay.purchase_id === p.id).map((pay: any) => ({ id: pay.id, date: pay.date, amount: +pay.amount, mode: pay.mode, chequeNumber: pay.cheque_number, bordereauNumber: pay.bordereau_number ?? undefined, accountId: pay.account_id ?? undefined, notes: pay.notes }));
             return m;
           });
           dispatch({ type: 'HYDRATE', payload: { purchases } });
@@ -2142,6 +2361,20 @@ async function refetchEntityAfterAction(
         break;
       }
       // ── Expenses ──────────────────────────────────────────────────────────
+      // ── Treasury ──────────────────────────────────────────────────────────
+      case 'ADD_BANK_ACCOUNT': case 'UPDATE_BANK_ACCOUNT': case 'DELETE_BANK_ACCOUNT':
+      case 'ADD_TREASURY_TX': case 'UPDATE_TREASURY_TX': case 'DELETE_TREASURY_TX': {
+        const treasuryTransactions = ((await db.getTreasuryTransactions()) as any[]).map(mapTreasuryTx);
+        const accounts = ((await db.getBankAccounts()) as any[]).map(mapBankAccount);
+        dispatch({
+          type: 'HYDRATE',
+          payload: {
+            treasuryTransactions,
+            bankAccounts: accounts.map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) })),
+          },
+        });
+        break;
+      }
       case 'ADD_EXPENSE': case 'UPDATE_EXPENSE': case 'DELETE_EXPENSE': {
         const raw = await db.getExpenses();
         dispatch({ type: 'HYDRATE', payload: { expenses: (raw as any[]).map(mapExpense) } });
@@ -2247,6 +2480,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           brigadesRaw, settingsRaw,
           brigadeAssignmentsRaw, chefAssignmentsRaw,
           permissionTemplatesRaw,
+          bankAccountsRaw, treasuryRaw,
         ] = await Promise.all([
           db.getTanks(),
           db.getPumps(),
@@ -2266,6 +2500,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id').then(r => r.data ?? []),
           supabase.from('chef_pompiste_assignments').select('chef_id, pompiste_id').then(r => r.data ?? []),
           db.getPermissionTemplates().catch(() => []),
+          db.getBankAccounts().catch(() => []),
+          db.getTreasuryTransactions().catch(() => []),
         ]);
 
         if (cancelled) return;
@@ -2302,6 +2538,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
         const settings = settingsRaw ? mapSettings(settingsRaw) : emptySettings;
         const permissionTemplates = (permissionTemplatesRaw as any[]).map(mapPermissionTemplate);
+        const treasuryTransactions = (treasuryRaw as any[]).map(mapTreasuryTx);
+        // Bank balances are derived from the ledger so a card can never drift
+        // from its own history.
+        const bankAccounts = (bankAccountsRaw as any[])
+          .map(mapBankAccount)
+          .map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) }));
 
         // Release loading spinner; app can render now
         clearTimeout(phase1Timeout);
@@ -2314,6 +2556,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             tanks, pumps, pumpNozzles, tracks, drivers, products, productBrands: brands,
             pompistes, brigadeChefs, gerants, magasinWorkers,
             clients, suppliers, brigades, settings, permissionTemplates,
+            bankAccounts, treasuryTransactions,
             // Transactional tables start empty; filled by Phase 2 momentarily
             fuelSales: [], shopSales: [], deliveryNotes: [], purchases: [],
             expenses: [], inventories: [], dailyReports: [],
@@ -2627,6 +2870,22 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       suppliers: async () => ({ suppliers:     ((await db.getSuppliers())    as any[]).map(mapSupplier) }),
       clients:  async () => ({ clients:        ((await db.getClients())      as any[]).map(mapClient) }),
       expenses: async () => ({ expenses:       ((await db.getExpenses())     as any[]).map(mapExpense) }),
+      treasury_transactions: async () => {
+        const treasuryTransactions = ((await db.getTreasuryTransactions()) as any[]).map(mapTreasuryTx);
+        const raw = ((await db.getBankAccounts()) as any[]).map(mapBankAccount);
+        return {
+          treasuryTransactions,
+          bankAccounts: raw.map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) })),
+        };
+      },
+      bank_accounts: async () => {
+        const treasuryTransactions = ((await db.getTreasuryTransactions()) as any[]).map(mapTreasuryTx);
+        const raw = ((await db.getBankAccounts()) as any[]).map(mapBankAccount);
+        return {
+          treasuryTransactions,
+          bankAccounts: raw.map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) })),
+        };
+      },
       brigades: async () => {
         const raw       = await db.getBrigades();
         const assignRaw = await supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id').then(r => r.data ?? []);
@@ -3021,19 +3280,19 @@ export function useSupabaseDispatch() {
         // ── Purchases ──────────────────────────────────────────────────────
         case 'ADD_PURCHASE': {
           const p = action.payload;
-          await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto });
+          await db.addPurchase({ id: p.id, date: p.date, supplier_id: nz(p.supplierId), invoice_number: p.invoiceNumber, due_date: nz(p.dueDate), driver_id: nz(p.driverId), total: p.total, amount_paid: p.amountPaid, rest: p.rest, status: p.status, payment_mode: p.paymentMode, cheque_number: p.chequeNumber, linked_delivery_note_id: nz(p.linkedDeliveryNoteId), notes: p.notes, type: p.type, tva_rate: p.tvaRate ?? 0, tva_active: p.tvaActive ?? false, tank_id: nz(p.tankId), receipt_photo_url: p.receiptPhoto, bl_number: nz(p.blNumber), discount_type: nz(p.discountType), discount_value: p.discountValue ?? 0, discount_amount: p.discountAmount ?? 0, subtotal: p.subtotal ?? 0, tva_amount: p.tvaAmount ?? 0 });
           if (p.items?.length) {
             await db.addPurchaseItems(p.items.map(i => ({ purchase_id: p.id, product_id: nz(i.productId), product_name: i.productName, quantity: i.quantity, buy_price: i.buyPrice, selling_price: i.sellingPrice, min_stock: i.minStock, unit: i.unit, total: i.total, tank_id: nz(i.tankId), tva_active: i.tvaActive ?? false, tva_rate: i.tvaRate ?? 0 })));
           }
           if (p.payments?.length) {
             for (const pay of p.payments) {
-              await db.addPurchasePayment({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, notes: pay.notes });
+              await db.addPurchasePayment({ id: pay.id, purchase_id: p.id, date: pay.date, amount: pay.amount, mode: pay.mode, cheque_number: pay.chequeNumber, bordereau_number: nz(pay.bordereauNumber), account_id: nz(pay.accountId), notes: pay.notes });
             }
           }
           break;
         }
         case 'UPDATE_PURCHASE':
-          await db.updatePurchase(action.payload.id, { total: action.payload.total, amount_paid: action.payload.amountPaid, rest: action.payload.rest, status: action.payload.status, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, notes: action.payload.notes, receipt_photo_url: action.payload.receiptPhoto });
+          await db.updatePurchase(action.payload.id, { date: action.payload.date, supplier_id: nz(action.payload.supplierId), invoice_number: action.payload.invoiceNumber, total: action.payload.total, amount_paid: action.payload.amountPaid, rest: action.payload.rest, status: action.payload.status, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, notes: action.payload.notes, receipt_photo_url: action.payload.receiptPhoto, bl_number: nz(action.payload.blNumber), discount_type: nz(action.payload.discountType), discount_value: action.payload.discountValue ?? 0, discount_amount: action.payload.discountAmount ?? 0, subtotal: action.payload.subtotal ?? 0, tva_amount: action.payload.tvaAmount ?? 0, tva_active: action.payload.tvaActive ?? false, tva_rate: action.payload.tvaRate ?? 0 });
           break;
         case 'DELETE_PURCHASE':
           await db.deletePurchase(action.payload);

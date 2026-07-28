@@ -1,17 +1,17 @@
 /**
  * ─── Business Modules Store ────────────────────────────────────────────────────
- * Lightweight in-memory + localStorage store powering the new commerce/production
- * parts (Restaurant / Cafétéria / Lavage / Magasin). Kept fully separate from the
+ * Lightweight in-memory + localStorage store powering the commerce/production
+ * parts (Cafétéria, Lavage & Réparation). Kept fully separate from the
  * Supabase-backed AppContext so the fuel-station data is never touched.
  *
  * Usage inside a page:
- *   const biz = useBiz('restaurant');
+ *   const biz = useBiz('cafeteria');
  *   biz.state.products; biz.add('products', {...}); biz.update('sales', {...}); …
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { BizState, ModuleKey, ModuleState, BizCollection } from '../lib/bizConfig';
-import { buildSeed } from '../lib/bizSeed';
+import { buildSeed, EMPTY_MODULE } from '../lib/bizSeed';
 import { loadBizStore, saveBizStore } from '../lib/supabase';
 
 const STORAGE_KEY = 'stationpro_biz_v1';
@@ -73,18 +73,84 @@ function reducer(state: BizState, action: Action): BizState {
 }
 
 function isValidState(v: any): v is BizState {
-  return !!v && !!v.restaurant && !!v.cafeteria && !!v.lavage && !!v.magasin;
+  return !!v && !!v.cafeteria && !!v.lavage;
+}
+
+/** Collections merged from a removed part into a surviving one. */
+const MERGED_COLLECTIONS: BizCollection[] = [
+  'categories', 'marques', 'roles', 'products', 'purchases', 'sales',
+  'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reparations',
+  'productions', 'fiches', 'comptoir', 'destructions', 'sessions', 'payRequests',
+];
+
+/**
+ * Brings a state saved by an older build up to the current shape:
+ *  • the Restaurant part was removed        → its data folds into Cafétéria
+ *  • the Magasin part was removed          → its data folds into Lavage
+ *    (that part now hosts the point-de-vente and ventes screens)
+ *  • the Services catalogue was removed     → each intervention keeps the sum of
+ *    its services as the hand-typed `serviceTotal`
+ *  • appointments were removed              → kept as pending interventions
+ *  • the new `sessions` / `payRequests` collections are created empty
+ *
+ * Merging deletes the legacy key, so the migration never runs twice.
+ */
+function migrate(raw: any): BizState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const state: any = { ...raw };
+
+  const fold = (from: string, into: ModuleKey) => {
+    const src = state[from];
+    if (!src) return;
+    const dst = state[into] || EMPTY_MODULE();
+    for (const coll of MERGED_COLLECTIONS) {
+      const a = Array.isArray(dst[coll]) ? dst[coll] : [];
+      const b = Array.isArray(src[coll]) ? src[coll] : [];
+      const seen = new Set(a.map((x: any) => x?.id));
+      dst[coll] = [...a, ...b.filter((x: any) => x?.id && !seen.has(x.id))];
+    }
+    state[into] = dst;
+    delete state[from];
+  };
+  fold('restaurant', 'cafeteria');
+  fold('magasin', 'lavage');
+
+  for (const key of ['cafeteria', 'lavage'] as ModuleKey[]) {
+    const mod = state[key] || EMPTY_MODULE();
+    // Guarantee every collection of the current ModuleState exists.
+    const base: any = EMPTY_MODULE();
+    for (const k of Object.keys(base)) if (!Array.isArray(mod[k])) mod[k] = base[k];
+
+    mod.reparations = (mod.reparations as any[]).map(r => {
+      const legacyServices: { price?: number }[] = Array.isArray(r.services) ? r.services : [];
+      const serviceTotal = typeof r.serviceTotal === 'number'
+        ? r.serviceTotal
+        : legacyServices.reduce((s, x) => s + (Number(x.price) || 0), 0);
+      const { services, comingDate, ...rest } = r;
+      return {
+        ...rest,
+        serviceTotal,
+        kind: r.kind === 'appointment' ? 'reparation' : r.kind,
+        status: r.kind === 'appointment' ? 'pending' : r.status,
+      };
+    });
+    delete mod.services;
+    state[key] = mod;
+  }
+
+  // Drop any other unknown top-level part so the store stays exactly two parts.
+  for (const k of Object.keys(state)) {
+    if (k !== 'cafeteria' && k !== 'lavage') delete state[k];
+  }
+  return isValidState(state) ? (state as BizState) : null;
 }
 
 function loadInitial(): BizState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      // Basic shape check: all four modules present.
-      if (parsed && parsed.restaurant && parsed.cafeteria && parsed.lavage && parsed.magasin) {
-        return parsed as BizState;
-      }
+      const migrated = migrate(JSON.parse(raw));
+      if (migrated) return migrated;
     }
   } catch { /* ignore corrupt storage */ }
   return buildSeed();
@@ -109,9 +175,9 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const remote = await loadBizStore();
+      const remote = migrate(await loadBizStore());
       if (cancelled) return;
-      if (isValidState(remote)) dispatch({ type: 'HYDRATE', state: remote });
+      if (remote) dispatch({ type: 'HYDRATE', state: remote });
       else saveBizStore(state);   // first run — seed the shared row
       hydratedRef.current = true;
     })();

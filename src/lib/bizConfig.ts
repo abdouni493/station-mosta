@@ -1,15 +1,19 @@
 /**
  * ─── Business Modules Configuration & Types ────────────────────────────────────
- * Self-contained data model for the new commerce/production parts added to the
- * StationPro sidebar: Restaurant, Cafétéria, Lavage & Réparation, and Magasin.
+ * Self-contained data model for the commerce/production parts of the sidebar:
+ * Cafétéria and Lavage & Réparation (the Magasin point-de-vente & ventes screens
+ * were folded into the Lavage part; the Restaurant part was removed).
  *
- * These modules live on a dedicated in-memory store (`BizContext`) seeded with
- * constant demo data, so they never touch the Supabase-backed fuel-station state.
+ * These modules live on a dedicated store (`BizContext`, persisted as one JSON
+ * row in Supabase), so they never touch the relational fuel-station tables.
  * Every generic page (`src/pages/modules/*`) is parameterised by a `ModuleKey`.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 
-export type ModuleKey = 'restaurant' | 'cafeteria' | 'lavage' | 'magasin';
+export type ModuleKey = 'cafeteria' | 'lavage';
+
+/** Keys that existed in older saved states and are migrated away on load. */
+export type LegacyModuleKey = 'restaurant' | 'magasin';
 
 // ─── Entity collections held per module ────────────────────────────────────────
 export type BizCollection =
@@ -27,8 +31,9 @@ export type BizCollection =
   | 'fiches'
   | 'comptoir'
   | 'destructions'
-  | 'services'
   | 'reparations'
+  | 'sessions'
+  | 'payRequests'
   | 'roles';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -52,18 +57,37 @@ export interface BizProduct {
   unit?: string;
   hasExpiration?: boolean;
   expirationDate?: string;
+  /** Sell fractions of one packaged unit (e.g. 1 L out of a 50 L drum). */
+  sellByDetail?: boolean;
+  /** How much the packaged unit holds, expressed in `detailUnit`. */
+  detailCapacity?: number;
+  /** Unit of the detail quantity: 'L' | 'ml' | 'kg' | 'g' | 'unité'… */
+  detailUnit?: string;
+  /** Price of ONE detail unit. Defaults to `salePrice / detailCapacity`. */
+  detailSalePrice?: number;
   createdAt: string;
+}
+
+/** Price of one detail unit of a product sold "au détail". */
+export function detailPrice(p: Pick<BizProduct, 'salePrice' | 'detailCapacity' | 'detailSalePrice'>): number {
+  if (p.detailSalePrice && p.detailSalePrice > 0) return p.detailSalePrice;
+  const cap = Number(p.detailCapacity) || 0;
+  return cap > 0 ? p.salePrice / cap : p.salePrice;
 }
 
 export interface BizLineItem {
   productId: string;
   productName: string;
+  /** Quantity in packaged units — fractional when sold au détail. */
   qty: number;
   unitPrice: number;
   minQty?: number;
   hasExpiration?: boolean;
   expirationDate?: string;
   total?: number;
+  /** Set when the line was sold au détail: quantity in `detailUnit`. */
+  detailQty?: number;
+  detailUnit?: string;
 }
 
 export interface BizPurchase {
@@ -92,8 +116,22 @@ export interface BizSale {
   paid: number;
   rest: number;
   date: string;
-  status: 'payée' | 'crédit';
+  status: 'payée' | 'crédit' | 'retournée' | 'échangée';
   createdBy?: string;
+  /** Work session the sale was rung up in (POS requires an open session). */
+  sessionId?: string;
+  workerId?: string;
+  workerName?: string;
+  printedAt?: string;
+  /** Set on a refund: the money handed back to the client. */
+  refundedAmount?: number;
+  refundedAt?: string;
+  /** Set on the replacement sale created by an exchange. */
+  exchangeOfSaleId?: string;
+  /** Set on the original sale once it has been exchanged. */
+  exchangedIntoSaleId?: string;
+  /** Difference settled at exchange time (>0 client pays, <0 station refunds). */
+  exchangeDelta?: number;
 }
 
 export interface BizContact {
@@ -106,7 +144,20 @@ export interface BizContact {
 
 export interface BizAcompte { id: string; date: string; amount: number; description?: string; paid: boolean }
 export interface BizAbsence { id: string; date: string; cost: number; description?: string; paid: boolean }
-export interface BizWorkerPayment { id: string; period: string; amount: number; date: string; description?: string }
+export interface BizWorkerPayment {
+  id: string;
+  period: string;
+  amount: number;
+  date: string;
+  description?: string;
+  /** Percentage payroll: the works (réparations/lavages) settled by this payment. */
+  workIds?: string[];
+  /** Sum of the settled works and the rate applied, for the payslip. */
+  worksTotal?: number;
+  percentage?: number;
+  from?: string;
+  to?: string;
+}
 
 export interface BizWorker {
   id: string;
@@ -118,8 +169,11 @@ export interface BizWorker {
   phone?: string;
   roleName: string;
   paid: boolean;                 // reçoit un salaire ?
-  salaryType: 'jour' | 'mois';
+  /** `pourcentage` pays a share of every intervention the worker performed. */
+  salaryType: 'jour' | 'mois' | 'pourcentage';
   salaryAmount: number;
+  /** Share of each intervention total, in % — used when salaryType = 'pourcentage'. */
+  percentage?: number;
   hasAccount: boolean;
   email?: string;
   username?: string;
@@ -171,6 +225,12 @@ export interface BizFiche {
   sellUnit?: string;
   usableInProduction?: boolean;
   productUnit?: string;
+  /**
+   * Quick-sale fiche (e.g. "café au lait"): appears directly on the POS grid.
+   * Selling one deducts the ingredients from stock on the spot — no production
+   * run and no comptoir step in between.
+   */
+  directSale?: boolean;
   outputQuantity: number;
   unitPrice: number;
   totalCost: number;
@@ -227,11 +287,48 @@ export interface BizDestruction {
   recovered?: boolean;
 }
 
-export interface BizService {
+// ─── POS work sessions (session de travail) ────────────────────────────────────
+/**
+ * A cashier must open a session before selling and closes it at the end of the
+ * shift. The opening float (`openingCash`) is money the worker already had in
+ * hand — it is NEVER counted in what they owe. The décalage compares the
+ * theoretical takings (cash sales of the session) with the cash actually
+ * declared at closing, minus the credit granted during the session.
+ */
+export interface BizSession {
   id: string;
-  name: string;
+  ref: string;
+  workerId?: string;
+  workerName: string;
+  /** Opening float — excluded from every theoretical/décalage computation. */
+  openingCash: number;
+  openedAt: string;
+  closedAt?: string;
+  /** Cash counted by the worker when closing. */
+  closingCash?: number;
+  status: 'open' | 'closed';
+  notes?: string;
+  /** Frozen at closing time so the history never drifts. */
+  theoretical?: number;
+  credit?: number;
+  decalage?: number;
+}
+
+// ─── Encaissement requests raised by a lavage worker ───────────────────────────
+/** A lavage worker tells the cashier/admin how much a client has to pay. */
+export interface BizPayRequest {
+  id: string;
+  ref: string;
+  clientName: string;
+  car: BizCar;
+  amount: number;
   description?: string;
-  price: number;
+  workerId?: string;
+  workerName: string;
+  status: 'pending' | 'collected' | 'canceled';
+  createdAt: string;
+  collectedAt?: string;
+  collectedBy?: string;
 }
 
 export interface BizCar {
@@ -246,22 +343,26 @@ export interface BizCar {
 export interface BizReparation {
   id: string;
   ref: string;
-  kind: 'reparation' | 'lavage' | 'appointment';
+  kind: 'reparation' | 'lavage';
   clientId?: string;
+  /** "Client de passage" when no client record was picked. */
   clientName: string;
   car: BizCar;
-  services: { id: string; name: string; price: number }[];
+  /** Price of the labour, typed by hand (services catalogue was removed). */
+  serviceTotal: number;
   usedProducts: BizLineItem[];
   problem?: string;
   total: number;
   paid: number;
   rest: number;
   status: 'pending' | 'finalized' | 'canceled';
-  comingDate?: string;
   outDate?: string;
   date: string;
   workers: string[];
   createdBy?: string;
+  printedAt?: string;
+  /** Payment already settled to the percentage-paid workers of this job. */
+  payrollSettled?: boolean;
 }
 
 export interface ModuleState {
@@ -280,8 +381,9 @@ export interface ModuleState {
   fiches: BizFiche[];
   comptoir: BizComptoirItem[];
   destructions: BizDestruction[];
-  services: BizService[];
   reparations: BizReparation[];
+  sessions: BizSession[];
+  payRequests: BizPayRequest[];
 }
 
 export type BizState = Record<ModuleKey, ModuleState>;
@@ -301,17 +403,6 @@ export interface ModuleConfig {
 }
 
 export const MODULES: Record<ModuleKey, ModuleConfig> = {
-  restaurant: {
-    key: 'restaurant',
-    label: 'Restaurant',
-    short: 'Restaurant',
-    emoji: '🍽️',
-    base: '/restaurant',
-    productWord: 'Produit',
-    hasProduction: true,
-    hasComptoir: true,
-    isService: false,
-  },
   cafeteria: {
     key: 'cafeteria',
     label: 'Cafétéria',
@@ -334,17 +425,6 @@ export const MODULES: Record<ModuleKey, ModuleConfig> = {
     hasComptoir: false,
     isService: true,
   },
-  magasin: {
-    key: 'magasin',
-    label: 'Magasin',
-    short: 'Magasin',
-    emoji: '🛍️',
-    base: '/magasin',
-    productWord: 'Produit',
-    hasProduction: false,
-    hasComptoir: false,
-    isService: false,
-  },
 };
 
 // Interfaces list shown in the worker "permissions" editor.
@@ -356,7 +436,7 @@ export const MODULE_INTERFACES: { id: string; label: string }[] = [
   { id: 'pos', label: 'Point de vente' },
   { id: 'sales', label: 'Ventes' },
   { id: 'reparations', label: 'Réparations & Lavage' },
-  { id: 'services', label: 'Services' },
+  { id: 'encaissements', label: 'Demandes d\'encaissement' },
   { id: 'clients', label: 'Clients' },
   { id: 'suppliers', label: 'Fournisseurs' },
   { id: 'workers', label: 'Employés' },
@@ -369,14 +449,21 @@ export const INTERFACE_ACTIONS = ['voir', 'creer', 'modifier', 'supprimer'] as c
 
 /**
  * Interfaces that actually exist for one part — the permissions editor and the
- * employee sidebar must never offer a screen the part does not have (a Lavage
- * employee has no "Production", a Restaurant employee has no "Réparations").
+ * employee sidebar must never offer a screen the part does not have (Lavage has
+ * no "Production", Cafétéria has no "Réparations").
+ *
+ * The Lavage part also carries the point-de-vente and ventes screens that used
+ * to live in the (now removed) Magasin part.
+ *
  * Mirrors `buildModuleRoutes` in App.tsx.
  */
 export function interfacesForModule(key: ModuleKey): { id: string; label: string }[] {
   const cfg = MODULES[key];
   const ids = cfg.isService
-    ? ['reparations', 'services', 'stock', 'purchases', 'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports']
+    ? [
+        'reparations', 'encaissements', 'pos', 'sales', 'stock', 'purchases',
+        'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports',
+      ]
     : [
         'stock', 'purchases',
         ...(cfg.hasProduction ? ['production', 'comptoir'] : []),
