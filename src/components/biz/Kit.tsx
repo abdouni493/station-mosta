@@ -71,12 +71,15 @@ export function Badge({ tone = 'neutral', children }: { tone?: 'success' | 'warn
 // ─── Modal ───────────────────────────────────────────────────────────────────
 const modalSizes: Record<string, string> = {
   sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl', '2xl': 'max-w-6xl',
+  // Full-width workspace for the data-entry forms (achats, ventes…): they hold
+  // several columns per line and need the whole screen to stay readable.
+  '3xl': 'max-w-[1600px]',
 };
 export function Modal({
   open, onClose, title, subtitle, icon: Icon, size = 'md', children, footer,
 }: {
   open: boolean; onClose: () => void; title: string; subtitle?: string; icon?: React.ElementType;
-  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl'; children: React.ReactNode; footer?: React.ReactNode;
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl'; children: React.ReactNode; footer?: React.ReactNode;
 }) {
   return (
     <AnimatePresence>
@@ -112,6 +115,39 @@ export function Modal({
         </div>
       )}
     </AnimatePresence>
+  );
+}
+
+// ─── FormSection ─────────────────────────────────────────────────────────────
+/**
+ * Numbered block of a long data-entry form (achats, ventes…). The step number,
+ * the title and the optional right-hand action always sit on the same line so a
+ * wide modal still reads top-to-bottom.
+ */
+export function FormSection({
+  step, icon: Icon, title, hint, action, children,
+}: {
+  step?: number; icon?: React.ElementType; title: string; hint?: string;
+  action?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white/70 overflow-hidden">
+      <header className="flex items-center gap-3 px-4 py-3 bg-slate-50/80 border-b border-slate-200">
+        {step !== undefined && (
+          <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[11px] font-black shrink-0">
+            {step}
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <h4 className="text-[11px] font-black uppercase tracking-widest text-[#002d87] flex items-center gap-1.5">
+            {Icon && <Icon className="w-3.5 h-3.5" />} {title}
+          </h4>
+          {hint && <p className="text-[11px] text-slate-400 mt-0.5">{hint}</p>}
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
+      </header>
+      <div className="p-4">{children}</div>
+    </section>
   );
 }
 

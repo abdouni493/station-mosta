@@ -50,6 +50,8 @@ export interface Pump {
   lastIndex: number;
   status: 'Actif' | 'Maintenance' | 'Hors service';
   currentBrigadeStartIndex?: number;
+  /** Row creation date — screens list the pompes from the oldest to the newest. */
+  createdAt?: string;
 }
 
 export interface PumpNozzle {
@@ -61,11 +63,40 @@ export interface PumpNozzle {
   lastIndex: number;
   startIndex: number;
   status: 'Actif' | 'Inactif';
+  /** Row creation date — pistolets are listed in creation order inside a pompe. */
+  createdAt?: string;
 }
 
 /** Cuve of a pistolet, falling back to its pump's cuve for legacy rows. */
 export function nozzleTankId(nozzle: PumpNozzle, pumps: Pump[]): string | undefined {
   return nozzle.tankId || pumps.find(p => p.id === nozzle.pumpId)?.tankId;
+}
+
+/**
+ * Pompes from the FIRST created to the LAST. Rows come back from Supabase
+ * newest-first, so every screen that walks the pompes (brigade wizard, fiche…)
+ * sorts through here to keep one stable, human-readable order. Pompes without a
+ * creation date (legacy rows) fall back to their number.
+ */
+export function pumpsInCreationOrder<T extends Pump>(pumps: T[]): T[] {
+  return [...pumps].sort((a, b) => {
+    const at = a.createdAt ? Date.parse(a.createdAt) : NaN;
+    const bt = b.createdAt ? Date.parse(b.createdAt) : NaN;
+    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+    if (Number.isFinite(at) !== Number.isFinite(bt)) return Number.isFinite(at) ? -1 : 1;
+    return String(a.number || '').localeCompare(String(b.number || ''), 'fr', { numeric: true });
+  });
+}
+
+/** Pistolets of one pompe, in creation order (name as the legacy fallback). */
+export function nozzlesInCreationOrder(nozzles: PumpNozzle[]): PumpNozzle[] {
+  return [...nozzles].sort((a, b) => {
+    const at = a.createdAt ? Date.parse(a.createdAt) : NaN;
+    const bt = b.createdAt ? Date.parse(b.createdAt) : NaN;
+    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+    if (Number.isFinite(at) !== Number.isFinite(bt)) return Number.isFinite(at) ? -1 : 1;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'fr', { numeric: true });
+  });
 }
 
 /** Distinct cuves a pump serves, derived from its pistolets. */
@@ -1350,7 +1381,7 @@ function mapTank(r: any): Tank {
   return { id: r.id, name: r.name, type: r.type, capacity: +r.capacity, current: +r.current, degrees: +r.degrees, alertThreshold: +r.alert_threshold, notes: r.notes };
 }
 function mapPump(r: any): Pump {
-  return { id: r.id, number: r.number, name: r.name, tankId: r.tank_id, trackId: r.track_id, type: r.type, lastIndex: +r.last_index, status: r.status, currentBrigadeStartIndex: r.current_brigade_start_index ? +r.current_brigade_start_index : undefined };
+  return { id: r.id, number: r.number, name: r.name, tankId: r.tank_id, trackId: r.track_id, type: r.type, lastIndex: +r.last_index, status: r.status, currentBrigadeStartIndex: r.current_brigade_start_index ? +r.current_brigade_start_index : undefined, createdAt: r.created_at ?? undefined };
 }
 function mapTrack(r: any): Track { return { id: r.id, name: r.name }; }
 function mapPermissionTemplate(r: any): PermissionTemplate {
@@ -1596,7 +1627,7 @@ function mapDailyReport(r: any): DailyReport {
   return { id: r.id, date: r.date, fuelRevenue: +r.fuel_revenue, shopRevenue: +r.shop_revenue, totalExpenses: +r.total_expenses, cashToDeposit: +r.cash_to_deposit, tankVariations: r.tank_variations || [], brigadeIds: r.brigade_ids || [] };
 }
 function mapNozzle(r: any): PumpNozzle {
-  return { id: r.id, pumpId: r.pump_id, name: r.name, tankId: r.tank_id ?? undefined, lastIndex: +r.last_index, startIndex: +r.start_index, status: r.status || 'Actif' };
+  return { id: r.id, pumpId: r.pump_id, name: r.name, tankId: r.tank_id ?? undefined, lastIndex: +r.last_index, startIndex: +r.start_index, status: r.status || 'Actif', createdAt: r.created_at ?? undefined };
 }
 function mapSettings(r: any): StationSettings {
   return { name: r.name, logo: r.logo_url, logoUrl: r.logo_url, address: r.address, phone: r.phone, email: r.email, fiscalId: r.fiscal_id, rc: r.rc, fuelPrices: r.fuel_prices || emptySettings.fuelPrices, fuelBuyPrices: r.fuel_buy_prices || emptySettings.fuelBuyPrices, conversionTables: r.conversion_tables || {}, productCategories: r.product_categories || emptySettings.productCategories, expenseCategories: r.expense_categories || emptySettings.expenseCategories, productUnits: r.product_units || DEFAULT_PRODUCT_UNITS, decalagePositifActif: r.decalage_positif_actif, decalageNegatifActif: r.decalage_negatif_actif, decalagePositifSeuil: +(r.decalage_positif_seuil ?? 0), decalageNegatifSeuil: +(r.decalage_negatif_seuil ?? 0) };

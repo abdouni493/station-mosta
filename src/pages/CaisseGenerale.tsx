@@ -1,5 +1,5 @@
 /**
- * ─── Caisse Générale (Système) ──────────────────────────────────────────────────
+ * ─── Caisse Générale (Finance) ──────────────────────────────────────────────────
  * Single place where the money of the whole station is read and moved.
  *
  *  • Solde de la caisse générale — the authoritative cash box, computed from the
@@ -52,7 +52,7 @@ const PART_META: Record<TreasuryPart, { label: string; icon: React.ElementType; 
   carburant: { label: 'Carburant', icon: Fuel, tone: '#003087' },
   cafeteria: { label: 'Cafétéria', icon: Coffee, tone: '#b45309' },
   lavage: { label: 'Lavage & Réparation', icon: Droplets, tone: '#0e7490' },
-  systeme: { label: 'Système', icon: Landmark, tone: '#4c1d95' },
+  systeme: { label: 'Finance', icon: Landmark, tone: '#4c1d95' },
 };
 
 const NATURE_ICON: Record<string, React.ElementType> = {
@@ -230,7 +230,7 @@ export default function CaisseGenerale() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader icon={PiggyBank} title="Caisse Générale" subtitle="Système — trésorerie consolidée de la station"
+      <PageHeader icon={PiggyBank} title="Caisse Générale" subtitle="Finance — trésorerie consolidée de la station"
         actions={perm.creer ? <div className="flex gap-2">
           <button className="btn-secondary" onClick={() => setTransferring(true)}>
             <ArrowLeftRight className="w-4 h-4" /> Virement vers banque

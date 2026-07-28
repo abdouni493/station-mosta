@@ -21,7 +21,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, orNull } from "@/src/lib/utils";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
-import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType, pumpTankIds, nozzleTankId } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType, pumpTankIds, nozzleTankId, pumpsInCreationOrder } from "../store/AppContext";
 import toast from "react-hot-toast";
 
 const Pumps = () => {
@@ -69,8 +69,9 @@ const Pumps = () => {
     dispatch({ type: 'UPDATE_PUMP', payload: { ...pump, tankId: firstTankId, type: tank?.type } });
   };
 
-  const filteredPumps = pumps.filter(p => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+  // Listed from the first created pompe to the last, like everywhere else.
+  const filteredPumps = pumpsInCreationOrder(pumps).filter(p =>
+    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.number.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
@@ -97,7 +98,7 @@ const Pumps = () => {
       dispatch({ type: 'UPDATE_PUMP', payload: formData as Pump });
       toast.success("Pompe mise à jour ✓");
     } else {
-      const newPump = { ...formData, id: newId() } as Pump;
+      const newPump = { ...formData, id: newId(), createdAt: new Date().toISOString() } as Pump;
       dispatch({ type: 'ADD_PUMP', payload: newPump });
       toast.success("Pompe ajoutée ✓");
     }
@@ -815,7 +816,7 @@ const Pumps = () => {
               next = pumpNozzles.map(n => n.id === updated.id ? updated : n);
               toast.success('Pistolet mis à jour ✓');
             } else {
-              const n: PumpNozzle = { id: newId(), pumpId: nozzlePump.id, name: nozzleForm.name, tankId: nozzleForm.tankId, lastIndex: nozzleForm.lastIndex, startIndex: nozzleForm.lastIndex, status: 'Actif' };
+              const n: PumpNozzle = { id: newId(), pumpId: nozzlePump.id, name: nozzleForm.name, tankId: nozzleForm.tankId, lastIndex: nozzleForm.lastIndex, startIndex: nozzleForm.lastIndex, status: 'Actif', createdAt: new Date().toISOString() };
               dispatch({ type: 'ADD_NOZZLE', payload: n });
               next = [...pumpNozzles, n];
               toast.success('Pistolet ajouté ✓');

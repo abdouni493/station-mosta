@@ -30,7 +30,7 @@ import {
 } from '../store/AppContext';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
-  Table, EmptyState, SearchInput, RowActions, ActionBtn,
+  Table, EmptyState, SearchInput, RowActions, ActionBtn, FormSection,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '../components/biz/Kit';
 import { printInvoice, stationFromSettings } from './modules/_shared';
@@ -413,21 +413,26 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
     onClose();
   };
 
+  const totalLiters = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
+
   return (
-    <Modal open onClose={onClose} icon={ShoppingCart} size="2xl"
+    <Modal open onClose={onClose} icon={ShoppingCart} size="3xl"
       title={isEdit ? "Modifier l'achat carburant" : 'Nouvel achat carburant'}
       subtitle="Aucun champ n'est obligatoire — l'achat peut être enregistré en dette"
       footer={<>
+        <div className="mr-auto flex items-center gap-4 text-xs font-bold">
+          <span className="text-slate-400 uppercase tracking-widest">{totalLiters.toLocaleString('fr-FR')} L</span>
+          <span className="text-[#002d87]">Total {money(total)}</span>
+          {rest > 0 && <span className="text-red-600">Dette {money(rest)}</span>}
+        </div>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
         <button className="btn-primary" onClick={save}>{isEdit ? 'Enregistrer' : "Enregistrer l'achat"}</button>
       </>}>
-      <div className="space-y-6">
-        {/* 1 + 2. Références, date, fournisseur */}
-        <section className="space-y-3">
-          <h4 className="text-[11px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-            <FileText className="w-3.5 h-3.5" /> Références
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="space-y-4">
+        {/* 1. Références, date, fournisseur */}
+        <FormSection step={1} icon={FileText} title="Références de la facture"
+          hint="Facture, bon de livraison, date et fournisseur">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <Field label="N° de facture"><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} placeholder="FA-2026-001" /></Field>
             <Field label="N° bon de livraison"><Input value={blNumber} onChange={e => setBlNumber(e.target.value)} placeholder="BL-2026-001" /></Field>
             <Field label="Date"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
@@ -438,29 +443,34 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
               </Select>
             </Field>
           </div>
-        </section>
+        </FormSection>
 
-        {/* 3. Cuves */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-[11px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-              <Droplets className="w-3.5 h-3.5" /> Cuves livrées
-            </h4>
+        {/* 2. Cuves */}
+        <FormSection step={2} icon={Droplets} title="Cuves livrées"
+          hint="Le prix d'achat vient des paramètres de la station"
+          action={
             <button className="btn-secondary !py-1.5 !px-3 text-xs" onClick={addLine} disabled={tanks.length === 0}>
               <Plus className="w-3.5 h-3.5" /> Ajouter une cuve
             </button>
-          </div>
-
+          }>
           {tanks.length === 0 && (
-            <p className="text-xs text-amber-600">Aucune cuve configurée — créez-en une dans « Cuves / Tanks ».</p>
+            <p className="text-xs text-amber-600 mb-2">Aucune cuve configurée — créez-en une dans « Cuves / Tanks ».</p>
           )}
 
           {lines.length === 0 ? (
-            <p className="text-sm text-slate-400 rounded-xl bg-slate-50 p-4 text-center">
-              Ajoutez une ou plusieurs cuves. Le prix d'achat vient des paramètres de la station.
+            <p className="text-sm text-slate-400 rounded-xl bg-slate-50 border border-dashed border-slate-300 p-6 text-center">
+              Aucune cuve — ajoutez la première ligne de livraison.
             </p>
           ) : (
             <div className="space-y-2">
+              {/* Column headers: one row per cuve, typed left to right. */}
+              <div className="hidden lg:grid grid-cols-12 gap-3 px-3 pb-1">
+                <span className="col-span-4 text-[10px] font-black uppercase tracking-widest text-slate-400">Cuve</span>
+                <span className="col-span-2 text-[10px] font-black uppercase tracking-widest text-slate-400">Quantité (L)</span>
+                <span className="col-span-2 text-[10px] font-black uppercase tracking-widest text-slate-400">Prix / L</span>
+                <span className="col-span-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Total ligne</span>
+                <span className="col-span-1" />
+              </div>
               {lines.map(l => {
                 const tank = tanks.find(t => t.id === l.tankId);
                 const qty = Number(l.quantity) || 0;
@@ -469,30 +479,31 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                 const overflow = tank ? after > tank.capacity : false;
                 return (
                   <div key={l.id} className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                      <div className="sm:col-span-4">
-                        <label className="text-[10px] font-bold uppercase text-slate-400">Cuve</label>
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+                      <div className="lg:col-span-4">
+                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Cuve</label>
                         <Select value={l.tankId} onChange={e => setLine(l.id, { tankId: e.target.value })}>
                           <option value="">— Choisir —</option>
                           {tanks.map(t => <option key={t.id} value={t.id}>{t.name} ({t.type})</option>)}
                         </Select>
                       </div>
-                      <div className="sm:col-span-3">
-                        <label className="text-[10px] font-bold uppercase text-slate-400">Quantité (L)</label>
-                        <Input type="number" step="0.01" value={l.quantity} onChange={e => setLine(l.id, { quantity: e.target.value })} placeholder="0" />
+                      <div className="lg:col-span-2">
+                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Quantité (L)</label>
+                        <Input type="number" step="0.01" value={l.quantity} onChange={e => setLine(l.id, { quantity: e.target.value })} placeholder="0" className="text-right font-bold" />
                       </div>
-                      <div className="sm:col-span-2">
-                        <label className="text-[10px] font-bold uppercase text-slate-400">Prix / L</label>
-                        <Input type="number" step="0.01" value={l.unitPrice} onChange={e => setLine(l.id, { unitPrice: e.target.value })} />
+                      <div className="lg:col-span-2">
+                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Prix / L</label>
+                        <Input type="number" step="0.01" value={l.unitPrice} onChange={e => setLine(l.id, { unitPrice: e.target.value })} className="text-right font-bold" />
                       </div>
-                      <div className="sm:col-span-2">
-                        <label className="text-[10px] font-bold uppercase text-slate-400">Total ligne</label>
-                        <div className="h-[46px] rounded-xl bg-white border border-slate-200 flex items-center px-3 font-black tabular-nums text-[#002d87]">
+                      <div className="lg:col-span-3">
+                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Total ligne</label>
+                        <div className="h-[46px] rounded-xl bg-white border border-slate-200 flex items-center justify-end px-3 font-black tabular-nums text-[#002d87]">
                           {money(qty * price)}
                         </div>
                       </div>
-                      <div className="sm:col-span-1 flex justify-end">
-                        <button onClick={() => rmLine(l.id)} className="w-10 h-10 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center">
+                      <div className="lg:col-span-1 flex justify-end">
+                        <button onClick={() => rmLine(l.id)} title="Retirer la ligne"
+                          className="w-10 h-10 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center">
                           <X className="w-4 h-4" />
                         </button>
                       </div>
@@ -507,16 +518,18 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                   </div>
                 );
               })}
+              <div className="flex justify-end gap-6 px-3 pt-1 text-xs font-black">
+                <span className="text-slate-400 uppercase tracking-widest">Volume total</span>
+                <span className="text-[#002d87] tabular-nums">{totalLiters.toLocaleString('fr-FR')} L</span>
+              </div>
             </div>
           )}
-        </section>
+        </FormSection>
 
-        {/* 4. Total, TVA, remise */}
-        <section className="space-y-3">
-          <h4 className="text-[11px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-            <Percent className="w-3.5 h-3.5" /> Total, TVA & remise
-          </h4>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {/* 3. Total, TVA, remise */}
+        <FormSection step={3} icon={Percent} title="Total, TVA & remise"
+          hint="La TVA est appliquée après la remise">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
@@ -526,7 +539,7 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                 <Switch checked={discountOn} onChange={setDiscountOn} />
               </div>
               {discountOn && (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-3">
                   <Field label="Type">
                     <Select value={discountType} onChange={e => setDiscountType(e.target.value as 'percent' | 'amount')}>
                       <option value="percent">Pourcentage (%)</option>
@@ -539,7 +552,7 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                 </div>
               )}
 
-              <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+              <div className="flex items-center justify-between pt-3 border-t border-slate-200">
                 <div>
                   <p className="text-sm font-bold text-slate-700">TVA</p>
                   <p className="text-xs text-slate-400">Appliquée après la remise</p>
@@ -553,59 +566,64 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
               )}
             </div>
 
-            <div className="rounded-2xl bg-[#001f5c] text-white p-4 space-y-2 text-sm">
+            <div className="rounded-2xl bg-[#001f5c] text-white p-5 space-y-2.5 text-sm self-start">
               <div className="flex justify-between"><span className="text-blue-200">Sous-total</span><span className="font-bold tabular-nums">{money(subtotal)}</span></div>
-              <div className="flex justify-between"><span className="text-blue-200">Remise</span><span className="font-bold tabular-nums text-amber-300">− {money(discountAmount)}</span></div>
+              <div className="flex justify-between"><span className="text-blue-200">Remise</span><span className="font-bold tabular-nums text-[#FFB800]">− {money(discountAmount)}</span></div>
               <div className="flex justify-between"><span className="text-blue-200">TVA {tvaActive ? `(${tvaRate}%)` : ''}</span><span className="font-bold tabular-nums">{money(tvaAmount)}</span></div>
-              <div className="flex justify-between pt-2 border-t border-white/20">
+              <div className="flex justify-between pt-3 border-t border-white/20">
                 <span className="font-semibold">Total à payer</span>
-                <span className="text-xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
+                <span className="text-2xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
               </div>
             </div>
           </div>
-        </section>
+        </FormSection>
 
-        {/* 5. Paiements */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-[11px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-              <Banknote className="w-3.5 h-3.5" /> Modes de paiement
-            </h4>
+        {/* 4. Paiements */}
+        <FormSection step={4} icon={Banknote} title="Modes de paiement"
+          hint="Espèces ou compte bancaire — le reste devient une dette fournisseur"
+          action={
             <button className="btn-secondary !py-1.5 !px-3 text-xs" onClick={addPay}>
               <Plus className="w-3.5 h-3.5" /> Ajouter un paiement
             </button>
-          </div>
-
+          }>
           {pays.length === 0 ? (
-            <p className="text-sm text-slate-400 rounded-xl bg-slate-50 p-4 text-center">
+            <p className="text-sm text-slate-400 rounded-xl bg-slate-50 border border-dashed border-slate-300 p-6 text-center">
               Aucun paiement — l'achat sera enregistré entièrement en dette.
             </p>
           ) : (
             <div className="space-y-2">
+              <div className="hidden lg:grid grid-cols-12 gap-3 px-3 pb-1">
+                <span className="col-span-4 text-[10px] font-black uppercase tracking-widest text-slate-400">Mode / compte</span>
+                <span className="col-span-2 text-[10px] font-black uppercase tracking-widest text-slate-400">N° chèque</span>
+                <span className="col-span-2 text-[10px] font-black uppercase tracking-widest text-slate-400">N° bordereau</span>
+                <span className="col-span-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Montant payé</span>
+                <span className="col-span-1" />
+              </div>
               {pays.map(p => (
                 <div key={p.id} className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                    <div className="sm:col-span-4">
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Mode / compte</label>
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+                    <div className="lg:col-span-4">
+                      <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Mode / compte</label>
                       <Select value={p.accountId} onChange={e => setPay(p.id, { accountId: e.target.value })}>
                         <option value={CAISSE_ID}>Espèces (caisse générale)</option>
                         {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                       </Select>
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] font-bold uppercase text-slate-400">N° chèque</label>
+                    <div className="lg:col-span-2">
+                      <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">N° chèque</label>
                       <Input value={p.chequeNumber} onChange={e => setPay(p.id, { chequeNumber: e.target.value })} placeholder="Optionnel" />
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[10px] font-bold uppercase text-slate-400">N° bordereau</label>
+                    <div className="lg:col-span-2">
+                      <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">N° bordereau</label>
                       <Input value={p.bordereauNumber} onChange={e => setPay(p.id, { bordereauNumber: e.target.value })} placeholder="Optionnel" />
                     </div>
-                    <div className="sm:col-span-3">
-                      <label className="text-[10px] font-bold uppercase text-slate-400">Montant payé</label>
-                      <Input type="number" step="0.01" value={p.amount} onChange={e => setPay(p.id, { amount: e.target.value })} placeholder="0" />
+                    <div className="lg:col-span-3">
+                      <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Montant payé</label>
+                      <Input type="number" step="0.01" value={p.amount} onChange={e => setPay(p.id, { amount: e.target.value })} placeholder="0" className="text-right font-bold" />
                     </div>
-                    <div className="sm:col-span-1 flex justify-end">
-                      <button onClick={() => rmPay(p.id)} className="w-10 h-10 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center">
+                    <div className="lg:col-span-1 flex justify-end">
+                      <button onClick={() => rmPay(p.id)} title="Retirer le paiement"
+                        className="w-10 h-10 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center">
                         <X className="w-4 h-4" />
                       </button>
                     </div>
@@ -620,7 +638,7 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
             <div className="rounded-xl bg-slate-50 p-3 text-center">
               <p className="text-[10px] uppercase font-bold text-slate-400">Total achat</p>
               <p className="font-black text-slate-700 tabular-nums">{money(total)}</p>
@@ -635,13 +653,16 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
             </div>
           </div>
           {rest > 0 && (
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3">
               L'achat sera enregistré avec le statut « {statusFor(total, paid)} » — le reste de {money(rest)} reste dû au fournisseur.
             </p>
           )}
-        </section>
+        </FormSection>
 
-        <Field label="Notes"><Textarea value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+        {/* 5. Notes */}
+        <FormSection step={5} icon={FileText} title="Observations" hint="Reprises sur la facture imprimée">
+          <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Notes internes ou mentions à imprimer…" />
+        </FormSection>
       </div>
     </Modal>
   );

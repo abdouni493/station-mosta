@@ -445,7 +445,7 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/expenses"         element={<ProtectedRoute element={<Expenses />} moduleId="Dépenses" />} />
         <Route path="/daily-report"     element={<ProtectedRoute element={<DailyReport />} moduleId="Fiche Journalière" />} />
 
-        {/* Système — trésorerie */}
+        {/* Finance — trésorerie */}
         <Route path="/caisse-generale"  element={<ProtectedRoute element={<CaisseGenerale />} moduleId="Caisse Générale" />} />
         <Route path="/bank-accounts"    element={<ProtectedRoute element={<BankAccounts />} moduleId="Comptes Bancaires" />} />
 

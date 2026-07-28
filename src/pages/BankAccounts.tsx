@@ -1,5 +1,5 @@
 /**
- * ─── Comptes Bancaires (Système) ────────────────────────────────────────────────
+ * ─── Comptes Bancaires (Finance) ────────────────────────────────────────────────
  * Bank accounts of the station. Each card shows the live solde (opening balance
  * plus every ledger movement) and offers: modifier, supprimer, transférer and
  * historique. A transfer moves money to another bank account or to the general
@@ -54,7 +54,7 @@ export default function BankAccounts() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader icon={Landmark} title="Comptes Bancaires" subtitle="Système — soldes, virements & historique"
+      <PageHeader icon={Landmark} title="Comptes Bancaires" subtitle="Finance — soldes, virements & historique"
         actions={perm.creer
           ? <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouveau compte</button>
           : undefined} />

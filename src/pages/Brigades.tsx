@@ -39,7 +39,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
@@ -1456,7 +1456,7 @@ const Brigades = () => {
                   <div className="space-y-2 p-4 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border-2 border-blue-200">
                     <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">👨‍💼 Chef de Brigade</label>
                     <select 
-                      className="input-field h-12 font-black italic border-2 border-blue-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
+                      className="input-field h-12 font-black italic border-2 border-blue-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40" 
                       value={chefId} 
                       onChange={e => setChefId(e.target.value)}
                     >
@@ -1497,7 +1497,7 @@ const Brigades = () => {
                     <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">📅 Date</label>
                     <input 
                       type="date" 
-                      className="input-field h-12 font-black italic border-2 border-blue-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
+                      className="input-field h-12 font-black italic border-2 border-blue-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40" 
                       value={shiftDate}
                       onChange={e => setShiftDate(e.target.value)}
                     />
@@ -1509,7 +1509,7 @@ const Brigades = () => {
                       <label className="text-[10px] font-black text-green-700 uppercase tracking-widest pl-1">🕐 Heure de Début</label>
                       <input 
                         type="time" 
-                        className="input-field h-12 font-black italic border-2 border-green-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
+                        className="input-field h-12 font-black italic border-2 border-green-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40" 
                         value={startTime}
                         onChange={e => setStartTime(e.target.value)}
                       />
@@ -1518,7 +1518,7 @@ const Brigades = () => {
                       <label className="text-[10px] font-black text-red-700 uppercase tracking-widest pl-1">🕕 Heure de Fin</label>
                       <input 
                         type="time" 
-                        className="input-field h-12 font-black italic border-2 border-red-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" 
+                        className="input-field h-12 font-black italic border-2 border-red-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40" 
                         value={endTime}
                         onChange={e => setEndTime(e.target.value)}
                       />
@@ -1620,11 +1620,17 @@ const Brigades = () => {
             { num: 1, label: 'Pompistes',    icon: Users },
             { num: 2, label: 'Pompes',       icon: WrenchIcon },
             { num: 3, label: 'Planning',     icon: Calendar },
-            { num: 4, label: 'Références',   icon: Database },
+            { num: 4, label: 'Départ',       icon: Database },
             { num: 5, label: 'Index fin',    icon: Droplets },
             { num: 6, label: 'Comparaison',  icon: TrendingUp },
             { num: 7, label: 'Comptabilité', icon: DollarSign },
           ];
+
+          // Pompes and pistolets are always walked from the first created to the
+          // last, so the wizard reads in the same order as the "Pompes" screen.
+          const orderedPumps = pumpsInCreationOrder(pumps);
+          const orderedNozzlesOfPump = (pumpId: string) =>
+            nozzlesInCreationOrder(pumpNozzles.filter(n => n.pumpId === pumpId));
 
           // A pompe may not be held by two pompistes at once.
           const pumpUsage: Record<string, number> = {};
@@ -1647,14 +1653,18 @@ const Brigades = () => {
           return (
             <div className="modal-shell z-[60]">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-[var(--modal-max-h)] shadow-2xl border border-slate-100">
-                {/* Header */}
-                <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex justify-between items-center shrink-0">
-                  <div>
-                    <h3 className="font-black text-xs uppercase tracking-widest italic">{editingBrigade ? '✏️ Modifier Brigade' : '➕ Nouvelle Brigade'}</h3>
-                    <p className="text-[10px] text-yellow-300 font-bold mt-1">{editingBrigade ? `Édition de la brigade ${editingBrigade.id.slice(0, 8)}` : "Création complète d'une brigade clôturée"}</p>
+              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-5xl rounded-[2rem] relative z-10 overflow-hidden flex flex-col h-[var(--modal-max-h)] shadow-2xl border border-slate-100">
+                {/* Header — same navy/yellow identity as every other modal */}
+                <div className="p-6 text-white flex justify-between items-center shrink-0 border-b-2 border-[#FFB800]/55"
+                  style={{ background: 'linear-gradient(120deg, #001233 0%, #001f5c 45%, #003087 100%)' }}>
+                  <div className="flex items-center gap-3">
+                    <div className="modal-title-icon"><Users className="w-4 h-4" /></div>
+                    <div>
+                      <h3 className="font-black text-sm uppercase tracking-widest">{editingBrigade ? 'Modifier Brigade' : 'Nouvelle Brigade'}</h3>
+                      <p className="text-[11px] text-blue-200 font-bold mt-0.5">{editingBrigade ? `Édition de la brigade ${editingBrigade.id.slice(0, 8)}` : "Création complète d'une brigade clôturée"}</p>
+                    </div>
                   </div>
-                  <button onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="hover:bg-white/20 p-2 rounded-lg transition-all"><X className="w-6 h-6" /></button>
+                  <button onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="modal-close"><X className="w-5 h-5" /></button>
                 </div>
 
                 {/* Progress Bar */}
@@ -1670,11 +1680,14 @@ const Brigades = () => {
                             <motion.div
                               initial={false}
                               animate={{ scale: isActive ? 1.1 : 1 }}
-                              className={cn("w-9 h-9 rounded-full flex items-center justify-center font-black text-xs mb-1.5 transition-all", isActive || isCompleted ? "bg-gradient-to-br from-yellow-400 to-yellow-500 text-blue-900 shadow-lg" : "bg-slate-100 text-slate-400")}
+                              className={cn("w-9 h-9 rounded-full flex items-center justify-center font-black text-xs mb-1.5 transition-all",
+                                isActive || isCompleted
+                                  ? "bg-gradient-to-br from-[#FFB800] to-[#e6a000] text-[#001f5c] shadow-lg shadow-[#FFB800]/40"
+                                  : "bg-slate-100 text-slate-400")}
                             >
                               {isCompleted ? <Check className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
                             </motion.div>
-                            <p className="text-[9px] font-bold text-center text-slate-500">{s.label}</p>
+                            <p className={cn("text-[9px] font-black text-center uppercase tracking-wider", isActive ? "text-[#002d87]" : "text-slate-400")}>{s.label}</p>
                           </div>
                           {idx < STEPS.length - 1 && (
                             <motion.div
@@ -1696,7 +1709,7 @@ const Brigades = () => {
                   {step === 1 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
                       <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">
+                        <label className="text-[10px] font-black text-[#002d87] uppercase tracking-widest pl-1">
                           Pompistes travaillant sur cette brigade
                         </label>
                         <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-black">
@@ -1719,23 +1732,23 @@ const Brigades = () => {
                               whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
                               onClick={() => setWizPompisteIds(prev => on ? prev.filter(x => x !== p.id) : [...prev, p.id])}
                               className={cn("p-4 rounded-2xl border-2 transition-all text-left",
-                                on ? "border-yellow-400 bg-gradient-to-br from-yellow-50 to-yellow-100 shadow-md" : "border-slate-200 hover:border-yellow-400 bg-white")}
+                                on ? "border-[#FFB800] bg-[#fff8e6] shadow-md" : "border-slate-200 hover:border-[#FFB800] bg-white")}
                             >
                               <div className="flex items-center gap-3">
                                 <div className={cn("w-11 h-11 rounded-full flex items-center justify-center font-black text-lg flex-shrink-0",
-                                  on ? "bg-gradient-to-br from-yellow-500 to-yellow-600 text-white" : "bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-300")}>
+                                  on ? "bg-gradient-to-br from-[#FFB800] to-[#e6a000] text-[#001f5c]" : "bg-gradient-to-br from-[#001f5c] to-[#003087] text-[#FFB800]")}>
                                   {p.name[0]}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className={cn("text-sm font-black truncate", on ? "text-yellow-900" : "text-slate-800")}>{p.name}</p>
+                                  <p className={cn("text-sm font-black truncate", on ? "text-[#002d87]" : "text-slate-800")}>{p.name}</p>
                                   <p className="text-[10px] text-slate-500">Tel: {p.phone || 'N/A'}</p>
                                   {on && (
-                                    <p className="text-[10px] font-bold text-blue-700 mt-0.5">
+                                    <p className="text-[10px] font-bold text-[#002d87] mt-0.5">
                                       {pumpsOf(p.id).length} pompe(s) affectée(s)
                                     </p>
                                   )}
                                 </div>
-                                {on && <CheckCircle className="w-5 h-5 text-yellow-500 flex-shrink-0" />}
+                                {on && <CheckCircle className="w-5 h-5 text-[#e6a000] flex-shrink-0" />}
                               </div>
                             </motion.button>
                           );
@@ -1753,7 +1766,7 @@ const Brigades = () => {
                   {/* STEP 2: Pompes tenues par chaque pompiste (plusieurs possibles) */}
                   {step === 2 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                      <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest pl-1">
+                      <label className="text-[10px] font-black text-[#002d87] uppercase tracking-widest pl-1">
                         Pompes de chaque pompiste
                       </label>
 
@@ -1774,8 +1787,8 @@ const Brigades = () => {
                           return (
                             <div key={pid} className={cn("p-4 rounded-2xl border-2", isAbsent ? "border-red-200 bg-red-50/50 opacity-75" : "border-slate-200 bg-white")}>
                               <div className="flex items-center gap-3 mb-3">
-                                <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-black text-white flex-shrink-0",
-                                  isAbsent ? "bg-red-400" : "bg-gradient-to-br from-blue-700 to-blue-900")}>
+                                <div className={cn("w-10 h-10 rounded-full flex items-center justify-center font-black flex-shrink-0",
+                                  isAbsent ? "bg-red-400 text-white" : "bg-gradient-to-br from-[#001f5c] to-[#003087] text-[#FFB800]")}>
                                   {pompiste?.name?.[0] || '?'}
                                 </div>
                                 <div className="flex-1">
@@ -1795,10 +1808,10 @@ const Brigades = () => {
                               {!isAbsent && (
                                 <div>
                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
-                                    Pompes tenues (plusieurs possibles)
+                                    Pompes tenues (plusieurs possibles) — de la première créée à la dernière
                                   </label>
                                   <div className="flex flex-wrap gap-2">
-                                    {pumps.map(pump => {
+                                    {orderedPumps.map(pump => {
                                       const on = mine.includes(pump.id);
                                       const takenByOther = !on && Object.keys(pompistePumps)
                                         .some(other => other !== pid && (pompistePumps[other] || []).includes(pump.id));
@@ -1813,13 +1826,13 @@ const Brigades = () => {
                                             [pid]: on ? mine.filter(x => x !== pump.id) : [...mine, pump.id],
                                           }))}
                                           className={cn("px-3 py-2 rounded-xl text-xs font-bold border-2 transition-all text-left",
-                                            on ? "bg-blue-900 text-white border-blue-900"
+                                            on ? "bg-[#001f5c] text-white border-[#001f5c] shadow-sm"
                                                : takenByOther ? "bg-slate-100 text-slate-300 border-slate-100 cursor-not-allowed"
-                                               : "bg-white text-slate-600 border-slate-200 hover:border-blue-400")}
+                                               : "bg-white text-slate-600 border-slate-200 hover:border-[#003087]")}
                                           title={takenByOther ? "Déjà tenue par un autre pompiste" : undefined}
                                         >
                                           {pump.number} · {pump.name}
-                                          <span className={cn("block text-[9px] font-medium", on ? "text-blue-200" : "text-slate-400")}>
+                                          <span className={cn("block text-[9px] font-medium", on ? "text-[#FFB800]" : "text-slate-400")}>
                                             {cuves || 'aucune cuve'}
                                           </span>
                                         </button>
@@ -1842,7 +1855,7 @@ const Brigades = () => {
                       {/* Start */}
                       <div className="space-y-3 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border-2 border-green-200">
                         <label className="text-[10px] font-black text-green-800 uppercase tracking-widest pl-1">📅 Date de début</label>
-                        <input type="date" className="input-field h-12 font-black italic border-2 border-green-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                        <input type="date" className="input-field h-12 font-black italic border-2 border-green-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40" value={startDate} onChange={e => setStartDate(e.target.value)} />
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="text-[9px] font-black text-green-700 uppercase tracking-widest pl-1 mb-1 block">Heure</label>
@@ -1860,7 +1873,7 @@ const Brigades = () => {
                       {/* End */}
                       <div className="space-y-3 p-4 bg-gradient-to-br from-red-50 to-pink-50 rounded-2xl border-2 border-red-200">
                         <label className="text-[10px] font-black text-red-800 uppercase tracking-widest pl-1">📅 Date de fin</label>
-                        <input type="date" className="input-field h-12 font-black italic border-2 border-red-300 focus:border-yellow-400 focus:ring-2 focus:ring-yellow-300" value={endDate} onChange={e => setEndDate(e.target.value)} />
+                        <input type="date" className="input-field h-12 font-black italic border-2 border-red-300 focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/40" value={endDate} onChange={e => setEndDate(e.target.value)} />
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="text-[9px] font-black text-red-700 uppercase tracking-widest pl-1 mb-1 block">Heure</label>
@@ -1877,16 +1890,17 @@ const Brigades = () => {
                     </motion.div>
                   )}
 
-                  {/* STEP 4: Niveaux actuels (read-only) */}
+                  {/* STEP 4 « Départ » : niveaux et index de début (read-only) */}
                   {step === 4 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-                      <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] font-bold text-blue-700">
+                      <div className="p-3 bg-[#eef3fc] rounded-xl border border-[#003087]/15 text-[11px] font-bold text-[#002d87]">
                         ℹ️ Ces valeurs sont issues du système. Elles seront utilisées comme référence de début de brigade.
                       </div>
 
                       {/* Section A — Tanks */}
                       <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Niveaux actuels des cuves</h4>
+                        <h4 className="text-[10px] font-black text-[#002d87] uppercase tracking-widest">Niveaux de départ des cuves</h4>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                         {tanks.map(t => {
                           const startLit = startTankLiters(t);
                           const pct = t.capacity > 0 ? Math.min(100, (startLit / t.capacity) * 100) : 0;
@@ -1912,67 +1926,89 @@ const Brigades = () => {
                             </div>
                           );
                         })}
+                        </div>
+                        {tanks.length === 0 && (
+                          <p className="text-xs text-slate-400 italic">Aucune cuve configurée.</p>
+                        )}
                       </div>
 
-                      {/* Section B — Nozzles grouped track → pump → nozzle */}
+                      {/* Section B — Index de début, pompe par pompe (ordre de création) */}
                       <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Index actuels des pistolets (par piste → pompe → pistolet)</h4>
-                        {tracks.map(track => {
-                          const trackPumps = pumps.filter(p => p.trackId === track.id);
-                          if (trackPumps.length === 0) return null;
+                        <h4 className="text-[10px] font-black text-[#002d87] uppercase tracking-widest">
+                          Index de départ des pistolets — de la première pompe créée à la dernière
+                        </h4>
+                        {orderedPumps.map((pump, pumpIdx) => {
+                          const nozzles = orderedNozzlesOfPump(pump.id);
+                          if (nozzles.length === 0) return null;
+                          const cuves = pumpTankIds(pump.id, pumpNozzles, pumps)
+                            .map(id => tanks.find(t => t.id === id)?.name).filter(Boolean).join(', ');
                           return (
-                            <div key={track.id} className="p-3 rounded-2xl border-2 border-slate-100 bg-slate-50/50">
-                              <p className="text-[10px] font-black text-slate-600 uppercase mb-2">🛣 {track.name}</p>
-                              <div className="space-y-2">
-                                {trackPumps.map(pump => {
-                                  const nozzles = pumpNozzles.filter(n => n.pumpId === pump.id);
-                                  return nozzles.map(n => (
-                                    <div key={n.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-100">
-                                      <div className="flex items-center gap-2">
-                                        <span className={cn("w-2 h-2 rounded-full", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
-                                        <div>
-                                          <p className="text-xs font-black text-slate-800">{n.name}</p>
-                                          <p className="text-[9px] text-slate-400">{pump.name}</p>
-                                        </div>
-                                      </div>
-                                      <div className="text-right">
-                                        <p className="text-sm font-black text-blue-700 tabular-nums">{startNozzleIdx(n).toLocaleString('fr-FR')}</p>
-                                        <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase", n.status === 'Actif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400')}>{n.status}</span>
+                            <div key={pump.id} className="rounded-2xl border-2 border-slate-100 bg-slate-50/60 overflow-hidden">
+                              <div className="flex items-center gap-2.5 px-3 py-2.5 bg-white border-b border-slate-100">
+                                <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[10px] font-black shrink-0">
+                                  {pumpIdx + 1}
+                                </span>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-black text-slate-800 truncate">Pompe {pump.number} · {pump.name}</p>
+                                  <p className="text-[9px] text-slate-400 truncate">{cuves || 'aucune cuve'}</p>
+                                </div>
+                              </div>
+                              <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                {nozzles.map(n => (
+                                  <div key={n.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-100">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className={cn("w-2 h-2 rounded-full shrink-0", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-black text-slate-800 truncate">{n.name}</p>
+                                        <p className="text-[9px] text-slate-400 truncate">{tanks.find(t => t.id === nozzleTankId(n, pumps))?.name || '—'}</p>
                                       </div>
                                     </div>
-                                  ));
-                                })}
+                                    <div className="text-right shrink-0 pl-2">
+                                      <p className="text-sm font-black text-[#002d87] tabular-nums">{startNozzleIdx(n).toLocaleString('fr-FR')}</p>
+                                      <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase", n.status === 'Actif' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400')}>{n.status}</span>
+                                    </div>
+                                  </div>
+                                ))}
                               </div>
                             </div>
                           );
                         })}
+                        {pumpNozzles.length === 0 && (
+                          <p className="text-xs text-slate-400 italic">Aucun pistolet configuré — ajoutez-les depuis « Pompes ».</p>
+                        )}
                       </div>
                     </motion.div>
                   )}
 
                   {/* STEP 5: Index de fin des pistolets
                       Les niveaux de cuve ne sont plus saisis ici : seuls les index
-                      des pistolets le sont, groupés par cuve. La touche Entrée fait
-                      passer au pistolet suivant. */}
+                      des pistolets le sont, groupés par pompe — de la première
+                      pompe créée à la dernière. La touche Entrée fait passer au
+                      pistolet suivant. */}
                   {step === 5 && (
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-                      <div className="p-3 bg-blue-50 rounded-xl border border-blue-200 text-[11px] font-bold text-blue-700">
-                        Saisissez uniquement les index de fin des pistolets. Appuyez sur
-                        <span className="mx-1 px-1.5 py-0.5 bg-white border border-blue-200 rounded">Entrée</span>
+                      <div className="p-3 bg-[#eef3fc] rounded-xl border border-[#003087]/15 text-[11px] font-bold text-[#002d87]">
+                        Saisissez uniquement les index de fin des pistolets, pompe par pompe. Appuyez sur
+                        <span className="mx-1 px-1.5 py-0.5 bg-white border border-[#003087]/20 rounded">Entrée</span>
                         pour passer automatiquement au pistolet suivant.
                       </div>
 
                       <div className="space-y-3">
                         {(() => {
-                          // Flat, ordered list of the inputs so Enter can jump to the next one.
+                          // One group per pompe, from the first created to the last, with
+                          // its pistolets in creation order. `ordered` is the flat list the
+                          // Enter key walks, so the focus follows exactly what is on screen.
                           const ordered: string[] = [];
-                          const groups = tanks.map(tank => {
-                            const list = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === tank.id);
+                          const groups = orderedPumps.map(pump => {
+                            const list = orderedNozzlesOfPump(pump.id).filter(n => n.status === 'Actif');
                             list.forEach(n => ordered.push(n.id));
-                            return { tank, list };
+                            return { pump, list };
                           }).filter(g => g.list.length > 0);
 
-                          const orphans = pumpNozzles.filter(n => n.status === 'Actif' && !nozzleTankId(n, pumps));
+                          // Pistolets attached to no known pompe — never silently dropped.
+                          const knownPumpIds = new Set(pumps.map(p => p.id));
+                          const orphans = nozzlesInCreationOrder(
+                            pumpNozzles.filter(n => n.status === 'Actif' && !knownPumpIds.has(n.pumpId)));
                           orphans.forEach(n => ordered.push(n.id));
 
                           const focusNext = (nozzleId: string) => {
@@ -1988,7 +2024,8 @@ const Brigades = () => {
                             const err = nozzleEndError(n.id);
                             const val = wizEndNozzleIndices[n.id];
                             const startIdx = startNozzleIdx(n);
-                            const pump = pumps.find(pp => pp.id === n.pumpId);
+                            const tankName = tanks.find(t => t.id === nozzleTankId(n, pumps))?.name;
+                            const sold = typeof val === 'number' && val >= startIdx ? val - startIdx : null;
                             return (
                               <div key={n.id} className={cn("p-2.5 bg-white rounded-lg border transition-colors", err ? "border-red-300" : "border-slate-100")}>
                                 <div className="flex items-center gap-3">
@@ -2000,7 +2037,10 @@ const Brigades = () => {
                                     >
                                       {n.name}
                                     </motion.p>
-                                    <p className="text-[9px] text-slate-400">{pump?.name || pump?.number || '—'} · Début: {startIdx.toLocaleString('fr-FR')}</p>
+                                    <p className="text-[9px] text-slate-400 truncate">
+                                      {tankName ? `${tankName} · ` : ''}Début: {startIdx.toLocaleString('fr-FR')}
+                                      {sold !== null && <span className="text-[#002d87] font-bold"> · {sold.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</span>}
+                                    </p>
                                   </div>
                                   <input
                                     id={`nozzle-idx-${n.id}`}
@@ -2038,16 +2078,33 @@ const Brigades = () => {
 
                           return (
                             <>
-                              {groups.map(({ tank, list }) => (
-                                <div key={tank.id} className="p-3 rounded-2xl border-2 border-slate-100 bg-slate-50/50">
-                                  <p className="text-[10px] font-black text-slate-600 uppercase mb-2">{tank.name} · {tank.type}</p>
-                                  <div className="space-y-2">{list.map(renderNozzle)}</div>
-                                </div>
-                              ))}
+                              {groups.map(({ pump, list }, pumpIdx) => {
+                                const filled = list.filter(n => typeof wizEndNozzleIndices[n.id] === 'number').length;
+                                const cuves = pumpTankIds(pump.id, pumpNozzles, pumps)
+                                  .map(id => tanks.find(t => t.id === id)?.name).filter(Boolean).join(', ');
+                                return (
+                                  <div key={pump.id} className="rounded-2xl border-2 border-slate-100 bg-slate-50/60 overflow-hidden">
+                                    <div className="flex items-center gap-2.5 px-3 py-2.5 bg-white border-b border-slate-100">
+                                      <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[10px] font-black shrink-0">
+                                        {pumpIdx + 1}
+                                      </span>
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-xs font-black text-slate-800 truncate">Pompe {pump.number} · {pump.name}</p>
+                                        <p className="text-[9px] text-slate-400 truncate">{cuves || 'aucune cuve'}</p>
+                                      </div>
+                                      <span className={cn("text-[9px] font-black px-2 py-1 rounded-full shrink-0",
+                                        filled === list.length ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500")}>
+                                        {filled}/{list.length}
+                                      </span>
+                                    </div>
+                                    <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">{list.map(renderNozzle)}</div>
+                                  </div>
+                                );
+                              })}
                               {orphans.length > 0 && (
                                 <div className="p-3 rounded-2xl border-2 border-amber-200 bg-amber-50/50">
-                                  <p className="text-[10px] font-black text-amber-700 uppercase mb-2">Pistolets sans cuve — à corriger dans « Pompes »</p>
-                                  <div className="space-y-2">{orphans.map(renderNozzle)}</div>
+                                  <p className="text-[10px] font-black text-amber-700 uppercase mb-2">Pistolets sans pompe — à corriger dans « Pompes »</p>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{orphans.map(renderNozzle)}</div>
                                 </div>
                               )}
                             </>
@@ -2103,7 +2160,7 @@ const Brigades = () => {
                     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
                       {/* SUB-SECTION A: Résumé des ventes par piste */}
                       <div className="space-y-2">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Résumé des ventes par piste</h4>
+                        <h4 className="text-[10px] font-black text-[#002d87] uppercase tracking-widest">Résumé des ventes par piste</h4>
                         <div className="overflow-x-auto rounded-2xl border-2 border-slate-100">
                           <table className="w-full text-left text-[11px]">
                             <thead className="bg-slate-50 text-slate-500 uppercase text-[9px] font-black">
@@ -2123,7 +2180,7 @@ const Brigades = () => {
                                   <td className="px-3 py-2 text-right tabular-nums text-blue-700">{s.theoretical.toLocaleString('fr-FR', { maximumFractionDigits: 0 })}</td>
                                 </tr>
                               ))}
-                              <tr className="bg-blue-50 font-black text-blue-900">
+                              <tr className="bg-[#eef3fc] font-black text-[#002d87]">
                                 <td className="px-3 py-2" colSpan={5}>TOTAL</td>
                                 <td className="px-3 py-2 text-right tabular-nums">{pompisteSales.reduce((s, x) => s + x.theoretical, 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</td>
                               </tr>
@@ -2134,7 +2191,7 @@ const Brigades = () => {
 
                       {/* SUB-SECTION B: Encaissements par pompiste */}
                       <div className="space-y-3">
-                        <h4 className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Saisie des encaissements par pompiste</h4>
+                        <h4 className="text-[10px] font-black text-[#002d87] uppercase tracking-widest">Saisie des encaissements par pompiste</h4>
                         {pompisteSales.map(s => {
                           const myVersements = versements[s.pompisteId] || [];
                           const versedTotal = myVersements.reduce((sum, v) => sum + (v.amount || 0), 0);
@@ -2166,7 +2223,7 @@ const Brigades = () => {
                             <div key={s.pompisteId} className="p-4 rounded-2xl border-2 border-slate-200 bg-white space-y-3">
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
-                                  <div className="w-8 h-8 rounded-lg bg-blue-900 text-yellow-300 flex items-center justify-center font-black text-xs">{s.name[0]}</div>
+                                  <div className="w-8 h-8 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center font-black text-xs">{s.name[0]}</div>
                                   <p className="text-sm font-black text-slate-800">{s.name}</p>
                                 </div>
                                 <p className="text-[10px] font-black text-blue-700">Théorique: {s.theoretical.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
@@ -2241,7 +2298,7 @@ const Brigades = () => {
                                 {/* Un TPE par compte bancaire : l'argent justifié part vers CE compte. */}
                                 {bankAccounts.length === 0 ? (
                                   <span className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-[10px] font-black uppercase"
-                                    title="Créez un compte bancaire dans Système → Comptes Bancaires">
+                                    title="Créez un compte bancaire dans Finance → Comptes Bancaires">
                                     TPE — aucun compte bancaire
                                   </span>
                                 ) : bankAccounts.map(acc => (
@@ -2293,7 +2350,7 @@ const Brigades = () => {
                                 const isAvance = showNewClientForm === `new-avance-${s.pompisteId}`;
                                 return (
                                   <div className="p-3 rounded-xl border-2 border-blue-100 bg-blue-50/50 space-y-2">
-                                    <p className="text-[10px] font-black text-blue-900 uppercase">Nouveau client</p>
+                                    <p className="text-[10px] font-black text-[#002d87] uppercase">Nouveau client</p>
                                     <input placeholder="Nom" value={newClientDraft.name} onChange={e => setNewClientDraft(d => ({ ...d, name: e.target.value }))} className="w-full input-field h-9 text-xs font-bold" />
                                     <input placeholder="Téléphone" value={newClientDraft.phone} onChange={e => setNewClientDraft(d => ({ ...d, phone: e.target.value }))} className="w-full input-field h-9 text-xs font-bold" />
                                     <div className="grid grid-cols-2 gap-2">
@@ -2312,7 +2369,7 @@ const Brigades = () => {
                                         dispatch({ type: 'ADD_CLIENT', payload: nc });
                                         addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: nc.id, clientName: nc.name, clientRestCredit: 0 });
                                         setShowNewClientForm(null);
-                                      }} className="flex-1 py-2 rounded-lg bg-blue-900 text-white text-[10px] font-black uppercase">Créer & ajouter</button>
+                                      }} className="flex-1 py-2 rounded-lg bg-[#001f5c] text-white text-[10px] font-black uppercase">Créer & ajouter</button>
                                     </div>
                                   </div>
                                 );
@@ -2409,10 +2466,10 @@ const Brigades = () => {
                         const totalJust = pompisteSales.reduce((s, x) => s + (pompisteJustifications[x.pompisteId] || []).reduce((a, j) => a + (j.amount || 0), 0), 0);
                         const solde = totalTheo - totalCash - totalJust;
                         return (
-                          <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-900 to-blue-800 text-white space-y-2">
-                            <h4 className="text-[10px] font-black text-yellow-300 uppercase tracking-widest">Récapitulatif final</h4>
+                          <div className="p-4 rounded-2xl bg-gradient-to-br from-[#001f5c] to-[#003087] text-white space-y-2">
+                            <h4 className="text-[10px] font-black text-[#FFB800] uppercase tracking-widest">Récapitulatif final</h4>
                             <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
-                              <p>Total théorique:</p><p className="text-right text-yellow-300 font-black">{totalTheo.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
+                              <p>Total théorique:</p><p className="text-right text-[#FFB800] font-black">{totalTheo.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               <p>Total espèces:</p><p className="text-right font-black">{totalCash.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               <p>Total justifications:</p><p className="text-right font-black">{totalJust.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               <p>Solde restant:</p><p className={cn("text-right font-black", Math.abs(solde) < 0.01 ? "text-green-300" : "text-red-300")}>{solde.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
@@ -2424,16 +2481,17 @@ const Brigades = () => {
                   )}
                 </div>
 
-                {/* Footer */}
-                <div className="p-6 bg-gradient-to-r from-slate-50 to-yellow-50 border-t border-slate-200 flex gap-4 shrink-0">
+                {/* Footer — the app's own primary/outline buttons */}
+                <div className="px-6 py-4 bg-gradient-to-b from-slate-50/85 to-slate-50 border-t border-slate-200 flex items-center gap-3 shrink-0">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-auto hidden sm:block">
+                    Étape {step} / {STEPS.length} — {STEPS[step - 1]?.label}
+                  </span>
                   {step > 1 && (
-                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setStep(s => s - 1)} disabled={isSubmitting}
-                      className="flex-1 text-[10px] font-black uppercase text-blue-900 italic hover:text-blue-800 transition-colors disabled:opacity-50 border-2 border-blue-900 rounded-lg py-3 hover:bg-white bg-gradient-to-r from-white to-yellow-50">
-                      ← Retour
-                    </motion.button>
+                    <button onClick={() => setStep(s => s - 1)} disabled={isSubmitting} className="btn-outline">
+                      Retour
+                    </button>
                   )}
-                  <motion.button
-                    whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+                  <button
                     onClick={() => {
                       if (step === 7) {
                         handleStartBrigade();
@@ -2452,10 +2510,10 @@ const Brigades = () => {
                       }
                     }}
                     disabled={isSubmitting || !canGoNext}
-                    className="flex-[2] bg-gradient-to-r from-blue-900 to-blue-800 hover:shadow-lg text-white font-black uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2 rounded-lg py-3 transition-all transform hover:-translate-y-0.5 text-[10px]"
+                    className="btn-primary min-w-[13rem] text-[11px]"
                   >
                     {isSubmitting ? (<><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>) : step < 7 ? (<>Suivant <ArrowRight className="w-4 h-4" /></>) : (editingBrigade ? 'Mettre à jour' : 'Créer la Brigade')}
-                  </motion.button>
+                  </button>
                 </div>
               </motion.div>
             </div>

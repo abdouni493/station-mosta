@@ -103,6 +103,17 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
     items: [{ label: "Tableau de Bord", icon: LayoutDashboard, path: "/dashboard", moduleId: "Tableau de bord" }]
   },
   {
+    // Finance = cross-activity treasury + the consolidated report. It sits
+    // directly under the dashboard because every part feeds into it. Every
+    // other former "(Station)" screen lives inside its own part.
+    id: "finance", label: "Finance",
+    items: [
+      { label: "Caisse Générale",      icon: PiggyBank,    path: "/caisse-generale",  moduleId: "Caisse Générale" },
+      { label: "Comptes Bancaires",    icon: Landmark,     path: "/bank-accounts",    moduleId: "Comptes Bancaires" },
+      { label: "Rapports Généraux",    icon: FileBarChart, path: "/general-reports" },
+    ]
+  },
+  {
     id: "carburant", label: "Carburant",
     items: [
       { label: "Brigades",           icon: Target,       path: "/brigades",        moduleId: "Brigades" },
@@ -121,16 +132,6 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
   },
   buildModuleNavGroup("cafeteria"),
   buildModuleNavGroup("lavage"),
-  {
-    // Système = cross-activity treasury + the consolidated report. Every other
-    // former "(Station)" screen lives inside its own part.
-    id: "systeme", label: "Système",
-    items: [
-      { label: "Caisse Générale",      icon: PiggyBank,    path: "/caisse-generale",  moduleId: "Caisse Générale" },
-      { label: "Comptes Bancaires",    icon: Landmark,     path: "/bank-accounts",    moduleId: "Comptes Bancaires" },
-      { label: "Rapports Généraux",    icon: FileBarChart, path: "/general-reports" },
-    ]
-  },
 ];
 
 // --- Worker nav (permission-driven) ---
@@ -318,6 +319,7 @@ const LABEL_KEYS: Record<string, string> = {
 };
 const GROUP_KEYS: Record<string, string> = {
   "Opérations": "sections.operations",
+  "Finance": "sections.finances",
   "Carburant": "sections.fuel",
   "Magasin": "sections.magasin",
   "Contacts": "sections.contacts",
@@ -346,7 +348,7 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
   const isRtl = i18n.dir() === "rtl";
   const trLabel = (label: string) => (LABEL_KEYS[label] ? t(LABEL_KEYS[label]) : label);
   const trGroup = (label?: string) => (label && GROUP_KEYS[label] ? t(GROUP_KEYS[label]) : label);
-  const [expandedGroups, setExpandedGroups] = useState<string[]>(["dashboard", "carburant"]);
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(["dashboard", "finance", "carburant"]);
 
   const { pompistes, brigadeChefs, gerants, magasinWorkers, users, settings } = useAppState();
 

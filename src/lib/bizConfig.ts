@@ -80,6 +80,7 @@ export interface BizLineItem {
   productName: string;
   /** Quantity in packaged units — fractional when sold au détail. */
   qty: number;
+  /** Unit price of the line: purchase price on an achat, sale price on a vente. */
   unitPrice: number;
   minQty?: number;
   hasExpiration?: boolean;
@@ -88,6 +89,17 @@ export interface BizLineItem {
   /** Set when the line was sold au détail: quantity in `detailUnit`. */
   detailQty?: number;
   detailUnit?: string;
+  // ── Purchase lines only ──────────────────────────────────────────────────
+  // An achat is where a product's commercial settings are (re)decided, so the
+  // line carries them and writes them back onto the product when it is saved.
+  /** New sale price of one packaged unit. */
+  salePrice?: number;
+  /** Whether the product is sold au détail — mirrored from the product. */
+  sellByDetail?: boolean;
+  /** How much one packaged unit holds, in `detailUnit`. */
+  detailCapacity?: number;
+  /** New sale price of ONE detail unit (only when `sellByDetail`). */
+  detailSalePrice?: number;
 }
 
 export interface BizPurchase {
