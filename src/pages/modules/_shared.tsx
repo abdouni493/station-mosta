@@ -471,6 +471,116 @@ export function printInvoice(opts: PrintInvoiceOptions) {
   win.document.close();
 }
 
+// ─── Payment receipt (reçu de règlement) ────────────────────────────────────────
+/**
+ * Receipt handed to a client (or kept by the station) when a debt instalment is
+ * collected. Same visual language as `printInvoice`, but the body is the
+ * movement itself — dette avant → montant réglé → dette après — instead of a
+ * list of articles.
+ */
+export interface PrintReceiptOptions {
+  /** Document title, e.g. "Reçu de règlement". */
+  title?: string;
+  /** Receipt number printed top-right. */
+  ref: string;
+  date: string;
+  station?: PrintStation;
+  party?: { label: string; name: string; phone?: string; address?: string };
+  /** Extra blocks under the party (N° facture, encaissé par…). */
+  info?: { label: string; value: string }[];
+  amount: number;
+  /** Payment mode: Espèces / Chèque / Virement. */
+  mode?: string;
+  /** Cheque or transfer number. */
+  reference?: string;
+  /** Debt before and after the payment, printed as the receipt's summary. */
+  debtBefore?: number;
+  debtAfter?: number;
+  notes?: string;
+  footerNote?: string;
+}
+
+export function printPaymentReceipt(opts: PrintReceiptOptions) {
+  const st = opts.station || {};
+  const stationName = st.name || 'altech station';
+  const title = opts.title || 'Reçu de règlement';
+
+  const infoBlocks = (opts.info || []).filter(i => i.value).map(i => `
+    <div style="background:#f8fafc;border-radius:10px;padding:10px 14px">
+      <p style="margin:0;font-size:10px;text-transform:uppercase;color:#94a3b8;font-weight:700">${esc(i.label)}</p>
+      <p style="margin:3px 0 0;font-weight:700;font-size:13px">${esc(i.value)}</p>
+    </div>`).join('');
+
+  const row = (label: string, value: string, color = '#1e293b', extra = '') =>
+    `<div style="display:flex;justify-content:space-between;padding:8px 0;color:${color};${extra}">
+       <span>${esc(label)}</span><strong>${value} DA</strong></div>`;
+
+  const win = window.open('', '_blank', 'width=820,height=920');
+  if (!win) return;
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)} ${esc(opts.ref)}</title></head>
+    <body style="font-family:Arial,Helvetica,sans-serif;color:#1e293b;padding:32px;max-width:760px;margin:auto">
+
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #003087;padding-bottom:16px;margin-bottom:18px;gap:16px">
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          ${st.logoUrl ? `<img src="${esc(st.logoUrl)}" alt="" style="width:58px;height:58px;object-fit:cover;border-radius:12px">` : ''}
+          <div>
+            <h1 style="margin:0;color:#003087;font-size:21px">${esc(stationName)}</h1>
+            ${st.address ? `<p style="margin:3px 0 0;color:#64748b;font-size:12px">${esc(st.address)}</p>` : ''}
+            ${st.phone ? `<p style="margin:2px 0 0;color:#64748b;font-size:12px">Tél: ${esc(st.phone)}</p>` : ''}
+            ${(st.fiscalId || st.rc) ? `<p style="margin:2px 0 0;color:#94a3b8;font-size:11px">
+              ${st.fiscalId ? `NIF: ${esc(st.fiscalId)}` : ''}${st.fiscalId && st.rc ? ' • ' : ''}${st.rc ? `RC: ${esc(st.rc)}` : ''}</p>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <h2 style="margin:0;color:#FFB800;font-size:19px">${esc(title)}</h2>
+          <p style="margin:4px 0 0;font-weight:700">${esc(opts.ref)}</p>
+          <p style="margin:2px 0 0;color:#64748b;font-size:12px">${new Date(opts.date).toLocaleString('fr-DZ')}</p>
+        </div>
+      </div>
+
+      ${opts.party ? `<div style="background:#f8fafc;border-radius:10px;padding:14px;margin-bottom:12px">
+        <p style="margin:0;font-size:11px;text-transform:uppercase;color:#94a3b8;font-weight:700">${esc(opts.party.label)}</p>
+        <p style="margin:4px 0 0;font-weight:700;font-size:15px">${esc(opts.party.name)}</p>
+        ${opts.party.phone ? `<p style="margin:2px 0 0;color:#64748b;font-size:13px">Tél: ${esc(opts.party.phone)}</p>` : ''}
+        ${opts.party.address ? `<p style="margin:2px 0 0;color:#64748b;font-size:13px">${esc(opts.party.address)}</p>` : ''}
+      </div>` : ''}
+
+      ${infoBlocks ? `<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:16px">${infoBlocks}</div>` : ''}
+
+      <!-- Le montant encaissé : l'information principale du reçu -->
+      <div style="background:#003087;color:#fff;border-radius:12px;padding:20px 24px;display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div>
+          <p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#bfdbfe;font-weight:700">Montant encaissé</p>
+          <p style="margin:6px 0 0;font-size:12px;color:#bfdbfe">
+            ${esc(opts.mode || 'Espèces')}${opts.reference ? ` — ${esc(opts.reference)}` : ''}
+          </p>
+        </div>
+        <span style="font-size:30px;font-weight:800;color:#FFB800">${dz(opts.amount)} DA</span>
+      </div>
+
+      ${(opts.debtBefore !== undefined || opts.debtAfter !== undefined) ? `
+        <div style="margin-left:auto;width:300px;font-size:13px">
+          ${opts.debtBefore !== undefined ? row('Dette avant règlement', dz(opts.debtBefore), '#64748b') : ''}
+          ${row('Montant réglé', `- ${dz(opts.amount)}`, '#059669')}
+          ${opts.debtAfter !== undefined ? row('Reste dû', dz(opts.debtAfter), '#dc2626', 'border-top:2px solid #003087;font-size:15px') : ''}
+        </div>` : ''}
+
+      ${opts.notes ? `<div style="margin-top:18px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px">
+        <p style="margin:0;font-size:11px;text-transform:uppercase;color:#b45309;font-weight:700">Observations</p>
+        <p style="margin:4px 0 0;font-size:13px">${esc(opts.notes)}</p></div>` : ''}
+
+      <div style="display:flex;justify-content:space-between;margin-top:56px">
+        <div style="text-align:center"><div style="border-top:1px solid #94a3b8;width:180px;padding-top:6px;font-size:12px;color:#64748b">Signature Client</div></div>
+        <div style="text-align:center"><div style="border-top:1px solid #94a3b8;width:180px;padding-top:6px;font-size:12px;color:#64748b">Cachet &amp; Signature</div></div>
+      </div>
+      <p style="margin-top:26px;text-align:center;color:#94a3b8;font-size:11px">
+        ${esc(opts.footerNote || `${stationName} — Reçu faisant foi de règlement.`)}</p>
+
+      <script>window.onload=()=>window.print()</script>
+    </body></html>`);
+  win.document.close();
+}
+
 // ─── "Imprimer la facture ?" prompt ─────────────────────────────────────────────
 /**
  * Small confirmation shown right after a sale / lavage / réparation is saved, so

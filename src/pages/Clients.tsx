@@ -44,11 +44,19 @@ import { useAppState, useAppDispatch, useModulePermission, Client } from "../sto
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
+import { printPaymentReceipt, stationFromSettings } from "./modules/_shared";
+
+/** Receipt number of a debt payment, derived from its transaction id. */
+const receiptRef = (txId: string) => `REG-${txId.slice(0, 8).toUpperCase()}`;
+
+const PAYMENT_MODE_LABEL: Record<string, string> = {
+  ESPECES: "Espèces", CHEQUE: "Chèque", VIREMENT: "Virement",
+};
 
 const Clients = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { clients, fuelSales, shopSales } = useAppState();
+  const { clients, fuelSales, shopSales, settings, currentUserName } = useAppState();
   const perm = useModulePermission('Clients');
   const dispatch = useAppDispatch();
 
@@ -123,6 +131,13 @@ const Clients = () => {
     return () => document.removeEventListener("click", handleOutsideClick);
   }, []);
 
+  // The opened client is a local snapshot: re-sync it whenever the store moves,
+  // so a règlement saved from a modal shows the debt and the history the server
+  // actually holds (the payment is re-read from `client_transactions`).
+  useEffect(() => {
+    setSelectedClient(prev => (prev ? clients.find(c => c.id === prev.id) ?? prev : prev));
+  }, [clients]);
+
   const handleSaveClient = () => {
     if (!clientForm.name) {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Le nom est obligatoire" } });
@@ -168,63 +183,125 @@ const Clients = () => {
     }, 800);
   };
 
+  /**
+   * Recharge d'avance. `ADD_CLIENT_PAYMENT` is used (and not `UPDATE_CLIENT`)
+   * because it is the only action that writes the movement to the
+   * `client_transactions` table — `UPDATE_CLIENT` persists the client columns
+   * only, so the history would be lost on the next reload.
+   */
   const handleRecharge = () => {
     if (!selectedClient || rechargeForm.amount <= 0) {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Montant invalide" } });
       return;
     }
-    
-    const updatedClient: Client = {
-      ...selectedClient,
-      balance: selectedClient.balance + rechargeForm.amount,
-      transactionHistory: [
-        ...(selectedClient.transactionHistory || []),
-        {
-          id: newId(),
-          date: rechargeForm.date,
-          type: "RECHARGE",
-          amount: rechargeForm.amount,
-          receiptPhoto: rechargeForm.receiptPhoto,
-          notes: rechargeForm.notes
-        }
-      ]
+
+    const payment = {
+      id: newId(),
+      date: rechargeForm.date,
+      type: "RECHARGE" as const,
+      amount: rechargeForm.amount,
+      receiptPhoto: rechargeForm.receiptPhoto,
+      notes: rechargeForm.notes,
     };
-    
-    dispatch({ type: 'UPDATE_CLIENT', payload: updatedClient });
+
+    dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment } });
     dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Avance rechargée: +${rechargeForm.amount.toLocaleString()} DA` } });
     setShowRecharge(false);
-    setSelectedClient(updatedClient);
+    setSelectedClient({
+      ...selectedClient,
+      balance: selectedClient.balance + rechargeForm.amount,
+      transactionHistory: [...(selectedClient.transactionHistory || []), payment],
+    });
     setRechargeForm({ amount: 0, date: new Date().toISOString().split("T")[0], notes: "", receiptPhoto: "" });
   };
 
-  const handleRecordPayment = () => {
+  /**
+   * Prints the receipt of one debt payment. `debtBefore` is only known for the
+   * payment being recorded right now; on a reprint of an older règlement the
+   * encours has moved since, so the before/after block is simply left out
+   * rather than reconstructed from an approximation.
+   */
+  const printReceipt = (client: Client, tx: NonNullable<Client['transactionHistory']>[number], debtBefore?: number) => {
+    printPaymentReceipt({
+      title: "Reçu de règlement",
+      ref: receiptRef(tx.id),
+      date: tx.date,
+      station: stationFromSettings(settings),
+      party: {
+        label: "Client",
+        name: client.name,
+        phone: client.phone,
+        address: client.address,
+      },
+      info: [
+        { label: "Mode de règlement", value: PAYMENT_MODE_LABEL[tx.mode || ''] || tx.mode || 'Espèces' },
+        { label: "Référence", value: tx.receiptNumber || '' },
+        { label: "Encaissé par", value: currentUserName || '' },
+        { label: "CIN / ID", value: client.cin || '' },
+      ],
+      amount: tx.amount,
+      mode: PAYMENT_MODE_LABEL[tx.mode || ''] || tx.mode || 'Espèces',
+      reference: tx.receiptNumber,
+      debtBefore,
+      debtAfter: debtBefore === undefined ? undefined : Math.max(0, debtBefore - tx.amount),
+      notes: tx.notes,
+    });
+  };
+
+  /**
+   * Règlement de la dette du client. The debt is held globally on the client
+   * (there is no per-facture payment column), so a payment always lowers the
+   * global encours; when it was started from an invoice row, that invoice is
+   * quoted on the receipt as the reason for the payment.
+   */
+  const handleRecordPayment = (andPrint = false) => {
     if (!selectedClient || paymentForm.amount <= 0) {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Montant invalide" } });
       return;
     }
+    if (paymentForm.amount > selectedClient.debt) {
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Le montant dépasse la dette du client" } });
+      return;
+    }
+
+    const invoiceRef = selectedSale ? `Facture #${selectedSale.id.substring(0, 8).toUpperCase()}` : '';
+    const payment = {
+      id: newId(),
+      date: paymentForm.date,
+      type: "PAYMENT" as const,
+      amount: paymentForm.amount,
+      mode: paymentForm.mode,
+      receiptNumber: paymentForm.chequeNumber,
+      notes: [invoiceRef, paymentForm.notes].filter(Boolean).join(' — '),
+    };
+    const debtBefore = selectedClient.debt;
+
+    dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment } });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Règlement enregistré: -${paymentForm.amount.toLocaleString()} DA` } });
 
     const updatedClient: Client = {
       ...selectedClient,
-      debt: Math.max(0, selectedClient.debt - paymentForm.amount),
-      transactionHistory: [
-        ...(selectedClient.transactionHistory || []),
-        {
-          id: newId(),
-          date: paymentForm.date,
-          type: "PAYMENT",
-          amount: paymentForm.amount,
-          mode: paymentForm.mode,
-          receiptNumber: paymentForm.chequeNumber,
-          notes: paymentForm.notes
-        }
-      ]
+      debt: Math.max(0, debtBefore - paymentForm.amount),
+      transactionHistory: [...(selectedClient.transactionHistory || []), payment],
     };
-
-    dispatch({ type: 'UPDATE_CLIENT', payload: updatedClient });
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Paiement enregistré: -${paymentForm.amount.toLocaleString()} DA` } });
-    setShowPayment(false);
     setSelectedClient(updatedClient);
+    if (andPrint) printReceipt(updatedClient, payment, debtBefore);
+
+    setShowPayment(false);
+    setSelectedSale(null);
     setPaymentForm({ amount: 0, date: new Date().toISOString().split("T")[0], mode: "ESPECES", chequeNumber: "", notes: "" });
+  };
+
+  /** Opens the debt modal for one client — global debt, no invoice attached. */
+  const openDebtPayment = (client: Client) => {
+    setSelectedClient(client);
+    setSelectedSale(null);
+    setPaymentForm({
+      amount: client.debt,
+      date: new Date().toISOString().split("T")[0],
+      mode: "ESPECES", chequeNumber: "", notes: "",
+    });
+    setShowPayment(true);
   };
 
   const handleSaveAppointment = () => {
@@ -284,6 +361,19 @@ const Clients = () => {
     const shop = (shopSales || []).filter(s => s.paymentMode === selectedClient.id).map(s => ({ ...s, category: "Magasin", description: "Achats Divers Magasin" }));
     return [...fuel, ...shop].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [selectedClient, fuelSales, shopSales]);
+
+  /** Règlements de dette du client, du plus récent au plus ancien. */
+  const clientPayments = useMemo(() => {
+    if (!selectedClient) return [];
+    return (selectedClient.transactionHistory || [])
+      .filter(tx => tx.type === "PAYMENT")
+      .slice()
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [selectedClient]);
+
+  const totalPaid = useMemo(
+    () => clientPayments.reduce((sum, tx) => sum + (tx.amount || 0), 0),
+    [clientPayments]);
 
   // Filtering Logic
   const filteredClients = useMemo(() => {
@@ -490,14 +580,20 @@ const Clients = () => {
                                 <Wallet className="w-4 h-4 text-green-500" /> Recharger Avance
                               </button>
                             )}
-                            {c.debt > 0 && (
-                              <button 
-                                onClick={() => { setSelectedClient(c); setActiveTab("historique"); setShowDetail(true); setActionMenuOpen(null); }}
-                                className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
+                            {c.debt > 0 && perm.modifier && (
+                              <button
+                                onClick={() => { openDebtPayment(c); setActionMenuOpen(null); }}
+                                className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-emerald-700 hover:bg-emerald-50 flex items-center gap-3 transition-colors"
                               >
-                                <DollarSign className="w-4 h-4 text-emerald-500" /> Enregistrer Paiement
+                                <DollarSign className="w-4 h-4 text-emerald-500" /> Payer la Dette
                               </button>
                             )}
+                            <button
+                              onClick={() => { setSelectedClient(c); setActiveTab("reglements"); setShowDetail(true); setActionMenuOpen(null); }}
+                              className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
+                            >
+                              <History className="w-4 h-4 text-slate-500" /> Historique Règlements
+                            </button>
                             {perm.supprimer && (
                             <button
                               onClick={() => { setClientToDelete(c); setActionMenuOpen(null); }}
@@ -552,6 +648,16 @@ const Clients = () => {
                       <p className="text-[10px] font-black text-blue-900 italic truncate">{c.creditLimit.toLocaleString()} DA</p>
                     </div>
                   </div>
+
+                  {/* Règlement de la dette — action directe, sans passer par le menu */}
+                  {c.debt > 0 && perm.modifier && (
+                    <button
+                      onClick={() => openDebtPayment(c)}
+                      className="w-full h-11 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-700 text-white text-[9px] font-black uppercase tracking-widest italic flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 hover:scale-[1.02] active:scale-95 transition-all"
+                    >
+                      <DollarSign className="w-4 h-4 text-yellow-300" /> Payer la Dette
+                    </button>
+                  )}
                 </motion.div>
               ))
             ) : (
@@ -641,6 +747,16 @@ const Clients = () => {
                       </td>
                       <td className="px-8 py-5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {c.debt > 0 && perm.modifier && (
+                            <button
+                              onClick={() => openDebtPayment(c)}
+                              title="Payer la dette"
+                              className="px-3 py-2 mr-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[8px] font-black uppercase tracking-widest italic transition-all flex items-center gap-1.5 shadow-sm"
+                            >
+                              <DollarSign className="w-3.5 h-3.5 text-yellow-300" /> Payer
+                            </button>
+                          )}
+                          <button onClick={() => { setSelectedClient(c); setActiveTab("reglements"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-emerald-600 transition-all border border-transparent hover:border-slate-200" title="Historique des règlements"><History className="w-4 h-4" /></button>
                           <button onClick={() => { setSelectedClient(c); setActiveTab("resume"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-900 transition-all border border-transparent hover:border-slate-200" title="Détails"><Eye className="w-4 h-4" /></button>
                           {perm.modifier && <button onClick={() => { setSelectedClient(c); setClientForm(c); setShowModal(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-600 transition-all border border-transparent hover:border-slate-200" title="Modifier"><Edit2 className="w-4 h-4" /></button>}
                           {perm.supprimer && <button onClick={() => setClientToDelete(c)} className="p-2.5 hover:bg-red-50 rounded-xl text-slate-200 hover:text-red-600 transition-all border border-transparent hover:border-red-100" title="Supprimer"><Trash2 className="w-4 h-4" /></button>}
@@ -943,6 +1059,7 @@ const Clients = () => {
                   {[
                     { id: "resume", label: "Résumé", icon: Building2 },
                     { id: "historique", label: "Factures & Ventes", icon: History },
+                    { id: "reglements", label: "Règlements", icon: CreditCard },
                     ...(selectedClient?.paymentMode === "ADVANCE" ? [{ id: "avances", label: "Avances", icon: Wallet }] : []),
                     { id: "rdv", label: "Rendez-vous", icon: Calendar }
                   ].map(tab => (
@@ -960,6 +1077,14 @@ const Clients = () => {
                 </div>
                 
                 <div className="flex gap-2">
+                  {selectedClient.debt > 0 && perm.modifier && (
+                    <button
+                      onClick={() => openDebtPayment(selectedClient)}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest italic flex items-center gap-2 shadow-sm"
+                    >
+                      <DollarSign className="w-3.5 h-3.5 text-yellow-300" /> Payer la Dette
+                    </button>
+                  )}
                   <button onClick={() => { setShowDetail(false); navigate('/fuel-sales'); }} className="px-5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl text-[9px] font-black uppercase tracking-widest italic">+ Vente Carburant</button>
                   <button onClick={() => { setShowDetail(false); navigate('/pos'); }} className="px-5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-[9px] font-black uppercase tracking-widest italic">+ Vente Boutique</button>
                 </div>
@@ -1100,9 +1225,18 @@ const Clients = () => {
                                   <td className="px-6 py-4 text-center">
                                     <div className="flex items-center justify-center gap-1">
                                       <button className="p-2 hover:bg-slate-100 rounded-lg text-slate-300 hover:text-slate-600 border border-transparent hover:border-slate-200 transition-all"><Printer className="w-3.5 h-3.5" /></button>
-                                      {remaining > 0 && (
-                                        <button 
-                                          onClick={() => { setSelectedSale(sale); setPaymentForm({ amount: remaining, date: new Date().toISOString().split("T")[0], mode: "ESPECES", chequeNumber: "", notes: "" }); setShowPayment(true); }}
+                                      {remaining > 0 && selectedClient.debt > 0 && perm.modifier && (
+                                        <button
+                                          onClick={() => {
+                                            setSelectedSale(sale);
+                                            // Jamais plus que l'encours réel du client.
+                                            setPaymentForm({
+                                              amount: Math.min(remaining, selectedClient.debt),
+                                              date: new Date().toISOString().split("T")[0],
+                                              mode: "ESPECES", chequeNumber: "", notes: "",
+                                            });
+                                            setShowPayment(true);
+                                          }}
                                           className="px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 rounded-lg text-[8px] font-black uppercase transition-all flex items-center gap-1"
                                         >
                                           Régler <DollarSign className="w-3 h-3" />
@@ -1122,6 +1256,99 @@ const Clients = () => {
                         <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucune vente ou facture enregistrée pour ce client</p>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* RÈGLEMENTS TAB — historique des paiements de dette, imprimables */}
+                {activeTab === "reglements" && (
+                  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
+                    {/* Bandeau dette + action de règlement */}
+                    <div className={cn("p-10 rounded-[2.5rem] flex flex-col sm:flex-row justify-between items-start sm:items-center shadow-xl relative overflow-hidden group text-white",
+                      selectedClient.debt > 0
+                        ? "bg-gradient-to-r from-red-600 via-red-700 to-rose-800"
+                        : "bg-gradient-to-r from-emerald-600 via-emerald-700 to-emerald-800")}>
+                      <div className="absolute top-0 right-0 p-24 bg-white/5 rounded-full blur-3xl -mr-12 -mt-12 group-hover:scale-150 transition-transform duration-700" />
+                      <div className="relative z-10 space-y-1.5">
+                        <p className="text-[9px] font-black uppercase tracking-[0.3em] opacity-80">
+                          {selectedClient.debt > 0 ? "Dette en-cours à régler" : "Aucune dette en-cours"}
+                        </p>
+                        <p className="text-5xl font-black italic tracking-tighter leading-none">
+                          {selectedClient.debt.toLocaleString()} <span className="text-xl font-bold text-yellow-400">DA</span>
+                        </p>
+                        <p className="text-[9px] font-bold uppercase tracking-widest opacity-70 pt-1">
+                          {clientPayments.length} règlement(s) — {totalPaid.toLocaleString()} DA encaissés au total
+                        </p>
+                      </div>
+                      {selectedClient.debt > 0 && perm.modifier && (
+                        <button
+                          onClick={() => openDebtPayment(selectedClient)}
+                          className="relative z-10 mt-6 sm:mt-0 px-8 py-4 bg-white text-red-700 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md flex items-center gap-2 italic"
+                        >
+                          <DollarSign className="w-4 h-4" /> Payer la Dette
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="space-y-4">
+                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">
+                        Historique des Règlements de Dette
+                      </h4>
+
+                      {clientPayments.length > 0 ? (
+                        <div className="overflow-hidden border border-slate-100 rounded-2xl shadow-sm">
+                          <table className="w-full text-left border-collapse text-xs font-bold">
+                            <thead className="bg-slate-50 text-blue-900 uppercase text-[9px] tracking-wider border-b border-slate-100">
+                              <tr>
+                                <th className="px-6 py-4">Date</th>
+                                <th className="px-6 py-4">N° Reçu</th>
+                                <th className="px-6 py-4">Mode</th>
+                                <th className="px-6 py-4">Référence / Notes</th>
+                                <th className="px-6 py-4 text-right">Montant</th>
+                                <th className="px-6 py-4 text-center">Reçu</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {clientPayments.map(tx => (
+                                <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
+                                  <td className="px-6 py-4 text-slate-500">{new Date(tx.date).toLocaleDateString()}</td>
+                                  <td className="px-6 py-4 text-blue-900 font-black">{receiptRef(tx.id)}</td>
+                                  <td className="px-6 py-4">
+                                    <span className="px-2.5 py-0.5 rounded text-[8px] font-black uppercase inline-block border bg-emerald-50 text-emerald-700 border-emerald-100">
+                                      {PAYMENT_MODE_LABEL[tx.mode || ''] || tx.mode || 'Espèces'}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-4 text-slate-500 font-medium italic max-w-[280px] truncate">
+                                    {[tx.receiptNumber, tx.notes].filter(Boolean).join(' — ') || '—'}
+                                  </td>
+                                  <td className="px-6 py-4 text-right text-emerald-600 font-black">
+                                    -{tx.amount.toLocaleString()} DA
+                                  </td>
+                                  <td className="px-6 py-4 text-center">
+                                    <button
+                                      onClick={() => printReceipt(selectedClient, tx)}
+                                      title="Imprimer le reçu"
+                                      className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-700 border border-transparent hover:border-blue-100 transition-all"
+                                    >
+                                      <Printer className="w-4 h-4" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                              <tr className="bg-slate-50 text-blue-900">
+                                <td className="px-6 py-4 font-black uppercase text-[9px] tracking-widest" colSpan={4}>Total encaissé</td>
+                                <td className="px-6 py-4 text-right font-black">{totalPaid.toLocaleString()} DA</td>
+                                <td />
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
+                          <CreditCard className="w-10 h-10 mx-auto text-slate-300 mb-3" />
+                          <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucun règlement enregistré pour ce client</p>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -1376,9 +1603,9 @@ const Clients = () => {
         )}
       </AnimatePresence>
 
-      {/* Payment Debt Modal (Payer la vente) */}
+      {/* Payment Debt Modal — règlement de la dette du client */}
       <AnimatePresence>
-        {showPayment && selectedClient && selectedSale && (
+        {showPayment && selectedClient && (
           <div className="modal-shell z-[80] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowPayment(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
             <motion.div 
@@ -1390,44 +1617,63 @@ const Clients = () => {
               <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-3">
                   <CreditCard className="w-5 h-5 text-yellow-400" />
-                  <h3 className="font-black uppercase italic text-yellow-400">Payer la Vente</h3>
+                  <div>
+                    <h3 className="font-black uppercase italic text-yellow-400">Payer la Dette</h3>
+                    <p className="text-[10px] text-blue-200 font-bold mt-0.5 not-italic">{selectedClient.name}</p>
+                  </div>
                 </div>
-                <button onClick={() => setShowPayment(false)} className="p-2 hover:bg-white/10 rounded-lg text-white"><X className="w-5 h-5" /></button>
+                <button onClick={() => { setShowPayment(false); setSelectedSale(null); }} className="p-2 hover:bg-white/10 rounded-lg text-white"><X className="w-5 h-5" /></button>
               </div>
 
               <div className="flex-1 overflow-y-auto p-8 space-y-5 custom-scrollbar bg-white">
-                
+
                 <div className="p-5 bg-gradient-to-br from-blue-50 to-slate-50 rounded-2xl space-y-2.5 border-2 border-slate-100">
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Récapitulatif de la Vente</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Situation du Compte Client</p>
                   <div className="grid grid-cols-2 gap-y-2 text-xs font-bold text-slate-600">
-                    <span>Facture N°</span>
-                    <span className="text-blue-900 font-black text-right">#{selectedSale.id.substring(0, 8).toUpperCase()}</span>
-                    <span>Total Facturé</span>
-                    <span className="text-slate-800 text-right">{selectedSale.total.toLocaleString()} DA</span>
-                    <span className="text-emerald-600">Déjà Réglé</span>
-                    <span className="text-emerald-700 text-right">{(selectedSale.paidAmount || 0).toLocaleString()} DA</span>
-                    <span className="text-red-500 border-t pt-2">Reste à Régler</span>
-                    <span className="text-red-600 font-black text-right border-t pt-2">{(selectedSale.total - (selectedSale.paidAmount || 0)).toLocaleString()} DA</span>
+                    {selectedSale && (
+                      <>
+                        <span>Facture concernée</span>
+                        <span className="text-blue-900 font-black text-right">#{selectedSale.id.substring(0, 8).toUpperCase()}</span>
+                      </>
+                    )}
+                    <span>Dette actuelle</span>
+                    <span className="text-red-600 font-black text-right">{selectedClient.debt.toLocaleString()} DA</span>
+                    <span className="text-emerald-600">Déjà réglé (cumul)</span>
+                    <span className="text-emerald-700 text-right">{totalPaid.toLocaleString()} DA</span>
+                    <span className="text-slate-500 border-t pt-2">Reste après ce règlement</span>
+                    <span className="text-blue-900 font-black text-right border-t pt-2">
+                      {Math.max(0, selectedClient.debt - (paymentForm.amount || 0)).toLocaleString()} DA
+                    </span>
                   </div>
+                  {selectedSale && (
+                    <p className="text-[9px] font-bold text-slate-400 italic leading-relaxed pt-1">
+                      La dette est tenue globalement sur le compte client : ce règlement diminue l'encours total et cite cette facture sur le reçu.
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
                   <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Montant payé (DA)</label>
                   <div className="relative">
-                    <input 
-                      type="number" 
-                      value={paymentForm.amount} 
+                    <input
+                      type="number"
+                      value={paymentForm.amount}
                       onChange={e => setPaymentForm({...paymentForm, amount: parseFloat(e.target.value) || 0})}
-                      className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-lg h-14 pr-24 shadow-inner text-center" 
+                      className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-lg h-14 pr-24 shadow-inner text-center"
                     />
-                    <button 
+                    <button
                       type="button"
-                      onClick={() => setPaymentForm({...paymentForm, amount: selectedSale.total - (selectedSale.paidAmount || 0)})}
+                      onClick={() => setPaymentForm({...paymentForm, amount: selectedClient.debt})}
                       className="absolute right-3 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-blue-50 text-blue-700 text-[8px] font-black uppercase rounded-lg hover:bg-blue-100 transition-colors"
                     >
                       Payer Total
                     </button>
                   </div>
+                  {paymentForm.amount > selectedClient.debt && (
+                    <p className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">
+                      Le montant dépasse la dette de {selectedClient.debt.toLocaleString()} DA
+                    </p>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -1458,14 +1704,21 @@ const Clients = () => {
                 </div>
               </div>
 
-              <div className="p-6 bg-slate-50 border-t flex gap-4 shrink-0">
-                <button onClick={() => setShowPayment(false)} className="flex-1 px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all italic">Annuler</button>
-                <button 
-                  onClick={handleRecordPayment}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > (selectedSale.total - (selectedSale.paidAmount || 0))}
-                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
+              <div className="p-6 bg-slate-50 border-t flex flex-wrap gap-3 shrink-0">
+                <button onClick={() => { setShowPayment(false); setSelectedSale(null); }} className="px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all italic">Annuler</button>
+                <button
+                  onClick={() => handleRecordPayment(false)}
+                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt}
+                  className="flex-1 min-w-[140px] px-4 py-2.5 bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:bg-emerald-50 transition-all flex items-center justify-center gap-2"
                 >
-                  <CheckCircle2 className="w-4 h-4 text-yellow-400" /> Valider Paiement
+                  <CheckCircle2 className="w-4 h-4" /> Valider
+                </button>
+                <button
+                  onClick={() => handleRecordPayment(true)}
+                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt}
+                  className="flex-1 min-w-[180px] px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
+                >
+                  <Printer className="w-4 h-4 text-yellow-400" /> Valider & Imprimer Reçu
                 </button>
               </div>
             </motion.div>

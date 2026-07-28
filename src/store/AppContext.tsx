@@ -1642,6 +1642,29 @@ function mapPaymentRecord(r: any): WorkerPaymentRecord {
   return { id: r.id, month: r.month, baseSalary: +r.base_salary, totalAcomptes: +r.total_acomptes, totalAbsences: +r.total_absences, bonusDecalage: +(r.bonus_decalage ?? 0), retenueDecalage: +(r.retenue_decalage ?? 0), netSalary: +r.net_salary, paymentDate: r.payment_date, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, notes: r.notes, isPaid: r.is_paid };
 }
 
+/**
+ * Reports a client movement onto the `clients` row itself.
+ *
+ * `ADD_CLIENT_PAYMENT` only inserts the line in `client_transactions`; without
+ * this the reducer's optimistic debt/balance would be wiped by the refresh that
+ * re-reads the client from the database right after. Only PAYMENT (lowers the
+ * debt) and RECHARGE (raises the advance) touch the account — a SALE line is
+ * pure history, its accounting is carried by the caller's own UPDATE_CLIENT.
+ */
+async function applyClientPaymentToAccount(
+  clientId: string,
+  payment: { type: 'PAYMENT' | 'RECHARGE' | 'SALE'; amount: number },
+): Promise<void> {
+  if (payment.type === 'SALE') return;
+  // maybeSingle() avoids a 406 if the client was concurrently deleted.
+  const { data } = await supabase.from('clients').select('balance, debt').eq('id', clientId).maybeSingle();
+  if (!data) return;
+  const patch = payment.type === 'PAYMENT'
+    ? { debt: Math.max(0, (+data.debt || 0) - payment.amount) }
+    : { balance: (+data.balance || 0) + payment.amount };
+  await supabase.from('clients').update(patch).eq('id', clientId);
+}
+
 async function cleanBrigadeDependencies(brigadeId: string): Promise<void> {
   // 1. Delete brigade_decalage_alerts for this brigade
   await supabase.from('brigade_decalage_alerts').delete().eq('brigade_id', brigadeId);
@@ -2168,6 +2191,7 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'ADD_CLIENT_PAYMENT':
         await db.addClientTransaction({ id: action.payload.payment.id, client_id: action.payload.clientId, date: action.payload.payment.date, type: action.payload.payment.type, amount: action.payload.payment.amount, mode: action.payload.payment.mode, receipt_number: action.payload.payment.receiptNumber, receipt_photo_url: action.payload.payment.receiptPhoto, notes: action.payload.payment.notes });
+        await applyClientPaymentToAccount(action.payload.clientId, action.payload.payment);
         break;
       case 'UPDATE_PRODUCT_STOCK': {
         // maybeSingle() avoids 406 if product was concurrently deleted
@@ -3390,6 +3414,7 @@ export function useSupabaseDispatch() {
           break;
         case 'ADD_CLIENT_PAYMENT':
           await db.addClientTransaction({ id: action.payload.payment.id, client_id: action.payload.clientId, date: action.payload.payment.date, type: action.payload.payment.type, amount: action.payload.payment.amount, mode: action.payload.payment.mode, receipt_number: action.payload.payment.receiptNumber, receipt_photo_url: action.payload.payment.receiptPhoto, notes: action.payload.payment.notes });
+          await applyClientPaymentToAccount(action.payload.clientId, action.payload.payment);
           break;
 
         // ── Product stock ──────────────────────────────────────────────────
