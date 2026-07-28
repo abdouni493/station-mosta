@@ -1,13 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import {
   FlaskConical, FileText, Plus, AlertTriangle, Clock, User, Eye, Trash2 as Trash, Beaker, Search, X,
-  TrendingUp, PackageCheck, Layers, Calculator,
+  TrendingUp, PackageCheck, Layers, Calculator, Upload, Image as ImageIcon,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizProduction, BizFiche, BizIngredient, BizProduct } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
+import { uploadFile } from '@/src/lib/supabase';
 import {
   PageHeader, StatCard, Badge, SearchInput, Select, CardGrid, GlassCard, EmptyState, Tabs,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Switch, InlineCreate, money, formatDate, inPeriod, Period,
@@ -420,6 +421,32 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
   const [ingredients, setIngredients] = useState<BizIngredient[]>(initial?.ingredients || []);
   const [query, setQuery] = useState('');
   const [showCat, setShowCat] = useState(false);
+  const [imageUrl, setImageUrl] = useState(initial?.imageUrl || '');
+  const [uploadingImage, setUploadingImage] = useState(false);
+
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingImage(true);
+    try {
+      const ext = file.name.split('.').pop() || 'jpg';
+      const fileName = `fiche_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+      const url = await uploadFile('products', fileName, file);
+      if (url) {
+        setImageUrl(url);
+      } else {
+        const reader = new FileReader();
+        reader.onloadend = () => setImageUrl(reader.result as string);
+        reader.readAsDataURL(file);
+      }
+    } catch {
+      const reader = new FileReader();
+      reader.onloadend = () => setImageUrl(reader.result as string);
+      reader.readAsDataURL(file);
+    } finally {
+      setUploadingImage(false);
+    }
+  };
 
   const reusable = fiches.filter(f => f.usableInProduction && f.id !== initial?.id);
   const matches = useMemo(() => {
@@ -449,6 +476,7 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
       description, ingredients, sellByUnit: true, sellUnit, usableInProduction, productUnit: sellUnit, directSale,
       outputQuantity, unitPrice, totalCost: +totalCost.toFixed(2), costPerUnit: +costPerUnit.toFixed(2),
       totalValue: +totalValue.toFixed(2), gainsPerUnit: +(unitPrice - costPerUnit).toFixed(2), totalGains: +(totalValue - totalCost).toFixed(2),
+      imageUrl: imageUrl || undefined,
       createdAt: initial?.createdAt || new Date().toISOString(),
     };
     if (isEdit) biz.update('fiches', fiche); else biz.add('fiches', fiche);
@@ -458,10 +486,49 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
 
   return (
     <Modal open onClose={onClose} icon={FileText} size="xl" title={isEdit ? 'Modifier la fiche' : 'Nouvelle fiche technique'} subtitle="Recette de fabrication"
-      footer={<><button className="btn-ghost" onClick={onClose}>Annuler</button><button className="btn-primary" onClick={save}>{isEdit ? 'Enregistrer' : 'Créer'}</button></>}>
+      footer={<><button className="btn-ghost" onClick={onClose}>Annuler</button><button className="btn-primary" onClick={save} disabled={uploadingImage}>{isEdit ? 'Enregistrer' : 'Créer'}</button></>}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="space-y-4">
           <Field label="Nom du produit" required><Input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Couscous royal" /></Field>
+          
+          {/* Photo field */}
+          <Field label="Photo du produit" hint="Affichée sur les cartes du point de vente (POS).">
+            <div className="flex items-center gap-4 bg-slate-50 border border-slate-200 rounded-2xl p-3">
+              {imageUrl ? (
+                <div className="relative w-20 h-20 rounded-xl overflow-hidden border border-slate-200 shrink-0 bg-white shadow-sm">
+                  <img src={imageUrl} alt="Aperçu" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => setImageUrl('')}
+                    className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 shadow-md hover:bg-red-700 transition-colors"
+                    title="Supprimer l'image"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <div className="w-20 h-20 rounded-xl border border-dashed border-slate-300 flex flex-col items-center justify-center bg-white text-slate-400 shrink-0">
+                  <ImageIcon className="w-6 h-6 mb-1" />
+                  <span className="text-[10px] font-bold">Sans image</span>
+                </div>
+              )}
+              <div className="flex-1 space-y-1.5">
+                <label className="btn-secondary !py-2 !px-3.5 inline-flex items-center gap-2 cursor-pointer text-xs font-bold">
+                  <Upload className="w-4 h-4 text-[#003087]" />
+                  {uploadingImage ? 'Téléchargement…' : imageUrl ? "Changer la photo" : 'Choisir une photo'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={uploadingImage}
+                    onChange={handleImageChange}
+                  />
+                </label>
+                <p className="text-[11px] text-slate-400">Stockée dans le bucket Supabase « products ».</p>
+              </div>
+            </div>
+          </Field>
+
           <Field label="Catégorie">
             <div className="flex gap-2">
               <Select value={categoryId} onChange={e => setCategoryId(e.target.value)}><option value="">— Sélectionner —</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>

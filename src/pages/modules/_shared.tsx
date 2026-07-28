@@ -6,12 +6,13 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { useState } from 'react';
-import { Package, Printer, RefreshCw, User, Truck, Wallet } from 'lucide-react';
+import { Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X } from 'lucide-react';
 import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
 import { BizProduct, BizContact } from '@/src/lib/bizConfig';
 import { Modal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
+import { uploadFile } from '@/src/lib/supabase';
 
 // ─── Barcode helpers ──────────────────────────────────────────────────────────
 export function genBarcode(): string {
@@ -46,6 +47,7 @@ export function emptyProduct(): Partial<BizProduct> {
     principalQty: 0, currentQty: 0, minQty: 5, purchasePrice: 0, salePrice: 0,
     unit: 'unité', hasExpiration: false, expirationDate: '',
     sellByDetail: false, detailCapacity: 0, detailUnit: 'L', detailSalePrice: 0,
+    imageUrl: '',
   };
 }
 
@@ -63,10 +65,35 @@ export function ProductModal({
   const [form, setForm] = useState<Partial<BizProduct>>(initial || emptyProduct());
   const [showMarque, setShowMarque] = useState(false);
   const [showCat, setShowCat] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   React.useEffect(() => { setForm(initial || emptyProduct()); }, [initial, open]);
 
   const set = (k: keyof BizProduct, v: any) => setForm(f => ({ ...f, [k]: v }));
+
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingImage(true);
+    try {
+      const ext = file.name.split('.').pop() || 'jpg';
+      const fileName = `prod_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+      const url = await uploadFile('products', fileName, file);
+      if (url) {
+        set('imageUrl', url);
+      } else {
+        const reader = new FileReader();
+        reader.onloadend = () => set('imageUrl', reader.result as string);
+        reader.readAsDataURL(file);
+      }
+    } catch {
+      const reader = new FileReader();
+      reader.onloadend = () => set('imageUrl', reader.result as string);
+      reader.readAsDataURL(file);
+    } finally {
+      setUploadingImage(false);
+    }
+  };
 
   const save = () => {
     if (!form.name?.trim()) return;
@@ -93,6 +120,7 @@ export function ProductModal({
       // Left empty ⇒ the POS falls back to salePrice / detailCapacity.
       detailSalePrice: form.sellByDetail && Number(form.detailSalePrice) > 0
         ? Number(form.detailSalePrice) : undefined,
+      imageUrl: form.imageUrl || undefined,
       createdAt: form.createdAt || new Date().toISOString(),
     };
     if (isEdit) biz.update('products', product); else biz.add('products', product);
@@ -106,7 +134,7 @@ export function ProductModal({
       subtitle="Informations du produit"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={save} disabled={!form.name?.trim()}>{isEdit ? 'Enregistrer' : 'Créer'}</button>
+        <button className="btn-primary" onClick={save} disabled={!form.name?.trim() || uploadingImage}>{isEdit ? 'Enregistrer' : 'Créer'}</button>
       </>}>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="sm:col-span-2">
@@ -114,6 +142,47 @@ export function ProductModal({
             <Input value={form.name || ''} onChange={e => set('name', e.target.value)} placeholder="Ex: Huile de table" />
           </Field>
         </div>
+
+        {/* Image Upload Field */}
+        <div className="sm:col-span-2">
+          <Field label="Photo du produit" hint="Affichée sur les cartes du point de vente (POS).">
+            <div className="flex items-center gap-4 bg-slate-50 border border-slate-200 rounded-2xl p-3">
+              {form.imageUrl ? (
+                <div className="relative w-20 h-20 rounded-xl overflow-hidden border border-slate-200 shrink-0 bg-white shadow-sm">
+                  <img src={form.imageUrl} alt="Aperçu" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => set('imageUrl', '')}
+                    className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 shadow-md hover:bg-red-700 transition-colors"
+                    title="Supprimer l'image"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <div className="w-20 h-20 rounded-xl border border-dashed border-slate-300 flex flex-col items-center justify-center bg-white text-slate-400 shrink-0">
+                  <ImageIcon className="w-6 h-6 mb-1" />
+                  <span className="text-[10px] font-bold">Sans image</span>
+                </div>
+              )}
+              <div className="flex-1 space-y-1.5">
+                <label className="btn-secondary !py-2 !px-3.5 inline-flex items-center gap-2 cursor-pointer text-xs font-bold">
+                  <Upload className="w-4 h-4 text-[#003087]" />
+                  {uploadingImage ? 'Téléchargement…' : form.imageUrl ? "Changer la photo" : 'Choisir une photo'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={uploadingImage}
+                    onChange={handleImageChange}
+                  />
+                </label>
+                <p className="text-[11px] text-slate-400">Stockée dans le bucket Supabase « products ».</p>
+              </div>
+            </div>
+          </Field>
+        </div>
+
         <div className="sm:col-span-2">
           <Field label="Description">
             <Textarea value={form.description || ''} onChange={e => set('description', e.target.value)} placeholder="Description du produit" />

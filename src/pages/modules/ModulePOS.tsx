@@ -59,6 +59,7 @@ interface Source {
   detailCapacity?: number;
   detailUnit?: string;
   fiche?: BizFiche;
+  imageUrl?: string;
 }
 
 export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
@@ -90,10 +91,15 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
     // Productions already sent to the comptoir.
     if (cfg.hasComptoir) {
-      comptoir.filter(c => c.qty > 0).forEach(c => out.push({
-        id: c.id, name: c.productName, price: c.unitPrice, avail: c.qty,
-        unit: c.unit, kind: 'comptoir', categoryName: c.categoryName,
-      }));
+      comptoir.filter(c => c.qty > 0).forEach(c => {
+        const matchingProd = products.find(p => p.name === c.productName);
+        const matchingFiche = fiches.find(f => f.name === c.productName);
+        out.push({
+          id: c.id, name: c.productName, price: c.unitPrice, avail: c.qty,
+          unit: c.unit, kind: 'comptoir', categoryName: c.categoryName,
+          imageUrl: matchingProd?.imageUrl || matchingFiche?.imageUrl,
+        });
+      });
     }
 
     // Stock products — including the ones sold au détail.
@@ -104,11 +110,13 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           avail: p.currentQty * (p.detailCapacity || 0),
           unit: p.detailUnit, kind: 'product', categoryName: p.categoryName,
           detail: true, detailCapacity: p.detailCapacity, detailUnit: p.detailUnit,
+          imageUrl: p.imageUrl,
         });
       } else {
         out.push({
           id: p.id, name: p.name, price: p.salePrice, avail: p.currentQty,
           unit: p.unit, kind: 'product', categoryName: p.categoryName,
+          imageUrl: p.imageUrl,
         });
       }
     });
@@ -118,6 +126,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       id: f.id, name: f.name, price: f.unitPrice,
       avail: maxFicheServings(f, products), unit: f.sellUnit || 'unité',
       kind: 'fiche', categoryName: f.categoryName, fiche: f,
+      imageUrl: f.imageUrl,
     }));
 
     return out;
@@ -335,11 +344,19 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
               {filtered.map(s => (
-                <button key={`${s.kind}-${s.id}`} onClick={() => addToCart(s)} className="card-glass p-3 text-left card-hover">
-                  <div className="w-full h-16 rounded-xl bg-gradient-to-br from-[#003087]/10 to-[#FFB800]/10 flex items-center justify-center mb-2">
-                    {s.kind === 'fiche' ? <Beaker className="w-6 h-6 text-[#003087]" /> : <Package className="w-6 h-6 text-[#003087]" />}
+                <button key={`${s.kind}-${s.id}`} onClick={() => addToCart(s)} className="card-glass p-3 text-left card-hover group flex flex-col justify-between">
+                  <div>
+                    {s.imageUrl ? (
+                      <div className="w-full h-28 rounded-xl overflow-hidden mb-2 relative bg-slate-100 border border-slate-200/60 shadow-inner">
+                        <img src={s.imageUrl} alt={s.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      </div>
+                    ) : (
+                      <div className="w-full h-16 rounded-xl bg-gradient-to-br from-[#003087]/10 to-[#FFB800]/10 flex items-center justify-center mb-2">
+                        {s.kind === 'fiche' ? <Beaker className="w-6 h-6 text-[#003087]" /> : <Package className="w-6 h-6 text-[#003087]" />}
+                      </div>
+                    )}
+                    <p className="font-bold text-slate-700 text-sm leading-tight line-clamp-2">{s.name}</p>
                   </div>
-                  <p className="font-bold text-slate-700 text-sm leading-tight line-clamp-2">{s.name}</p>
                   <div className="flex items-center justify-between mt-1">
                     <span className="font-black text-[#002d87] text-sm tabular-nums">
                       {money(s.price)}{s.detail ? <span className="text-[10px] font-bold">/{s.detailUnit}</span> : null}

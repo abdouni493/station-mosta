@@ -65,6 +65,8 @@ export interface BizProduct {
   detailUnit?: string;
   /** Price of ONE detail unit. Defaults to `salePrice / detailCapacity`. */
   detailSalePrice?: number;
+  /** Image URL (stored in Supabase products bucket or base64 fallback). */
+  imageUrl?: string;
   createdAt: string;
 }
 
@@ -250,6 +252,8 @@ export interface BizFiche {
   totalValue: number;
   gainsPerUnit: number;
   totalGains: number;
+  /** Image URL (stored in Supabase products bucket or base64 fallback). */
+  imageUrl?: string;
   createdAt: string;
 }
 
