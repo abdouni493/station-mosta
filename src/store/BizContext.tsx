@@ -127,13 +127,42 @@ function migrate(raw: any): BizState | null {
         ? r.serviceTotal
         : legacyServices.reduce((s, x) => s + (Number(x.price) || 0), 0);
       const { services, comingDate, ...rest } = r;
+      const kind = r.kind === 'appointment' ? 'reparation' : r.kind;
+      // One prestation per intervention before the multi-prestation form existed:
+      // rebuilding it here means every screen can read `prestations` blindly.
+      const prestations = Array.isArray(r.prestations) && r.prestations.length
+        ? r.prestations
+        : (serviceTotal > 0
+          ? [{
+            id: `${r.id}-p1`,
+            kind: kind === 'mixte' ? 'reparation' : kind,
+            label: r.problem || (kind === 'lavage' ? 'Lavage' : 'Réparation'),
+            amount: serviceTotal,
+            workerIds: Array.isArray(r.workers) ? r.workers : [],
+          }]
+          : []);
+      const productsTotal = (Array.isArray(r.usedProducts) ? r.usedProducts : [])
+        .reduce((s: number, x: any) => s + (Number(x.total) || (Number(x.qty) || 0) * (Number(x.unitPrice) || 0)), 0);
       return {
         ...rest,
         serviceTotal,
-        kind: r.kind === 'appointment' ? 'reparation' : r.kind,
+        prestations,
+        // No remise existed before: the subtotal is simply the old total.
+        subtotal: typeof r.subtotal === 'number' ? r.subtotal : serviceTotal + productsTotal,
+        discountType: r.discountType,
+        discountValue: r.discountValue,
+        discountAmount: typeof r.discountAmount === 'number' ? r.discountAmount : 0,
+        kind,
         status: r.kind === 'appointment' ? 'pending' : r.status,
       };
     });
+
+    // Lavage employees created before the speciality existed are polyvalent, so
+    // they keep showing up on both kinds of prestation.
+    mod.workers = (mod.workers as any[]).map(w => ({
+      ...w,
+      workerKind: w.workerKind || (key === 'lavage' ? 'both' : undefined),
+    }));
     delete mod.services;
     state[key] = mod;
   }

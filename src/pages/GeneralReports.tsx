@@ -1,7 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
   FileBarChart, Globe2, Fuel, ChevronRight, Printer, Calendar, TrendingUp, ShoppingCart,
-  CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee, UtensilsCrossed, Wrench,
+  CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
+  UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -10,17 +11,26 @@ import { useBizAll } from '@/src/store/BizContext';
 import { useAppState } from '@/src/store/AppContext';
 import { money, formatDate } from '@/src/components/biz/Kit';
 import { computeModuleReport, computeCarburantReport, consolidate, PartReport, GlobalReport } from '@/src/lib/bizReporting';
+import { computeWorkforce } from '@/src/lib/workforceReporting';
+import { computeTreasuryReport } from '@/src/lib/treasuryReporting';
 import ReportView from '@/src/components/biz/ReportView';
+import WorkforceView from '@/src/components/biz/WorkforceView';
+import TreasuryView from '@/src/components/biz/TreasuryView';
 import { ModuleFiche, GlobalFiche, printFiche } from '@/src/components/biz/ReportFiche';
 
-type ActiveKey = 'global' | 'carburant' | ModuleKey;
+type ActiveKey = 'global' | 'carburant' | 'employes' | 'tresorerie' | ModuleKey;
 
-const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType }[] = [
-  { id: 'global', label: 'Vue globale', icon: Globe2 },
-  { id: 'carburant', label: 'Carburant', icon: Fuel },
-  { id: 'cafeteria', label: 'Cafétéria', icon: Coffee },
-  { id: 'lavage', label: 'Lavage & Réparation', icon: Wrench },
+const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType; hint: string }[] = [
+  { id: 'global', label: 'Vue globale', icon: Globe2, hint: 'Rapport consolidé' },
+  { id: 'employes', label: 'Employés & Personnel', icon: UsersRound, hint: 'Tous les employés, en détail' },
+  { id: 'tresorerie', label: 'Caisse & Banques', icon: PiggyBank, hint: 'Trésorerie et journal complet' },
+  { id: 'carburant', label: 'Carburant', icon: Fuel, hint: 'Rapport détaillé' },
+  { id: 'cafeteria', label: 'Cafétéria', icon: Coffee, hint: 'Rapport détaillé' },
+  { id: 'lavage', label: 'Lavage & Réparation', icon: Wrench, hint: 'Rapport détaillé' },
 ];
+
+/** Sections that are a per-activity `PartReport` (the others have their own view). */
+const PART_SECTIONS: ActiveKey[] = ['carburant', 'cafeteria', 'lavage'];
 
 export default function GeneralReports() {
   const biz = useBizAll();
@@ -46,12 +56,19 @@ export default function GeneralReports() {
     [reports, range],
   );
 
-  const activeReport: PartReport | null = active === 'global' ? null : reports[active];
+  const workforce = useMemo(() => computeWorkforce(app, biz, range.from, range.to), [app, biz, range]);
+  const treasury = useMemo(() => computeTreasuryReport(app, biz, range.from, range.to), [app, biz, range]);
+
+  const activeReport: PartReport | null = PART_SECTIONS.includes(active)
+    ? reports[active as 'carburant' | ModuleKey]
+    : null;
   const activeInfo = SECTIONS.find(s => s.id === active)!;
   const ActiveIcon = activeInfo.icon;
 
   const generate = () => setRange({ from, to });
-  const handlePrint = () => printFiche(active === 'global' ? globalFicheRef.current : moduleFicheRef.current);
+  // The two cross-cutting sections have no dedicated printable sheet: they fall
+  // back to the consolidated one, which already carries their headline numbers.
+  const handlePrint = () => printFiche(activeReport ? moduleFicheRef.current : globalFicheRef.current);
 
   return (
     <div className="space-y-8 max-w-[1600px] mx-auto pb-16">
@@ -62,7 +79,7 @@ export default function GeneralReports() {
           <p className="text-slate-500 font-medium mt-2 italic leading-relaxed">Bilan consolidé et détaillé de toutes les activités : carburant, cafétéria et lavage & réparation.</p>
         </div>
         <button onClick={handlePrint} className="btn-primary h-14 px-10 text-[11px] uppercase tracking-[0.25em] italic font-black flex items-center gap-3 shrink-0">
-          <Printer className="w-4 h-4" /> Imprimer {active === 'global' ? 'la fiche globale' : 'la fiche'}
+          <Printer className="w-4 h-4" /> Imprimer {activeReport ? 'la fiche' : 'la fiche globale'}
         </button>
       </div>
 
@@ -85,21 +102,41 @@ export default function GeneralReports() {
             <div className="px-3 py-3 space-y-0.5">
               {SECTIONS.map(s => {
                 const Icon = s.icon; const isActive = active === s.id;
-                const rep = s.id === 'global' ? null : reports[s.id];
+                const rep = PART_SECTIONS.includes(s.id) ? reports[s.id as 'carburant' | ModuleKey] : null;
+                // Cross-cutting sections show a count instead of a net-gain figure.
+                const badge = rep
+                  ? { text: money(rep.netGain).replace(' DA', ''), cls: rep.netGain >= 0 ? 'text-emerald-300' : 'text-red-300' }
+                  : s.id === 'employes'
+                    ? { text: `${workforce.totals.workers}`, cls: 'text-blue-200' }
+                    : s.id === 'tresorerie'
+                      ? { text: money(treasury.grandTotal).replace(' DA', ''), cls: treasury.grandTotal >= 0 ? 'text-emerald-300' : 'text-red-300' }
+                      : null;
                 return (
                   <button key={s.id} onClick={() => setActive(s.id)} className={cn('sidebar-link w-full', isActive ? 'sidebar-link-active' : 'sidebar-link-inactive')}>
                     <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center shrink-0', isActive ? 'bg-[#001f5c]/20' : 'bg-white/6')}><Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[#001f5c]' : 'text-blue-200')} /></div>
                     <span className="text-sm leading-none flex-1 text-left">{s.label}</span>
-                    {rep ? <span className={cn('text-[10px] font-black tabular-nums px-1.5 py-0.5 rounded', rep.netGain >= 0 ? 'text-emerald-300' : 'text-red-300')}>{money(rep.netGain).replace(' DA', '')}</span> : null}
+                    {badge ? <span className={cn('text-[10px] font-black tabular-nums px-1.5 py-0.5 rounded', badge.cls)}>{badge.text}</span> : null}
                     {isActive && <ChevronRight className="w-3 h-3 text-[#001f5c]/50 shrink-0" />}
                   </button>
                 );
               })}
             </div>
             {/* Total gain footer */}
-            <div className="px-5 py-4 border-t border-white/10" style={{ background: 'rgba(0,0,0,0.15)' }}>
-              <p className="text-[10px] font-black uppercase tracking-widest text-white/40">Gain net total</p>
-              <p className={cn('text-2xl font-black tabular-nums leading-tight', global.netGain >= 0 ? 'text-emerald-400' : 'text-red-400')}>{money(global.netGain)}</p>
+            <div className="px-5 py-4 border-t border-white/10 space-y-3" style={{ background: 'rgba(0,0,0,0.15)' }}>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-white/40">Gain net total</p>
+                <p className={cn('text-2xl font-black tabular-nums leading-tight', global.netGain >= 0 ? 'text-emerald-400' : 'text-red-400')}>{money(global.netGain)}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-white/5 px-2.5 py-2">
+                  <p className="text-[9px] font-black uppercase tracking-wide text-white/40">Trésorerie</p>
+                  <p className="text-[13px] font-black tabular-nums text-[#FFB800] leading-tight">{money(treasury.grandTotal)}</p>
+                </div>
+                <div className="rounded-lg bg-white/5 px-2.5 py-2">
+                  <p className="text-[9px] font-black uppercase tracking-wide text-white/40">Employés</p>
+                  <p className="text-[13px] font-black tabular-nums text-white leading-tight">{workforce.totals.workers}</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -109,14 +146,15 @@ export default function GeneralReports() {
           <div className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden flex flex-col min-h-[700px]" style={{ boxShadow: 'var(--shadow-xl)' }}>
             <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white px-8 py-5 flex items-center gap-4 shrink-0">
               <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'rgba(255,184,0,0.2)', border: '1px solid rgba(255,184,0,0.3)' }}><ActiveIcon className="w-4 h-4 text-yellow-400" /></div>
-              <div><h2 className="font-black text-sm uppercase tracking-widest italic leading-none">{activeInfo.label}</h2><p className="text-[10px] text-blue-200 mt-0.5 font-bold">{active === 'global' ? 'Rapport consolidé' : 'Rapport détaillé'}</p></div>
+              <div><h2 className="font-black text-sm uppercase tracking-widest italic leading-none">{activeInfo.label}</h2><p className="text-[10px] text-blue-200 mt-0.5 font-bold">{activeInfo.hint}</p></div>
             </div>
             <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar">
               <AnimatePresence mode="wait">
                 <motion.div key={active} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                  {active === 'global'
-                    ? <GlobalOverview global={global} onSelect={setActive} />
-                    : activeReport && <ReportView report={activeReport} />}
+                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} onSelect={setActive} />}
+                  {active === 'employes' && <WorkforceView report={workforce} />}
+                  {active === 'tresorerie' && <TreasuryView report={treasury} />}
+                  {activeReport && <ReportView report={activeReport} />}
                 </motion.div>
               </AnimatePresence>
             </div>
@@ -144,7 +182,12 @@ function OverviewCard({ icon: Icon, label, value, sub, tone = 'blue' }: { icon: 
   );
 }
 
-function GlobalOverview({ global: g, onSelect }: { global: GlobalReport; onSelect: (k: ActiveKey) => void }) {
+function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect }: {
+  global: GlobalReport;
+  workforce: ReturnType<typeof computeWorkforce>;
+  treasury: ReturnType<typeof computeTreasuryReport>;
+  onSelect: (k: ActiveKey) => void;
+}) {
   return (
     <div className="space-y-8">
       {/* KPI cards */}
@@ -157,6 +200,69 @@ function GlobalOverview({ global: g, onSelect }: { global: GlobalReport; onSelec
         <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} />
         <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} />
         <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} />
+      </div>
+
+      {/* Trésorerie — raccourci vers la section dédiée */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-black text-[#002d87] flex items-center gap-2"><PiggyBank className="w-5 h-5 text-[#FFB800]" /> Trésorerie de la station</h3>
+          <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => onSelect('tresorerie')}>Tout le détail →</button>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#001f5c,#003087)' }}>
+            <div className="flex items-center gap-2 text-blue-200"><PiggyBank className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Caisse générale</span></div>
+            <p className="text-3xl font-black tabular-nums mt-1.5 text-[#FFB800]">{money(tr.caisseBalance)}</p>
+          </button>
+          <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#065f46,#047857)' }}>
+            <div className="flex items-center gap-2 text-emerald-100"><Landmark className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Total en banque</span></div>
+            <p className="text-3xl font-black tabular-nums mt-1.5">{money(tr.bankTotal)}</p>
+            <p className="text-[11px] text-emerald-100 mt-0.5">{tr.counts.accounts} compte(s)</p>
+          </button>
+          <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#4c1d95,#6d28d9)' }}>
+            <div className="flex items-center gap-2 text-violet-200"><Layers className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Flux net de la période</span></div>
+            <p className="text-3xl font-black tabular-nums mt-1.5">{money(tr.net)}</p>
+            <p className="text-[11px] text-violet-200 mt-0.5">+{money(tr.inflow)} · −{money(tr.outflow)} · {tr.counts.movements} opérations</p>
+          </button>
+        </div>
+      </div>
+
+      {/* Personnel — raccourci vers la section dédiée */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-black text-[#002d87] flex items-center gap-2"><UsersRound className="w-5 h-5 text-[#FFB800]" /> Personnel de la station</h3>
+          <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => onSelect('employes')}>Dossier de chaque employé →</button>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <OverviewCard icon={UsersRound} tone="blue" label="Employés" value={String(wf.totals.workers)} sub={`${wf.totals.withAccount} compte(s) actif(s)`} />
+          <OverviewCard icon={Banknote} tone="green" label="Salaires versés" value={money(wf.totals.salariesPaid)} sub={`${money(wf.totals.acomptes)} d'acomptes`} />
+          <OverviewCard icon={Target} tone="purple" label="Brigades couvertes" value={String(wf.totals.brigades)} sub={`${wf.totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L vendus`} />
+          <OverviewCard icon={Car} tone="cyan" label="Travaux lavage / réparation" value={String(wf.totals.works)} sub={`${wf.totals.sessions} sessions cafétéria`} />
+        </div>
+        <div className="card-glass overflow-hidden">
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full border-collapse">
+              <thead><tr>
+                <th className="table-head">Activité</th><th className="table-head text-right">Employés</th>
+                <th className="table-head text-right">Salaires versés</th><th className="table-head text-right">Acomptes</th>
+                <th className="table-head text-right">Absences</th><th className="table-head text-right">Activité</th>
+                <th className="table-head text-right">Parts à régler</th>
+              </tr></thead>
+              <tbody>
+                {wf.parts.map(p => (
+                  <tr key={p.key} className="cursor-pointer hover:bg-slate-50" onClick={() => onSelect('employes')}>
+                    <td className="table-cell font-bold whitespace-nowrap">{p.emoji} {p.label}</td>
+                    <td className="table-cell tabular-nums text-right font-bold">{p.count}</td>
+                    <td className="table-cell tabular-nums text-right text-emerald-600">{money(p.salariesPaid)}</td>
+                    <td className="table-cell tabular-nums text-right text-amber-700">{money(p.acomptes)}</td>
+                    <td className="table-cell tabular-nums text-right text-red-600">{money(p.absences)}</td>
+                    <td className="table-cell tabular-nums text-right text-blue-700">{p.activityValue} {p.activityLabel.toLowerCase()}</td>
+                    <td className={cn('table-cell tabular-nums text-right font-black', p.dueNow > 0 ? 'text-red-600' : 'text-slate-400')}>{money(p.dueNow)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       {/* Net gain hero */}

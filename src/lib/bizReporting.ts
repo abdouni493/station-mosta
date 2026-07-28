@@ -8,7 +8,7 @@
  * printable "Fiche Journalière"-style sheet render from a single source of truth.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { ModuleState, ModuleKey, MODULES } from './bizConfig';
+import { ModuleState, ModuleKey, MODULES, prestationsOf } from './bizConfig';
 
 // ─── Date helper ─────────────────────────────────────────────────────────────
 export const within = (dateStr: string, from: string, to: string): boolean => {
@@ -121,13 +121,20 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
       items: s.items.map(it => ({ name: it.productName, qty: it.qty, unitPrice: it.unitPrice, total: it.total ?? it.qty * it.unitPrice })),
     })),
     ...repsInRange.map(r => ({
-      id: r.id, ref: r.ref, kind: r.kind === 'lavage' ? 'Lavage' : 'Réparation', date: r.date, client: r.clientName,
+      id: r.id, ref: r.ref,
+      kind: r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation',
+      date: r.date, client: r.clientName,
       total: r.total, paid: r.paid, rest: r.rest,
       items: [
-        ...(r.serviceTotal > 0
-          ? [{ name: "Main d'œuvre", qty: 1, unitPrice: r.serviceTotal, total: r.serviceTotal }]
-          : []),
+        // One line per prestation performed, then the products, then the remise.
+        ...prestationsOf(r).map(p => ({
+          name: `${p.kind === 'lavage' ? 'Lavage' : 'Réparation'} — ${p.label}`,
+          qty: 1, unitPrice: p.amount, total: p.amount,
+        })),
         ...(r.usedProducts || []).map(it => ({ name: it.productName, qty: it.qty, unitPrice: it.unitPrice, total: it.total ?? it.qty * it.unitPrice })),
+        ...(r.discountAmount
+          ? [{ name: `Remise${r.discountType === 'percent' ? ` ${r.discountValue}%` : ''}`, qty: 1, unitPrice: -r.discountAmount, total: -r.discountAmount }]
+          : []),
       ],
     })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -148,9 +155,26 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
     bp[k].revenue += it.total ?? it.qty * it.unitPrice;
     bp[k].cost += costOfItem(it);
   }));
-  // Reparation services as a pure-margin line
-  const servicesRevenue = repsInRange.reduce((s, r) => s + (r.serviceTotal || 0), 0);
-  if (servicesRevenue > 0) bp['Prestations / Services'] = { qty: repsInRange.filter(r => (r.serviceTotal || 0) > 0).length, revenue: servicesRevenue, cost: 0, unit: 'service' };
+  // Prestations are pure margin (no goods behind them) and are split by nature so
+  // the report says how much lavage and how much réparation was sold.
+  repsInRange.forEach(r => prestationsOf(r).forEach(p => {
+    const k = p.kind === 'lavage' ? 'Prestations — Lavage' : 'Prestations — Réparation';
+    (bp[k] ||= { qty: 0, revenue: 0, cost: 0, unit: 'prestation' });
+    bp[k].qty += 1;
+    bp[k].revenue += Number(p.amount) || 0;
+  }));
+  // Remises are a negative revenue line, so the CA of this table reconciles with
+  // the invoiced totals (which are net of the remise).
+  const discountsTotal =
+    repsInRange.reduce((s, r) => s + (r.discountAmount || 0), 0)
+    + salesInRange.reduce((s, x) => s + (x.reduction || 0), 0);
+  if (discountsTotal > 0) {
+    bp['Remises accordées'] = {
+      qty: repsInRange.filter(r => (r.discountAmount || 0) > 0).length
+        + salesInRange.filter(x => (x.reduction || 0) > 0).length,
+      revenue: -discountsTotal, cost: 0, unit: 'remise',
+    };
+  }
 
   const salesByProduct: ProductGain[] = Object.entries(bp)
     .map(([name, v]) => ({ name, qty: v.qty, unit: v.unit, revenue: v.revenue, cost: v.cost, gain: v.revenue - v.cost }))

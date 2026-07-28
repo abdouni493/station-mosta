@@ -7,8 +7,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'react-hot-toast';
 import { cn, newId } from '@/src/lib/utils';
 import {
-  ModuleKey, MODULES, BizWorker, BizWorkerPayment, BizReparation,
-  INTERFACE_ACTIONS, interfacesForModule,
+  ModuleKey, MODULES, BizWorker, BizWorkerPayment, BizReparation, BizWorkerKind,
+  WORKER_KIND_META, INTERFACE_ACTIONS, interfacesForModule, workerShareOf, prestationsOf,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -28,6 +28,7 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
   const perm = useBizPermission(moduleKey, 'workers');
   const { workers } = biz.state;
   const [search, setSearch] = useState('');
+  const [kindFilter, setKindFilter] = useState<'all' | BizWorkerKind>('all');
   const [form, setForm] = useState<BizWorker | null | 'new'>(null);
   const [viewing, setViewing] = useState<BizWorker | null>(null);
   const [perms, setPerms] = useState<BizWorker | null>(null);
@@ -41,8 +42,16 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const currentMonth = new Date().toISOString().slice(0, 7);
 
-  const filtered = workers.filter(w =>
-    !search || w.name.toLowerCase().includes(search.toLowerCase()) || w.roleName.toLowerCase().includes(search.toLowerCase()));
+  // The speciality only exists on the Lavage & Réparation part.
+  const hasKinds = cfg.isService;
+  const filtered = workers.filter(w => {
+    const q = search.trim().toLowerCase();
+    const matchQ = !q || w.name.toLowerCase().includes(q) || w.roleName.toLowerCase().includes(q);
+    const kind = w.workerKind || 'both';
+    // A polyvalent employee belongs to both the "lavage" and the "réparation" filters.
+    const matchKind = !hasKinds || kindFilter === 'all' || kind === kindFilter || kind === 'both';
+    return matchQ && matchKind;
+  });
 
   const del = async () => {
     if (!toDelete) return;
@@ -79,7 +88,20 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
         <StatCard icon={Wallet} label="Masse salariale" value={money(totalPayroll)} tone="purple" sub="/ période" />
       </div>
 
-      <div className="card-glass p-4"><SearchInput value={search} onChange={setSearch} placeholder="Nom ou rôle…" /></div>
+      <div className="card-glass p-4 flex flex-wrap items-center gap-3">
+        <SearchInput value={search} onChange={setSearch} placeholder="Nom ou rôle…" />
+        {hasKinds && (
+          <div className="flex flex-wrap gap-1.5">
+            {(['all', 'lavage', 'reparation', 'both'] as const).map(k => (
+              <button key={k} onClick={() => setKindFilter(k)}
+                className={cn('px-3 py-1.5 rounded-lg text-xs font-bold transition-all',
+                  kindFilter === k ? 'bg-[#003087] text-white shadow' : 'bg-slate-100 text-slate-500 hover:bg-slate-200')}>
+                {k === 'all' ? 'Tous' : WORKER_KIND_META[k].short}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {filtered.length === 0 ? (
         <EmptyState icon={UsersRound} title="Aucun employé"
@@ -165,6 +187,20 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
                   <span className="text-[9px] font-bold px-2.5 py-1 bg-blue-100 text-blue-700 rounded-full flex items-center gap-1 italic">
                     <MapIcon className="w-3 h-3" /> {w.roleName}
                   </span>
+                  {hasKinds && (
+                    <span className={cn('text-[9px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1 italic',
+                      (w.workerKind || 'both') === 'lavage' ? 'bg-cyan-100 text-cyan-700'
+                        : (w.workerKind || 'both') === 'reparation' ? 'bg-orange-100 text-orange-700'
+                          : 'bg-violet-100 text-violet-700')}>
+                      {(w.workerKind || 'both') === 'lavage' ? '🧽' : (w.workerKind || 'both') === 'reparation' ? '🔧' : '🧽🔧'}
+                      {' '}{WORKER_KIND_META[w.workerKind || 'both'].short}
+                    </span>
+                  )}
+                  {w.salaryType === 'pourcentage' && (
+                    <span className="text-[9px] font-bold px-2.5 py-1 bg-emerald-100 text-emerald-700 rounded-full italic">
+                      {w.percentage || 0}% des travaux
+                    </span>
+                  )}
                   {w.hasAccount && w.authUserId && (
                     <span className="text-[9px] font-bold px-2.5 py-1 bg-green-100 text-green-700 rounded-full flex items-center gap-1 italic">
                       <Lock className="w-3 h-3" /> Compte actif
@@ -239,8 +275,11 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
   const biz = useBiz(moduleKey);
   const { roles } = biz.state;
   const isEdit = !!initial;
+  // Only the Lavage & Réparation part splits its staff by speciality.
+  const hasKinds = MODULES[moduleKey].isService;
   const [f, setF] = useState<Partial<BizWorker>>(initial || {
     name: '', birthday: '', cin: '', phone: '', roleName: '', paid: true, salaryType: 'mois', salaryAmount: 0, percentage: 0,
+    workerKind: 'lavage',
     hasAccount: false, email: '', username: '', password: '', startDate: new Date().toISOString().split('T')[0],
   });
   const [showRole, setShowRole] = useState(false);
@@ -297,7 +336,9 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
 
     const worker: BizWorker = {
       id: workerId, authUserId, name: f.name!.trim(), birthday: f.birthday, cin: f.cin, phone: f.phone,
-      roleName: f.roleName!, paid: !!f.paid, salaryType: (f.salaryType as any) || 'mois', salaryAmount: Number(f.salaryAmount) || 0,
+      roleName: f.roleName!,
+      workerKind: hasKinds ? ((f.workerKind as BizWorkerKind) || 'both') : initial?.workerKind,
+      paid: !!f.paid, salaryType: (f.salaryType as any) || 'mois', salaryAmount: Number(f.salaryAmount) || 0,
       percentage: f.salaryType === 'pourcentage' ? Number(f.percentage) || 0 : undefined,
       hasAccount, email: f.email, username: username || undefined, password: f.password,
       startDate: f.startDate || new Date().toISOString().split('T')[0],
@@ -332,6 +373,36 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
           </div>
           {showRole && <div className="mt-2"><InlineCreate placeholder="Nouveau rôle" onCreate={n => { biz.add('roles', { id: newId(), name: n }); set('roleName', n); setShowRole(false); }} /></div>}
         </Field>
+        {hasKinds && (
+          <div className="sm:col-span-2 rounded-xl border border-slate-200 p-4"
+            style={{ background: 'linear-gradient(135deg, rgba(6,182,212,0.06), rgba(249,115,22,0.06))' }}>
+            <p className="text-sm font-bold text-[#002d87]">Type d'employé</p>
+            <p className="text-xs text-slate-500 mb-3">
+              Détermine sur quelles prestations cet employé est proposé lors de la création d'une intervention.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(['lavage', 'reparation', 'both'] as const).map(k => {
+                const on = (f.workerKind || 'both') === k;
+                return (
+                  <button key={k} onClick={() => set('workerKind', k)}
+                    className={cn('rounded-xl border-2 px-3 py-3 text-left transition-all',
+                      on ? 'border-[#003087] bg-white shadow-sm' : 'border-slate-200 bg-white/60 hover:border-slate-300')}>
+                    <p className="text-lg leading-none">{k === 'lavage' ? '🧽' : k === 'reparation' ? '🔧' : '🧽🔧'}</p>
+                    <p className={cn('text-xs font-black mt-1.5', on ? 'text-[#003087]' : 'text-slate-600')}>
+                      {WORKER_KIND_META[k].label}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      {k === 'lavage' ? 'Uniquement les lavages'
+                        : k === 'reparation' ? 'Uniquement les réparations'
+                          : 'Proposé sur les deux'}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="sm:col-span-2"><Field label="Date de début de travail"><Input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></Field></div>
 
         <div className="sm:col-span-2 rounded-xl bg-slate-50 border border-slate-200 p-4">
@@ -443,8 +514,14 @@ function ViewWorker({ worker, onClose }: { worker: BizWorker; onClose: () => voi
   return (
     <Modal open onClose={onClose} icon={Eye} size="md" title={worker.name} subtitle={worker.roleName}>
       <div className="grid grid-cols-2 gap-3 text-sm">
-        {[['Rôle', worker.roleName], ['Téléphone', worker.phone || '—'], ['Naissance', worker.birthday ? formatDate(worker.birthday) : '—'],
-        ['CIN', worker.cin || '—'], ['Salaire', worker.paid ? `${money(worker.salaryAmount)} / ${worker.salaryType}` : '—'],
+        {[['Rôle', worker.roleName],
+        ...(worker.workerKind ? [['Spécialité', WORKER_KIND_META[worker.workerKind].label]] : []),
+        ['Téléphone', worker.phone || '—'], ['Naissance', worker.birthday ? formatDate(worker.birthday) : '—'],
+        ['CIN', worker.cin || '—'],
+        ['Salaire', !worker.paid ? '—'
+          : worker.salaryType === 'pourcentage'
+            ? `${worker.percentage || 0} % des travaux`
+            : `${money(worker.salaryAmount)} / ${worker.salaryType}`],
         ['Identifiant', worker.username || '—'],
         ['Compte', worker.hasAccount ? (worker.authUserId ? 'Actif' : 'À activer') : 'Aucun'],
         ['Début', formatDate(worker.startDate)], ['Acomptes', String(worker.acomptes.length)]].map(([k, v]) => (
@@ -606,6 +683,16 @@ function pendingWorksFor(worker: BizWorker, reparations: BizReparation[]): BizRe
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
 
+/**
+ * Amount of an intervention that counts for one worker: the sum of the
+ * prestations assigned to them, or the whole total when the job carries no
+ * per-prestation assignment (legacy record, or products-only job).
+ */
+function baseFor(r: BizReparation, workerId: string): number {
+  const lines = (r.prestations || []).filter(p => (p.workerIds || []).includes(workerId));
+  return lines.length ? lines.reduce((s, p) => s + (Number(p.amount) || 0), 0) : r.total;
+}
+
 /** Every intervention of this worker, with the payment that settled it (if any). */
 function allWorksFor(worker: BizWorker, reparations: BizReparation[]) {
   const byWork = new Map<string, BizWorkerPayment>();
@@ -625,8 +712,10 @@ function PaymentModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; wo
   const pendingWorks = useMemo(
     () => (isPercent ? pendingWorksFor(worker, reparations) : []),
     [isPercent, worker, reparations]);
-  const worksTotal = pendingWorks.reduce((s, r) => s + r.total, 0);
-  const percentDue = worksTotal * rate / 100;
+  // Base of the share: the prestations this worker actually performed (a job can
+  // hold a lavage done by A and a réparation done by B).
+  const worksTotal = pendingWorks.reduce((s, r) => s + baseFor(r, worker.id), 0);
+  const percentDue = pendingWorks.reduce((s, r) => s + workerShareOf(r, worker.id, rate), 0);
 
   const base = isPercent ? percentDue : worker.salaryAmount;
   const acomptesDue = worker.acomptes.filter(a => !a.paid).reduce((s, a) => s + a.amount, 0);
@@ -683,23 +772,30 @@ function PaymentModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; wo
                 <p className="text-sm text-slate-400 text-center py-4">Aucun travail non payé pour cet employé.</p>
               ) : (
                 <div className="max-h-[240px] overflow-y-auto custom-scrollbar space-y-1.5">
-                  {pendingWorks.map(r => (
-                    <div key={r.id} className="flex items-center justify-between bg-slate-50 rounded-xl p-2.5 text-sm">
-                      <div className="min-w-0">
-                        <p className="font-bold text-slate-700 truncate">{r.ref} — {r.clientName}</p>
-                        <p className="text-xs text-slate-400">{formatDate(r.date)} • {r.kind === 'lavage' ? 'Lavage' : 'Réparation'}</p>
+                  {pendingWorks.map(r => {
+                    const mine = prestationsOf(r).filter(p => p.workerIds.includes(worker.id));
+                    return (
+                      <div key={r.id} className="flex items-center justify-between bg-slate-50 rounded-xl p-2.5 text-sm">
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-700 truncate">{r.ref} — {r.clientName}</p>
+                          <p className="text-xs text-slate-400 truncate">
+                            {formatDate(r.date)} • {mine.length
+                              ? mine.map(p => `${p.kind === 'lavage' ? 'Lavage' : 'Réparation'} : ${p.label}`).join(' · ')
+                              : (r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation')}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0 ml-3">
+                          <p className="font-bold tabular-nums text-slate-700">{money(baseFor(r, worker.id))}</p>
+                          <p className="text-xs text-emerald-600 tabular-nums">+{money(workerShareOf(r, worker.id, rate))}</p>
+                        </div>
                       </div>
-                      <div className="text-right shrink-0 ml-3">
-                        <p className="font-bold tabular-nums text-slate-700">{money(r.total)}</p>
-                        <p className="text-xs text-emerald-600 tabular-nums">+{money(r.total * rate / 100)}</p>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
               <div className="grid grid-cols-3 gap-3 text-sm">
                 <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Travaux</p><p className="font-black tabular-nums">{pendingWorks.length}</p></div>
-                <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Montant travaux</p><p className="font-black tabular-nums text-sm">{money(worksTotal)}</p></div>
+                <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Base retenue</p><p className="font-black tabular-nums text-sm">{money(worksTotal)}</p></div>
                 <div className="rounded-xl bg-emerald-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Part {rate}%</p><p className="font-black tabular-nums text-sm text-emerald-600">{money(percentDue)}</p></div>
               </div>
             </>
@@ -748,8 +844,9 @@ function WorkerWorksModal({ worker, reparations, onClose }: {
 }) {
   const rate = worker.percentage || 0;
   const rows = useMemo(() => allWorksFor(worker, reparations), [worker, reparations]);
-  const paidTotal = rows.filter(r => r.payment).reduce((s, r) => s + r.work.total * rate / 100, 0);
-  const dueTotal = rows.filter(r => !r.payment && r.work.status === 'finalized').reduce((s, r) => s + r.work.total * rate / 100, 0);
+  const paidTotal = rows.filter(r => r.payment).reduce((s, r) => s + workerShareOf(r.work, worker.id, rate), 0);
+  const dueTotal = rows.filter(r => !r.payment && r.work.status === 'finalized')
+    .reduce((s, r) => s + workerShareOf(r.work, worker.id, rate), 0);
 
   return (
     <Modal open onClose={onClose} icon={Briefcase} size="2xl"
@@ -768,27 +865,45 @@ function WorkerWorksModal({ worker, reparations, onClose }: {
               <table className="w-full border-collapse">
                 <thead><tr>
                   <th className="table-head">Réf</th><th className="table-head">Date</th><th className="table-head">Client</th>
-                  <th className="table-head">Type</th><th className="table-head">Total</th>
-                  <th className="table-head">Part {rate}%</th><th className="table-head">État</th>
+                  <th className="table-head">Véhicule</th><th className="table-head">Prestations réalisées</th>
+                  <th className="table-head text-right">Total facture</th><th className="table-head text-right">Base</th>
+                  <th className="table-head text-right">Part {rate}%</th><th className="table-head">État</th>
                 </tr></thead>
                 <tbody>
-                  {rows.map(({ work, payment }) => (
-                    <tr key={work.id}>
-                      <td className="table-cell font-bold">{work.ref}</td>
-                      <td className="table-cell">{formatDate(work.date)}</td>
-                      <td className="table-cell">{work.clientName}</td>
-                      <td className="table-cell">{work.kind === 'lavage' ? 'Lavage' : 'Réparation'}</td>
-                      <td className="table-cell tabular-nums">{money(work.total)}</td>
-                      <td className="table-cell tabular-nums font-bold">{money(work.total * rate / 100)}</td>
-                      <td className="table-cell">
-                        {payment
-                          ? <span className="badge badge-success">Payé le {formatDate(payment.date)}</span>
-                          : work.status === 'finalized'
-                            ? <span className="badge badge-warning">À payer</span>
-                            : <span className="badge badge-neutral">En attente</span>}
-                      </td>
-                    </tr>
-                  ))}
+                  {rows.map(({ work, payment }) => {
+                    const mine = prestationsOf(work).filter(p => p.workerIds.includes(worker.id));
+                    return (
+                      <tr key={work.id}>
+                        <td className="table-cell font-bold">{work.ref}</td>
+                        <td className="table-cell whitespace-nowrap">{formatDate(work.date)}</td>
+                        <td className="table-cell">{work.clientName}</td>
+                        <td className="table-cell text-slate-500">
+                          {[work.car?.marque, work.car?.name, work.car?.immatriculation].filter(Boolean).join(' • ') || '—'}
+                        </td>
+                        <td className="table-cell">
+                          {mine.length ? (
+                            <div className="flex flex-wrap gap-1">
+                              {mine.map(p => (
+                                <span key={p.id} className={cn('badge', p.kind === 'lavage' ? 'badge-info' : 'badge-primary')}>
+                                  {p.kind === 'lavage' ? '🧽' : '🔧'} {p.label} · {money(p.amount)}
+                                </span>
+                              ))}
+                            </div>
+                          ) : <span className="text-slate-400 italic text-xs">Intervention entière</span>}
+                        </td>
+                        <td className="table-cell tabular-nums text-right">{money(work.total)}</td>
+                        <td className="table-cell tabular-nums text-right text-slate-500">{money(baseFor(work, worker.id))}</td>
+                        <td className="table-cell tabular-nums text-right font-bold">{money(workerShareOf(work, worker.id, rate))}</td>
+                        <td className="table-cell">
+                          {payment
+                            ? <span className="badge badge-success">Payé le {formatDate(payment.date)}</span>
+                            : work.status === 'finalized'
+                              ? <span className="badge badge-warning">À payer</span>
+                              : <span className="badge badge-neutral">En attente</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

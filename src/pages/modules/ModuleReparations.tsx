@@ -4,10 +4,11 @@
  *
  *  • Le client est optionnel — sans client, l'intervention est au nom d'un
  *    « Client de passage ».
- *  • Il n'y a plus de catalogue de services : le montant de la prestation est
- *    saisi à la main.
- *  • L'employé qui a réalisé le travail est sélectionné (base de la paie au
- *    pourcentage).
+ *  • Une intervention porte AUTANT DE PRESTATIONS que nécessaire : un lavage et
+ *    une réparation peuvent être créés en une seule fois. Chaque prestation a sa
+ *    désignation, son montant et ses employés (base de la paie au pourcentage).
+ *  • Une remise peut être appliquée en pourcentage ou en montant fixe ; elle est
+ *    déduite du sous-total (prestations + produits).
  *  • Les produits utilisés sont cherchés par nom OU code-barres ; un produit
  *    vendu au détail se saisit dans son unité de détail (ex: 10 L sur 50 L).
  *  • Une intervention peut être créée « en attente » puis finalisée plus tard
@@ -17,12 +18,13 @@
 import React, { useMemo, useState } from 'react';
 import {
   Car, Wrench, Droplets, Plus, Search, X, User, UserPlus, Wallet, Printer,
-  Eye, Edit2, Trash2, Clock, Package, CheckCircle2, Hourglass,
+  Eye, Edit2, Trash2, Clock, Package, CheckCircle2, Hourglass, Layers, Percent, Tag,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
-  ModuleKey, MODULES, BizReparation, BizCar, BizLineItem, BizProduct, detailPrice,
+  ModuleKey, MODULES, BizReparation, BizRepKind, BizPrestation, BizDiscountType,
+  BizCar, BizLineItem, BizProduct, BizWorker, detailPrice, discountOf, prestationsOf,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -33,10 +35,24 @@ import {
 } from '@/src/components/biz/Kit';
 import { ContactModal, PayDebtModal, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
 
-const KIND_META: Record<BizReparation['kind'], { label: string; icon: React.ElementType }> = {
+const KIND_META: Record<BizRepKind, { label: string; icon: React.ElementType }> = {
   reparation: { label: 'Réparation', icon: Wrench },
   lavage: { label: 'Lavage', icon: Droplets },
+  mixte: { label: 'Lavage + Réparation', icon: Layers },
 };
+
+/** Kind of the whole intervention, derived from what it actually contains. */
+function kindOfPrestations(lines: BizPrestation[], fallback: BizRepKind): BizRepKind {
+  if (!lines.length) return fallback === 'mixte' ? 'lavage' : fallback;
+  const hasLav = lines.some(l => l.kind === 'lavage');
+  const hasRep = lines.some(l => l.kind === 'reparation');
+  return hasLav && hasRep ? 'mixte' : (hasLav ? 'lavage' : 'reparation');
+}
+
+/** Employees proposed on a prestation of that kind (polyvalents always show). */
+function workersForKind(workers: BizWorker[], kind: 'lavage' | 'reparation'): BizWorker[] {
+  return workers.filter(w => !w.workerKind || w.workerKind === 'both' || w.workerKind === kind);
+}
 const STATUS_META: Record<string, { label: string; tone: any }> = {
   pending: { label: 'En attente', tone: 'warning' },
   finalized: { label: 'Finalisé', tone: 'success' },
@@ -56,7 +72,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   const [status, setStatus] = useState<'all' | 'pending' | 'finalized' | 'canceled'>('all');
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
-  const [creating, setCreating] = useState<null | { kind: BizReparation['kind']; pending: boolean }>(null);
+  const [creating, setCreating] = useState<null | { kind: BizRepKind; pending: boolean }>(null);
   const [viewing, setViewing] = useState<BizReparation | null>(null);
   const [editing, setEditing] = useState<BizReparation | null>(null);
   const [paying, setPaying] = useState<BizReparation | null>(null);
@@ -92,7 +108,11 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
   const doPrint = (r: BizReparation) => {
     const client = clients.find(c => c.id === r.clientId);
-    const workerNames = r.workers.map(id => workers.find(w => w.id === id)?.name).filter(Boolean).join(', ');
+    const nameOf = (id: string) => workers.find(w => w.id === id)?.name;
+    const workerNames = r.workers.map(nameOf).filter(Boolean).join(', ');
+    const lines = prestationsOf(r);
+    const productsTotal = r.usedProducts.reduce((s, p) => s + (p.total ?? p.qty * p.unitPrice), 0);
+    const subtotal = r.subtotal ?? (r.serviceTotal + productsTotal);
     printInvoice({
       title: KIND_META[r.kind].label, ref: r.ref, date: r.date,
       station: stationFromSettings(settings),
@@ -102,9 +122,15 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
         { label: 'Immatriculation', value: r.car?.immatriculation || '' },
         { label: 'Employé(s)', value: workerNames },
         { label: 'Statut', value: STATUS_META[r.status].label },
+        { label: 'Prestations', value: lines.length > 1 ? `${lines.length} prestations` : '' },
       ],
       items: [
-        ...(r.serviceTotal > 0 ? [{ name: 'Prestation / main d’œuvre', qty: 1, unitPrice: r.serviceTotal, total: r.serviceTotal }] : []),
+        // One printed line per prestation, so the client sees exactly what was done.
+        ...lines.map(l => ({
+          name: `${KIND_META[l.kind].label} — ${l.label || 'Main d’œuvre'}`
+            + (l.workerIds.length ? ` (${l.workerIds.map(nameOf).filter(Boolean).join(', ')})` : ''),
+          qty: 1, unitPrice: l.amount, total: l.amount,
+        })),
         ...r.usedProducts.map(p => ({
           name: p.productName,
           qty: p.detailQty ? `${p.detailQty} ${p.detailUnit || ''}`.trim() : p.qty,
@@ -112,9 +138,14 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
           total: p.total ?? p.qty * p.unitPrice,
         })),
       ],
+      subtotal: r.discountAmount ? subtotal : undefined,
+      reduction: r.discountAmount || undefined,
       total: r.total, paid: r.paid, rest: r.rest,
       payments: [{ label: 'Espèces', amount: r.paid }],
       notes: r.problem,
+      footerNote: r.discountAmount
+        ? `Remise accordée : ${r.discountType === 'percent' ? `${r.discountValue}%` : money(r.discountAmount)}`
+        : undefined,
     });
     biz.update('reparations', { ...r, printedAt: new Date().toISOString() });
   };
@@ -129,8 +160,11 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
           <button className="btn-secondary" onClick={() => setCreating({ kind: 'lavage', pending: false })}>
             <Droplets className="w-4 h-4" /> Lavage
           </button>
-          <button className="btn-primary" onClick={() => setCreating({ kind: 'reparation', pending: false })}>
+          <button className="btn-secondary" onClick={() => setCreating({ kind: 'reparation', pending: false })}>
             <Wrench className="w-4 h-4" /> Réparation
+          </button>
+          <button className="btn-primary" onClick={() => setCreating({ kind: 'mixte', pending: false })}>
+            <Layers className="w-4 h-4" /> Lavage + Réparation
           </button>
         </div> : undefined} />
 
@@ -177,9 +211,24 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                   </p>
                 )}
                 <div className="flex flex-wrap gap-1 mt-2">
-                  {r.serviceTotal > 0 && <Badge tone="primary">Prestation {money(r.serviceTotal)}</Badge>}
+                  {prestationsOf(r).map(l => (
+                    <Badge key={l.id} tone={l.kind === 'lavage' ? 'info' : 'primary'}>
+                      {l.kind === 'lavage' ? '🧽' : '🔧'} {l.label || KIND_META[l.kind].label} {money(l.amount)}
+                    </Badge>
+                  ))}
                   {r.usedProducts.length > 0 && <Badge tone="neutral">{r.usedProducts.length} produit(s)</Badge>}
+                  {!!r.discountAmount && (
+                    <Badge tone="warning">
+                      Remise {r.discountType === 'percent' ? `${r.discountValue}%` : ''} −{money(r.discountAmount)}
+                    </Badge>
+                  )}
                 </div>
+                {r.workers.length > 0 && (
+                  <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 truncate">
+                    <User className="w-3 h-3 shrink-0" />
+                    {r.workers.map(id => workers.find(w => w.id === id)?.name).filter(Boolean).join(', ')}
+                  </p>
+                )}
                 <div className="grid grid-cols-3 gap-2 mt-3">
                   <div className="rounded-xl bg-slate-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(r.total)}</p></div>
                   <div className="rounded-xl bg-emerald-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(r.paid)}</p></div>
@@ -237,7 +286,9 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 function ViewRep({ rep, workers, onClose, onPrint }: {
   rep: BizReparation; workers: { id: string; name: string }[]; onClose: () => void; onPrint: () => void;
 }) {
-  const workerNames = rep.workers.map(id => workers.find(w => w.id === id)?.name).filter(Boolean).join(', ');
+  const nameOf = (id: string) => workers.find(w => w.id === id)?.name;
+  const workerNames = rep.workers.map(nameOf).filter(Boolean).join(', ');
+  const lines = prestationsOf(rep);
   return (
     <Modal open onClose={onClose} icon={KIND_META[rep.kind].icon} size="lg"
       title={`${KIND_META[rep.kind].label} ${rep.ref}`} subtitle={rep.clientName}
@@ -254,9 +305,32 @@ function ViewRep({ rep, workers, onClose, onPrint }: {
             <p className="text-sm font-semibold text-slate-700">{[rep.car.marque, rep.car.name, rep.car.color, rep.car.year, rep.car.immatriculation].filter(Boolean).join(' • ')}</p></div>
         )}
         {rep.problem && <div className="rounded-xl bg-amber-50 p-3"><p className="text-[10px] uppercase font-bold text-amber-500">Problème</p><p className="text-sm text-amber-700">{rep.problem}</p></div>}
-        <div className="flex justify-between text-sm bg-slate-50 rounded-lg px-3 py-2">
-          <span>Prestation / main d'œuvre</span><span className="font-bold tabular-nums">{money(rep.serviceTotal)}</span>
+
+        <div>
+          <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Prestations réalisées</p>
+          <div className="space-y-1">
+            {lines.length === 0
+              ? <p className="text-sm text-slate-400 italic">Aucune prestation — produits uniquement.</p>
+              : lines.map(l => {
+                const Icon = KIND_META[l.kind].icon;
+                return (
+                  <div key={l.id} className="flex items-start justify-between gap-3 text-sm bg-slate-50 rounded-lg px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-700 flex items-center gap-1.5">
+                        <Icon className="w-3.5 h-3.5 text-[#003087]" /> {l.label || KIND_META[l.kind].label}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        {KIND_META[l.kind].label}
+                        {l.workerIds.length ? ` • ${l.workerIds.map(nameOf).filter(Boolean).join(', ')}` : ' • aucun employé'}
+                      </p>
+                    </div>
+                    <span className="font-bold tabular-nums shrink-0">{money(l.amount)}</span>
+                  </div>
+                );
+              })}
+          </div>
         </div>
+
         {rep.usedProducts.length > 0 && (
           <div><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Produits utilisés</p>
             <div className="space-y-1">{rep.usedProducts.map((p, i) => (
@@ -266,6 +340,19 @@ function ViewRep({ rep, workers, onClose, onPrint }: {
               </div>))}
             </div></div>
         )}
+
+        {!!rep.discountAmount && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-sm bg-slate-50 rounded-lg px-3 py-2">
+              <span>Sous-total</span><span className="font-bold tabular-nums">{money(rep.subtotal ?? rep.total + rep.discountAmount)}</span>
+            </div>
+            <div className="flex justify-between text-sm bg-amber-50 rounded-lg px-3 py-2 text-amber-700">
+              <span>Remise {rep.discountType === 'percent' ? `(${rep.discountValue}%)` : '(montant fixe)'}</span>
+              <span className="font-bold tabular-nums">−{money(rep.discountAmount)}</span>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums">{money(rep.total)}</p></div>
           <div className="rounded-xl bg-emerald-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums">{money(rep.paid)}</p></div>
@@ -277,15 +364,28 @@ function ViewRep({ rep, workers, onClose, onPrint }: {
 }
 
 // ─── Create / edit / finalize ──────────────────────────────────────────────────
+/** A prestation being edited: the amount is kept as text so the field can be
+ *  emptied while typing without collapsing to 0. */
+type LineDraft = BizPrestation & { amountStr: string };
+
+/** A prestation worth saving: it has a price, a designation or an employee. */
+const keptLine = (l: LineDraft) =>
+  (Number(l.amountStr) || 0) > 0 || !!l.label.trim() || l.workerIds.length > 0;
+
 /**
  * The same form serves creation, edition and finalisation of a pending job, so
  * the three flows can never drift apart.
+ *
+ * An intervention holds a LIST of prestations: un lavage et une réparation
+ * peuvent être facturés en une seule création, chacun avec sa désignation, son
+ * montant et ses employés. Une remise (pourcentage ou montant fixe) est ensuite
+ * déduite du sous-total.
  */
 function ReparationForm({
   moduleKey, kind, initial, asPending, onClose, onSaved,
 }: {
   moduleKey: ModuleKey;
-  kind: BizReparation['kind'];
+  kind: BizRepKind;
   initial?: BizReparation;
   asPending?: boolean;
   onClose: () => void;
@@ -296,25 +396,76 @@ function ReparationForm({
   const isEdit = !!initial;
   const wasPending = initial?.status === 'pending';
 
-  const [repKind, setRepKind] = useState<BizReparation['kind']>(initial?.kind || kind);
+  const emptyLine = (k: 'lavage' | 'reparation'): LineDraft =>
+    ({ id: newId(), kind: k, label: '', amount: 0, workerIds: [], amountStr: '' });
+
+  const [lines, setLines] = useState<LineDraft[]>(() => {
+    if (initial) {
+      const existing = prestationsOf(initial).map(l => ({
+        ...l, workerIds: [...(l.workerIds || [])], amountStr: l.amount ? String(l.amount) : '',
+      }));
+      // A products-only job saved before prestations existed still carries its
+      // employees — keep them on an empty line rather than dropping them.
+      if (!existing.length && (initial.workers || []).length) {
+        return [{
+          id: newId(), kind: initial.kind === 'lavage' ? 'lavage' : 'reparation',
+          label: '', amount: 0, workerIds: [...initial.workers], amountStr: '',
+        }];
+      }
+      return existing;
+    }
+    return kind === 'mixte'
+      ? [emptyLine('lavage'), emptyLine('reparation')]
+      : [emptyLine(kind === 'reparation' ? 'reparation' : 'lavage')];
+  });
+
   const [clientId, setClientId] = useState(initial?.clientId || '');
   const [showClient, setShowClient] = useState(false);
   const [car, setCar] = useState<BizCar>(initial?.car || {});
   const [problem, setProblem] = useState(initial?.problem || '');
-  const [serviceTotal, setServiceTotal] = useState(String(initial?.serviceTotal ?? ''));
   const [used, setUsed] = useState<BizLineItem[]>(initial?.usedProducts || []);
   const [paidStr, setPaidStr] = useState<string>(initial ? String(initial.paid) : '');
-  const [selWorkers, setSelWorkers] = useState<string[]>(initial?.workers || []);
   const [pQuery, setPQuery] = useState('');
   const [pending, setPending] = useState<boolean>(initial ? initial.status === 'pending' : !!asPending);
+  const [discountMode, setDiscountMode] = useState<'none' | BizDiscountType>(
+    initial?.discountAmount ? (initial.discountType || 'amount') : 'none');
+  const [discountStr, setDiscountStr] = useState<string>(
+    initial?.discountValue ? String(initial.discountValue) : '');
 
-  const service = Number(serviceTotal) || 0;
+  // ── Money ──────────────────────────────────────────────────────────────────
+  const serviceTotal = lines.reduce((s, l) => s + (Number(l.amountStr) || 0), 0);
   const productsTotal = used.reduce((s, x) => s + (x.total ?? x.qty * x.unitPrice), 0);
-  const total = service + productsTotal;
+  const subtotal = serviceTotal + productsTotal;
+  const discountAmount = discountMode === 'none' ? 0 : discountOf(subtotal, discountMode, Number(discountStr) || 0);
+  const total = Math.max(0, subtotal - discountAmount);
   const paid = paidStr === '' ? (pending ? 0 : total) : Number(paidStr);
   const rest = Math.max(0, total - paid);
 
-  // Search by product name OR barcode.
+  const repKind = kindOfPrestations(lines.filter(keptLine), kind);
+
+  // Every employee taking part in the intervention, across all its prestations.
+  const allWorkerIds = useMemo(
+    () => Array.from(new Set(lines.flatMap(l => l.workerIds))),
+    [lines]);
+
+  // ── Prestation helpers ─────────────────────────────────────────────────────
+  const addLine = (k: 'lavage' | 'reparation') => setLines(prev => [...prev, emptyLine(k)]);
+  const rmLine = (id: string) => setLines(prev => prev.filter(l => l.id !== id));
+  const patchLine = (id: string, patch: Partial<LineDraft>) =>
+    setLines(prev => prev.map(l => (l.id === id ? { ...l, ...patch } : l)));
+  const setLineKind = (id: string, k: 'lavage' | 'reparation') =>
+    setLines(prev => prev.map(l => {
+      if (l.id !== id) return l;
+      // Drop employees who do not work on the new kind, so an assignment is never wrong.
+      const allowed = new Set(workersForKind(workers, k).map(w => w.id));
+      return { ...l, kind: k, workerIds: l.workerIds.filter(w => allowed.has(w)) };
+    }));
+  const toggleLineWorker = (id: string, workerId: string) =>
+    setLines(prev => prev.map(l => l.id === id
+      ? { ...l, workerIds: l.workerIds.includes(workerId) ? l.workerIds.filter(w => w !== workerId) : [...l.workerIds, workerId] }
+      : l));
+
+  // ── Products — search by name OR barcode ───────────────────────────────────
   const productMatches = useMemo(() => {
     const q = pQuery.trim().toLowerCase();
     if (!q) return [];
@@ -353,23 +504,46 @@ function ReparationForm({
     }));
   };
   const rmUsed = (id: string) => setUsed(prev => prev.filter(u => u.productId !== id));
-  const toggleWorker = (id: string) => setSelWorkers(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
+  // ── Save ───────────────────────────────────────────────────────────────────
   const save = () => {
+    const cleanLines: BizPrestation[] = lines
+      .filter(keptLine)
+      .map(l => ({
+        id: l.id, kind: l.kind,
+        label: l.label.trim() || KIND_META[l.kind].label,
+        amount: Number(l.amountStr) || 0,
+        workerIds: l.workerIds,
+      }));
+
+    if (cleanLines.length === 0 && used.length === 0) {
+      toast.error('Ajoutez au moins une prestation ou un produit');
+      return;
+    }
+
     const client = clients.find(c => c.id === clientId);
     const status: BizReparation['status'] = pending ? 'pending' : 'finalized';
-    const prefix = repKind === 'lavage' ? 'LAV' : 'REP';
+    const finalKind = kindOfPrestations(cleanLines, kind);
+    const prefix = finalKind === 'lavage' ? 'LAV' : finalKind === 'reparation' ? 'REP' : 'INT';
     const rep: BizReparation = {
       id: initial?.id || newId(),
       ref: initial?.ref || `${prefix}-${String(biz.state.reparations.length + 1).padStart(4, '0')}`,
-      kind: repKind,
+      kind: finalKind,
       clientId: clientId || undefined,
       clientName: client?.name || PASSAGE,
-      car, serviceTotal: service, usedProducts: used, problem,
+      car,
+      serviceTotal: cleanLines.reduce((s, l) => s + l.amount, 0),
+      prestations: cleanLines,
+      usedProducts: used,
+      problem,
+      subtotal,
+      discountType: discountMode === 'none' ? undefined : discountMode,
+      discountValue: discountMode === 'none' ? undefined : Number(discountStr) || 0,
+      discountAmount,
       total, paid, rest, status,
       date: initial?.date || new Date().toISOString(),
       outDate: initial?.outDate,
-      workers: selWorkers,
+      workers: Array.from(new Set(cleanLines.flatMap(l => l.workerIds))),
       createdBy: initial?.createdBy || 'Admin',
       printedAt: initial?.printedAt,
       payrollSettled: initial?.payrollSettled,
@@ -395,12 +569,12 @@ function ReparationForm({
 
   const title = isEdit
     ? (wasPending ? `Finaliser ${initial!.ref}` : `Modifier ${initial!.ref}`)
-    : (pending ? 'Nouvelle intervention en attente' : `Nouveau ${KIND_META[repKind].label.toLowerCase()}`);
+    : (pending ? 'Nouvelle intervention en attente' : `Nouvelle intervention — ${KIND_META[repKind].label}`);
 
   return (
     <>
       <Modal open onClose={onClose} icon={KIND_META[repKind].icon} size="xl" title={title}
-        subtitle="Client optionnel • prestation saisie à la main • produits du stock"
+        subtitle="Plusieurs prestations par intervention • remise • produits du stock"
         footer={<>
           <button className="btn-ghost" onClick={onClose}>Annuler</button>
           {pending && (
@@ -413,21 +587,8 @@ function ReparationForm({
           </button>
         </>}>
         <div className="space-y-5">
-          {/* Kind + status */}
+          {/* Status + resulting kind */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Type d'intervention">
-              <div className="flex gap-2">
-                {(['lavage', 'reparation'] as const).map(k => {
-                  const Icon = KIND_META[k].icon;
-                  return (
-                    <button key={k} onClick={() => setRepKind(k)}
-                      className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 ${repKind === k ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500'}`}>
-                      <Icon className="w-4 h-4" /> {KIND_META[k].label}
-                    </button>
-                  );
-                })}
-              </div>
-            </Field>
             <Field label="Statut">
               <div className="flex gap-2">
                 <button onClick={() => setPending(true)}
@@ -438,6 +599,15 @@ function ReparationForm({
                   className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 ${!pending ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
                   <CheckCircle2 className="w-4 h-4" /> Finalisé
                 </button>
+              </div>
+            </Field>
+            <Field label="Type d'intervention" hint="Déduit automatiquement des prestations ajoutées.">
+              <div className="h-[46px] rounded-xl bg-slate-100 flex items-center gap-2 px-4 font-bold text-sm text-[#002d87]">
+                {React.createElement(KIND_META[repKind].icon, { className: 'w-4 h-4' })}
+                {KIND_META[repKind].label}
+                <span className="ml-auto text-[11px] font-semibold text-slate-400">
+                  {lines.length} prestation{lines.length > 1 ? 's' : ''}
+                </span>
               </div>
             </Field>
           </div>
@@ -465,35 +635,109 @@ function ReparationForm({
             </div>
           </div>
 
-          <Field label="Description du problème / de la prestation">
+          {/* ── Prestations ─────────────────────────────────────────────────── */}
+          <div className="rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200">
+              <div>
+                <h4 className="text-[11px] font-black uppercase tracking-widest text-[#002d87] flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5" /> Prestations
+                </h4>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Ajoutez un lavage et/ou une réparation — chacun avec son montant et ses employés.
+                </p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine('lavage')}>
+                  <Droplets className="w-3.5 h-3.5" /> + Lavage
+                </button>
+                <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine('reparation')}>
+                  <Wrench className="w-3.5 h-3.5" /> + Réparation
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 space-y-3">
+              {lines.length === 0 && (
+                <p className="text-sm text-slate-400 italic text-center py-3">
+                  Aucune prestation — l'intervention ne facturera que les produits utilisés.
+                </p>
+              )}
+              {lines.map((l, i) => {
+                const pool = workersForKind(workers, l.kind);
+                return (
+                  <div key={l.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[11px] font-black shrink-0">
+                        {i + 1}
+                      </span>
+                      <div className="flex gap-1.5">
+                        {(['lavage', 'reparation'] as const).map(k => {
+                          const Icon = KIND_META[k].icon;
+                          return (
+                            <button key={k} onClick={() => setLineKind(l.id, k)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 ${l.kind === k ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500'}`}>
+                              <Icon className="w-3.5 h-3.5" /> {KIND_META[k].label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <span className="ml-auto text-xs font-black tabular-nums text-[#002d87]">
+                        {money(Number(l.amountStr) || 0)}
+                      </span>
+                      <button onClick={() => rmLine(l.id)} title="Retirer la prestation"
+                        className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg shrink-0">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="sm:col-span-2">
+                        <Input placeholder={l.kind === 'lavage' ? 'Ex: Lavage complet intérieur/extérieur' : 'Ex: Changement plaquettes de frein'}
+                          value={l.label} onChange={e => patchLine(l.id, { label: e.target.value })} />
+                      </div>
+                      <Input type="number" placeholder="Montant (DA)" value={l.amountStr}
+                        onChange={e => patchLine(l.id, { amountStr: e.target.value, amount: Number(e.target.value) || 0 })} />
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">
+                        Employé(s) de cette prestation
+                      </p>
+                      {pool.length === 0 ? (
+                        <p className="text-xs text-slate-400 italic">
+                          Aucun employé « {l.kind === 'lavage' ? 'lavage' : 'réparation'} » enregistré.
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {pool.map(w => {
+                            const on = l.workerIds.includes(w.id);
+                            return (
+                              <button key={w.id} onClick={() => toggleLineWorker(l.id, w.id)}
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${on ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                                {on && <CheckCircle2 className="w-3 h-3" />} {w.name}
+                                {w.salaryType === 'pourcentage' && <span className="opacity-70">· {w.percentage || 0}%</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {allWorkerIds.length > 0 && (
+                <p className="text-[11px] text-slate-500">
+                  <b>{allWorkerIds.length}</b> employé(s) sur cette intervention :{' '}
+                  {allWorkerIds.map(id => workers.find(w => w.id === id)?.name).filter(Boolean).join(', ')}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <Field label="Description du problème / observations">
             <Textarea value={problem} onChange={e => setProblem(e.target.value)} placeholder="Décrivez le travail à réaliser…" />
           </Field>
-
-          {/* Manual service amount */}
-          <Field label="Montant de la prestation (DA)" hint="Saisissez le prix du travail réalisé.">
-            <Input type="number" value={serviceTotal} onChange={e => setServiceTotal(e.target.value)} placeholder="0" />
-          </Field>
-
-          {/* Worker who did the job */}
-          <div>
-            <label className="label-field">Employé(s) ayant réalisé le travail</label>
-            {workers.length === 0 ? (
-              <p className="text-xs text-slate-400">Aucun employé enregistré dans cette partie.</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {workers.map(w => {
-                  const on = selWorkers.includes(w.id);
-                  return (
-                    <button key={w.id} onClick={() => toggleWorker(w.id)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${on ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                      {on && <CheckCircle2 className="w-3 h-3" />} {w.name}
-                      {w.salaryType === 'pourcentage' && <span className="opacity-70">· {w.percentage || 0}%</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
 
           {/* Used products — search by name or barcode */}
           <div>
@@ -547,20 +791,62 @@ function ReparationForm({
             )}
           </div>
 
+          {/* ── Remise ──────────────────────────────────────────────────────── */}
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Tag className="w-4 h-4 text-amber-600" />
+              <h4 className="text-[11px] font-black uppercase tracking-widest text-amber-700">Remise client</h4>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Field label="Type de remise">
+                <div className="flex gap-1.5">
+                  {([['none', 'Aucune'], ['percent', '%'], ['amount', 'DA']] as const).map(([m, lbl]) => (
+                    <button key={m} onClick={() => setDiscountMode(m)}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold ${discountMode === m ? 'bg-amber-500 text-white' : 'bg-white text-slate-500 border border-slate-200'}`}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Field label={discountMode === 'percent' ? 'Pourcentage (%)' : 'Montant remisé (DA)'}
+                hint={discountMode === 'percent' ? 'Appliqué sur le sous-total.' : undefined}>
+                <div className="relative">
+                  <Input type="number" min={0} value={discountStr} disabled={discountMode === 'none'}
+                    onChange={e => setDiscountStr(e.target.value)} placeholder="0"
+                    className={discountMode === 'none' ? 'opacity-50' : ''} />
+                  {discountMode === 'percent' && <Percent className="w-4 h-4 text-slate-300 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />}
+                </div>
+              </Field>
+              <Field label="Remise déduite">
+                <div className="h-[46px] rounded-xl bg-white border border-amber-200 flex items-center px-4 font-black tabular-nums text-amber-700">
+                  −{money(discountAmount)}
+                </div>
+              </Field>
+            </div>
+          </div>
+
           {/* Totals */}
           <div className="rounded-2xl bg-[#001f5c] text-white p-4">
-            <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
               <div className="rounded-xl bg-white/10 p-3">
-                <p className="text-[10px] uppercase font-bold text-blue-200">Prestation</p>
-                <p className="font-black tabular-nums">{money(service)}</p>
+                <p className="text-[10px] uppercase font-bold text-blue-200">Prestations</p>
+                <p className="font-black tabular-nums">{money(serviceTotal)}</p>
               </div>
               <div className="rounded-xl bg-white/10 p-3">
                 <p className="text-[10px] uppercase font-bold text-blue-200">Produits</p>
                 <p className="font-black tabular-nums">{money(productsTotal)}</p>
               </div>
+              <div className="rounded-xl bg-white/10 p-3">
+                <p className="text-[10px] uppercase font-bold text-blue-200">Sous-total</p>
+                <p className="font-black tabular-nums">{money(subtotal)}</p>
+              </div>
+              <div className="rounded-xl bg-white/10 p-3">
+                <p className="text-[10px] uppercase font-bold text-blue-200">Remise</p>
+                <p className="font-black tabular-nums text-amber-300">−{money(discountAmount)}</p>
+              </div>
             </div>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm font-semibold text-blue-200">Total</span>
+              <span className="text-sm font-semibold text-blue-200">Total à payer</span>
               <span className="text-xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">

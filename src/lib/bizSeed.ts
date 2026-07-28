@@ -142,8 +142,9 @@ function seedLavage(): ModuleState {
     { id: `${m}-sup-2`, name: 'Distrib. Total', phone: '0663778899', address: 'Alger', createdAt: daysAgo(50) },
   ];
   s.workers = [
-    worker(m, 1, 'Rachid Benmoussa', 'Mécanicien', 'mois', 55000, daysAgo(500)),
-    worker(m, 2, 'Karim Ould Ali', 'Laveur', 'pourcentage', 0, daysAgo(100), 20),
+    worker(m, 1, 'Rachid Benmoussa', 'Mécanicien', 'mois', 55000, daysAgo(500), undefined, 'reparation'),
+    worker(m, 2, 'Karim Ould Ali', 'Laveur', 'pourcentage', 0, daysAgo(100), 20, 'lavage'),
+    worker(m, 3, 'Sofiane Haddad', 'Polyvalent', 'pourcentage', 0, daysAgo(80), 15, 'both'),
   ];
   s.reparations = [
     {
@@ -151,24 +152,48 @@ function seedLavage(): ModuleState {
       kind: 'reparation',
       car: { name: 'Clio 4', marque: 'Renault', color: 'Gris', year: '2018', immatriculation: '00123-116-16' },
       serviceTotal: 2300,
+      prestations: [{ id: `${m}-rep-1-p1`, kind: 'reparation', label: 'Entretien périodique 20 000 km', amount: 2300, workerIds: [`${m}-wrk-1`] }],
       usedProducts: [{ productId: `${m}-prod-2`, productName: 'Huile moteur 5W40', qty: 4, unitPrice: 2400, total: 9600 }],
-      problem: 'Entretien périodique 20 000 km', total: 11900, paid: 5000, rest: 6900, status: 'pending',
+      problem: 'Entretien périodique 20 000 km',
+      subtotal: 11900, discountAmount: 0,
+      total: 11900, paid: 5000, rest: 6900, status: 'pending',
       date: daysAgo(1), workers: [`${m}-wrk-1`], createdBy: 'Admin',
     },
     {
       id: `${m}-rep-2`, ref: 'REP-0002', kind: 'reparation', clientId: `${m}-cli-2`, clientName: 'Transport Express',
       car: { name: 'Master', marque: 'Renault', color: 'Blanc', year: '2020', immatriculation: '04521-116-16' },
       serviceTotal: 2000,
+      prestations: [{ id: `${m}-rep-2-p1`, kind: 'reparation', label: 'Remplacement plaquettes avant', amount: 2000, workerIds: [`${m}-wrk-1`] }],
       usedProducts: [{ productId: `${m}-prod-5`, productName: 'Plaquettes de frein', qty: 1, unitPrice: 3200, total: 3200 }],
-      problem: 'Freins avant usés', total: 5200, paid: 5200, rest: 0, status: 'finalized',
+      problem: 'Freins avant usés',
+      subtotal: 5200, discountAmount: 0,
+      total: 5200, paid: 5200, rest: 0, status: 'finalized',
       date: daysAgo(3), workers: [`${m}-wrk-1`], createdBy: 'Admin',
     },
     {
       id: `${m}-rep-3`, ref: 'LAV-0003', kind: 'lavage', clientName: 'Client de passage',
       car: { name: 'Symbol', marque: 'Renault', color: 'Rouge', immatriculation: '01998-116-16' },
       serviceTotal: 400,
-      usedProducts: [], problem: '', total: 400, paid: 400, rest: 0, status: 'finalized',
+      prestations: [{ id: `${m}-rep-3-p1`, kind: 'lavage', label: 'Lavage extérieur', amount: 400, workerIds: [`${m}-wrk-2`] }],
+      usedProducts: [], problem: '',
+      subtotal: 400, discountAmount: 0,
+      total: 400, paid: 400, rest: 0, status: 'finalized',
       date: daysAgo(1), workers: [`${m}-wrk-2`], createdBy: 'Admin',
+    },
+    // Une seule intervention qui porte un lavage ET une réparation, avec remise.
+    {
+      id: `${m}-rep-4`, ref: 'INT-0004', kind: 'mixte', clientId: `${m}-cli-1`, clientName: 'Mohamed Ziani',
+      car: { name: 'Kangoo', marque: 'Renault', color: 'Bleu', year: '2019', immatriculation: '02874-116-16' },
+      serviceTotal: 3500,
+      prestations: [
+        { id: `${m}-rep-4-p1`, kind: 'lavage', label: 'Lavage complet intérieur/extérieur', amount: 900, workerIds: [`${m}-wrk-2`] },
+        { id: `${m}-rep-4-p2`, kind: 'reparation', label: 'Vidange + filtre à huile', amount: 2600, workerIds: [`${m}-wrk-1`, `${m}-wrk-3`] },
+      ],
+      usedProducts: [{ productId: `${m}-prod-2`, productName: 'Huile moteur 5W40', qty: 2, unitPrice: 2400, total: 4800 }],
+      problem: 'Lavage complet et vidange sur le même passage',
+      subtotal: 8300, discountType: 'percent', discountValue: 10, discountAmount: 830,
+      total: 7470, paid: 7470, rest: 0, status: 'finalized',
+      date: daysAgo(2), workers: [`${m}-wrk-1`, `${m}-wrk-2`, `${m}-wrk-3`], createdBy: 'Admin',
     },
   ];
   s.expenses = [
@@ -197,9 +222,10 @@ function worker(
   m: string, i: number, name: string, roleName: string,
   salaryType: 'jour' | 'mois' | 'pourcentage', salaryAmount: number, startDate: string,
   percentage?: number,
+  workerKind?: 'lavage' | 'reparation' | 'both',
 ) {
   return {
-    id: `${m}-wrk-${i}`, name, phone: `055${i}00${i}0${i}${i}`, roleName,
+    id: `${m}-wrk-${i}`, name, phone: `055${i}00${i}0${i}${i}`, roleName, workerKind,
     paid: true, salaryType, salaryAmount, percentage, hasAccount: false, startDate,
     permissions: {}, acomptes: [
       { id: `${m}-acp-${i}`, date: daysAgo(10), amount: salaryType === 'mois' ? 10000 : 3000, description: 'Avance', paid: false },

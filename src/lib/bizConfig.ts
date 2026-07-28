@@ -173,6 +173,19 @@ export interface BizWorkerPayment {
   to?: string;
 }
 
+/**
+ * Speciality of an employee of the Lavage & Réparation part. It decides which
+ * employees are proposed on a « lavage » prestation and which on a
+ * « réparation » one — `both` shows up on either.
+ */
+export type BizWorkerKind = 'lavage' | 'reparation' | 'both';
+
+export const WORKER_KIND_META: Record<BizWorkerKind, { label: string; short: string }> = {
+  lavage: { label: 'Employé lavage', short: 'Lavage' },
+  reparation: { label: 'Employé réparation', short: 'Réparation' },
+  both: { label: 'Lavage & réparation', short: 'Polyvalent' },
+};
+
 export interface BizWorker {
   id: string;
   /** Supabase auth user id — set once the login account is provisioned. */
@@ -182,6 +195,8 @@ export interface BizWorker {
   cin?: string;
   phone?: string;
   roleName: string;
+  /** Lavage part only: is this a lavage worker, a réparation worker, or both? */
+  workerKind?: BizWorkerKind;
   paid: boolean;                 // reçoit un salaire ?
   /** `pourcentage` pays a share of every intervention the worker performed. */
   salaryType: 'jour' | 'mois' | 'pourcentage';
@@ -356,18 +371,54 @@ export interface BizCar {
   description?: string;
 }
 
+/** Nature of an intervention: a single kind, or several kinds at once. */
+export type BizRepKind = 'reparation' | 'lavage' | 'mixte';
+
+/**
+ * One line of work inside an intervention. A single visit can hold several of
+ * them — e.g. a « Lavage complet » *and* a « Changement de plaquettes » — each
+ * with its own price and its own employees, so the payroll of a
+ * percentage-paid worker is computed on exactly what they did.
+ */
+export interface BizPrestation {
+  id: string;
+  kind: 'reparation' | 'lavage';
+  /** Free-text designation, e.g. "Lavage complet intérieur/extérieur". */
+  label: string;
+  amount: number;
+  /** Employees who performed THIS prestation (subset of `BizReparation.workers`). */
+  workerIds: string[];
+}
+
+/** A remise granted on an intervention: a percentage or a flat amount. */
+export type BizDiscountType = 'percent' | 'amount';
+
 export interface BizReparation {
   id: string;
   ref: string;
-  kind: 'reparation' | 'lavage';
+  /** `mixte` when the intervention holds both lavage and réparation prestations. */
+  kind: BizRepKind;
   clientId?: string;
   /** "Client de passage" when no client record was picked. */
   clientName: string;
   car: BizCar;
-  /** Price of the labour, typed by hand (services catalogue was removed). */
+  /**
+   * Total of the labour lines. Kept in sync with `prestations` (it is their sum)
+   * so every older screen and report keeps working unchanged.
+   */
   serviceTotal: number;
+  /** Detail of the labour: one line per lavage / réparation performed. */
+  prestations?: BizPrestation[];
   usedProducts: BizLineItem[];
   problem?: string;
+  /** Prestations + produits, BEFORE the remise. */
+  subtotal?: number;
+  discountType?: BizDiscountType;
+  /** The percentage (0-100) or the flat amount typed by the user. */
+  discountValue?: number;
+  /** Money actually taken off the subtotal — always in DA. */
+  discountAmount?: number;
+  /** Subtotal − remise. */
   total: number;
   paid: number;
   rest: number;
@@ -379,6 +430,40 @@ export interface BizReparation {
   printedAt?: string;
   /** Payment already settled to the percentage-paid workers of this job. */
   payrollSettled?: boolean;
+}
+
+/** Money actually deducted by a remise, clamped to the subtotal. */
+export function discountOf(subtotal: number, type: BizDiscountType | undefined, value: number | undefined): number {
+  const v = Number(value) || 0;
+  if (v <= 0 || subtotal <= 0) return 0;
+  const raw = type === 'percent' ? (subtotal * Math.min(v, 100)) / 100 : v;
+  return Math.max(0, Math.min(subtotal, raw));
+}
+
+/**
+ * Prestations of an intervention, rebuilt from the legacy single `serviceTotal`
+ * when the record predates the multi-prestation form.
+ */
+export function prestationsOf(r: BizReparation): BizPrestation[] {
+  if (r.prestations && r.prestations.length) return r.prestations;
+  if (!r.serviceTotal) return [];
+  return [{
+    id: `${r.id}-legacy`,
+    kind: r.kind === 'mixte' ? 'reparation' : r.kind,
+    label: r.problem || (r.kind === 'lavage' ? 'Lavage' : 'Réparation'),
+    amount: r.serviceTotal,
+    workerIds: r.workers || [],
+  }];
+}
+
+/** Share of one intervention owed to a percentage-paid worker.
+ *  Prestation-level assignments narrow it down to what they actually did. */
+export function workerShareOf(r: BizReparation, workerId: string, rate: number): number {
+  if (rate <= 0) return 0;
+  const lines = (r.prestations || []).filter(p => (p.workerIds || []).includes(workerId));
+  // No per-line assignment (legacy record or products-only job) → whole total.
+  if (!lines.length) return (r.total * rate) / 100;
+  return (lines.reduce((s, p) => s + (Number(p.amount) || 0), 0) * rate) / 100;
 }
 
 export interface ModuleState {
