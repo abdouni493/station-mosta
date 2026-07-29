@@ -485,6 +485,13 @@ export interface Expense {
   description: string;
   paymentMode?: string;
   chequeNumber?: string;
+  /** Bordereau of a virement / versement, when the money left a bank account. */
+  bordereauNumber?: string;
+  /**
+   * Account the money actually left: `CAISSE_ID` for cash, otherwise a
+   * `BankAccount.id`. The expense then appears in that account's historique.
+   */
+  accountId?: string;
   paidBy?: string;
   recipient?: string;
   status?: string;
@@ -1612,7 +1619,7 @@ function mapPurchase(r: any): Purchase {
     appointmentPaidAt: r.appointment_paid_at ?? undefined };
 }
 function mapExpense(r: any): Expense {
-  return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by };
+  return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, bordereauNumber: r.bordereau_number ?? undefined, accountId: r.account_id ?? undefined, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by };
 }
 function mapBankAccount(r: any): BankAccount {
   return {
@@ -2151,10 +2158,10 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'DELETE_PURCHASE': await db.deletePurchase(action.payload); break;
       case 'ADD_EXPENSE':
-        await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy) });
+        await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy) });
         break;
       case 'UPDATE_EXPENSE':
-        await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl });
+        await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl });
         break;
       case 'DELETE_EXPENSE': await db.deleteExpense(action.payload); break;
 
@@ -3395,10 +3402,10 @@ export function useSupabaseDispatch() {
 
         // ── Expenses ───────────────────────────────────────────────────────
         case 'ADD_EXPENSE':
-          await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy) });
+          await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy) });
           break;
         case 'UPDATE_EXPENSE':
-          await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl });
+          await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl });
           break;
         case 'DELETE_EXPENSE':
           await db.deleteExpense(action.payload);

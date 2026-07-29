@@ -498,6 +498,9 @@ create table if not exists public.expenses (
   description    text,
   payment_mode   text,
   cheque_number  text,
+  -- Compte débité : 'CAISSE' (espèces) ou bank_accounts.id.
+  account_id       text default 'CAISSE',
+  bordereau_number text,
   paid_by        text,
   recipient      text,
   status         text,

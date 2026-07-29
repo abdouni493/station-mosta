@@ -144,8 +144,12 @@ export default function CaisseGenerale() {
       });
     }
 
-    // 2. Fuel part documents.
+    // 2. Fuel part documents — only those that have NOT written a ledger line of
+    //    their own, otherwise the same money would be listed twice.
+    const ledgered = new Set(
+      treasuryTransactions.filter(t => t.refType && t.refId).map(t => `${t.refType}:${t.refId}`));
     for (const p of purchases) {
+      if (ledgered.has(`purchase:${p.id}`)) continue;
       const supplier = state.suppliers.find(s => s.id === p.supplierId);
       out.push({
         id: `pur-${p.id}`, date: p.date, nature: 'Achat', part: 'carburant',
@@ -154,6 +158,7 @@ export default function CaisseGenerale() {
       });
     }
     for (const e of expenses) {
+      if (ledgered.has(`expense:${e.id}`)) continue;
       out.push({
         id: `exp-${e.id}`, date: e.date, nature: 'Dépense', part: 'carburant',
         label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(),

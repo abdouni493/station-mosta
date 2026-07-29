@@ -125,7 +125,12 @@ export interface BizSale {
   clientName: string;   // "Client de passage" si non renseigné
   items: BizLineItem[];
   subtotal: number;
+  /** Money actually taken off the subtotal — always in DA. */
   reduction: number;
+  /** How the remise was expressed at the caisse: pourcentage ou montant fixe. */
+  discountType?: BizDiscountType;
+  /** The percentage (0-100) or the flat amount typed by the caissier. */
+  discountValue?: number;
   total: number;
   paid: number;
   rest: number;
@@ -485,6 +490,22 @@ export interface ModuleState {
   reparations: BizReparation[];
   sessions: BizSession[];
   payRequests: BizPayRequest[];
+  /**
+   * Order of the "accès rapide" tiles of the point de vente: the products that
+   * sell the most, pinned by the user so they open the grid. Each entry is a
+   * `posPinKey` — the comptoir keys are name-based because a production run
+   * creates a new row every time.
+   */
+  posPinned: string[];
+}
+
+/**
+ * Stable key of a POS tile, used by the "accès rapide" ordering.
+ * Products and fiches keep their id; a comptoir line is keyed by its product
+ * name so the pin survives the next production run.
+ */
+export function posPinKey(kind: 'comptoir' | 'product' | 'fiche', idOrName: string): string {
+  return `${kind}:${idOrName}`;
 }
 
 export type BizState = Record<ModuleKey, ModuleState>;

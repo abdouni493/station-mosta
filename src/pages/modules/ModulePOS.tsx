@@ -7,6 +7,9 @@
  *    n'ouvre sa session avec le fond de caisse qu'il a déjà en main. Ce fond
  *    n'entre JAMAIS dans le théorique ni dans le décalage.
  *  • Filtrage par catégorie en plus de la recherche.
+ *  • Accès rapide : l'utilisateur épingle les produits qui se vendent le plus et
+ *    choisit leur ordre ; ils ouvrent la grille du comptoir.
+ *  • Remise : en pourcentage ou en montant fixe, activée à la demande.
  *  • Vente au détail : un produit « au détail » demande la quantité dans son
  *    unité (10 L sur un bidon de 50 L) et le stock est décrémenté d'autant.
  *  • Vente rapide de fiches techniques : une fiche marquée « vente directe »
@@ -19,11 +22,13 @@ import React, { useMemo, useState } from 'react';
 import {
   ShoppingBag, Search, Plus, Minus, X, User, UserPlus, Percent, Check, Package,
   PlayCircle, StopCircle, Lock, Beaker, Layers, Wallet, AlertTriangle, Printer,
+  Star, ArrowUp, ArrowDown, ListOrdered, Zap,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
-  ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, detailPrice,
+  ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizDiscountType,
+  detailPrice, discountOf, posPinKey,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -60,6 +65,8 @@ interface Source {
   detailUnit?: string;
   fiche?: BizFiche;
   imageUrl?: string;
+  /** Stable key used by the "accès rapide" pinning. */
+  pinKey: string;
 }
 
 export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
@@ -68,6 +75,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const perm = useBizPermission(moduleKey, 'pos');
   const { settings, currentUserName, currentModuleWorker } = useAppState();
   const { comptoir, products, clients, fiches, sessions, workers } = biz.state;
+  const pinned = biz.state.posPinned || [];
 
   const openSession = useMemo(() => sessions.find(s => s.status === 'open') || null, [sessions]);
 
@@ -77,12 +85,13 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const [clientId, setClientId] = useState('');
   const [passage, setPassage] = useState(true);
   const [showClient, setShowClient] = useState(false);
-  const [useReduction, setUseReduction] = useState(false);
-  const [reduction, setReduction] = useState(0);
+  const [discountMode, setDiscountMode] = useState<'none' | BizDiscountType>('none');
+  const [discountStr, setDiscountStr] = useState('');
   const [paidStr, setPaidStr] = useState('');
   const [detailPrompt, setDetailPrompt] = useState<Source | null>(null);
   const [showOpen, setShowOpen] = useState(false);
   const [showClose, setShowClose] = useState(false);
+  const [showOrganize, setShowOrganize] = useState(false);
   const [askPrint, setAskPrint] = useState<BizSale | null>(null);
 
   // ── Sellable catalogue ────────────────────────────────────────────────────
@@ -98,6 +107,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           id: c.id, name: c.productName, price: c.unitPrice, avail: c.qty,
           unit: c.unit, kind: 'comptoir', categoryName: c.categoryName,
           imageUrl: matchingProd?.imageUrl || matchingFiche?.imageUrl,
+          pinKey: posPinKey('comptoir', c.productName),
         });
       });
     }
@@ -111,12 +121,14 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           unit: p.detailUnit, kind: 'product', categoryName: p.categoryName,
           detail: true, detailCapacity: p.detailCapacity, detailUnit: p.detailUnit,
           imageUrl: p.imageUrl,
+          pinKey: posPinKey('product', p.id),
         });
       } else {
         out.push({
           id: p.id, name: p.name, price: p.salePrice, avail: p.currentQty,
           unit: p.unit, kind: 'product', categoryName: p.categoryName,
           imageUrl: p.imageUrl,
+          pinKey: posPinKey('product', p.id),
         });
       }
     });
@@ -127,21 +139,45 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       avail: maxFicheServings(f, products), unit: f.sellUnit || 'unité',
       kind: 'fiche', categoryName: f.categoryName, fiche: f,
       imageUrl: f.imageUrl,
+      pinKey: posPinKey('fiche', f.id),
     }));
 
     return out;
   }, [cfg.hasComptoir, comptoir, products, fiches]);
 
+  // ── Accès rapide ──────────────────────────────────────────────────────────
+  // Pinned tiles come first, in the order the user arranged them; everything
+  // else keeps the catalogue order behind them.
+  const rank = (s: Source) => {
+    const i = pinned.indexOf(s.pinKey);
+    return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+  };
+  const isPinned = (s: Source) => pinned.includes(s.pinKey);
+
+  const savePinned = (keys: string[]) => biz.patch({ posPinned: keys });
+  const togglePin = (s: Source) => {
+    const next = isPinned(s) ? pinned.filter(k => k !== s.pinKey) : [...pinned, s.pinKey];
+    savePinned(next);
+    toast.success(isPinned(s) ? `${s.name} retiré de l'accès rapide` : `${s.name} épinglé en accès rapide`);
+  };
+
   const categories = useMemo(
     () => Array.from(new Set(source.map(s => s.categoryName).filter(Boolean))).sort() as string[],
     [source]);
 
-  const filtered = source.filter(s =>
-    (!search || s.name.toLowerCase().includes(search.toLowerCase())) &&
-    (category === 'all' || s.categoryName === category));
+  const filtered = useMemo(() => source
+    .filter(s =>
+      (!search || s.name.toLowerCase().includes(search.toLowerCase())) &&
+      (category === 'all' || s.categoryName === category))
+    .sort((a, b) => rank(a) - rank(b)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [source, search, category, pinned]);
 
   const subtotal = cart.reduce((s, l) => s + l.qty * l.unitPrice, 0);
-  const total = Math.max(0, subtotal - (useReduction ? reduction : 0));
+  const discountAmount = discountMode === 'none'
+    ? 0
+    : discountOf(subtotal, discountMode, Number(discountStr) || 0);
+  const total = Math.max(0, subtotal - discountAmount);
   const paid = paidStr === '' ? total : Number(paidStr);
   const rest = Math.max(0, total - paid);
 
@@ -197,7 +233,11 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       id: newId(), ref: `V-${String(biz.state.sales.length + 1).padStart(4, '0')}`,
       clientId: passage ? undefined : clientId,
       clientName: passage ? 'Client de passage' : (client?.name || '—'),
-      items, subtotal, reduction: useReduction ? reduction : 0, total, paid, rest,
+      items, subtotal,
+      reduction: discountAmount,
+      discountType: discountMode === 'none' ? undefined : discountMode,
+      discountValue: discountMode === 'none' ? undefined : Number(discountStr) || 0,
+      total, paid, rest,
       date: new Date().toISOString(), status: rest > 0 ? 'crédit' : 'payée',
       createdBy: currentUserName || 'Admin',
       sessionId: openSession.id,
@@ -230,8 +270,10 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       }
     });
 
-    toast.success('Vente enregistrée');
-    setCart([]); setReduction(0); setUseReduction(false); setPaidStr(''); setClientId(''); setPassage(true);
+    toast.success(discountAmount > 0
+      ? `Vente enregistrée — remise de ${money(discountAmount)} accordée`
+      : 'Vente enregistrée');
+    setCart([]); setDiscountMode('none'); setDiscountStr(''); setPaidStr(''); setClientId(''); setPassage(true);
     setAskPrint(sale);
   };
 
@@ -253,6 +295,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       subtotal: sale.subtotal, reduction: sale.reduction,
       total: sale.total, paid: sale.paid, rest: sale.rest,
       payments: [{ label: 'Espèces', amount: sale.paid }],
+      footerNote: sale.reduction
+        ? `Remise accordée : ${sale.discountType === 'percent' ? `${sale.discountValue}%` : money(sale.reduction)}`
+        : undefined,
     });
     biz.update('sales', { ...sale, printedAt: new Date().toISOString() });
   };
@@ -319,6 +364,10 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
               <option value="all">Toutes catégories</option>
               {categories.map(c => <option key={c} value={c}>{c}</option>)}
             </Select>
+            <button className="btn-secondary shrink-0" onClick={() => setShowOrganize(true)}
+              title="Choisir et ordonner les produits affichés en tête de la grille">
+              <ListOrdered className="w-4 h-4" /> Organiser l'affichage
+            </button>
           </div>
 
           {/* Category chips */}
@@ -337,6 +386,13 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
             </div>
           )}
 
+          {pinned.length > 0 && (
+            <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+              <Zap className="w-3.5 h-3.5 text-[#FFB800]" />
+              {pinned.length} produit(s) en accès rapide — ils s'affichent en tête de la grille.
+            </p>
+          )}
+
           {filtered.length === 0 ? (
             <div className="card-glass p-12 text-center text-slate-400">
               <Package className="w-10 h-10 mx-auto mb-2 text-slate-300" />Aucun produit disponible
@@ -344,7 +400,19 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
               {filtered.map(s => (
-                <button key={`${s.kind}-${s.id}`} onClick={() => addToCart(s)} className="card-glass p-3 text-left card-hover group flex flex-col justify-between">
+                <div key={`${s.kind}-${s.id}`} role="button" tabIndex={0}
+                  onClick={() => addToCart(s)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); addToCart(s); } }}
+                  className={`card-glass p-3 text-left card-hover group flex flex-col justify-between relative cursor-pointer ${isPinned(s) ? 'ring-2 ring-[#FFB800]' : ''}`}>
+                  {/* Pin / unpin — quick access for the best sellers. */}
+                  <button type="button" onClick={e => { e.stopPropagation(); togglePin(s); }}
+                    title={isPinned(s) ? "Retirer de l'accès rapide" : "Épingler en accès rapide"}
+                    className={`absolute top-2 right-2 z-10 w-7 h-7 rounded-lg flex items-center justify-center border transition-colors
+                      ${isPinned(s)
+                        ? 'bg-[#FFB800] border-[#FFB800] text-white'
+                        : 'bg-white/90 border-slate-200 text-slate-300 hover:text-[#FFB800] opacity-0 group-hover:opacity-100 focus:opacity-100'}`}>
+                    <Star className={`w-3.5 h-3.5 ${isPinned(s) ? 'fill-white' : ''}`} />
+                  </button>
                   <div>
                     {s.imageUrl ? (
                       <div className="w-full h-28 rounded-xl overflow-hidden mb-2 relative bg-slate-100 border border-slate-200/60 shadow-inner">
@@ -366,10 +434,11 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
                     </Badge>
                   </div>
                   <div className="flex flex-wrap gap-1 mt-1.5">
+                    {isPinned(s) && <Badge tone="warning">Accès rapide</Badge>}
                     {s.kind === 'fiche' && <Badge tone="primary">Vente rapide</Badge>}
                     {s.detail && <Badge tone="info">Au détail</Badge>}
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -422,9 +491,36 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
           <div className="card-glass p-4 space-y-3">
             <div className="flex items-center justify-between text-sm"><span className="text-slate-400">Sous-total</span><span className="font-bold tabular-nums">{money(subtotal)}</span></div>
-            <div className="flex items-center justify-between">
-              <button onClick={() => setUseReduction(v => !v)} className="flex items-center gap-1.5 text-sm font-semibold text-slate-500"><Percent className="w-4 h-4" /> Réduction</button>
-              {useReduction && <input type="number" value={reduction} onChange={e => setReduction(Number(e.target.value))} className="input-field !py-1.5 w-24 text-right" />}
+
+            {/* Remise — en pourcentage ou en montant fixe */}
+            <div className="rounded-xl bg-amber-50 border border-amber-100 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-amber-700">
+                  <Percent className="w-4 h-4" /> Remise
+                </span>
+                {discountAmount > 0 && (
+                  <span className="font-black tabular-nums text-amber-700 text-sm">−{money(discountAmount)}</span>
+                )}
+              </div>
+              <div className="flex gap-1.5">
+                {([['none', 'Aucune'], ['percent', '%'], ['amount', 'Montant']] as const).map(([m, lbl]) => (
+                  <button key={m} onClick={() => { setDiscountMode(m); if (m === 'none') setDiscountStr(''); }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-colors ${discountMode === m ? 'bg-amber-500 text-white' : 'bg-white text-slate-500 border border-slate-200'}`}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              {discountMode !== 'none' && (
+                <div className="relative">
+                  <input type="number" min={0} value={discountStr} autoFocus
+                    onChange={e => setDiscountStr(e.target.value)}
+                    placeholder={discountMode === 'percent' ? 'Pourcentage (0-100)' : 'Montant remisé (DA)'}
+                    className="input-field !py-1.5 pr-8 text-right" />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-300 pointer-events-none">
+                    {discountMode === 'percent' ? '%' : 'DA'}
+                  </span>
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-between rounded-xl bg-[#001f5c] text-white p-3">
               <span className="text-sm font-semibold text-blue-200">Total à payer</span><span className="text-xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
@@ -445,6 +541,12 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       {detailPrompt && (
         <DetailQtyModal source={detailPrompt} onClose={() => setDetailPrompt(null)}
           onConfirm={qty => { pushLine(detailPrompt, qty); setDetailPrompt(null); }} />
+      )}
+
+      {showOrganize && (
+        <OrganizeModal sources={source} pinned={pinned} sales={biz.state.sales}
+          onSave={keys => { savePinned(keys); setShowOrganize(false); toast.success('Ordre d\'affichage enregistré'); }}
+          onClose={() => setShowOrganize(false)} />
       )}
 
       {showOpen && (
@@ -497,6 +599,129 @@ export function figuresForSession(session: BizSession | null, sales: BizSale[]) 
     credit: own.reduce((s, x) => s + x.rest, 0),    // granted as debt, not cash
     count: own.length,
   };
+}
+
+// ─── Organise the POS grid (accès rapide) ──────────────────────────────────────
+/**
+ * Lets the caissier pick the products that sell the most and arrange the order
+ * in which they open the grid. Everything that is not pinned keeps following
+ * behind, in the catalogue order.
+ */
+function OrganizeModal({ sources, pinned, sales, onSave, onClose }: {
+  sources: Source[];
+  pinned: string[];
+  sales: BizSale[];
+  onSave: (keys: string[]) => void;
+  onClose: () => void;
+}) {
+  const [keys, setKeys] = useState<string[]>(pinned);
+  const [search, setSearch] = useState('');
+
+  // Units already sold, by product name — what "se vend le plus" actually means.
+  const soldByName = useMemo(() => {
+    const m: Record<string, number> = {};
+    sales.filter(s => s.status !== 'retournée').forEach(s =>
+      s.items.forEach(i => { m[i.productName] = (m[i.productName] || 0) + (i.detailQty || i.qty || 0); }));
+    return m;
+  }, [sales]);
+
+  // One entry per pin key — a product and its comptoir line share the same tile.
+  // The best sellers come first so they are the easiest to pin.
+  const unique = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Source[] = [];
+    sources.forEach(s => { if (!seen.has(s.pinKey)) { seen.add(s.pinKey); out.push(s); } });
+    return out.sort((a, b) => (soldByName[b.name] || 0) - (soldByName[a.name] || 0));
+  }, [sources, soldByName]);
+
+  const labelOf = (key: string) =>
+    unique.find(s => s.pinKey === key)?.name || key.split(':').slice(1).join(':');
+  const move = (i: number, dir: -1 | 1) => setKeys(prev => {
+    const j = i + dir;
+    if (j < 0 || j >= prev.length) return prev;
+    const next = [...prev];
+    [next[i], next[j]] = [next[j], next[i]];
+    return next;
+  });
+  const toggle = (key: string) =>
+    setKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+
+  const available = unique
+    .filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <Modal open onClose={onClose} icon={ListOrdered} size="lg"
+      title="Organiser l'affichage du comptoir"
+      subtitle="Épinglez les produits qui se vendent le plus : ils s'affichent en premier"
+      footer={<>
+        <button className="btn-ghost" onClick={onClose}>Annuler</button>
+        <button className="btn-primary" onClick={() => onSave(keys)}>Enregistrer l'ordre</button>
+      </>}>
+      <div className="space-y-4">
+        {/* Ordered quick-access list */}
+        <div>
+          <p className="text-[11px] font-black uppercase text-slate-400 mb-2 flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-[#FFB800]" /> Accès rapide — {keys.length} produit(s)
+          </p>
+          {keys.length === 0 ? (
+            <p className="rounded-xl bg-slate-50 p-4 text-center text-sm text-slate-400">
+              Aucun produit épinglé — cochez ci-dessous ceux à mettre en tête.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {keys.map((key, i) => (
+                <div key={key} className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-100 p-2">
+                  <span className="w-6 h-6 rounded-lg bg-[#FFB800] text-white text-xs font-black flex items-center justify-center shrink-0">{i + 1}</span>
+                  <span className="flex-1 min-w-0 truncate text-sm font-bold text-slate-700">{labelOf(key)}</span>
+                  <button className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center disabled:opacity-30"
+                    onClick={() => move(i, -1)} disabled={i === 0} title="Monter">
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center disabled:opacity-30"
+                    onClick={() => move(i, 1)} disabled={i === keys.length - 1} title="Descendre">
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  </button>
+                  <button className="w-7 h-7 rounded-lg text-red-500 flex items-center justify-center" onClick={() => toggle(key)} title="Retirer">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Catalogue picker */}
+        <div>
+          <p className="text-[11px] font-black uppercase text-slate-400 mb-2">
+            Catalogue — trié par quantités déjà vendues
+          </p>
+          <div className="relative mb-2">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Rechercher un produit…" className="input-field pl-9" />
+          </div>
+          <div className="max-h-[260px] overflow-y-auto custom-scrollbar space-y-1">
+            {available.length === 0 && <p className="text-center text-sm text-slate-400 py-4">Aucun produit</p>}
+            {available.map(s => {
+              const on = keys.includes(s.pinKey);
+              return (
+                <button key={s.pinKey} onClick={() => toggle(s.pinKey)}
+                  className={`w-full flex items-center gap-2 rounded-xl p-2 text-left border transition-colors ${on ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100 hover:bg-slate-50'}`}>
+                  <Star className={`w-4 h-4 shrink-0 ${on ? 'text-[#FFB800] fill-[#FFB800]' : 'text-slate-300'}`} />
+                  <span className="flex-1 min-w-0 truncate text-sm font-semibold text-slate-700">{s.name}</span>
+                  {(soldByName[s.name] || 0) > 0 && (
+                    <Badge tone="success">{Math.round(soldByName[s.name])} vendu(s)</Badge>
+                  )}
+                  {s.categoryName && <Badge tone="neutral">{s.categoryName}</Badge>}
+                  <span className="text-xs font-black tabular-nums text-[#002d87] shrink-0">{money(s.price)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
 }
 
 // ─── Detail quantity prompt ────────────────────────────────────────────────────

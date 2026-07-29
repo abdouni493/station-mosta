@@ -16,7 +16,8 @@ import {
   AlertCircle, 
   Download, 
   CreditCard, 
-  Banknote, 
+  Banknote,
+  Landmark,
   RefreshCcw,
   ArrowRight,
   PieChart as PieChartIcon,
@@ -47,15 +48,32 @@ import {
 } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission } from "@/src/store/AppContext";
+import {
+  useAppState, useAppDispatch, useModulePermission,
+  TreasuryTransaction, CAISSE_ID, bankBalanceOf, caisseBalanceOf,
+} from "@/src/store/AppContext";
 import { toast } from "react-hot-toast";
+
+/** Instrument used to pay — independent of the account the money leaves. */
+const PAYMENT_MODES = ["Espèces", "Virement", "Chèque", "TPE", "Prélèvement"] as const;
 
 const Expenses = () => {
   const { t } = useTranslation();
-  const { expenses, settings } = useAppState();
+  const { expenses, settings, bankAccounts, treasuryTransactions, currentUserName } = useAppState();
   const perm = useModulePermission('Dépenses');
   const dispatch = useAppDispatch();
-  
+
+  // Live soldes so the payment-method list shows what each account really holds.
+  const accounts = useMemo(
+    () => bankAccounts.map(a => ({ ...a, balance: bankBalanceOf(a, treasuryTransactions) })),
+    [bankAccounts, treasuryTransactions],
+  );
+  const caisseBalance = useMemo(() => caisseBalanceOf(treasuryTransactions), [treasuryTransactions]);
+
+  /** Label of the account an expense was paid from. */
+  const accountLabel = (id?: string) =>
+    !id || id === CAISSE_ID ? 'Caisse générale' : (bankAccounts.find(a => a.id === id)?.name || 'Compte supprimé');
+
   const [showModal, setShowModal] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState<any>(null);
   const [activeView, setActiveView] = useState("list");
@@ -74,7 +92,7 @@ const Expenses = () => {
   const [maxAmount, setMaxAmount] = useState("");
 
   // Form State
-  const [formData, setFormData] = useState<any>({
+  const emptyForm = () => ({
     description: "",
     category: "",
     date: new Date().toISOString().split('T')[0],
@@ -82,11 +100,14 @@ const Expenses = () => {
     mode: "Espèces",
     paymentMode: "Espèces",
     chequeNumber: "",
+    bordereauNumber: "",
+    accountId: CAISSE_ID,
     paidBy: "Caisse",
     recipient: "",
     status: "Validé",
     receipt: null
   });
+  const [formData, setFormData] = useState<any>(emptyForm);
 
   const filteredExpenses = useMemo(() => {
     return expenses.filter(e => {
@@ -215,35 +236,55 @@ const Expenses = () => {
         return;
     }
 
+    const amount = parseFloat(formData.amount);
+    const accountId = formData.accountId || CAISSE_ID;
+    const id = selectedExpense?.id || newId();
     const payload = {
         ...formData,
-        amount: parseFloat(formData.amount),
-        id: selectedExpense?.id || newId()
+        amount,
+        accountId,
+        paymentMode: formData.paymentMode || (accountId === CAISSE_ID ? "Espèces" : "Virement"),
+        id
     };
 
     if (selectedExpense) {
         dispatch({ type: "UPDATE_EXPENSE", payload });
-        toast.success("Dépense mise à jour ✓");
     } else {
         dispatch({ type: "ADD_EXPENSE", payload });
-        toast.success("Dépense enregistrée ✓");
     }
+
+    // Trésorerie — the money leaves the caisse or the chosen bank account, so the
+    // expense shows up in that account's historique and moves its solde.
+    // Rewriting the line of this expense keeps the soldes exact after an edit.
+    treasuryTransactions
+      .filter(t => t.refType === 'expense' && t.refId === id)
+      .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
+    if (amount > 0) {
+      const tx: TreasuryTransaction = {
+        id: newId(),
+        date: new Date(formData.date).toISOString(),
+        kind: 'EXPENSE',
+        amount,
+        description: `Dépense ${formData.category} — ${formData.description}`
+          + (formData.recipient ? ` (${formData.recipient})` : ''),
+        accountFrom: accountId,
+        part: 'systeme',
+        refType: 'expense', refId: id,
+        chequeNumber: formData.chequeNumber || undefined,
+        bordereauNumber: formData.bordereauNumber || undefined,
+        createdBy: currentUserName,
+        createdAt: new Date().toISOString(),
+      };
+      dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
+    }
+
+    toast.success(selectedExpense
+      ? `Dépense mise à jour ✓ — ${accountLabel(accountId)} mis à jour`
+      : `Dépense enregistrée ✓ — débitée de ${accountLabel(accountId)}`);
 
     setShowModal(false);
     setSelectedExpense(null);
-    setFormData({
-        description: "",
-        category: "",
-        date: new Date().toISOString().split('T')[0],
-        amount: 0,
-        mode: "Espèces",
-        paymentMode: "Espèces",
-        chequeNumber: "",
-        paidBy: "Caisse",
-        recipient: "",
-        status: "Validé",
-        receipt: null
-    });
+    setFormData(emptyForm());
   };
 
   const handleDelete = (id: string) => {
@@ -253,8 +294,12 @@ const Expenses = () => {
 
   const handleConfirmDelete = () => {
     if (expenseToDelete) {
+      // The ledger line goes with the expense so the account solde is restored.
+      treasuryTransactions
+        .filter(t => t.refType === 'expense' && t.refId === expenseToDelete)
+        .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
       dispatch({ type: "DELETE_EXPENSE", payload: expenseToDelete });
-      toast.success("Dépense supprimée ✓");
+      toast.success("Dépense supprimée ✓ — solde du compte rétabli");
       setShowDeleteConfirm(false);
       setExpenseToDelete(null);
       setOpenMenuId(null);
@@ -318,6 +363,12 @@ const Expenses = () => {
                 <span class="label">Mode Paiement:</span>
                 <span class="value">${expense.paymentMode || expense.mode}</span>
               </div>
+              <div class="row">
+                <span class="label">Compte débité:</span>
+                <span class="value">${accountLabel(expense.accountId)}</span>
+              </div>
+              ${expense.chequeNumber ? `<div class="row"><span class="label">N° Chèque:</span><span class="value">${expense.chequeNumber}</span></div>` : ''}
+              ${expense.bordereauNumber ? `<div class="row"><span class="label">N° Bordereau:</span><span class="value">${expense.bordereauNumber}</span></div>` : ''}
               ${expense.paidBy ? `<div class="row"><span class="label">Payé par:</span><span class="value">${expense.paidBy}</span></div>` : ''}
               ${expense.recipient ? `<div class="row"><span class="label">Reçu de:</span><span class="value">${expense.recipient}</span></div>` : ''}
             </div>
@@ -343,7 +394,14 @@ const Expenses = () => {
 
   const handleEdit = (expense: any) => {
     setSelectedExpense(expense);
-    setFormData(expense);
+    // Expenses saved before the bank accounts existed were paid in cash.
+    setFormData({
+      ...emptyForm(),
+      ...expense,
+      accountId: expense.accountId || CAISSE_ID,
+      bordereauNumber: expense.bordereauNumber || "",
+      chequeNumber: expense.chequeNumber || "",
+    });
     setShowModal(true);
   };
 
@@ -368,7 +426,7 @@ const Expenses = () => {
            </button>
            {perm.creer && (
            <button
-            onClick={() => { setSelectedExpense(null); setShowModal(true); }}
+            onClick={() => { setSelectedExpense(null); setFormData(emptyForm()); setShowModal(true); }}
             className="h-14 px-8 bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] text-[#FFB800] border border-blue-900 hover:border-[#FFB800] rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-950/20 hover:scale-105 transition-all flex items-center gap-3 italic"
            >
             <Plus className="w-5 h-5 text-[#FFB800]" /> NOUVELLE DÉPENSE
@@ -536,6 +594,12 @@ const Expenses = () => {
                       <div className="flex items-center gap-2.5">
                         <CreditCard className="w-3.5 h-3.5 text-slate-400" />
                         <span>{expense.paymentMode || expense.mode}</span>
+                      </div>
+                      <div className="flex items-center gap-2.5">
+                        {(expense.accountId && expense.accountId !== "CAISSE")
+                          ? <Landmark className="w-3.5 h-3.5 text-slate-400" />
+                          : <Banknote className="w-3.5 h-3.5 text-slate-400" />}
+                        <span className="truncate">{accountLabel(expense.accountId)}</span>
                       </div>
                       {expense.recipient && (
                         <div className="flex items-center gap-2.5">
@@ -785,23 +849,56 @@ const Expenses = () => {
                           onChange={e => setFormData({ ...formData, amount: e.target.value })}
                         />
                      </div>
+                     {/* Payment method — the caisse or one of the bank accounts.
+                         The chosen account is debited and the dépense appears in
+                         its historique. */}
+                     <div className="space-y-1.5">
+                        <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Mode de paiement / Compte débité</label>
+                        <select
+                         className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-800"
+                         value={formData.accountId || CAISSE_ID}
+                         onChange={e => {
+                           const accountId = e.target.value;
+                           setFormData({
+                             ...formData,
+                             accountId,
+                             // Espèces only makes sense for the cash box.
+                             paymentMode: accountId === CAISSE_ID
+                               ? "Espèces"
+                               : (formData.paymentMode && formData.paymentMode !== "Espèces" ? formData.paymentMode : "Virement"),
+                           });
+                         }}
+                        >
+                           <option value={CAISSE_ID}>Espèces — Caisse générale ({caisseBalance.toLocaleString('fr-FR')} DA)</option>
+                           {accounts.length > 0 && (
+                             <optgroup label="Comptes bancaires">
+                               {accounts.map(a => (
+                                 <option key={a.id} value={a.id}>{a.name} — {a.balance.toLocaleString('fr-FR')} DA</option>
+                               ))}
+                             </optgroup>
+                           )}
+                        </select>
+                        {accounts.length === 0 && (
+                          <p className="text-[9px] font-bold text-slate-400 pl-1">
+                            Aucun compte bancaire — créez-en un dans « Comptes Bancaires » pour payer par banque.
+                          </p>
+                        )}
+                     </div>
+
                      <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
-                           <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Mode Paiement</label>
-                           <select 
+                           <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Type d'opération</label>
+                           <select
                             className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-800"
                             value={formData.paymentMode}
                             onChange={e => setFormData({ ...formData, paymentMode: e.target.value })}
                            >
-                              <option value="Espèces">Espèces</option>
-                              <option value="Chèque">Chèque</option>
-                              <option value="Virement">Virement</option>
-                              <option value="TPE">TPE</option>
+                              {PAYMENT_MODES.map(m => <option key={m} value={m}>{m}</option>)}
                            </select>
                         </div>
                         <div className="space-y-1.5">
                            <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Payé par</label>
-                           <select 
+                           <select
                             className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-800"
                             value={formData.paidBy}
                             onChange={e => setFormData({ ...formData, paidBy: e.target.value })}
@@ -812,16 +909,49 @@ const Expenses = () => {
                            </select>
                         </div>
                      </div>
-                     {formData.paymentMode === "Chèque" && (
-                       <div className="space-y-1.5">
-                         <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Numéro de Chèque</label>
-                         <input 
-                          type="text" className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-850" placeholder="Ex: CHQ-2024-001" 
-                          value={formData.chequeNumber}
-                          onChange={e => setFormData({ ...formData, chequeNumber: e.target.value })}
-                         />
+
+                     {((formData.accountId || CAISSE_ID) !== CAISSE_ID
+                       || ["Chèque", "Virement", "Prélèvement"].includes(formData.paymentMode)) && (
+                       <div className="grid grid-cols-2 gap-4">
+                         <div className="space-y-1.5">
+                           <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Numéro de Chèque</label>
+                           <input
+                            type="text" className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-850" placeholder="Optionnel"
+                            value={formData.chequeNumber}
+                            onChange={e => setFormData({ ...formData, chequeNumber: e.target.value })}
+                           />
+                         </div>
+                         <div className="space-y-1.5">
+                           <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Numéro de Bordereau</label>
+                           <input
+                            type="text" className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-850" placeholder="Optionnel"
+                            value={formData.bordereauNumber}
+                            onChange={e => setFormData({ ...formData, bordereauNumber: e.target.value })}
+                           />
+                         </div>
                        </div>
                      )}
+
+                     {/* Effect on the debited account */}
+                     <div className="rounded-2xl bg-slate-50 border border-slate-150 p-4 flex items-center justify-between gap-3">
+                       <div className="min-w-0">
+                         <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Compte débité</p>
+                         <p className="text-xs font-black text-blue-900 truncate">{accountLabel(formData.accountId)}</p>
+                       </div>
+                       <div className="text-right shrink-0">
+                         <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Solde après</p>
+                         <p className="text-xs font-black text-blue-900 tabular-nums">
+                           {(
+                             ((formData.accountId || CAISSE_ID) === CAISSE_ID
+                               ? caisseBalance
+                               : (accounts.find(a => a.id === formData.accountId)?.balance || 0))
+                             - (parseFloat(formData.amount) || 0)
+                             + (selectedExpense && (selectedExpense.accountId || CAISSE_ID) === (formData.accountId || CAISSE_ID)
+                               ? (selectedExpense.amount || 0) : 0)
+                           ).toLocaleString('fr-FR')} DA
+                         </p>
+                       </div>
+                     </div>
                      <div className="space-y-1.5">
                         <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Reçu de (Bénéficiaire/Prestataire)</label>
                         <input 

@@ -25,7 +25,7 @@ const emptyModule = (): ModuleState => ({
   categories: [], marques: [], roles: [], products: [], purchases: [], sales: [],
   clients: [], suppliers: [], workers: [], expenses: [], caisse: [], productions: [],
   fiches: [], comptoir: [], destructions: [], reparations: [],
-  sessions: [], payRequests: [],
+  sessions: [], payRequests: [], posPinned: [],
 });
 
 // Small helpers to build entities compactly.
