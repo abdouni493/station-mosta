@@ -15,6 +15,7 @@ import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import { provisionModuleWorkerAccount, saveModuleWorkerPermissions } from '@/src/lib/supabase';
 import { printInvoice, stationFromSettings } from './_shared';
 import WorkerPaymentModal, { WorkerPaymentResult } from '@/src/components/WorkerPaymentModal';
+import WorkerDetailsModal from '@/src/components/WorkerDetailsModal';
 import { WEEKDAYS, DEFAULT_WORK_DAYS, PayWork } from '@/src/lib/workerPay';
 import {
   PageHeader, StatCard, SearchInput, EmptyState,
@@ -248,7 +249,7 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
       )}
 
       {form && <WorkerForm moduleKey={moduleKey} initial={form === 'new' ? null : form} onClose={() => setForm(null)} />}
-      {viewing && <ViewWorker worker={viewing} onClose={() => setViewing(null)} />}
+      {viewing && <ViewWorker moduleKey={moduleKey} workerId={viewing.id} onClose={() => setViewing(null)} />}
       {perms && <PermsModal moduleKey={moduleKey} worker={perms} onClose={() => setPerms(null)} />}
       {acompte && <AcompteModal moduleKey={moduleKey} worker={acompte} onClose={() => setAcompte(null)} />}
       {absence && <AbsenceModal moduleKey={moduleKey} worker={absence} onClose={() => setAbsence(null)} />}
@@ -541,27 +542,48 @@ function ActivateModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; w
   );
 }
 
-function ViewWorker({ worker, onClose }: { worker: BizWorker; onClose: () => void }) {
+function ViewWorker({ moduleKey, workerId, onClose }: { moduleKey: ModuleKey; workerId: string; onClose: () => void }) {
+  const biz = useBiz(moduleKey);
+  const perm = useBizPermission(moduleKey, 'workers');
+  const worker = biz.state.workers.find(w => w.id === workerId);
+  if (!worker) return null;
+
+  const salaryLabel = !worker.paid ? '—'
+    : worker.salaryType === 'pourcentage' ? `${worker.percentage || 0} % des travaux`
+      : `${money(worker.salaryAmount)} / ${worker.salaryType === 'jour' ? 'jour' : 'mois'}`;
+
+  const info = [
+    { label: 'Rôle', value: worker.roleName },
+    ...(worker.workerKind ? [{ label: 'Spécialité', value: WORKER_KIND_META[worker.workerKind].label }] : []),
+    { label: 'Téléphone', value: worker.phone || '—' },
+    { label: 'CIN', value: worker.cin || '—' },
+    { label: 'Naissance', value: worker.birthday ? formatDate(worker.birthday) : '—' },
+    { label: 'Salaire', value: salaryLabel },
+    ...(worker.salaryType === 'jour' ? [{ label: 'Jours travaillés', value: (worker.workDays && worker.workDays.length ? worker.workDays : DEFAULT_WORK_DAYS).map(idx => WEEKDAYS.find(w => w.idx === idx)?.short).filter(Boolean).join(', ') }] : []),
+    { label: 'Déclaration CNAS', value: worker.cnasDate ? formatDate(worker.cnasDate) : '—' },
+    { label: 'Début de travail', value: formatDate(worker.startDate) },
+    { label: 'Identifiant', value: worker.username || '—' },
+    { label: 'Compte', value: worker.hasAccount ? (worker.authUserId ? 'Actif' : 'À activer') : 'Aucun' },
+    { label: 'Email', value: worker.email || '—' },
+  ];
+
   return (
-    <Modal open onClose={onClose} icon={Eye} size="md" title={worker.name} subtitle={worker.roleName}>
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        {[['Rôle', worker.roleName],
-        ...(worker.workerKind ? [['Spécialité', WORKER_KIND_META[worker.workerKind].label]] : []),
-        ['Téléphone', worker.phone || '—'], ['Naissance', worker.birthday ? formatDate(worker.birthday) : '—'],
-        ['CIN', worker.cin || '—'],
-        ['Salaire', !worker.paid ? '—'
-          : worker.salaryType === 'pourcentage'
-            ? `${worker.percentage || 0} % des travaux`
-            : `${money(worker.salaryAmount)} / ${worker.salaryType}`],
-        ['Identifiant', worker.username || '—'],
-        ['Compte', worker.hasAccount ? (worker.authUserId ? 'Actif' : 'À activer') : 'Aucun'],
-        ...(worker.salaryType === 'jour' ? [['Jours travaillés', (worker.workDays && worker.workDays.length ? worker.workDays : DEFAULT_WORK_DAYS).map(idx => WEEKDAYS.find(w => w.idx === idx)?.short).filter(Boolean).join(', ')]] : []),
-        ['Déclaration CNAS', worker.cnasDate ? formatDate(worker.cnasDate) : '—'],
-        ['Début', formatDate(worker.startDate)], ['Acomptes', String(worker.acomptes.length)]].map(([k, v]) => (
-          <div key={k as string} className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">{k}</p><p className="font-bold text-slate-700">{v}</p></div>
-        ))}
-      </div>
-    </Modal>
+    <WorkerDetailsModal
+      open onClose={onClose}
+      name={worker.name} role={worker.roleName} subtitle={MODULES[moduleKey].label}
+      statusLabel={worker.paid ? 'Salarié' : 'Non salarié'} statusTone={worker.paid ? 'green' : 'slate'}
+      info={info}
+      payments={worker.payments.map(p => ({ id: p.id, date: p.date, amount: p.amount, title: p.period, subtitle: p.mode, notes: p.description }))}
+      acomptes={worker.acomptes.map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: a.paid }))}
+      absences={worker.absences.map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: a.paid }))}
+      canEdit={perm.modifier} canDelete={perm.supprimer}
+      onSaveAcompte={a => biz.update('workers', { ...worker, acomptes: worker.acomptes.map(x => x.id === a.id ? { ...x, date: a.date, amount: a.amount, description: a.description } : x) })}
+      onDeleteAcompte={id => biz.update('workers', { ...worker, acomptes: worker.acomptes.filter(x => x.id !== id) })}
+      onSaveAbsence={a => biz.update('workers', { ...worker, absences: worker.absences.map(x => x.id === a.id ? { ...x, date: a.date, cost: a.cost, description: a.description } : x) })}
+      onDeleteAbsence={id => biz.update('workers', { ...worker, absences: worker.absences.filter(x => x.id !== id) })}
+      onSavePayment={p => biz.update('workers', { ...worker, payments: worker.payments.map(x => x.id === p.id ? { ...x, date: p.date, amount: p.amount, description: p.notes } : x) })}
+      onDeletePayment={id => biz.update('workers', { ...worker, payments: worker.payments.filter(x => x.id !== id) })}
+    />
   );
 }
 

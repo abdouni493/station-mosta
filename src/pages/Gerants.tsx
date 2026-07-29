@@ -20,6 +20,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import PermissionsModal from "../components/PermissionsModal";
 import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
+import WorkerDetailsModal from "../components/WorkerDetailsModal";
 import { WEEKDAYS, DEFAULT_WORK_DAYS } from "../lib/workerPay";
 
 // For now, we'll reuse Pompiste interface as Gerant type
@@ -71,6 +72,7 @@ const Gerants = () => {
   });
   const payPaidDays = useMemo(() => (selectedGerant?.paymentRecord || []).flatMap(p => p.paidDays || []), [selectedGerant]);
   const payPaidMonths = useMemo(() => (selectedGerant?.paymentRecord || []).flatMap(p => p.paidMonths || []), [selectedGerant]);
+  const detailGerant = selectedGerant ? (gerants.find(g => g.id === selectedGerant.id) || selectedGerant) : null;
 
   // Modal form states
   const [advanceForm, setAdvanceForm] = useState({ amount: 0, date: new Date().toISOString().split('T')[0], description: "" });
@@ -700,113 +702,37 @@ const Gerants = () => {
         )}
       </AnimatePresence>
 
-      {/* Detail Modal */}
-      <AnimatePresence>
-        {showDetailModal && selectedGerant && (
-          <div className="modal-shell z-[60] italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl relative z-10 overflow-hidden">
-              <div className="p-8 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 bg-[#FFB800] rounded-2xl flex items-center justify-center text-[#002d87] font-black text-xl shadow-lg"><Building2 className="w-7 h-7" /></div>
-                  <div>
-                    <h3 className="font-black uppercase tracking-wider italic text-lg">{selectedGerant.name}</h3>
-                    <p className="text-[10px] text-blue-100 font-bold mt-1">Gérant ⬢ CIN: {selectedGerant.cin}</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowDetailModal(false)} className="p-2 hover:bg-white/10 rounded-xl transition-colors"><X className="w-6 h-6" /></button>
-              </div>
-
-              <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto">
-                {/* Profile Card */}
-                <div className="p-8 bg-gradient-to-br from-[#002d87]/5 to-[#FFB800]/5 rounded-3xl border-2 border-[#002d87]/20 shadow-sm">
-                  <div className="flex items-center gap-6">
-                    <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-[#002d87] to-[#003087] flex items-center justify-center font-black text-4xl text-[#FFB800] shadow-lg">{selectedGerant.name[0]}</div>
-                    <div className="flex-1">
-                      <p className="text-2xl font-black text-[#002d87] uppercase tracking-wider mb-3">{selectedGerant.name}</p>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">CIN</p>
-                          <p className="font-black text-[#002d87]">{selectedGerant.cin}</p>
-                        </div>
-                        <div>
-                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Statut</p>
-                          <span className={cn("inline-block text-[10px] font-black uppercase px-3 py-1 rounded-full shadow-sm", 
-                            selectedGerant.status === "Actif" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700")}>\n                            {selectedGerant.status === "Actif" ? "Actif" : "Inactif"}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Contact Information */}
-                <div className="space-y-3">
-                  <h4 className="text-[11px] font-black text-[#002d87] uppercase tracking-widest"> Informations de Contact</h4>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100">
-                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2">Téléphone</p>
-                      <p className="font-black text-[#002d87] text-sm">{selectedGerant.phone || 'N/A'}</p>
-                    </div>
-                    <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100">
-                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2">Email</p>
-                      <p className="font-black text-[#002d87] text-sm truncate">{selectedGerant.email || 'N/A'}</p>
-                    </div>
-                  </div>
-                  <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100">
-                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2">Adresse</p>
-                    <p className="font-bold text-slate-700 text-sm">{selectedGerant.address || 'N/A'}</p>
-                  </div>
-                </div>
-
-                {/* Professional Information */}
-                <div className="space-y-3">
-                  <h4 className="text-[11px] font-black text-[#002d87] uppercase tracking-widest">Informations Professionnelles</h4>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="p-5 bg-gradient-to-br from-[#FFB800]/10 to-yellow-50 rounded-2xl border border-[#FFB800]/30">
-                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2">Salaire</p>
-                      <p className="font-black text-[#002d87] text-lg">{selectedGerant.baseSalary?.toLocaleString()}</p>
-                      <p className="text-[9px] text-[#FFB800] font-bold">DA</p>
-                    </div>
-                    <div className="p-5 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border border-blue-100">
-                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2">Embauche</p>
-                      <p className="font-black text-[#002d87] text-sm">{selectedGerant.hireDate || 'N/A'}</p>
-                    </div>
-                    <div className={cn("p-5 bg-gradient-to-br rounded-2xl border", selectedGerant.hasAccess ? "from-green-50 to-emerald-50 border-green-100" : "from-red-50 to-rose-50 border-red-100")}>
-                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2">Accès</p>
-                      <p className={cn("font-black text-sm", selectedGerant.hasAccess ? "text-green-600" : "text-red-500")}>
-                        {selectedGerant.hasAccess ? "Actif" : "Inactif"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Financial Summary */}
-                <div className="space-y-3">
-                  <h4 className="text-[11px] font-black text-[#002d87] uppercase tracking-widest\">Résumé Financier</h4>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="p-5 bg-gradient-to-br from-red-50 to-orange-50 rounded-2xl border border-red-100">
-                      <p className="text-[8px] font-black text-red-500 uppercase tracking-widest mb-2">Acomptes</p>
-                      <p className="font-black text-red-600 text-lg">{(selectedGerant.acomptes || []).length}</p>
-                      <p className="text-[9px] text-slate-500 font-bold">Enregistrés</p>
-                    </div>
-                    <div className="p-5 bg-gradient-to-br from-orange-50 to-yellow-50 rounded-2xl border border-orange-100">
-                      <p className="text-[8px] font-black text-orange-500 uppercase tracking-widest mb-2">Absences</p>
-                      <p className="font-black text-orange-600 text-lg">{(selectedGerant.absences || []).length}</p>
-                      <p className="text-[9px] text-slate-500 font-bold">Enregistrées</p>
-                    </div>
-                    <div className="p-5 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100">
-                      <p className="text-[8px] font-black text-green-500 uppercase tracking-widest mb-2">Paiements</p>
-                      <p className="font-black text-green-600 text-lg">{(selectedGerant.paymentRecord || []).length}</p>
-                      <p className="text-[9px] text-slate-500 font-bold">Effectués</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Detail Modal (shared) */}
+      {showDetailModal && detailGerant && (
+        <WorkerDetailsModal
+          open onClose={() => setShowDetailModal(false)}
+          name={detailGerant.name} role="Gérant"
+          statusLabel={detailGerant.status} statusTone={detailGerant.status === 'Actif' ? 'green' : 'red'}
+          info={[
+            { label: 'CIN', value: detailGerant.cin || '—' },
+            { label: 'Téléphone', value: detailGerant.phone || '—' },
+            { label: 'Email', value: detailGerant.email || '—' },
+            { label: 'Adresse', value: detailGerant.address || '—' },
+            { label: 'Type de paie', value: detailGerant.salaryType === 'jour' ? 'Journalier' : 'Mensuel' },
+            { label: detailGerant.salaryType === 'jour' ? 'Salaire / jour' : 'Salaire / mois', value: `${(detailGerant.baseSalary || 0).toLocaleString()} DA` },
+            ...(detailGerant.salaryType === 'jour' ? [{ label: 'Jours travaillés', value: (detailGerant.workDays && detailGerant.workDays.length ? detailGerant.workDays : DEFAULT_WORK_DAYS).map(idx => WEEKDAYS.find(w => w.idx === idx)?.short).filter(Boolean).join(', ') }] : []),
+            { label: 'Déclaration CNAS', value: detailGerant.cnasDate ? new Date(detailGerant.cnasDate).toLocaleDateString('fr-DZ') : '—' },
+            { label: "Date d'embauche", value: detailGerant.hireDate ? new Date(detailGerant.hireDate).toLocaleDateString('fr-DZ') : '—' },
+            { label: 'Compte', value: detailGerant.hasAccess ? (detailGerant.authUserId ? 'Actif' : 'À activer') : 'Aucun' },
+            { label: 'Identifiant', value: detailGerant.username || '—' },
+          ]}
+          payments={(detailGerant.paymentRecord || []).slice().sort((a, b) => (b.paymentDate || '').localeCompare(a.paymentDate || '')).map(p => ({ id: p.id, date: p.paymentDate, amount: p.netSalary, title: p.month, subtitle: [p.paymentMode, p.chequeNumber && `Chèque ${p.chequeNumber}`].filter(Boolean).join(' · '), notes: p.notes }))}
+          acomptes={(detailGerant.acomptes || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: a.isPaid }))}
+          absences={(detailGerant.absences || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: a.isPaid }))}
+          canEdit={perm.modifier} canDelete={perm.supprimer}
+          onSaveAcompte={a => { const o = (detailGerant.acomptes || []).find(x => x.id === a.id); dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'gerant', workerId: detailGerant.id, acompte: { ...(o as any), id: a.id, date: a.date, amount: a.amount, description: a.description } } }); }}
+          onDeleteAcompte={id => dispatch({ type: 'DELETE_WORKER_ACOMPTE', payload: { workerType: 'gerant', workerId: detailGerant.id, acompteId: id } })}
+          onSaveAbsence={a => { const o = (detailGerant.absences || []).find(x => x.id === a.id); dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'gerant', workerId: detailGerant.id, absence: { ...(o as any), id: a.id, date: a.date, cost: a.cost, description: a.description } } }); }}
+          onDeleteAbsence={id => dispatch({ type: 'DELETE_WORKER_ABSENCE', payload: { workerType: 'gerant', workerId: detailGerant.id, absenceId: id } })}
+          onSavePayment={p => { const o = (detailGerant.paymentRecord || []).find(x => x.id === p.id); dispatch({ type: 'ADD_WORKER_PAYMENT', payload: { workerType: 'gerant', workerId: detailGerant.id, payment: { ...(o as any), id: p.id, paymentDate: p.date, netSalary: p.amount, amount: p.amount, notes: p.notes } } }); }}
+          onDeletePayment={id => dispatch({ type: 'DELETE_WORKER_PAYMENT', payload: { workerType: 'gerant', workerId: detailGerant.id, paymentId: id } })}
+        />
+      )}
 
       {/* Advance Modal */}
       <AnimatePresence>

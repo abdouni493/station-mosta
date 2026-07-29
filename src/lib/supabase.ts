@@ -501,10 +501,14 @@ export const db = {
   // Worker payroll sub-records
   getWorkerAcomptes:       (workerId: string) => dbSelect('worker_acomptes', { worker_id: workerId }),
   addWorkerAcompte:        (a: object) => dbUpsert('worker_acomptes', a),
+  deleteWorkerAcompte:     (id: string) => dbDelete('worker_acomptes', id),
   getWorkerAbsences:       (workerId: string) => dbSelect('worker_absences', { worker_id: workerId }),
   addWorkerAbsence:        (a: object) => dbUpsert('worker_absences', a),
+  deleteWorkerAbsence:     (id: string) => dbDelete('worker_absences', id),
   getWorkerPaymentRecords: (workerId: string) => dbSelect('worker_payment_records', { worker_id: workerId }),
-  addWorkerPaymentRecord:  (p: object) => dbInsert('worker_payment_records', p),
+  addWorkerPaymentRecord:  (p: object) => dbUpsert('worker_payment_records', p),
+  updateWorkerPaymentRecord: (id: string, p: object) => dbUpdate('worker_payment_records', id, p),
+  deleteWorkerPaymentRecord: (id: string) => dbDelete('worker_payment_records', id),
   markPaymentPaid: async (paymentId: string) => dbUpdate('worker_payment_records', paymentId, { is_paid: true }),
 
   // Brigades

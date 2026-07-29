@@ -32,6 +32,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import PermissionsModal from "../components/PermissionsModal";
 import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
+import WorkerDetailsModal from "../components/WorkerDetailsModal";
 import { WEEKDAYS, DEFAULT_WORK_DAYS } from "../lib/workerPay";
 
 // Username must be 3-32 chars: lowercase letters, digits, dot, underscore, hyphen
@@ -83,6 +84,7 @@ const MagasinWorkers = () => {
   });
   const payPaidDays = useMemo(() => (selectedWorker?.paymentRecord || []).flatMap(p => p.paidDays || []), [selectedWorker]);
   const payPaidMonths = useMemo(() => (selectedWorker?.paymentRecord || []).flatMap(p => p.paidMonths || []), [selectedWorker]);
+  const detailWorker = selectedWorker ? (workers.find(w => w.id === selectedWorker.id) || selectedWorker) : null;
 
   // Modal form states
   const [advanceForm, setAdvanceForm] = useState({ amount: 0, date: new Date().toISOString().split('T')[0], description: "" });
@@ -714,58 +716,37 @@ const MagasinWorkers = () => {
         )}
       </AnimatePresence>
 
-      {/* Detail Modal */}
-      <AnimatePresence>
-        {showDetailModal && selectedWorker && (
-          <div className="modal-shell z-[60] italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
-              <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
-                <h3 className="font-black text-yellow-400 uppercase tracking-widest italic flex items-center gap-2"><Eye className="w-5 h-5 text-yellow-400" /> DÉTAILS DE L'EMPLOYÉ</h3>
-                <button onClick={() => setShowDetailModal(false)} className="p-2 hover:bg-white/10 rounded-xl transition-colors"><X className="w-6 h-6 text-white" /></button>
-              </div>
-
-              <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto">
-                <div className="flex items-center gap-6 p-6 bg-gradient-to-r from-blue-50 to-yellow-50 rounded-2xl border border-blue-100">
-                  <div className="w-20 h-20 bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-400 rounded-2xl flex items-center justify-center font-black text-3xl shadow-lg">{selectedWorker.name[0]}</div>
-                  <div>
-                    <p className="text-lg font-black text-blue-900 uppercase mb-2">{selectedWorker.name}</p>
-                    <p className="text-[10px] text-slate-500 font-bold">CIN: {selectedWorker.cin}</p>
-                    <p className="text-[10px] text-slate-500 font-bold">Tél: {selectedWorker.phone}</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Statut</p>
-                    <p className="font-black text-slate-700">{selectedWorker.status}</p>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Salaire</p>
-                    <p className="font-black text-blue-900">{selectedWorker.baseSalary.toLocaleString()} DA</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Email</p>
-                    <p className="font-bold text-slate-700">{selectedWorker.email || 'N/A'}</p>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Adresse</p>
-                    <p className="font-bold text-slate-700">{selectedWorker.address || 'N/A'}</p>
-                  </div>
-                </div>
-
-                <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl">
-                  <p className="text-[9px] font-bold text-blue-700 uppercase mb-2 italic">Date d'Embauche</p>
-                  <p className="font-black text-blue-900">{new Date(selectedWorker.hireDate).toLocaleDateString('fr-FR')}</p>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Detail Modal (shared) */}
+      {showDetailModal && detailWorker && (
+        <WorkerDetailsModal
+          open onClose={() => setShowDetailModal(false)}
+          name={detailWorker.name} role="Employé Magasin"
+          statusLabel={detailWorker.status} statusTone={detailWorker.status === 'Actif' ? 'green' : 'red'}
+          info={[
+            { label: 'CIN', value: detailWorker.cin || '—' },
+            { label: 'Téléphone', value: detailWorker.phone || '—' },
+            { label: 'Email', value: detailWorker.email || '—' },
+            { label: 'Adresse', value: detailWorker.address || '—' },
+            { label: 'Type de paie', value: detailWorker.salaryType === 'jour' ? 'Journalier' : 'Mensuel' },
+            { label: detailWorker.salaryType === 'jour' ? 'Salaire / jour' : 'Salaire / mois', value: `${(detailWorker.baseSalary || 0).toLocaleString()} DA` },
+            ...(detailWorker.salaryType === 'jour' ? [{ label: 'Jours travaillés', value: (detailWorker.workDays && detailWorker.workDays.length ? detailWorker.workDays : DEFAULT_WORK_DAYS).map(idx => WEEKDAYS.find(w => w.idx === idx)?.short).filter(Boolean).join(', ') }] : []),
+            { label: 'Déclaration CNAS', value: detailWorker.cnasDate ? new Date(detailWorker.cnasDate).toLocaleDateString('fr-DZ') : '—' },
+            { label: "Date d'embauche", value: detailWorker.hireDate ? new Date(detailWorker.hireDate).toLocaleDateString('fr-DZ') : '—' },
+            { label: 'Compte', value: detailWorker.hasAccess ? (detailWorker.authUserId ? 'Actif' : 'À activer') : 'Aucun' },
+            { label: 'Identifiant', value: detailWorker.username || '—' },
+          ]}
+          payments={(detailWorker.paymentRecord || []).slice().sort((a, b) => (b.paymentDate || '').localeCompare(a.paymentDate || '')).map(p => ({ id: p.id, date: p.paymentDate, amount: p.netSalary, title: p.month, subtitle: [p.paymentMode, p.chequeNumber && `Chèque ${p.chequeNumber}`].filter(Boolean).join(' · '), notes: p.notes }))}
+          acomptes={(detailWorker.acomptes || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: a.isPaid }))}
+          absences={(detailWorker.absences || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: a.isPaid }))}
+          canEdit={perm.modifier} canDelete={perm.supprimer}
+          onSaveAcompte={a => { const o = (detailWorker.acomptes || []).find(x => x.id === a.id); dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'magasin', workerId: detailWorker.id, acompte: { ...(o as any), id: a.id, date: a.date, amount: a.amount, description: a.description } } }); }}
+          onDeleteAcompte={id => dispatch({ type: 'DELETE_WORKER_ACOMPTE', payload: { workerType: 'magasin', workerId: detailWorker.id, acompteId: id } })}
+          onSaveAbsence={a => { const o = (detailWorker.absences || []).find(x => x.id === a.id); dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'magasin', workerId: detailWorker.id, absence: { ...(o as any), id: a.id, date: a.date, cost: a.cost, description: a.description } } }); }}
+          onDeleteAbsence={id => dispatch({ type: 'DELETE_WORKER_ABSENCE', payload: { workerType: 'magasin', workerId: detailWorker.id, absenceId: id } })}
+          onSavePayment={p => { const o = (detailWorker.paymentRecord || []).find(x => x.id === p.id); dispatch({ type: 'ADD_WORKER_PAYMENT', payload: { workerType: 'magasin', workerId: detailWorker.id, payment: { ...(o as any), id: p.id, paymentDate: p.date, netSalary: p.amount, amount: p.amount, notes: p.notes } } }); }}
+          onDeletePayment={id => dispatch({ type: 'DELETE_WORKER_PAYMENT', payload: { workerType: 'magasin', workerId: detailWorker.id, paymentId: id } })}
+        />
+      )}
 
       {/* Advance Modal */}
       <AnimatePresence>

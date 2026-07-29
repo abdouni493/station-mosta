@@ -17,6 +17,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import PermissionsModal from "../components/PermissionsModal";
 import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
+import WorkerDetailsModal from "../components/WorkerDetailsModal";
 import { WEEKDAYS, DEFAULT_WORK_DAYS, PayDecalage } from "../lib/workerPay";
 
 // Username must be 3-32 chars: lowercase letters, digits, dot, underscore, hyphen
@@ -141,6 +142,8 @@ const Pompistes = () => {
   }, [selectedPompiste, brigades, settings]);
   const payPaidDays = useMemo(() => (selectedPompiste?.paymentRecord || []).flatMap(p => p.paidDays || []), [selectedPompiste]);
   const payPaidMonths = useMemo(() => (selectedPompiste?.paymentRecord || []).flatMap(p => p.paidMonths || []), [selectedPompiste]);
+  // Live worker (so détails reflects acompte/absence/paiement edits instantly).
+  const detailPompiste = selectedPompiste ? (pompistes.find(p => p.id === selectedPompiste.id) || selectedPompiste) : null;
 
   const handleSave = async () => {
     if (!form.name) {
@@ -748,53 +751,39 @@ const Pompistes = () => {
         )}
       </AnimatePresence>
 
-      {/* Detail Modal */}
-      <AnimatePresence>
-        {showDetailModal && selectedPompiste && (
-          <div className="modal-shell z-[60] italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetailModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden border border-slate-100">
-              <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
-                <h3 className="font-black text-yellow-400 uppercase tracking-widest italic flex items-center gap-2"><Eye className="w-5 h-5 text-yellow-400" /> DÉTAILS DU POMPISTE</h3>
-                <button onClick={() => setShowDetailModal(false)} className="p-2 hover:bg-white/10 rounded-xl transition-colors"><X className="w-6 h-6 text-white" /></button>
-              </div>
-
-              <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto">
-                <div className="flex items-center gap-6 p-6 bg-gradient-to-r from-blue-50 to-yellow-50 rounded-2xl border border-blue-100">
-                  <div className="w-20 h-20 bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-400 rounded-2xl flex items-center justify-center font-black text-3xl shadow-lg">{selectedPompiste.name[0]}</div>
-                  <div>
-                    <p className="text-lg font-black text-blue-900 uppercase mb-2">{selectedPompiste.name}</p>
-                    <p className="text-[10px] text-slate-500 font-bold">CIN: {selectedPompiste.cin}</p>
-                    <p className="text-[10px] text-slate-500 font-bold">Tél: {selectedPompiste.phone}</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Statut</p>
-                    <p className="font-black text-slate-700">{selectedPompiste.status}</p>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Salaire</p>
-                    <p className="font-black text-primary">{selectedPompiste.baseSalary.toLocaleString()} DA</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Piste</p>
-                    <p className="font-bold text-slate-700">{tracks.find(t => t.id === selectedPompiste.trackId)?.name || 'N/A'}</p>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-xl">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1 italic">Chef</p>
-                    <p className="font-bold text-slate-700">{brigadeChefs.find(c => c.id === selectedPompiste.chefId)?.name || 'Libre'}</p>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Detail Modal (shared) */}
+      {showDetailModal && detailPompiste && (
+        <WorkerDetailsModal
+          open onClose={() => setShowDetailModal(false)}
+          name={detailPompiste.name} role="Pompiste"
+          statusLabel={detailPompiste.status} statusTone={detailPompiste.status === 'Actif' ? 'green' : 'red'}
+          info={[
+            { label: 'CIN', value: detailPompiste.cin || '—' },
+            { label: 'Téléphone', value: detailPompiste.phone || '—' },
+            { label: 'Email', value: detailPompiste.email || '—' },
+            { label: 'Adresse', value: detailPompiste.address || '—' },
+            { label: 'Piste', value: tracks.find(t => t.id === detailPompiste.trackId)?.name || '—' },
+            { label: 'Chef', value: brigadeChefs.find(c => c.id === detailPompiste.chefId)?.name || 'Libre' },
+            { label: 'Type de paie', value: detailPompiste.salaryType === 'jour' ? 'Journalier' : 'Mensuel' },
+            { label: detailPompiste.salaryType === 'jour' ? 'Salaire / jour' : 'Salaire / mois', value: `${(detailPompiste.baseSalary || 0).toLocaleString()} DA` },
+            ...(detailPompiste.salaryType === 'jour' ? [{ label: 'Jours travaillés', value: (detailPompiste.workDays && detailPompiste.workDays.length ? detailPompiste.workDays : DEFAULT_WORK_DAYS).map(idx => WEEKDAYS.find(w => w.idx === idx)?.short).filter(Boolean).join(', ') }] : []),
+            { label: 'Déclaration CNAS', value: detailPompiste.cnasDate ? new Date(detailPompiste.cnasDate).toLocaleDateString('fr-DZ') : '—' },
+            { label: "Date d'embauche", value: detailPompiste.hireDate ? new Date(detailPompiste.hireDate).toLocaleDateString('fr-DZ') : '—' },
+            { label: 'Compte', value: detailPompiste.hasAccess ? (detailPompiste.authUserId ? 'Actif' : 'À activer') : 'Aucun' },
+            { label: 'Identifiant', value: detailPompiste.username || '—' },
+          ]}
+          payments={(detailPompiste.paymentRecord || []).slice().sort((a, b) => (b.paymentDate || '').localeCompare(a.paymentDate || '')).map(p => ({ id: p.id, date: p.paymentDate, amount: p.netSalary, title: p.month, subtitle: [p.paymentMode, p.chequeNumber && `Chèque ${p.chequeNumber}`].filter(Boolean).join(' · '), notes: p.notes }))}
+          acomptes={(detailPompiste.acomptes || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: a.isPaid }))}
+          absences={(detailPompiste.absences || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: a.isPaid }))}
+          canEdit={perm.modifier} canDelete={perm.supprimer}
+          onSaveAcompte={a => { const o = (detailPompiste.acomptes || []).find(x => x.id === a.id); dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'pompiste', workerId: detailPompiste.id, acompte: { ...(o as any), id: a.id, date: a.date, amount: a.amount, description: a.description } } }); }}
+          onDeleteAcompte={id => dispatch({ type: 'DELETE_WORKER_ACOMPTE', payload: { workerType: 'pompiste', workerId: detailPompiste.id, acompteId: id } })}
+          onSaveAbsence={a => { const o = (detailPompiste.absences || []).find(x => x.id === a.id); dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'pompiste', workerId: detailPompiste.id, absence: { ...(o as any), id: a.id, date: a.date, cost: a.cost, description: a.description } } }); }}
+          onDeleteAbsence={id => dispatch({ type: 'DELETE_WORKER_ABSENCE', payload: { workerType: 'pompiste', workerId: detailPompiste.id, absenceId: id } })}
+          onSavePayment={p => { const o = (detailPompiste.paymentRecord || []).find(x => x.id === p.id); dispatch({ type: 'ADD_WORKER_PAYMENT', payload: { workerType: 'pompiste', workerId: detailPompiste.id, payment: { ...(o as any), id: p.id, paymentDate: p.date, netSalary: p.amount, amount: p.amount, notes: p.notes } } }); }}
+          onDeletePayment={id => dispatch({ type: 'DELETE_WORKER_PAYMENT', payload: { workerType: 'pompiste', workerId: detailPompiste.id, paymentId: id } })}
+        />
+      )}
 
       {/* Advance Modal */}
       <AnimatePresence>

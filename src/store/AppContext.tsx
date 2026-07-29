@@ -1082,8 +1082,11 @@ type AppAction =
   | { type: 'UPDATE_BRAND'; payload: ProductBrand }
   | { type: 'DELETE_BRAND'; payload: string }
   | { type: 'UPDATE_WORKER_ACOMPTE'; payload: { workerType: 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; workerId: string; acompte: Acompte } }
+  | { type: 'DELETE_WORKER_ACOMPTE'; payload: { workerType: 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; workerId: string; acompteId: string } }
   | { type: 'UPDATE_WORKER_ABSENCE'; payload: { workerType: 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; workerId: string; absence: Absence } }
+  | { type: 'DELETE_WORKER_ABSENCE'; payload: { workerType: 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; workerId: string; absenceId: string } }
   | { type: 'ADD_WORKER_PAYMENT'; payload: { workerType: 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; workerId: string; payment: WorkerPaymentRecord } }
+  | { type: 'DELETE_WORKER_PAYMENT'; payload: { workerType: 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin'; workerId: string; paymentId: string } }
   | { type: 'ADD_SUPPLIER_APPOINTMENT'; payload: { supplierId: string; appointment: SupplierAppointment } }
   | { type: 'ADD_CLIENT_APPOINTMENT'; payload: { clientId: string; appointment: ClientAppointment } }
   | { type: 'ADD_SUPPLIER_PAYMENT'; payload: { supplierId: string; payment: SupplierDebtPayment } }
@@ -1348,6 +1351,36 @@ function appReducer(state: AppState, action: AppAction): AppState {
           : [...(item.paymentRecord || []), payment];
         return { ...item, paymentRecord };
       });
+      if (workerType === 'pompiste') return { ...state, pompistes: updateList(state.pompistes) };
+      if (workerType === 'chef_brigade') return { ...state, brigadeChefs: updateList(state.brigadeChefs) };
+      if (workerType === 'gerant') return { ...state, gerants: updateList(state.gerants) };
+      return { ...state, magasinWorkers: updateList(state.magasinWorkers) };
+    }
+
+    case 'DELETE_WORKER_ACOMPTE': {
+      const { workerType, workerId, acompteId } = action.payload;
+      const updateList = (list: any[]) => list.map(item => item.id !== workerId ? item
+        : { ...item, acomptes: (item.acomptes || []).filter((a: any) => a.id !== acompteId) });
+      if (workerType === 'pompiste') return { ...state, pompistes: updateList(state.pompistes) };
+      if (workerType === 'chef_brigade') return { ...state, brigadeChefs: updateList(state.brigadeChefs) };
+      if (workerType === 'gerant') return { ...state, gerants: updateList(state.gerants) };
+      return { ...state, magasinWorkers: updateList(state.magasinWorkers) };
+    }
+
+    case 'DELETE_WORKER_ABSENCE': {
+      const { workerType, workerId, absenceId } = action.payload;
+      const updateList = (list: any[]) => list.map(item => item.id !== workerId ? item
+        : { ...item, absences: (item.absences || []).filter((a: any) => a.id !== absenceId) });
+      if (workerType === 'pompiste') return { ...state, pompistes: updateList(state.pompistes) };
+      if (workerType === 'chef_brigade') return { ...state, brigadeChefs: updateList(state.brigadeChefs) };
+      if (workerType === 'gerant') return { ...state, gerants: updateList(state.gerants) };
+      return { ...state, magasinWorkers: updateList(state.magasinWorkers) };
+    }
+
+    case 'DELETE_WORKER_PAYMENT': {
+      const { workerType, workerId, paymentId } = action.payload;
+      const updateList = (list: any[]) => list.map(item => item.id !== workerId ? item
+        : { ...item, paymentRecord: (item.paymentRecord || []).filter((p: any) => p.id !== paymentId) });
       if (workerType === 'pompiste') return { ...state, pompistes: updateList(state.pompistes) };
       if (workerType === 'chef_brigade') return { ...state, brigadeChefs: updateList(state.brigadeChefs) };
       if (workerType === 'gerant') return { ...state, gerants: updateList(state.gerants) };
@@ -2240,6 +2273,9 @@ async function syncToSupabase(action: AppAction): Promise<void> {
       case 'ADD_WORKER_PAYMENT':
         await db.addWorkerPaymentRecord({ id: action.payload.payment.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, month: action.payload.payment.month, base_salary: action.payload.payment.baseSalary, total_acomptes: action.payload.payment.totalAcomptes, total_absences: action.payload.payment.totalAbsences, bonus_decalage: action.payload.payment.bonusDecalage ?? 0, retenue_decalage: action.payload.payment.retenueDecalage ?? 0, net_salary: action.payload.payment.netSalary, payment_date: action.payload.payment.paymentDate, payment_mode: action.payload.payment.paymentMode, cheque_number: action.payload.payment.chequeNumber, notes: action.payload.payment.notes, is_paid: action.payload.payment.isPaid, paid_days: action.payload.payment.paidDays ?? null, paid_months: action.payload.payment.paidMonths ?? null, decalage_ids: action.payload.payment.decalageIds ?? null, prime_type: nz(action.payload.payment.primeType), prime_value: action.payload.payment.primeValue ?? null, prime_amount: action.payload.payment.primeAmount ?? null });
         break;
+      case 'DELETE_WORKER_ACOMPTE': await db.deleteWorkerAcompte(action.payload.acompteId); break;
+      case 'DELETE_WORKER_ABSENCE': await db.deleteWorkerAbsence(action.payload.absenceId); break;
+      case 'DELETE_WORKER_PAYMENT': await db.deleteWorkerPaymentRecord(action.payload.paymentId); break;
       case 'MARK_PAYMENT_PAID': await db.markPaymentPaid(action.payload.paymentId); break;
       case 'ADD_SUPPLIER_APPOINTMENT':
         await db.addSupplierAppointment({ id: action.payload.appointment.id, supplier_id: action.payload.supplierId, purchase_id: nz(action.payload.appointment.purchaseId), date: action.payload.appointment.date, amount: action.payload.appointment.amount, notes: action.payload.appointment.notes, is_paid: action.payload.appointment.isPaid });
@@ -2312,6 +2348,9 @@ async function refetchEntityAfterAction(
       case 'UPDATE_WORKER_ACOMPTE':
       case 'UPDATE_WORKER_ABSENCE':
       case 'ADD_WORKER_PAYMENT':
+      case 'DELETE_WORKER_ACOMPTE':
+      case 'DELETE_WORKER_ABSENCE':
+      case 'DELETE_WORKER_PAYMENT':
       case 'MARK_PAYMENT_PAID': {
         const workerType = (action as any).payload?.workerType;
         if (workerType === 'pompiste') {
@@ -3466,6 +3505,15 @@ export function useSupabaseDispatch() {
           break;
         case 'ADD_WORKER_PAYMENT':
           await db.addWorkerPaymentRecord({ id: action.payload.payment.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, month: action.payload.payment.month, base_salary: action.payload.payment.baseSalary, total_acomptes: action.payload.payment.totalAcomptes, total_absences: action.payload.payment.totalAbsences, bonus_decalage: action.payload.payment.bonusDecalage ?? 0, retenue_decalage: action.payload.payment.retenueDecalage ?? 0, net_salary: action.payload.payment.netSalary, payment_date: action.payload.payment.paymentDate, payment_mode: action.payload.payment.paymentMode, cheque_number: action.payload.payment.chequeNumber, notes: action.payload.payment.notes, is_paid: action.payload.payment.isPaid, paid_days: action.payload.payment.paidDays ?? null, paid_months: action.payload.payment.paidMonths ?? null, decalage_ids: action.payload.payment.decalageIds ?? null, prime_type: nz(action.payload.payment.primeType), prime_value: action.payload.payment.primeValue ?? null, prime_amount: action.payload.payment.primeAmount ?? null });
+          break;
+        case 'DELETE_WORKER_ACOMPTE':
+          await db.deleteWorkerAcompte(action.payload.acompteId);
+          break;
+        case 'DELETE_WORKER_ABSENCE':
+          await db.deleteWorkerAbsence(action.payload.absenceId);
+          break;
+        case 'DELETE_WORKER_PAYMENT':
+          await db.deleteWorkerPaymentRecord(action.payload.paymentId);
           break;
         case 'MARK_PAYMENT_PAID':
           await db.markPaymentPaid(action.payload.paymentId);
