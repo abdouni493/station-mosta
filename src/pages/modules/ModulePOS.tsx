@@ -112,8 +112,10 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       });
     }
 
-    // Stock products — including the ones sold au détail.
-    products.filter(p => p.currentQty > 0).forEach(p => {
+    // Stock products — including the ones sold au détail. Products are listed
+    // even at 0 or negative stock: the POS may oversell them (stock goes minus)
+    // and a later purchase settles the shortfall (e.g. −5 stock + 15 reçus = 10).
+    products.forEach(p => {
       if (p.sellByDetail && (p.detailCapacity || 0) > 0) {
         out.push({
           id: p.id, name: p.name, price: detailPrice(p),
@@ -183,15 +185,18 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   // ── Cart ──────────────────────────────────────────────────────────────────
   const pushLine = (s: Source, qty: number) => {
+    // Stock products may be oversold (stock goes negative); comptoir productions
+    // and quick-sale fiches stay capped at what is physically available.
+    const oversell = s.kind === 'product';
     setCart(prev => {
       const found = prev.find(l => l.id === s.id);
       if (found) {
-        const next = Math.min(found.max, found.qty + qty);
+        const next = oversell ? found.qty + qty : Math.min(found.max, found.qty + qty);
         if (next === found.qty) { toast.error('Stock atteint'); return prev; }
         return prev.map(l => l.id === s.id ? { ...l, qty: next } : l);
       }
       return [...prev, {
-        id: s.id, name: s.name, unitPrice: s.price, qty: Math.min(s.avail, qty),
+        id: s.id, name: s.name, unitPrice: s.price, qty: oversell ? qty : Math.min(s.avail, qty),
         max: s.avail, unit: s.unit, kind: s.kind,
         detailCapacity: s.detailCapacity, detailUnit: s.detailUnit,
       }];
@@ -200,16 +205,18 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const addToCart = (s: Source) => {
     if (!openSession) { toast.error('Ouvrez une session de travail pour vendre'); return; }
-    if (s.avail <= 0) { toast.error('Stock épuisé'); return; }
+    // Only production items (comptoir / fiches) are blocked when out of stock;
+    // stock products can always be sold and drive the stock into the negative.
+    if (s.kind !== 'product' && s.avail <= 0) { toast.error('Stock épuisé'); return; }
     // Detail products ask for the quantity to sell, in the detail unit.
     if (s.detail) { setDetailPrompt(s); return; }
     pushLine(s, 1);
   };
 
-  const inc = (id: string) => setCart(prev => prev.map(l => l.id === id ? { ...l, qty: Math.min(l.max, l.qty + 1) } : l));
+  const inc = (id: string) => setCart(prev => prev.map(l => l.id === id ? { ...l, qty: l.kind === 'product' ? l.qty + 1 : Math.min(l.max, l.qty + 1) } : l));
   const dec = (id: string) => setCart(prev => prev.flatMap(l => l.id === id ? (l.qty > 1 ? [{ ...l, qty: l.qty - 1 }] : []) : [l]));
   const setLineQty = (id: string, v: number) =>
-    setCart(prev => prev.map(l => l.id === id ? { ...l, qty: Math.max(0, Math.min(l.max, v)) } : l));
+    setCart(prev => prev.map(l => l.id === id ? { ...l, qty: l.kind === 'product' ? Math.max(0, v) : Math.max(0, Math.min(l.max, v)) } : l));
   const rm = (id: string) => setCart(prev => prev.filter(l => l.id !== id));
 
   // ── Checkout ──────────────────────────────────────────────────────────────
@@ -253,20 +260,22 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
         if (c) biz.update('comptoir', { ...c, qty: Math.max(0, c.qty - l.qty) });
       } else if (l.kind === 'fiche') {
         // A direct-sale fiche behaves like an instant production: its ingredients
-        // leave the stock right away.
+        // leave the stock right away — and may drive it negative, settled later
+        // by a purchase.
         const f = fiches.find(x => x.id === l.id);
         f?.ingredients.forEach(ing => {
           const p = products.find(x => x.id === ing.productId);
           if (p) biz.update('products', {
             ...p,
-            currentQty: Math.max(0, p.currentQty - ing.quantityUsed * l.qty / Math.max(1, f.outputQuantity)),
+            currentQty: p.currentQty - ing.quantityUsed * l.qty / Math.max(1, f.outputQuantity),
           });
         });
       } else {
         const p = products.find(x => x.id === l.id);
         if (!p) return;
         const consumed = l.detailCapacity ? l.qty / l.detailCapacity : l.qty;
-        biz.update('products', { ...p, currentQty: Math.max(0, p.currentQty - consumed) });
+        // Oversell allowed: stock may go negative and is recovered on the next purchase.
+        biz.update('products', { ...p, currentQty: p.currentQty - consumed });
       }
     });
 
@@ -429,7 +438,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
                     <span className="font-black text-[#002d87] text-sm tabular-nums">
                       {money(s.price)}{s.detail ? <span className="text-[10px] font-bold">/{s.detailUnit}</span> : null}
                     </span>
-                    <Badge tone={s.avail <= 5 ? 'warning' : 'neutral'}>
+                    <Badge tone={s.avail <= 0 ? 'danger' : s.avail <= 5 ? 'warning' : 'neutral'}>
                       {s.avail % 1 === 0 ? s.avail : s.avail.toFixed(2)} {s.unit}
                     </Badge>
                   </div>
@@ -473,7 +482,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
                     </p>
                   </div>
                   {l.detailCapacity ? (
-                    <input type="number" step="0.01" min={0} max={l.max} value={l.qty}
+                    <input type="number" step="0.01" min={0} value={l.qty}
                       onChange={e => setLineQty(l.id, Number(e.target.value))}
                       className="input-field !py-1 !px-2 w-20 text-center" />
                   ) : (
@@ -730,13 +739,15 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
 }) {
   const [qty, setQty] = useState('1');
   const value = Number(qty) || 0;
+  // Selling more than the stock is allowed — the stock simply goes negative and
+  // is recovered on the next purchase; we only inform the cashier.
   const tooMuch = value > source.avail;
   return (
     <Modal open onClose={onClose} icon={Package} size="sm"
       title={source.name} subtitle={`Vente au détail — ${source.detailUnit} sur ${source.detailCapacity} ${source.detailUnit} par unité`}
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={() => onConfirm(value)} disabled={value <= 0 || tooMuch}>Ajouter</button>
+        <button className="btn-primary" onClick={() => onConfirm(value)} disabled={value <= 0}>Ajouter</button>
       </>}>
       <div className="space-y-4">
         <Field label={`Quantité à vendre (${source.detailUnit})`} required>
@@ -753,8 +764,8 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
           </div>
         </div>
         {tooMuch && (
-          <p className="text-xs text-red-600 flex items-center gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5" /> La quantité dépasse le stock disponible.
+          <p className="text-xs text-amber-600 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" /> Quantité supérieure au stock — le stock passera en négatif (rattrapé au prochain achat).
           </p>
         )}
       </div>

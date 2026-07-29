@@ -16,6 +16,8 @@ import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import PermissionsModal from "../components/PermissionsModal";
+import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
+import { WEEKDAYS, DEFAULT_WORK_DAYS, PayDecalage } from "../lib/workerPay";
 
 // Username must be 3-32 chars: lowercase letters, digits, dot, underscore, hyphen
 const USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
@@ -23,7 +25,7 @@ const USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
 const Pompistes = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { pompistes, tracks, brigadeChefs, fuelSales, settings, currentUserRole } = useAppState();
+  const { pompistes, tracks, brigadeChefs, brigades, fuelSales, settings, currentUserRole } = useAppState();
   const perm = useModulePermission('Pompistes');
   const dispatch = useAppDispatch();
 
@@ -56,8 +58,15 @@ const Pompistes = () => {
     trackId: undefined,
     chefId: undefined,
     baseSalary: 3500,
+    salaryType: 'mois',
+    workDays: DEFAULT_WORK_DAYS,
+    cnasDate: "",
     status: "Actif",
     hireDate: new Date().toISOString().split('T')[0]
+  });
+  const toggleWorkDay = (idx: number) => setForm(f => {
+    const cur = f.workDays && f.workDays.length ? f.workDays : DEFAULT_WORK_DAYS;
+    return { ...f, workDays: cur.includes(idx) ? cur.filter(d => d !== idx) : [...cur, idx] };
   });
 
   // Modal form states
@@ -107,9 +116,31 @@ const Pompistes = () => {
       : 0;
     
     const net = (selectedPompiste.baseSalary || 0) - totalAcomptes - totalAbsences + bonusDecalage - retenueDecalage;
-    
+
     return { monthAcomptes, monthAbsences, totalAcomptes, totalAbsences, bonusDecalage, retenueDecalage, net, decalagePositifActif, decalageNegatifActif };
   }, [selectedPompiste, settings]);
+
+  // ── Adapters for the shared WorkerPaymentModal ────────────────────────────────
+  const brigadeLabel = (brigadeId: string) => {
+    const b = brigades.find(br => br.id === brigadeId);
+    if (!b) return 'Brigade (supprimée)';
+    const d = b.date ? new Date(b.date).toLocaleDateString('fr-DZ', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+    return `Brigade ${b.shift || ''}${d ? ' · ' + d : ''}`.trim();
+  };
+  const payDecalages: PayDecalage[] = useMemo(() => {
+    if (!selectedPompiste) return [];
+    const settled = new Set((selectedPompiste.paymentRecord || []).flatMap(p => p.decalageIds || []));
+    const decPos = settings?.decalagePositifActif ?? true;
+    const decNeg = settings?.decalageNegatifActif ?? true;
+    return (selectedPompiste.decalageHistory || [])
+      .map((d, i) => ({ d, id: `${d.brigadeId || 'b'}-${d.date}-${d.amount}-${d.type}-${i}` }))
+      .filter(({ d }) => (d.type === 'BONUS' ? decPos : decNeg))
+      .filter(({ id }) => !settled.has(id))
+      .map(({ d, id }) => ({ id, date: d.date, amount: d.amount, type: d.type, label: brigadeLabel(d.brigadeId) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPompiste, brigades, settings]);
+  const payPaidDays = useMemo(() => (selectedPompiste?.paymentRecord || []).flatMap(p => p.paidDays || []), [selectedPompiste]);
+  const payPaidMonths = useMemo(() => (selectedPompiste?.paymentRecord || []).flatMap(p => p.paidMonths || []), [selectedPompiste]);
 
   const handleSave = async () => {
     if (!form.name) {
@@ -299,56 +330,47 @@ const Pompistes = () => {
     setAbsenceForm({ cost: 0, date: new Date().toISOString().split('T')[0], description: "" });
   };
 
-  const handleSavePayment = () => {
-    if (!selectedPompiste || !paymentCalc) return;
+  const handleSavePayment = (res: WorkerPaymentResult) => {
+    if (!selectedPompiste) return;
+    const selAc = new Set(res.selectedAcompteIds);
+    const selAb = new Set(res.selectedAbsenceIds);
+    const monthKey = res.selectedMonths[0] || currentMonthForPayment;
 
-    // Marquer acomptes comme payés
-    const updatedAcomptes = (selectedPompiste.acomptes || []).map(a => 
-      (a.date.startsWith(currentMonthForPayment) && !a.isPaid) ? { ...a, isPaid: true, monthPaid: currentMonthForPayment } : a
-    );
-
-    // Marquer absences comme payées
-    const updatedAbsences = (selectedPompiste.absences || []).map(a =>
-      (a.date.startsWith(currentMonthForPayment) && !a.isPaid) ? { ...a, isPaid: true, monthPaid: currentMonthForPayment } : a
-    );
-
-    // Créer le WorkerPaymentRecord
     const record = {
       id: newId(),
-      month: currentMonthForPayment,
-      baseSalary: selectedPompiste.baseSalary,
-      totalAcomptes: paymentCalc.totalAcomptes,
-      totalAbsences: paymentCalc.totalAbsences,
-      bonusDecalage: paymentCalc.bonusDecalage,
-      retenueDecalage: paymentCalc.retenueDecalage,
-      netSalary: paymentCalc.net,
-      paymentDate: new Date().toISOString().split('T')[0],
-      paymentMode: paymentForm.mode,
-      chequeNumber: paymentForm.chequeNumber || undefined,
-      notes: paymentForm.notes || undefined,
+      month: monthKey,
+      baseSalary: res.breakdown.base,
+      totalAcomptes: res.breakdown.acomptes,
+      totalAbsences: res.breakdown.absences,
+      bonusDecalage: res.breakdown.decalageBonus,
+      retenueDecalage: res.breakdown.decalageRetenue,
+      netSalary: res.net,
+      amount: res.net,
+      paymentDate: res.date,
+      paymentMode: res.mode,
+      chequeNumber: res.chequeNumber || undefined,
+      notes: res.notes || undefined,
       isPaid: true,
+      paidDays: res.selectedDays,
+      paidMonths: res.selectedMonths,
+      decalageIds: res.selectedDecalageIds,
+      primeType: res.prime?.type,
+      primeValue: res.prime?.value,
+      primeAmount: res.prime?.amount,
     };
 
-    // Dispatch acompte & absence updates to DB
+    const updatedAcomptes = (selectedPompiste.acomptes || []).map(a => selAc.has(a.id) ? { ...a, isPaid: true, monthPaid: monthKey } : a);
+    const updatedAbsences = (selectedPompiste.absences || []).map(a => selAb.has(a.id) ? { ...a, isPaid: true, monthPaid: monthKey } : a);
+
     (selectedPompiste.acomptes || []).forEach(a => {
-      if (a.date.startsWith(currentMonthForPayment) && !a.isPaid) {
-        dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'pompiste', workerId: selectedPompiste.id, acompte: { ...a, isPaid: true, monthPaid: currentMonthForPayment } } });
-      }
+      if (selAc.has(a.id) && !a.isPaid) dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'pompiste', workerId: selectedPompiste.id, acompte: { ...a, isPaid: true, monthPaid: monthKey } } });
     });
-
     (selectedPompiste.absences || []).forEach(a => {
-      if (a.date.startsWith(currentMonthForPayment) && !a.isPaid) {
-        dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'pompiste', workerId: selectedPompiste.id, absence: { ...a, isPaid: true, monthPaid: currentMonthForPayment } } });
-      }
+      if (selAb.has(a.id) && !a.isPaid) dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'pompiste', workerId: selectedPompiste.id, absence: { ...a, isPaid: true, monthPaid: monthKey } } });
     });
 
-    // Dispatch add payment
-    dispatch({
-      type: 'ADD_WORKER_PAYMENT',
-      payload: { workerType: 'pompiste', workerId: selectedPompiste.id, payment: record }
-    });
+    dispatch({ type: 'ADD_WORKER_PAYMENT', payload: { workerType: 'pompiste', workerId: selectedPompiste.id, payment: record } });
 
-    // Update local state
     setSelectedPompiste({
       ...selectedPompiste,
       acomptes: updatedAcomptes,
@@ -356,13 +378,12 @@ const Pompistes = () => {
       paymentRecord: [...(selectedPompiste.paymentRecord || []), record]
     });
 
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Paiement de ${currentMonthForPayment} enregistré` } });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: 'Paiement enregistré' } });
     setShowPaymentModal(false);
-    setPaymentForm({ month: "", mode: 'Espèces', chequeNumber: "", notes: "" });
   };
 
   const resetForm = () => {
-    setForm({ name: "", cin: "", phone: "", email: "", address: "", trackId: undefined, chefId: undefined, baseSalary: 3500, status: "Actif", hireDate: new Date().toISOString().split('T')[0] });
+    setForm({ name: "", cin: "", phone: "", email: "", address: "", trackId: undefined, chefId: undefined, baseSalary: 3500, salaryType: 'mois', workDays: DEFAULT_WORK_DAYS, cnasDate: "", status: "Actif", hireDate: new Date().toISOString().split('T')[0] });
     setSelectedPompiste(null);
   };
 
@@ -633,9 +654,36 @@ const Pompistes = () => {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Salaire Base (DA)</label>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Type de paie</label>
+                    <select className="input-field italic uppercase font-black text-[10px]" value={form.salaryType || 'mois'} onChange={e => setForm({...form, salaryType: e.target.value as 'jour' | 'mois'})}>
+                      <option value="mois">Mensuel</option>
+                      <option value="jour">Journalier</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">{form.salaryType === 'jour' ? 'Salaire / Jour (DA)' : 'Salaire / Mois (DA)'}</label>
                     <input type="number" className="input-field italic font-black text-lg" value={form.baseSalary} onChange={e => setForm({...form, baseSalary: parseFloat(e.target.value)})} />
                   </div>
+                </div>
+
+                {form.salaryType === 'jour' && (
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Jours de travail (les autres sont repos)</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {WEEKDAYS.map(d => {
+                        const on = (form.workDays && form.workDays.length ? form.workDays : DEFAULT_WORK_DAYS).includes(d.idx);
+                        return (
+                          <button type="button" key={d.idx} onClick={() => toggleWorkDay(d.idx)}
+                            className={cn('px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all', on ? 'bg-blue-900 text-white shadow' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-100')}>
+                            {d.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Statut</label>
                     <select className="input-field italic uppercase font-black text-[10px]" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
@@ -644,11 +692,15 @@ const Pompistes = () => {
                       <option value="Inactif">Inactif</option>
                     </select>
                   </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date d'Embauche</label>
+                    <input type="date" className="input-field italic font-black text-xs" value={form.hireDate} onChange={e => setForm({...form, hireDate: e.target.value})} />
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date d'Embauche</label>
-                  <input type="date" className="input-field italic font-black text-xs" value={form.hireDate} onChange={e => setForm({...form, hireDate: e.target.value})} />
+                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date de déclaration CNAS</label>
+                  <input type="date" className="input-field italic font-black text-xs" value={form.cnasDate || ''} onChange={e => setForm({...form, cnasDate: e.target.value})} />
                 </div>
 
                 {/* Accès Logiciel */}
@@ -818,209 +870,29 @@ const Pompistes = () => {
         )}
       </AnimatePresence>
 
-      {/* Payment Modal */}
-      <AnimatePresence>
-        {showPaymentModal && selectedPompiste && paymentCalc && (
-          <div className="modal-shell z-[70] bg-black/40 text-left">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[var(--modal-max-h)] overflow-hidden flex flex-col relative z-10 border border-slate-100"
-            >
-              {/* Header with Gradient */}
-              <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-700 to-blue-800 text-white flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-yellow-400 rounded-xl flex items-center justify-center text-blue-900 font-black"><DollarSign className="w-6 h-6" /></div>
-                  <div>
-                    <h3 className="font-black uppercase tracking-widest text-lg">FORMULAIRE DE PAIEMENT</h3>
-                    <p className="text-[10px] text-blue-100 font-bold mt-1">{selectedPompiste.name} ⬢ {new Date(currentMonthForPayment + '-01').toLocaleString('default', { month: 'long', year: 'numeric' })}</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowPaymentModal(false)} className="p-2 hover:bg-white/10 rounded-lg transition-colors"><X className="w-6 h-6" /></button>
-              </div>
-
-              {/* Content */}
-              <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
-                
-                {/* Salary Base */}
-                <div className="p-6 bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl border-2 border-purple-200 shadow-sm">
-                  <p className="text-[9px] font-bold text-purple-700 uppercase tracking-widest mb-2 flex items-center gap-2">💰 Salaire de Base</p>
-                  <p className="text-4xl font-black text-purple-900">{selectedPompiste.baseSalary.toLocaleString()} <span className="text-xl text-purple-600">DA</span></p>
-                </div>
-
-                {/* Summary Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  
-                  {/* Acomptes Card */}
-                  <div className="p-5 bg-gradient-to-br from-red-50 to-orange-50 rounded-2xl border-2 border-red-200">
-                    <p className="text-[9px] font-bold text-red-700 uppercase tracking-widest mb-3 flex items-center gap-2">🏦 Total Acomptes</p>
-                    <p className="text-3xl font-black text-red-600">{paymentCalc.totalAcomptes.toLocaleString()} <span className="text-sm text-red-500">DA</span></p>
-                    {paymentCalc.monthAcomptes.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-red-200">
-                        <p className="text-[8px] text-red-600 font-bold mb-2">{paymentCalc.monthAcomptes.length} entrée(s):</p>
-                        <div className="space-y-1">
-                          {paymentCalc.monthAcomptes.map((a, i) => (
-                            <div key={i} className="text-[8px] text-slate-600">
-                              ⬢ {a.description || 'Acompte'}: {a.amount.toLocaleString()} DA
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Absences Card */}
-                  <div className="p-5 bg-gradient-to-br from-orange-50 to-yellow-50 rounded-2xl border-2 border-orange-200">
-                    <p className="text-[9px] font-bold text-orange-700 uppercase tracking-widest mb-3 flex items-center gap-2">❌ Total Absences</p>
-                    <p className="text-3xl font-black text-orange-600">{paymentCalc.totalAbsences.toLocaleString()} <span className="text-sm text-orange-500">DA</span></p>
-                    {paymentCalc.monthAbsences.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-orange-200">
-                        <p className="text-[8px] text-orange-600 font-bold mb-2">{paymentCalc.monthAbsences.length} entrée(s):</p>
-                        <div className="space-y-1">
-                          {paymentCalc.monthAbsences.map((a, i) => (
-                            <div key={i} className="text-[8px] text-slate-600">
-                              ⬢ {a.description || 'Absence'}: {a.cost.toLocaleString()} DA
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Décalages Card */}
-                  <div className="p-5 bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl border-2 border-blue-200">
-                    <p className="text-[9px] font-bold text-blue-700 uppercase tracking-widest mb-3 flex items-center gap-2">⚖️ Total Décalages</p>
-                    <div className="space-y-2">
-                      {paymentCalc.bonusDecalage > 0 && paymentCalc.decalagePositifActif && (
-                        <div>
-                          <p className="text-2xl font-black text-emerald-600">+{paymentCalc.bonusDecalage.toLocaleString()} DA</p>
-                          <p className="text-[8px] text-emerald-600 font-bold">Prime (Surplus)</p>
-                        </div>
-                      )}
-                      {paymentCalc.retenueDecalage > 0 && paymentCalc.decalageNegatifActif && (
-                        <div>
-                          <p className="text-2xl font-black text-red-600">-{paymentCalc.retenueDecalage.toLocaleString()} DA</p>
-                          <p className="text-[8px] text-red-600 font-bold">Retenue (Manque)</p>
-                        </div>
-                      )}
-                      {paymentCalc.bonusDecalage === 0 && paymentCalc.retenueDecalage === 0 && (
-                        <p className="text-2xl font-black text-slate-400">0 DA</p>
-                      )}
-                    </div>
-                  </div>
-
-                </div>
-
-                {/* Final Calculation - Large */}
-                <div className="p-8 bg-gradient-to-br from-blue-900 to-blue-800 rounded-3xl space-y-6 text-white shadow-2xl shadow-blue-900/40 border-2 border-blue-700">
-                  <p className="text-[11px] font-black text-yellow-400 uppercase tracking-widest flex items-center gap-2">
-                    📊 CALCUL NET À PAYER
-                  </p>
-                  
-                  <div className="space-y-4 bg-white/5 p-6 rounded-2xl backdrop-blur-sm border border-white/10">
-                    <div className="flex justify-between text-sm items-center pb-4 border-b border-blue-600">
-                      <span className="text-blue-200">Salaire de base</span>
-                      <span className="font-black text-2xl text-white">{selectedPompiste.baseSalary.toLocaleString()} DA</span>
-                    </div>
-                    
-                    {paymentCalc.totalAcomptes > 0 && (
-                      <div className="flex justify-between text-sm items-center">
-                        <span className="text-red-300">- Acomptes</span>
-                        <span className="text-red-400 font-black text-lg">-{paymentCalc.totalAcomptes.toLocaleString()} DA</span>
-                      </div>
-                    )}
-                    
-                    {paymentCalc.totalAbsences > 0 && (
-                      <div className="flex justify-between text-sm items-center">
-                        <span className="text-orange-300">- Absences</span>
-                        <span className="text-orange-400 font-black text-lg">-{paymentCalc.totalAbsences.toLocaleString()} DA</span>
-                      </div>
-                    )}
-                    
-                    {paymentCalc.bonusDecalage > 0 && paymentCalc.decalagePositifActif && (
-                      <div className="flex justify-between text-sm items-center">
-                        <span className="text-emerald-300">+ Prime Décalage</span>
-                        <span className="text-emerald-400 font-black text-lg">+{paymentCalc.bonusDecalage.toLocaleString()} DA</span>
-                      </div>
-                    )}
-                    
-                    {paymentCalc.retenueDecalage > 0 && paymentCalc.decalageNegatifActif && (
-                      <div className="flex justify-between text-sm items-center">
-                        <span className="text-red-300">- Retenue Décalage</span>
-                        <span className="text-red-400 font-black text-lg">-{paymentCalc.retenueDecalage.toLocaleString()} DA</span>
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="border-t-2 border-yellow-400 pt-6 mt-4 flex justify-between items-center">
-                    <span className="text-xs font-black uppercase tracking-widest text-blue-200">MONTANT TOTAL À PAYER</span>
-                    <span className="text-5xl font-black text-yellow-400">{paymentCalc.net.toLocaleString()}</span>
-                  </div>
-                  <div className="text-right text-yellow-300 text-lg font-bold">DA</div>
-                </div>
-
-                {/* Payment Method */}
-                <div className="space-y-2 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100">
-                  <label className="text-[9px] font-bold text-green-700 uppercase tracking-widest">💳 Mode Paiement</label>
-                  <select 
-                    className="w-full px-4 py-2.5 bg-white border border-green-200 rounded-lg font-bold outline-none focus:ring-2 focus:ring-green-400" 
-                    value={paymentForm.mode}
-                    onChange={e => setPaymentForm({...paymentForm, mode: e.target.value})}
-                  >
-                    <option value="Espèces">💵 Espèces</option>
-                    <option value="Chèque">📋 Chèque</option>
-                  </select>
-                </div>
-
-                {paymentForm.mode === 'Chèque' && (
-                  <div className="space-y-2 p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-2xl border border-amber-100">
-                    <label className="text-[9px] font-bold text-amber-700 uppercase tracking-widest"> Numéro Chèque</label>
-                    <input 
-                      type="text" 
-                      className="w-full px-4 py-2.5 bg-white border border-amber-200 rounded-lg font-bold outline-none focus:ring-2 focus:ring-amber-400" 
-                      placeholder="Ex: 123456"
-                      value={paymentForm.chequeNumber}
-                      onChange={e => setPaymentForm({...paymentForm, chequeNumber: e.target.value})}
-                    />
-                  </div>
-                )}
-
-                <div className="space-y-2 p-4 bg-gradient-to-br from-slate-50 to-slate-100 rounded-2xl border border-slate-200">
-                  <label className="text-[9px] font-bold text-slate-700 uppercase tracking-widest">Notes</label>
-                  <textarea 
-                    className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg font-bold outline-none focus:ring-2 focus:ring-slate-400 text-sm" 
-                    placeholder="Notes optionnelles..."
-                    rows={2}
-                    value={paymentForm.notes}
-                    onChange={e => setPaymentForm({...paymentForm, notes: e.target.value})}
-                  />
-                </div>
-              </div>
-
-              {/* Footer */}
-              <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3 shrink-0">
-                <button 
-                  onClick={() => {
-                    setShowPaymentModal(false);
-                    setPaymentForm({ month: "", mode: 'Espèces', chequeNumber: "", notes: "" });
-                  }}
-                  className="flex-1 text-[10px] font-black uppercase text-slate-600 hover:text-slate-700 transition-colors border border-slate-300 rounded-xl py-3 hover:bg-slate-100"
-                >
-                  Annuler
-                </button>
-                <button 
-                  onClick={handleSavePayment}
-                  className="flex-[2] bg-gradient-to-r from-green-600 to-emerald-500 hover:shadow-lg text-white font-black uppercase tracking-widest rounded-xl py-3 transition-all transform hover:-translate-y-0.5 text-[10px] flex items-center justify-center gap-2 shadow-lg shadow-green-200/50"
-                >
-                  <DollarSign className="w-4 h-4" /> CONFIRMER PAIEMENT
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Payment Modal (shared component) */}
+      {showPaymentModal && selectedPompiste && (
+        <WorkerPaymentModal
+          open
+          onClose={() => setShowPaymentModal(false)}
+          worker={{
+            name: selectedPompiste.name,
+            role: 'Pompiste',
+            salaryType: selectedPompiste.salaryType || 'mois',
+            salaryAmount: selectedPompiste.baseSalary,
+            workDays: selectedPompiste.workDays,
+            startDate: selectedPompiste.hireDate,
+          }}
+          acomptes={(selectedPompiste.acomptes || []).filter(a => !a.isPaid).map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: !!a.isPaid }))}
+          absences={(selectedPompiste.absences || []).filter(a => !a.isPaid).map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: !!a.isPaid }))}
+          decalages={payDecalages}
+          paidDays={payPaidDays}
+          paidMonths={payPaidMonths}
+          modes={['Espèces', 'Chèque', 'Virement']}
+          history={(selectedPompiste.paymentRecord || []).slice().reverse().slice(0, 4).map(p => ({ label: p.month, date: p.paymentDate, amount: p.netSalary }))}
+          onConfirm={handleSavePayment}
+        />
+      )}
 
       {/* History Modal */}
       <AnimatePresence>

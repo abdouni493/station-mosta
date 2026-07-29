@@ -19,6 +19,8 @@ import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import PermissionsModal from "../components/PermissionsModal";
+import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
+import { WEEKDAYS, DEFAULT_WORK_DAYS } from "../lib/workerPay";
 
 // For now, we'll reuse Pompiste interface as Gerant type
 type Gerant = GerantWorker;
@@ -57,9 +59,18 @@ const Gerants = () => {
     email: "",
     address: "",
     baseSalary: 5000,
+    salaryType: 'mois',
+    workDays: DEFAULT_WORK_DAYS,
+    cnasDate: "",
     status: "Actif",
     hireDate: new Date().toISOString().split('T')[0]
   });
+  const toggleWorkDay = (idx: number) => setForm(f => {
+    const cur = f.workDays && f.workDays.length ? f.workDays : DEFAULT_WORK_DAYS;
+    return { ...f, workDays: cur.includes(idx) ? cur.filter(d => d !== idx) : [...cur, idx] };
+  });
+  const payPaidDays = useMemo(() => (selectedGerant?.paymentRecord || []).flatMap(p => p.paidDays || []), [selectedGerant]);
+  const payPaidMonths = useMemo(() => (selectedGerant?.paymentRecord || []).flatMap(p => p.paidMonths || []), [selectedGerant]);
 
   // Modal form states
   const [advanceForm, setAdvanceForm] = useState({ amount: 0, date: new Date().toISOString().split('T')[0], description: "" });
@@ -297,56 +308,46 @@ const Gerants = () => {
     setAbsenceForm({ cost: 0, date: new Date().toISOString().split('T')[0], description: "" });
   };
 
-  const handleSavePayment = () => {
-    if (!selectedGerant || !paymentForm.month || !paymentCalc) return;
+  const handleSavePayment = (res: WorkerPaymentResult) => {
+    if (!selectedGerant) return;
+    const selAc = new Set(res.selectedAcompteIds);
+    const selAb = new Set(res.selectedAbsenceIds);
+    const monthKey = res.selectedMonths[0] || currentMonthForPayment;
 
-    // Mark acomptes as paid
-    const updatedAcomptes = (selectedGerant.acomptes || []).map(a => 
-      (a.date.startsWith(paymentForm.month) && !a.isPaid) ? { ...a, isPaid: true, monthPaid: paymentForm.month } : a
-    );
-
-    // Mark absences as paid
-    const updatedAbsences = (selectedGerant.absences || []).map(a =>
-      (a.date.startsWith(paymentForm.month) && !a.isPaid) ? { ...a, isPaid: true, monthPaid: paymentForm.month } : a
-    );
-
-    // Create WorkerPaymentRecord
     const record = {
       id: newId(),
-      month: paymentForm.month,
-      baseSalary: selectedGerant.baseSalary,
-      totalAcomptes: paymentCalc.totalAcomptes,
-      totalAbsences: paymentCalc.totalAbsences,
+      month: monthKey,
+      baseSalary: res.breakdown.base,
+      totalAcomptes: res.breakdown.acomptes,
+      totalAbsences: res.breakdown.absences,
       bonusDecalage: 0,
       retenueDecalage: 0,
-      netSalary: paymentCalc.net,
-      paymentDate: new Date().toISOString().split('T')[0],
-      paymentMode: paymentForm.mode,
-      chequeNumber: paymentForm.chequeNumber || undefined,
-      notes: paymentForm.notes || undefined,
+      netSalary: res.net,
+      amount: res.net,
+      paymentDate: res.date,
+      paymentMode: res.mode,
+      chequeNumber: res.chequeNumber || undefined,
+      notes: res.notes || undefined,
       isPaid: true,
+      paidDays: res.selectedDays,
+      paidMonths: res.selectedMonths,
+      primeType: res.prime?.type,
+      primeValue: res.prime?.value,
+      primeAmount: res.prime?.amount,
     };
 
-    // Dispatch acompte & absence updates to DB
+    const updatedAcomptes = (selectedGerant.acomptes || []).map(a => selAc.has(a.id) ? { ...a, isPaid: true, monthPaid: monthKey } : a);
+    const updatedAbsences = (selectedGerant.absences || []).map(a => selAb.has(a.id) ? { ...a, isPaid: true, monthPaid: monthKey } : a);
+
     (selectedGerant.acomptes || []).forEach(a => {
-      if (a.date.startsWith(paymentForm.month) && !a.isPaid) {
-        dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'gerant', workerId: selectedGerant.id, acompte: { ...a, isPaid: true, monthPaid: paymentForm.month } } });
-      }
+      if (selAc.has(a.id) && !a.isPaid) dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'gerant', workerId: selectedGerant.id, acompte: { ...a, isPaid: true, monthPaid: monthKey } } });
     });
-
     (selectedGerant.absences || []).forEach(a => {
-      if (a.date.startsWith(paymentForm.month) && !a.isPaid) {
-        dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'gerant', workerId: selectedGerant.id, absence: { ...a, isPaid: true, monthPaid: paymentForm.month } } });
-      }
+      if (selAb.has(a.id) && !a.isPaid) dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'gerant', workerId: selectedGerant.id, absence: { ...a, isPaid: true, monthPaid: monthKey } } });
     });
 
-    // Dispatch add payment
-    dispatch({
-      type: 'ADD_WORKER_PAYMENT',
-      payload: { workerType: 'gerant', workerId: selectedGerant.id, payment: record }
-    });
+    dispatch({ type: 'ADD_WORKER_PAYMENT', payload: { workerType: 'gerant', workerId: selectedGerant.id, payment: record } });
 
-    // Update local state
     setSelectedGerant({
       ...selectedGerant,
       acomptes: updatedAcomptes,
@@ -354,13 +355,12 @@ const Gerants = () => {
       paymentRecord: [...(selectedGerant.paymentRecord || []), record]
     });
 
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Paiement de ${paymentForm.month} enregistré` } });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: 'Paiement enregistré' } });
     setShowPaymentModal(false);
-    setPaymentForm({ month: "", mode: 'Espèces', chequeNumber: "", notes: "" });
   };
 
   const resetForm = () => {
-    setForm({ name: "", cin: "", phone: "", email: "", address: "", baseSalary: 5000, status: "Actif", hireDate: new Date().toISOString().split('T')[0] });
+    setForm({ name: "", cin: "", phone: "", email: "", address: "", baseSalary: 5000, salaryType: 'mois', workDays: DEFAULT_WORK_DAYS, cnasDate: "", status: "Actif", hireDate: new Date().toISOString().split('T')[0] });
     setSelectedGerant(null);
   };
 
@@ -607,9 +607,36 @@ const Gerants = () => {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Salaire Base (DA)</label>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Type de paie</label>
+                    <select className="input-field italic uppercase font-black text-[10px]" value={form.salaryType || 'mois'} onChange={e => setForm({...form, salaryType: e.target.value as 'jour' | 'mois'})}>
+                      <option value="mois">Mensuel</option>
+                      <option value="jour">Journalier</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">{form.salaryType === 'jour' ? 'Salaire / Jour (DA)' : 'Salaire / Mois (DA)'}</label>
                     <input type="number" className="input-field italic font-black text-lg" value={form.baseSalary} onChange={e => setForm({...form, baseSalary: parseFloat(e.target.value)})} />
                   </div>
+                </div>
+
+                {form.salaryType === 'jour' && (
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Jours de travail (les autres sont repos)</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {WEEKDAYS.map(d => {
+                        const on = (form.workDays && form.workDays.length ? form.workDays : DEFAULT_WORK_DAYS).includes(d.idx);
+                        return (
+                          <button type="button" key={d.idx} onClick={() => toggleWorkDay(d.idx)}
+                            className={cn('px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all', on ? 'bg-[#002d87] text-white shadow' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-100')}>
+                            {d.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Statut</label>
                     <select className="input-field italic uppercase font-black text-[10px]" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
@@ -618,11 +645,15 @@ const Gerants = () => {
                       <option value="Inactif">Inactif</option>
                     </select>
                   </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date d'Embauche</label>
+                    <input type="date" className="input-field italic font-black text-xs" value={form.hireDate} onChange={e => setForm({...form, hireDate: e.target.value})} />
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date d'Embauche</label>
-                  <input type="date" className="input-field italic font-black text-xs" value={form.hireDate} onChange={e => setForm({...form, hireDate: e.target.value})} />
+                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date de déclaration CNAS</label>
+                  <input type="date" className="input-field italic font-black text-xs" value={form.cnasDate || ''} onChange={e => setForm({...form, cnasDate: e.target.value})} />
                 </div>
 
                 {/* System Access Section */}
@@ -851,197 +882,28 @@ const Gerants = () => {
         )}
       </AnimatePresence>
 
-      {/* Payment Modal */}
-      <AnimatePresence>
-        {showPaymentModal && selectedGerant && paymentCalc && (
-          <div className="modal-shell z-[70] bg-black/40 text-left">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[var(--modal-max-h)] overflow-hidden flex flex-col relative z-10 border border-slate-100"
-            >
-              {/* Header */}
-              <div className="p-8 bg-gradient-to-r from-[#002d87] via-[#003087] to-[#002d87] text-white flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-[#FFB800] rounded-xl flex items-center justify-center text-[#002d87] font-black"><DollarSign className="w-6 h-6" /></div>
-                  <div>
-                    <h3 className="font-black uppercase tracking-widest text-lg">FORMULAIRE DE PAIEMENT</h3>
-                    <p className="text-[10px] text-blue-100 font-bold mt-1">{selectedGerant.name} ⬢ {new Date(currentMonthForPayment + '-01').toLocaleString('default', { month: 'long', year: 'numeric' })}</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowPaymentModal(false)} className="p-2 hover:bg-white/10 rounded-lg transition-colors"><X className="w-6 h-6" /></button>
-              </div>
-
-              {/* Content */}
-              <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
-                
-                {/* Salary Base */}
-                <div className="p-6 bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl border-2 border-purple-200 shadow-sm">
-                  <p className="text-[9px] font-bold text-purple-700 uppercase tracking-widest mb-2 flex items-center gap-2">💰 Salaire de Base</p>
-                  <p className="text-4xl font-black text-purple-900">{selectedGerant.baseSalary.toLocaleString()} <span className="text-xl text-purple-600">DA</span></p>
-                </div>
-
-                {/* Summary Grid - 3 Column */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  
-                  {/* Acomptes Card */}
-                  <div className="p-5 bg-gradient-to-br from-red-50 to-orange-50 rounded-2xl border-2 border-red-200">
-                    <p className="text-[9px] font-bold text-red-700 uppercase tracking-widest mb-3 flex items-center gap-2">🏦 Total Acomptes</p>
-                    <p className="text-3xl font-black text-red-600">{paymentCalc.totalAcomptes.toLocaleString()} <span className="text-sm text-red-500">DA</span></p>
-                    {paymentCalc.monthAcomptes.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-red-200">
-                        <p className="text-[8px] text-red-600 font-bold mb-2">{paymentCalc.monthAcomptes.length} entrée(s):</p>
-                        <div className="space-y-1">
-                          {paymentCalc.monthAcomptes.map((a, i) => (
-                            <div key={i} className="text-[8px] text-slate-600">
-                              ⬢ {a.description || 'Acompte'}: {a.amount.toLocaleString()} DA
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Absences Card */}
-                  <div className="p-5 bg-gradient-to-br from-orange-50 to-yellow-50 rounded-2xl border-2 border-orange-200">
-                    <p className="text-[9px] font-bold text-orange-700 uppercase tracking-widest mb-3 flex items-center gap-2">❌ Total Absences</p>
-                    <p className="text-3xl font-black text-orange-600">{paymentCalc.totalAbsences.toLocaleString()} <span className="text-sm text-orange-500">DA</span></p>
-                    {paymentCalc.monthAbsences.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-orange-200">
-                        <p className="text-[8px] text-orange-600 font-bold mb-2">{paymentCalc.monthAbsences.length} entrée(s):</p>
-                        <div className="space-y-1">
-                          {paymentCalc.monthAbsences.map((a, i) => (
-                            <div key={i} className="text-[8px] text-slate-600">
-                              ⬢ {a.description || 'Absence'}: {a.cost.toLocaleString()} DA
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Net Calculation - Compact Card */}
-                  <div className="p-5 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border-2 border-green-200">
-                    <p className="text-[9px] font-bold text-green-700 uppercase tracking-widest mb-3 flex items-center gap-2">NET À PAYER</p>
-                    <p className="text-3xl font-black text-green-600">{paymentCalc.net.toLocaleString()} <span className="text-sm text-green-500">DA</span></p>
-                    <div className="mt-3 pt-3 border-t border-green-200 text-[8px] text-slate-600 space-y-1">
-                      <div className="flex justify-between">
-                        <span className="font-bold">Salaire:</span>
-                        <span className="font-black">{selectedGerant.baseSalary.toLocaleString()} DA</span>
-                      </div>
-                      {paymentCalc.totalAcomptes > 0 && (
-                        <div className="flex justify-between">
-                          <span className="font-bold">-Acomptes:</span>
-                          <span className="font-black text-red-600">-{paymentCalc.totalAcomptes.toLocaleString()} DA</span>
-                        </div>
-                      )}
-                      {paymentCalc.totalAbsences > 0 && (
-                        <div className="flex justify-between">
-                          <span className="font-bold">-Absences:</span>
-                          <span className="font-black text-orange-600">-{paymentCalc.totalAbsences.toLocaleString()} DA</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                </div>
-
-                {/* Final Calculation - Large */}
-                <div className="p-8 bg-gradient-to-br from-[#002d87] to-[#003087] rounded-3xl space-y-6 text-white shadow-2xl shadow-blue-900/40 border-2 border-[#002d87]">
-                  <p className="text-[11px] font-black text-[#FFB800] uppercase tracking-widest flex items-center gap-2">
-                    📊 CALCUL NET À PAYER
-                  </p>
-                  
-                  <div className="space-y-4 bg-white/5 p-6 rounded-2xl backdrop-blur-sm border border-white/10">
-                    <div className="flex justify-between text-sm items-center pb-4 border-b border-[#FFB800]/30">
-                      <span className="text-blue-200">Salaire de base</span>
-                      <span className="font-black text-2xl text-white">{selectedGerant.baseSalary.toLocaleString()} DA</span>
-                    </div>
-                    
-                    {paymentCalc.totalAcomptes > 0 && (
-                      <div className="flex justify-between text-sm items-center">
-                        <span className="text-red-300">- Acomptes</span>
-                        <span className="text-red-400 font-black text-lg">-{paymentCalc.totalAcomptes.toLocaleString()} DA</span>
-                      </div>
-                    )}
-                    
-                    {paymentCalc.totalAbsences > 0 && (
-                      <div className="flex justify-between text-sm items-center">
-                        <span className="text-orange-300">- Absences</span>
-                        <span className="text-orange-400 font-black text-lg">-{paymentCalc.totalAbsences.toLocaleString()} DA</span>
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="border-t-2 border-[#FFB800] pt-6 mt-4 flex justify-between items-center">
-                    <span className="text-xs font-black uppercase tracking-widest text-blue-200">MONTANT TOTAL À PAYER</span>
-                    <span className="text-5xl font-black text-[#FFB800]">{paymentCalc.net.toLocaleString()}</span>
-                  </div>
-                  <div className="text-right text-[#FFB800] text-lg font-bold">DA</div>
-                </div>
-
-                {/* Payment Method */}
-                <div className="space-y-2 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border border-green-100">
-                  <label className="text-[9px] font-bold text-green-700 uppercase tracking-widest">💳 Mode Paiement</label>
-                  <select 
-                    className="w-full px-4 py-2.5 bg-white border border-green-200 rounded-lg font-bold outline-none focus:ring-2 focus:ring-green-400" 
-                    value={paymentForm.mode}
-                    onChange={e => setPaymentForm({...paymentForm, mode: e.target.value})}
-                  >
-                    <option value="Espèces">💵 Espèces</option>
-                    <option value="Chèque">📋 Chèque</option>
-                  </select>
-                </div>
-
-                {paymentForm.mode === 'Chèque' && (
-                  <div className="space-y-2 p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-2xl border border-amber-100">
-                    <label className="text-[9px] font-bold text-amber-700 uppercase tracking-widest"> Numéro Chèque</label>
-                    <input 
-                      type="text" 
-                      className="w-full px-4 py-2.5 bg-white border border-amber-200 rounded-lg font-bold outline-none focus:ring-2 focus:ring-amber-400" 
-                      placeholder="Ex: 123456"
-                      value={paymentForm.chequeNumber}
-                      onChange={e => setPaymentForm({...paymentForm, chequeNumber: e.target.value})}
-                    />
-                  </div>
-                )}
-
-                <div className="space-y-2 p-4 bg-gradient-to-br from-slate-50 to-slate-100 rounded-2xl border border-slate-200">
-                  <label className="text-[9px] font-bold text-slate-700 uppercase tracking-widest">Notes</label>
-                  <textarea 
-                    className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg font-bold outline-none focus:ring-2 focus:ring-slate-400 text-sm" 
-                    placeholder="Notes optionnelles..."
-                    rows={2}
-                    value={paymentForm.notes}
-                    onChange={e => setPaymentForm({...paymentForm, notes: e.target.value})}
-                  />
-                </div>
-              </div>
-
-              <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3 shrink-0">
-                <button 
-                  onClick={() => {
-                    setShowPaymentModal(false);
-                    setPaymentForm({ month: "", mode: 'Espèces', chequeNumber: "", notes: "" });
-                  }}
-                  className="flex-1 text-[10px] font-black uppercase text-slate-600 hover:text-slate-700 transition-colors border border-slate-300 rounded-xl py-3 hover:bg-slate-100"
-                >
-                  Annuler
-                </button>
-                <button 
-                  onClick={handleSavePayment}
-                  disabled={!paymentCalc}
-                  className="flex-[2] bg-gradient-to-r from-green-600 to-emerald-500 disabled:from-slate-400 disabled:to-slate-300 disabled:cursor-not-allowed hover:shadow-lg text-white font-black uppercase tracking-widest rounded-xl py-3 transition-all transform hover:-translate-y-0.5 text-[10px] flex items-center justify-center gap-2 shadow-lg shadow-green-200/50"
-                >
-                  <DollarSign className="w-4 h-4" /> CONFIRMER PAIEMENT
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Payment Modal (shared component) */}
+      {showPaymentModal && selectedGerant && (
+        <WorkerPaymentModal
+          open
+          onClose={() => setShowPaymentModal(false)}
+          worker={{
+            name: selectedGerant.name,
+            role: 'Gérant',
+            salaryType: selectedGerant.salaryType || 'mois',
+            salaryAmount: selectedGerant.baseSalary,
+            workDays: selectedGerant.workDays,
+            startDate: selectedGerant.hireDate,
+          }}
+          acomptes={(selectedGerant.acomptes || []).filter(a => !a.isPaid).map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: !!a.isPaid }))}
+          absences={(selectedGerant.absences || []).filter(a => !a.isPaid).map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: !!a.isPaid }))}
+          paidDays={payPaidDays}
+          paidMonths={payPaidMonths}
+          modes={['Espèces', 'Chèque', 'Virement']}
+          history={(selectedGerant.paymentRecord || []).slice().reverse().slice(0, 4).map(p => ({ label: p.month, date: p.paymentDate, amount: p.netSalary }))}
+          onConfirm={handleSavePayment}
+        />
+      )}
 
       {/* History Modal */}
       <AnimatePresence>

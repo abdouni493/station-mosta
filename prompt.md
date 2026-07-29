@@ -106,4 +106,58 @@ fix the interface of pos on lavage add for it new option for activate remise wit
 fix the interface of pos of cafeteria and pos of lavage make on it option for organize the order of displaying products make it user can select the products that have to display on the begin of the interface as products that selling too much to quick access
 
 make sure to make the interfaces of purchase lavage and cafeteria and purchase carburant large exactly like the interface of create new brigade
-then push all updates to repo
+
+
+fix the interface of clients on the part of carburant mkae button action for pay the debt of client and make the transaction of payement save on histoy of that client with possibility of print it 
+
+fix the itnerface of create lavage and reparation make new option that user can create multiple on the same one like a reparation and lavage on the same creation 
+
+add new option on the creation of reparation or lavage make it for remise let user can apply remis for the client with monton fix or with pourcentage
+and minus it from the total 
+
+fix the interface of repart generatl make new part special for the workers make sure to make it display all the worekrs and all the works of each workers with all the small details and all the informations in liste 
+for the cafeteria make it dsilay the sessions workes an dmfor the lavage make it display  the pourcentage of each workers  with liste of all works that assigned for that workers for for the pompistes also and for the sellings and for all the parts of all the workers and make srue to make it detailed and for the pompistes make sure to make it detailed also for each brigade created assiged for him make srue to  anlyse th einterface of brigades and make this new option on the interface of reports generage display more detail s and all small details of the created brigades assigned to him and make sure to make it display on this interface of repart generatl all the small detail a about all the interfaces with better design and more detail s and informations and make it dsiplay on it the new interfaces of caisssse general and the bank accounts and all the transactions make sure to analyse the application a deep analyse and make  sure to add for this interface more details and infomrmations and make it better and better
+
+fix the creation of the workers all the workers of the applicaiton make it if user choose the payement methode is with days then make sure to let the user check what is the working days of this worker like the from  sunday to thusday and user can set that worker not working on friday and sameday 
+
+and for all the worker creation add new option of user can set the date declaration cnas
+
+
+
+fix the creation of the workers on the part of lavage make new method for pay with pourcentage 
+
+make sure to make the interface of payment display all the works of that worker that not payed and make it calculate how much have to pay for him automatically from pourcentage and make  sure to make when user save the payment then  do not make that works payed display again and make sure to make on the interface of payment option for see the details of all works of that worker
+
+and make on the creation of workers on the part of lavage and reparation option of user can select the type of that worker if its lavage or reparation
+
+
+
+make sure to fix the payment interfaces of all the parts of the application for all the cards of workers make it specially for the workers that get pay with days let it display on the payment interface the number of days of working that not payed and the same for the the workers with monthly make it display the number of    months that not payed 
+
+and make make it as user will pay for all the not payed days make it display as checked all 
+
+with possibility of user can uncheck and check the not payed days 
+
+then  make sure to make the interface of payment display the list of acompts with informations of date and amount of each acompte with possibility of user check and uncheck the acompts that he wants minus them from the ammount that have to pay for worker on this payment 
+
+
+
+and make it display the list of absences with possibility of check or uncheck with make them check by default and make sure to make the option of calculate the working days with this calculating logic : 
+
+make it all the days of week calculated except the days of absences and days of repose of worker that on the creation of the worker and make sure to make it calculate with system date and make sure to make it do not display the payed days do not calculate them and when user save the payment than do not display that payed days or months again
+
+
+
+then make user can edit the finale amount to pay on the end let user can edit it manually 
+
+and add option for user can activate prime let it user choose with pourcentage or with amount fix 
+
+make it add that prime to that final amount to pay 
+
+
+
+ special case for the pompistes workers make the decalage negative and positive display on list also with possibility  of check and uncheck for minus or add that decalage to the worker or no and make sure to make it display the list of decalages with informations of the brigade of that decalage 
+
+
+
+fix the interface design of payment button action interface make sure to make it bigger and make it better design and colors and make it more organized with this new updates and make sure to make it large like the interface of creation new brigade and like the interface of create the purchase of carburant and products purchase

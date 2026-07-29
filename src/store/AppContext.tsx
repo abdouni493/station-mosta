@@ -151,11 +151,23 @@ export interface WorkerPaymentRecord {
   bonusDecalage?: number;
   retenueDecalage?: number;
   netSalary: number;
+  /** Alias of netSalary kept for the history views that read `amount`. */
+  amount?: number;
   paymentDate: string;
-  paymentMode: 'ESPECES' | 'CHEQUE' | 'VIREMENT';
+  paymentMode: string;
   chequeNumber?: string;
   notes?: string;
   isPaid: boolean;
+  /** `jour` payroll: the worked days settled by this payment (never re-listed). */
+  paidDays?: string[];
+  /** `mois` payroll: the months settled by this payment. */
+  paidMonths?: string[];
+  /** Pompiste: the décalage lines applied by this payment. */
+  decalageIds?: string[];
+  /** Optional bonus added on top of the net. */
+  primeType?: 'percent' | 'amount';
+  primeValue?: number;
+  primeAmount?: number;
 }
 
 export interface Pompiste {
@@ -171,6 +183,12 @@ export interface Pompiste {
   trackId?: string;
   chefId?: string;
   baseSalary: number;
+  /** `mois` (default) pays a monthly salary; `jour` pays a daily rate. */
+  salaryType?: 'jour' | 'mois';
+  /** Weekdays worked (0 = Sunday … 6 = Saturday) — only used when salaryType = 'jour'. */
+  workDays?: number[];
+  /** Date the employee was declared to the CNAS (social security). */
+  cnasDate?: string;
   hasAccess: boolean;
   username?: string;
   password?: string;
@@ -228,6 +246,9 @@ export interface GerantWorker {
   photoUrl?: string;
   status: 'Actif' | 'Inactif';
   baseSalary: number;
+  salaryType?: 'jour' | 'mois';
+  workDays?: number[];
+  cnasDate?: string;
   hireDate?: string;
   hasAccess: boolean;
   username?: string;
@@ -250,6 +271,9 @@ export interface MagasinWorker {
   photoUrl?: string;
   status: 'Actif' | 'Inactif';
   baseSalary: number;
+  salaryType?: 'jour' | 'mois';
+  workDays?: number[];
+  cnasDate?: string;
   hireDate?: string;
   hasAccess: boolean;
   username?: string;
@@ -1431,16 +1455,16 @@ function mapProduct(r: any): Product {
 }
 function mapBrand(r: any): ProductBrand { return { id: r.id, name: r.name }; }
 function mapPompiste(r: any): Pompiste {
-  return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, trackId: r.track_id, chefId: r.chef_id, baseSalary: +r.base_salary, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [], decalageHistory: [] };
+  return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, trackId: r.track_id, chefId: r.chef_id, baseSalary: +r.base_salary, salaryType: r.salary_type ?? undefined, workDays: r.work_days ?? undefined, cnasDate: r.cnas_date ?? undefined, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [], decalageHistory: [] };
 }
 function mapBrigadeChef(r: any): BrigadeChef {
   return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, pompisteIds: [], paymentRecord: [], acomptes: [], absences: [], decalageHistory: [] };
 }
 function mapGerant(r: any): GerantWorker {
-  return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [] };
+  return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, salaryType: r.salary_type ?? undefined, workDays: r.work_days ?? undefined, cnasDate: r.cnas_date ?? undefined, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [] };
 }
 function mapMagasinWorker(r: any): MagasinWorker {
-  return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [] };
+  return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, salaryType: r.salary_type ?? undefined, workDays: r.work_days ?? undefined, cnasDate: r.cnas_date ?? undefined, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [] };
 }
 function mapBrigade(r: any): Brigade {
   return { id: r.id, date: r.date, shift: r.shift, chefId: r.chef_id, status: r.status, startTimestamp: r.start_timestamp, endTimestamp: r.end_timestamp, startTime: r.start_time, endTime: r.end_time, startDatetime: r.start_datetime, endDatetime: r.end_datetime, isActive: r.is_active, notes: r.notes, printedAt: r.printed_at, pompisteIds: [], startIndices: r.start_indices || {}, endIndices: r.end_indices || {}, startTankLevels: r.start_tank_levels || {}, endTankLevels: r.end_tank_levels || {}, pompisteData: r.pompiste_data || {}, pompisteAssignments: r.pompiste_assignments || [], startNozzleIndices: r.start_nozzle_indices || {}, endNozzleIndices: r.end_nozzle_indices || {}, activeNozzleIds: r.active_nozzle_ids || [], canReactivate: r.can_reactivate ?? false, pompistePumpAssignments: r.pompiste_pump_assignments || [], versements: r.versements || [] };
@@ -1666,7 +1690,7 @@ function mapAbsence(r: any): Absence {
   return { id: r.id, date: r.date, cost: +r.cost, description: r.description, isPaid: r.is_paid, monthPaid: r.month_paid };
 }
 function mapPaymentRecord(r: any): WorkerPaymentRecord {
-  return { id: r.id, month: r.month, baseSalary: +r.base_salary, totalAcomptes: +r.total_acomptes, totalAbsences: +r.total_absences, bonusDecalage: +(r.bonus_decalage ?? 0), retenueDecalage: +(r.retenue_decalage ?? 0), netSalary: +r.net_salary, paymentDate: r.payment_date, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, notes: r.notes, isPaid: r.is_paid };
+  return { id: r.id, month: r.month, baseSalary: +r.base_salary, totalAcomptes: +r.total_acomptes, totalAbsences: +r.total_absences, bonusDecalage: +(r.bonus_decalage ?? 0), retenueDecalage: +(r.retenue_decalage ?? 0), netSalary: +r.net_salary, amount: +r.net_salary, paymentDate: r.payment_date, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, notes: r.notes, isPaid: r.is_paid, paidDays: r.paid_days ?? undefined, paidMonths: r.paid_months ?? undefined, decalageIds: r.decalage_ids ?? undefined, primeType: r.prime_type ?? undefined, primeValue: r.prime_value != null ? +r.prime_value : undefined, primeAmount: r.prime_amount != null ? +r.prime_amount : undefined };
 }
 
 /**
@@ -1783,33 +1807,33 @@ async function syncToSupabase(action: AppAction): Promise<void> {
       case 'UPDATE_BRAND': await db.updateBrand(action.payload.id, { name: action.payload.name }); break;
       case 'DELETE_BRAND': await db.deleteBrand(action.payload); break;
       case 'ADD_POMPISTE':
-        await db.addPompiste({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.addPompiste({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         break;
       case 'UPDATE_POMPISTE':
-        await db.updatePompiste(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.updatePompiste(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         break;
       case 'DELETE_POMPISTE': await db.deletePompiste(action.payload); break;
       case 'ADD_BRIGADE_CHEF':
-        await db.addBrigadeChef({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.addBrigadeChef({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         if (action.payload.pompisteIds?.length) await supabase.from('chef_pompiste_assignments').insert(action.payload.pompisteIds.map(pid => ({ chef_id: action.payload.id, pompiste_id: pid })));
         break;
       case 'UPDATE_BRIGADE_CHEF':
-        await db.updateBrigadeChef(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.updateBrigadeChef(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         if (action.payload.pompisteIds !== undefined) { await supabase.from('chef_pompiste_assignments').delete().eq('chef_id', action.payload.id); if (action.payload.pompisteIds.length) await supabase.from('chef_pompiste_assignments').insert(action.payload.pompisteIds.map(pid => ({ chef_id: action.payload.id, pompiste_id: pid }))); }
         break;
       case 'DELETE_BRIGADE_CHEF': await db.deleteBrigadeChef(action.payload); break;
       case 'ADD_GERANT':
-        await db.addGerant({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.addGerant({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         break;
       case 'UPDATE_GERANT':
-        await db.updateGerant(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.updateGerant(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         break;
       case 'DELETE_GERANT': await db.deleteGerant(action.payload); break;
       case 'ADD_MAGASIN_WORKER':
-        await db.addMagasinWorker({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.addMagasinWorker({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         break;
       case 'UPDATE_MAGASIN_WORKER':
-        await db.updateMagasinWorker(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+        await db.updateMagasinWorker(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: (action.payload as any).photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, auth_user_id: action.payload.authUserId, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
         break;
       case 'DELETE_MAGASIN_WORKER': await db.deleteMagasinWorker(action.payload); break;
       case 'ADD_BRIGADE': {
@@ -2214,7 +2238,7 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         await db.addWorkerAbsence({ id: action.payload.absence.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, date: action.payload.absence.date, cost: action.payload.absence.cost, description: action.payload.absence.description, is_paid: action.payload.absence.isPaid, month_paid: action.payload.absence.monthPaid });
         break;
       case 'ADD_WORKER_PAYMENT':
-        await db.addWorkerPaymentRecord({ id: action.payload.payment.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, month: action.payload.payment.month, base_salary: action.payload.payment.baseSalary, total_acomptes: action.payload.payment.totalAcomptes, total_absences: action.payload.payment.totalAbsences, bonus_decalage: action.payload.payment.bonusDecalage ?? 0, retenue_decalage: action.payload.payment.retenueDecalage ?? 0, net_salary: action.payload.payment.netSalary, payment_date: action.payload.payment.paymentDate, payment_mode: action.payload.payment.paymentMode, cheque_number: action.payload.payment.chequeNumber, notes: action.payload.payment.notes, is_paid: action.payload.payment.isPaid });
+        await db.addWorkerPaymentRecord({ id: action.payload.payment.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, month: action.payload.payment.month, base_salary: action.payload.payment.baseSalary, total_acomptes: action.payload.payment.totalAcomptes, total_absences: action.payload.payment.totalAbsences, bonus_decalage: action.payload.payment.bonusDecalage ?? 0, retenue_decalage: action.payload.payment.retenueDecalage ?? 0, net_salary: action.payload.payment.netSalary, payment_date: action.payload.payment.paymentDate, payment_mode: action.payload.payment.paymentMode, cheque_number: action.payload.payment.chequeNumber, notes: action.payload.payment.notes, is_paid: action.payload.payment.isPaid, paid_days: action.payload.payment.paidDays ?? null, paid_months: action.payload.payment.paidMonths ?? null, decalage_ids: action.payload.payment.decalageIds ?? null, prime_type: nz(action.payload.payment.primeType), prime_value: action.payload.payment.primeValue ?? null, prime_amount: action.payload.payment.primeAmount ?? null });
         break;
       case 'MARK_PAYMENT_PAID': await db.markPaymentPaid(action.payload.paymentId); break;
       case 'ADD_SUPPLIER_APPOINTMENT':
@@ -3245,10 +3269,10 @@ export function useSupabaseDispatch() {
 
         // ── Pompistes ──────────────────────────────────────────────────────
         case 'ADD_POMPISTE':
-          await db.addPompiste({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.addPompiste({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           break;
         case 'UPDATE_POMPISTE':
-          await db.updatePompiste(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.updatePompiste(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, track_id: nz(action.payload.trackId), chef_id: nz(action.payload.chefId), base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           break;
         case 'DELETE_POMPISTE':
           await db.deletePompiste(action.payload);
@@ -3256,11 +3280,11 @@ export function useSupabaseDispatch() {
 
         // ── Brigade Chefs ──────────────────────────────────────────────────
         case 'ADD_BRIGADE_CHEF':
-          await db.addBrigadeChef({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.addBrigadeChef({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           if (action.payload.pompisteIds?.length) await supabase.from('chef_pompiste_assignments').insert(action.payload.pompisteIds.map(pid => ({ chef_id: action.payload.id, pompiste_id: pid })));
           break;
         case 'UPDATE_BRIGADE_CHEF':
-          await db.updateBrigadeChef(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.updateBrigadeChef(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           if (action.payload.pompisteIds !== undefined) { await supabase.from('chef_pompiste_assignments').delete().eq('chef_id', action.payload.id); if (action.payload.pompisteIds.length) await supabase.from('chef_pompiste_assignments').insert(action.payload.pompisteIds.map(pid => ({ chef_id: action.payload.id, pompiste_id: pid }))); }
           break;
         case 'DELETE_BRIGADE_CHEF':
@@ -3269,10 +3293,10 @@ export function useSupabaseDispatch() {
 
         // ── Gérants ────────────────────────────────────────────────────────
         case 'ADD_GERANT':
-          await db.addGerant({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.addGerant({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           break;
         case 'UPDATE_GERANT':
-          await db.updateGerant(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.updateGerant(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           break;
         case 'DELETE_GERANT':
           await db.deleteGerant(action.payload);
@@ -3280,10 +3304,10 @@ export function useSupabaseDispatch() {
 
         // ── Magasin Workers ────────────────────────────────────────────────
         case 'ADD_MAGASIN_WORKER':
-          await db.addMagasinWorker({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.addMagasinWorker({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           break;
         case 'UPDATE_MAGASIN_WORKER':
-          await db.updateMagasinWorker(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
+          await db.updateMagasinWorker(action.payload.id, { name: action.payload.name, phone: action.payload.phone, email: action.payload.email, cin: action.payload.cin, address: action.payload.address, photo_url: action.payload.photoUrl, status: action.payload.status, base_salary: action.payload.baseSalary, salary_type: nz((action.payload as any).salaryType), work_days: (action.payload as any).workDays ?? null, cnas_date: nz((action.payload as any).cnasDate), has_access: action.payload.hasAccess, username: action.payload.username, permissions: action.payload.permissions || {}, hire_date: nz(action.payload.hireDate) });
           break;
         case 'DELETE_MAGASIN_WORKER':
           await db.deleteMagasinWorker(action.payload);
@@ -3441,7 +3465,7 @@ export function useSupabaseDispatch() {
           await db.addWorkerAbsence({ id: action.payload.absence.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, date: action.payload.absence.date, cost: action.payload.absence.cost, description: action.payload.absence.description, is_paid: action.payload.absence.isPaid, month_paid: action.payload.absence.monthPaid });
           break;
         case 'ADD_WORKER_PAYMENT':
-          await db.addWorkerPaymentRecord({ id: action.payload.payment.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, month: action.payload.payment.month, base_salary: action.payload.payment.baseSalary, total_acomptes: action.payload.payment.totalAcomptes, total_absences: action.payload.payment.totalAbsences, bonus_decalage: action.payload.payment.bonusDecalage ?? 0, retenue_decalage: action.payload.payment.retenueDecalage ?? 0, net_salary: action.payload.payment.netSalary, payment_date: action.payload.payment.paymentDate, payment_mode: action.payload.payment.paymentMode, cheque_number: action.payload.payment.chequeNumber, notes: action.payload.payment.notes, is_paid: action.payload.payment.isPaid });
+          await db.addWorkerPaymentRecord({ id: action.payload.payment.id, worker_type: action.payload.workerType, worker_id: action.payload.workerId, month: action.payload.payment.month, base_salary: action.payload.payment.baseSalary, total_acomptes: action.payload.payment.totalAcomptes, total_absences: action.payload.payment.totalAbsences, bonus_decalage: action.payload.payment.bonusDecalage ?? 0, retenue_decalage: action.payload.payment.retenueDecalage ?? 0, net_salary: action.payload.payment.netSalary, payment_date: action.payload.payment.paymentDate, payment_mode: action.payload.payment.paymentMode, cheque_number: action.payload.payment.chequeNumber, notes: action.payload.payment.notes, is_paid: action.payload.payment.isPaid, paid_days: action.payload.payment.paidDays ?? null, paid_months: action.payload.payment.paidMonths ?? null, decalage_ids: action.payload.payment.decalageIds ?? null, prime_type: nz(action.payload.payment.primeType), prime_value: action.payload.payment.primeValue ?? null, prime_amount: action.payload.payment.primeAmount ?? null });
           break;
         case 'MARK_PAYMENT_PAID':
           await db.markPaymentPaid(action.payload.paymentId);

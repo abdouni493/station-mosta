@@ -31,6 +31,8 @@ import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import PermissionsModal from "../components/PermissionsModal";
+import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
+import { WEEKDAYS, DEFAULT_WORK_DAYS } from "../lib/workerPay";
 
 // Username must be 3-32 chars: lowercase letters, digits, dot, underscore, hyphen
 const USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
@@ -69,9 +71,18 @@ const MagasinWorkers = () => {
     email: "",
     address: "",
     baseSalary: 3000,
+    salaryType: 'mois',
+    workDays: DEFAULT_WORK_DAYS,
+    cnasDate: "",
     status: "Actif",
     hireDate: new Date().toISOString().split('T')[0]
   });
+  const toggleWorkDay = (idx: number) => setForm(f => {
+    const cur = f.workDays && f.workDays.length ? f.workDays : DEFAULT_WORK_DAYS;
+    return { ...f, workDays: cur.includes(idx) ? cur.filter(d => d !== idx) : [...cur, idx] };
+  });
+  const payPaidDays = useMemo(() => (selectedWorker?.paymentRecord || []).flatMap(p => p.paidDays || []), [selectedWorker]);
+  const payPaidMonths = useMemo(() => (selectedWorker?.paymentRecord || []).flatMap(p => p.paidMonths || []), [selectedWorker]);
 
   // Modal form states
   const [advanceForm, setAdvanceForm] = useState({ amount: 0, date: new Date().toISOString().split('T')[0], description: "" });
@@ -310,56 +321,46 @@ const MagasinWorkers = () => {
     setAbsenceForm({ cost: 0, date: new Date().toISOString().split('T')[0], description: "" });
   };
 
-  const handleSavePayment = () => {
-    if (!selectedWorker || !currentUnpaidMonth || !paymentCalc) return;
+  const handleSavePayment = (res: WorkerPaymentResult) => {
+    if (!selectedWorker) return;
+    const selAc = new Set(res.selectedAcompteIds);
+    const selAb = new Set(res.selectedAbsenceIds);
+    const monthKey = res.selectedMonths[0] || currentUnpaidMonth || new Date().toISOString().slice(0, 7);
 
-    // Mark acomptes as paid
-    const updatedAcomptes = (selectedWorker.acomptes || []).map(a => 
-      (a.date.startsWith(currentUnpaidMonth) && !a.isPaid) ? { ...a, isPaid: true, monthPaid: currentUnpaidMonth } : a
-    );
-
-    // Mark absences as paid
-    const updatedAbsences = (selectedWorker.absences || []).map(a =>
-      (a.date.startsWith(currentUnpaidMonth) && !a.isPaid) ? { ...a, isPaid: true, monthPaid: currentUnpaidMonth } : a
-    );
-
-    // Create WorkerPaymentRecord
     const record = {
       id: newId(),
-      month: currentUnpaidMonth,
-      baseSalary: selectedWorker.baseSalary,
-      totalAcomptes: paymentCalc.totalAcomptes,
-      totalAbsences: paymentCalc.totalAbsences,
+      month: monthKey,
+      baseSalary: res.breakdown.base,
+      totalAcomptes: res.breakdown.acomptes,
+      totalAbsences: res.breakdown.absences,
       bonusDecalage: 0,
       retenueDecalage: 0,
-      netSalary: paymentCalc.net,
-      paymentDate: new Date().toISOString().split('T')[0],
-      paymentMode: paymentForm.mode,
-      chequeNumber: paymentForm.chequeNumber || undefined,
-      notes: paymentForm.notes || undefined,
+      netSalary: res.net,
+      amount: res.net,
+      paymentDate: res.date,
+      paymentMode: res.mode,
+      chequeNumber: res.chequeNumber || undefined,
+      notes: res.notes || undefined,
       isPaid: true,
+      paidDays: res.selectedDays,
+      paidMonths: res.selectedMonths,
+      primeType: res.prime?.type,
+      primeValue: res.prime?.value,
+      primeAmount: res.prime?.amount,
     };
 
-    // Dispatch acompte & absence updates to DB
+    const updatedAcomptes = (selectedWorker.acomptes || []).map(a => selAc.has(a.id) ? { ...a, isPaid: true, monthPaid: monthKey } : a);
+    const updatedAbsences = (selectedWorker.absences || []).map(a => selAb.has(a.id) ? { ...a, isPaid: true, monthPaid: monthKey } : a);
+
     (selectedWorker.acomptes || []).forEach(a => {
-      if (a.date.startsWith(currentUnpaidMonth) && !a.isPaid) {
-        dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'magasin', workerId: selectedWorker.id, acompte: { ...a, isPaid: true, monthPaid: currentUnpaidMonth } } });
-      }
+      if (selAc.has(a.id) && !a.isPaid) dispatch({ type: 'UPDATE_WORKER_ACOMPTE', payload: { workerType: 'magasin', workerId: selectedWorker.id, acompte: { ...a, isPaid: true, monthPaid: monthKey } } });
     });
-
     (selectedWorker.absences || []).forEach(a => {
-      if (a.date.startsWith(currentUnpaidMonth) && !a.isPaid) {
-        dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'magasin', workerId: selectedWorker.id, absence: { ...a, isPaid: true, monthPaid: currentUnpaidMonth } } });
-      }
+      if (selAb.has(a.id) && !a.isPaid) dispatch({ type: 'UPDATE_WORKER_ABSENCE', payload: { workerType: 'magasin', workerId: selectedWorker.id, absence: { ...a, isPaid: true, monthPaid: monthKey } } });
     });
 
-    // Dispatch add payment
-    dispatch({
-      type: 'ADD_WORKER_PAYMENT',
-      payload: { workerType: 'magasin', workerId: selectedWorker.id, payment: record }
-    });
+    dispatch({ type: 'ADD_WORKER_PAYMENT', payload: { workerType: 'magasin', workerId: selectedWorker.id, payment: record } });
 
-    // Update local state
     setSelectedWorker({
       ...selectedWorker,
       acomptes: updatedAcomptes,
@@ -367,13 +368,12 @@ const MagasinWorkers = () => {
       paymentRecord: [...(selectedWorker.paymentRecord || []), record]
     });
 
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Paiement de ${currentUnpaidMonth} enregistré` } });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: 'Paiement enregistré' } });
     setShowPaymentModal(false);
-    setPaymentForm({ month: "", mode: 'Espèces', chequeNumber: "", notes: "" });
   };
 
   const resetForm = () => {
-    setForm({ name: "", cin: "", phone: "", email: "", address: "", baseSalary: 3000, status: "Actif", hireDate: new Date().toISOString().split('T')[0] });
+    setForm({ name: "", cin: "", phone: "", email: "", address: "", baseSalary: 3000, salaryType: 'mois', workDays: DEFAULT_WORK_DAYS, cnasDate: "", status: "Actif", hireDate: new Date().toISOString().split('T')[0] });
     setSelectedWorker(null);
   };
 
@@ -620,9 +620,36 @@ const MagasinWorkers = () => {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Salaire Base (DA)</label>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Type de paie</label>
+                    <select className="input-field italic uppercase font-black text-[10px]" value={form.salaryType || 'mois'} onChange={e => setForm({...form, salaryType: e.target.value as 'jour' | 'mois'})}>
+                      <option value="mois">Mensuel</option>
+                      <option value="jour">Journalier</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">{form.salaryType === 'jour' ? 'Salaire / Jour (DA)' : 'Salaire / Mois (DA)'}</label>
                     <input type="number" className="input-field italic font-black text-lg" value={form.baseSalary} onChange={e => setForm({...form, baseSalary: parseFloat(e.target.value)})} />
                   </div>
+                </div>
+
+                {form.salaryType === 'jour' && (
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Jours de travail (les autres sont repos)</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {WEEKDAYS.map(d => {
+                        const on = (form.workDays && form.workDays.length ? form.workDays : DEFAULT_WORK_DAYS).includes(d.idx);
+                        return (
+                          <button type="button" key={d.idx} onClick={() => toggleWorkDay(d.idx)}
+                            className={cn('px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all', on ? 'bg-blue-900 text-white shadow' : 'bg-white text-slate-400 border border-slate-200 hover:bg-slate-100')}>
+                            {d.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Statut</label>
                     <select className="input-field italic uppercase font-black text-[10px]" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
@@ -631,11 +658,15 @@ const MagasinWorkers = () => {
                       <option value="Inactif">Inactif</option>
                     </select>
                   </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date d'Embauche</label>
+                    <input type="date" className="input-field italic font-black text-xs" value={form.hireDate} onChange={e => setForm({...form, hireDate: e.target.value})} />
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date d'Embauche</label>
-                  <input type="date" className="input-field italic font-black text-xs" value={form.hireDate} onChange={e => setForm({...form, hireDate: e.target.value})} />
+                  <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 italic">Date de déclaration CNAS</label>
+                  <input type="date" className="input-field italic font-black text-xs" value={form.cnasDate || ''} onChange={e => setForm({...form, cnasDate: e.target.value})} />
                 </div>
 
                 {/* Accès Application */}
@@ -810,177 +841,28 @@ const MagasinWorkers = () => {
         )}
       </AnimatePresence>
 
-      {/* Payment Modal */}
-      <AnimatePresence>
-        {showPaymentModal && selectedWorker && (
-          <div className="modal-shell z-[60] italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowPaymentModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-4xl rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-slate-100">
-              <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 bg-white/10 backdrop-blur-sm text-yellow-400 rounded-2xl flex items-center justify-center shadow-inner">
-                    <DollarSign className="w-7 h-7" />
-                  </div>
-                  <div>
-                    <h2 className="text-2xl font-black text-yellow-400 uppercase tracking-widest">Paiement {currentUnpaidMonth && new Date(currentUnpaidMonth + '-01').toLocaleString('default', { month: 'long', year: 'numeric' })}</h2>
-                    <p className="text-blue-100 text-sm font-semibold">{selectedWorker.name}</p>
-                  </div>
-                </div>
-                <motion.button 
-                  onClick={() => setShowPaymentModal(false)}
-                  whileHover={{ rotate: 90 }}
-                  className="text-white hover:bg-white/20 p-2 rounded-lg transition"
-                >
-                  <X className="w-6 h-6" />
-                </motion.button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
-                {currentUnpaidMonth && paymentCalc && (
-                  <>
-                    {/* Acomptes Card */}
-                    {paymentCalc.monthAcomptes.length > 0 && (
-                      <div className="p-6 bg-gradient-to-br from-red-50 to-rose-50 rounded-2xl border-2 border-red-200">
-                        <p className="text-[10px] font-black text-red-700 uppercase tracking-widest mb-4 flex items-center gap-2 italic">ACOMPTES PRÉLEVÉS</p>
-                        <div className="space-y-3">
-                          {paymentCalc.monthAcomptes.map((a, i) => (
-                            <div key={i} className="flex justify-between items-center text-sm bg-white/70 p-3 rounded-lg">
-                              <div>
-                                <p className="font-bold text-slate-700">{a.date}</p>
-                                <p className="text-xs text-slate-500">{a.description}</p>
-                              </div>
-                              <span className="font-black text-red-600 text-xl">-{a.amount.toLocaleString()}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="border-t-2 border-red-200 mt-4 pt-4 flex justify-between items-center">
-                          <span className="text-[10px] font-black text-red-700 uppercase italic">Total Acomptes</span>
-                          <span className="text-3xl font-black text-red-600">-{paymentCalc.totalAcomptes.toLocaleString()}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Absences Card */}
-                    {paymentCalc.monthAbsences.length > 0 && (
-                      <div className="p-6 bg-gradient-to-br from-orange-50 to-amber-50 rounded-2xl border-2 border-orange-200">
-                        <p className="text-[10px] font-black text-orange-700 uppercase tracking-widest mb-4 flex items-center gap-2 italic">RETENUES ABSENCES</p>
-                        <div className="space-y-3">
-                          {paymentCalc.monthAbsences.map((a, i) => (
-                            <div key={i} className="flex justify-between items-center text-sm bg-white/70 p-3 rounded-lg">
-                              <div>
-                                <p className="font-bold text-slate-700">{a.date}</p>
-                                <p className="text-xs text-slate-500">{a.description}</p>
-                              </div>
-                              <span className="font-black text-orange-600 text-xl">-{a.cost.toLocaleString()}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="border-t-2 border-orange-200 mt-4 pt-4 flex justify-between items-center">
-                          <span className="text-[10px] font-black text-orange-700 uppercase italic">Total Absences</span>
-                          <span className="text-3xl font-black text-orange-600">-{paymentCalc.totalAbsences.toLocaleString()}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Final Calculation - Large Blue Box */}
-                    <div className="p-8 bg-gradient-to-br from-blue-900 to-blue-800 rounded-3xl space-y-8 text-white shadow-2xl shadow-blue-900/50 border-2 border-blue-700">
-                      <p className="text-[12px] font-black text-yellow-400 uppercase tracking-widest flex items-center gap-2 italic">
-                        📊 CALCUL NET À PAYER
-                      </p>
-                      
-                      <div className="space-y-5 bg-white/5 p-7 rounded-2xl backdrop-blur-sm border border-white/10">
-                        <div className="flex justify-between items-center pb-5 border-b border-blue-600">
-                          <span className="text-blue-100 font-black text-sm">Salaire de base</span>
-                          <span className="font-black text-3xl text-white">{selectedWorker.baseSalary.toLocaleString()}</span>
-                        </div>
-                        
-                        {paymentCalc.totalAcomptes > 0 && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-red-300 font-black text-sm">- Acomptes</span>
-                            <span className="text-red-300 font-black text-2xl">-{paymentCalc.totalAcomptes.toLocaleString()}</span>
-                          </div>
-                        )}
-                        
-                        {paymentCalc.totalAbsences > 0 && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-orange-300 font-black text-sm">- Absences</span>
-                            <span className="text-orange-300 font-black text-2xl">-{paymentCalc.totalAbsences.toLocaleString()}</span>
-                          </div>
-                        )}
-                      </div>
-                      
-                      <div className="border-t-2 border-yellow-400 pt-6 flex justify-between items-end">
-                        <span className="text-[11px] font-black uppercase tracking-widest text-blue-200 italic">Montant Total à Payer</span>
-                        <div className="text-right">
-                          <span className="text-6xl font-black text-yellow-400 leading-none">{paymentCalc.net.toLocaleString()}</span>
-                          <p className="text-yellow-300 text-xl font-black mt-2">DA</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Payment Method */}
-                    <div className="space-y-3 p-5 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border-2 border-green-200">
-                      <label className="text-[10px] font-black text-green-700 uppercase tracking-widest italic">💳 Mode Paiement</label>
-                      <select 
-                        className="w-full px-4 py-3 bg-white border-2 border-green-200 rounded-xl font-bold text-sm outline-none focus:ring-2 focus:ring-green-400" 
-                        value={paymentForm.mode}
-                        onChange={e => setPaymentForm({...paymentForm, mode: e.target.value})}
-                      >
-                        <option value="Espèces">💵 Espèces</option>
-                        <option value="Chèque">📋 Chèque</option>
-                      </select>
-                    </div>
-
-                    {paymentForm.mode === 'Chèque' && (
-                      <div className="space-y-3 p-5 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-2xl border-2 border-amber-200">
-                        <label className="text-[10px] font-black text-amber-700 uppercase tracking-widest italic"> Numéro Chèque</label>
-                        <input 
-                          type="text" 
-                          className="w-full px-4 py-3 bg-white border-2 border-amber-200 rounded-xl font-bold text-sm outline-none focus:ring-2 focus:ring-amber-400" 
-                          placeholder="Ex: 123456"
-                          value={paymentForm.chequeNumber}
-                          onChange={e => setPaymentForm({...paymentForm, chequeNumber: e.target.value})}
-                        />
-                      </div>
-                    )}
-
-                    <div className="space-y-3 p-5 bg-gradient-to-br from-slate-50 to-slate-100 rounded-2xl border-2 border-slate-300">
-                      <label className="text-[10px] font-black text-slate-700 uppercase tracking-widest italic">Notes</label>
-                      <textarea 
-                        className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl font-bold text-sm outline-none focus:ring-2 focus:ring-slate-400" 
-                        placeholder="Notes optionnelles..."
-                        rows={2}
-                        value={paymentForm.notes}
-                        onChange={e => setPaymentForm({...paymentForm, notes: e.target.value})}
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3 shrink-0">
-                <button 
-                  onClick={() => {
-                    setShowPaymentModal(false);
-                    setPaymentForm({ month: "", mode: 'Espèces', chequeNumber: "", notes: "" });
-                  }}
-                  className="flex-1 text-[10px] font-black uppercase text-slate-600 hover:text-slate-700 transition-colors border-2 border-slate-300 rounded-xl py-3 hover:bg-slate-100 italic"
-                >
-                  Annuler
-                </button>
-                <button 
-                  onClick={handleSavePayment}
-                  disabled={!currentUnpaidMonth}
-                  className="flex-[2] bg-gradient-to-r from-green-600 to-emerald-500 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-widest rounded-xl py-3 transition-all transform hover:-translate-y-0.5 text-[10px] flex items-center justify-center gap-2 shadow-lg shadow-green-200/50 italic"
-                >
-                  <DollarSign className="w-4 h-4" /> CONFIRMER PAIEMENT
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Payment Modal (shared component) */}
+      {showPaymentModal && selectedWorker && (
+        <WorkerPaymentModal
+          open
+          onClose={() => setShowPaymentModal(false)}
+          worker={{
+            name: selectedWorker.name,
+            role: 'Employé Magasin',
+            salaryType: selectedWorker.salaryType || 'mois',
+            salaryAmount: selectedWorker.baseSalary,
+            workDays: selectedWorker.workDays,
+            startDate: selectedWorker.hireDate,
+          }}
+          acomptes={(selectedWorker.acomptes || []).filter(a => !a.isPaid).map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: !!a.isPaid }))}
+          absences={(selectedWorker.absences || []).filter(a => !a.isPaid).map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: !!a.isPaid }))}
+          paidDays={payPaidDays}
+          paidMonths={payPaidMonths}
+          modes={['Espèces', 'Chèque', 'Virement']}
+          history={(selectedWorker.paymentRecord || []).slice().reverse().slice(0, 4).map(p => ({ label: p.month, date: p.paymentDate, amount: p.netSalary }))}
+          onConfirm={handleSavePayment}
+        />
+      )}
 
       {/* History Modal */}
       <AnimatePresence>

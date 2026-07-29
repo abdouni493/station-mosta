@@ -169,6 +169,7 @@ export interface BizWorkerPayment {
   amount: number;
   date: string;
   description?: string;
+  mode?: string;
   /** Percentage payroll: the works (réparations/lavages) settled by this payment. */
   workIds?: string[];
   /** Sum of the settled works and the rate applied, for the payslip. */
@@ -176,6 +177,14 @@ export interface BizWorkerPayment {
   percentage?: number;
   from?: string;
   to?: string;
+  /** `jour` payroll: the worked days settled here (so they never reappear). */
+  paidDays?: string[];
+  /** `mois` payroll: the months settled here. */
+  paidMonths?: string[];
+  /** Bonus added on top of the computed net. */
+  primeType?: 'percent' | 'amount';
+  primeValue?: number;
+  primeAmount?: number;
 }
 
 /**
@@ -208,6 +217,13 @@ export interface BizWorker {
   salaryAmount: number;
   /** Share of each intervention total, in % — used when salaryType = 'pourcentage'. */
   percentage?: number;
+  /**
+   * Weekdays worked, indexed like `Date.getDay()` (0 = Sunday … 6 = Saturday).
+   * Only meaningful when `salaryType = 'jour'`; the missing days are the repos.
+   */
+  workDays?: number[];
+  /** Date the employee was declared to the CNAS (social security). */
+  cnasDate?: string;
   hasAccount: boolean;
   email?: string;
   username?: string;
