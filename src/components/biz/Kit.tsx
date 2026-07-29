@@ -71,12 +71,12 @@ export function Badge({ tone = 'neutral', children }: { tone?: 'success' | 'warn
 // ─── Modal ───────────────────────────────────────────────────────────────────
 const modalSizes: Record<string, string> = {
   sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl', '2xl': 'max-w-6xl',
-  // Full-width workspace for the data-entry forms (achats, ventes…): they hold
-  // several columns per line and need the whole screen to stay readable.
-  '3xl': 'max-w-[1600px]',
+  // Large workspace for the data-entry forms (achats, ventes…): same width as
+  // the « Nouvelle Brigade » assistant, which is the reference for these screens.
+  '3xl': 'max-w-5xl',
 };
 export function Modal({
-  open, onClose, title, subtitle, icon: Icon, size = 'md', formScale, children, footer,
+  open, onClose, title, subtitle, icon: Icon, size = 'md', formScale, fullHeight, children, footer,
 }: {
   open: boolean; onClose: () => void; title: string; subtitle?: string; icon?: React.ElementType;
   size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl';
@@ -85,6 +85,12 @@ export function Modal({
    * scale: taller inputs, bigger labels and full-width actions on a phone.
    */
   formScale?: boolean;
+  /**
+   * Always fill the available height, like the « Nouvelle Brigade » assistant:
+   * header and footer stay put and only the body scrolls. Without it the dialog
+   * hugs its content.
+   */
+  fullHeight?: boolean;
   children: React.ReactNode; footer?: React.ReactNode;
 }) {
   return (
@@ -96,7 +102,7 @@ export function Modal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.97, y: -10 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className={cn('modal-box', modalSizes[size], formScale && 'modal-form-lg')}
+            className={cn('modal-box', modalSizes[size], formScale && 'modal-form-lg', fullHeight && 'modal-box-full')}
             onClick={e => e.stopPropagation()}
           >
             <div className="modal-header">
@@ -115,7 +121,7 @@ export function Modal({
                 <X className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} />
               </button>
             </div>
-            <div className={formScale ? 'p-3 sm:p-5 lg:p-6' : 'p-4 sm:p-6'}>{children}</div>
+            <div className={cn('modal-body', formScale ? 'p-3 sm:p-5 lg:p-6' : 'p-4 sm:p-6')}>{children}</div>
             {footer && <div className="modal-footer">{footer}</div>}
           </motion.div>
         </div>

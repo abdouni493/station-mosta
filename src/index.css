@@ -394,9 +394,15 @@ tr:hover .table-cell { background: rgba(0,48,135,0.025); }
   background: rgba(0,18,51,0.62);
   animation: fadeIn 0.2s ease;
 }
+/* NOTE — no `max-width` here on purpose.
+   This rule is UNLAYERED while Tailwind's `max-w-*` utilities live in
+   `@layer utilities`, and unlayered rules beat layered ones whatever the source
+   order. A `max-width` here therefore overrode every `max-w-*` a dialog asked
+   for and pinned all of them to the same width. Each call site now declares its
+   own width (see `modalSizes` in components/biz/Kit.tsx). */
 .modal-box {
   border-radius: 1.5rem;
-  width: 100%; max-width: 32rem;
+  width: 100%;
   max-height: var(--modal-max-h);
   overflow-y: auto; overflow-x: hidden;
   background: white;
@@ -404,6 +410,24 @@ tr:hover .table-cell { background: rgba(0,48,135,0.025); }
   box-shadow: 0 32px 80px rgba(0,18,51,0.35), 0 0 0 1px rgba(255,255,255,0.6) inset;
   animation: modalDrop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* Full-height workspace — same geometry as the « Nouvelle Brigade » assistant:
+   the dialog always fills the available height, the header and the footer stay
+   put, and only the body scrolls. Declared after .modal-box (and unlayered) so
+   it wins over the base overflow / height. */
+.modal-box-full {
+  height: var(--modal-max-h);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal-box-full > .modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto; overflow-x: hidden;
+  min-height: 0;
+}
+.modal-box-full > .modal-header,
+.modal-box-full > .modal-footer { flex-shrink: 0; }
+
 @keyframes modalDrop { from { opacity: 0; transform: translateY(-18px) scale(0.97); } to { opacity: 1; transform: none; } }
 
 /* Navy header with the sidebar's gradient + yellow accent */

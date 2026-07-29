@@ -564,7 +564,7 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
   const totalLiters = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
 
   return (
-    <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale
+    <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale fullHeight
       title={isEdit ? "Modifier l'achat carburant" : 'Nouvel achat carburant'}
       subtitle="Aucun champ n'est obligatoire — l'achat peut être enregistré en dette"
       footer={<>

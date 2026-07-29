@@ -290,7 +290,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
 
   return (
     <>
-      <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale
+      <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale fullHeight
         title={isEdit ? 'Modifier l\'achat' : 'Nouvel achat'}
         subtitle="Produits reçus, prix de vente, fournisseur et paiement"
         footer={<>
