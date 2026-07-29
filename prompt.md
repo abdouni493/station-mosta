@@ -105,11 +105,3 @@ fix the interface of pos on lavage add for it new option for activate remise wit
  
 fix the interface of pos of cafeteria and pos of lavage make on it option for organize the order of displaying products make it user can select the products that have to display on the begin of the interface as products that selling too much to quick access
 
-remove all the requarement of upload images for all the interfaces make the scannin imags optionnal 
-make on the login page button for create admin account with name and user name and email and password and make sure to make this button of create admin account hide automatically when user create the admin account correctly 
-analyse the application a deep analyse and make sure to create on the main folder sql file put on it the full sql code for this application make sure to make the sql code contains all the interfaces and button actions connection and make sure ot make on the sql code the creation of the admin account on the login page and the creaion of the login accounts of the workers make them save on the supabase authentification table and make sure to make the admin and the workers can login to his accounts directly 
-make sure to make on the sql code creation of the buckets where saving all the uploading images of the application and make sure to make the application save and display the images from this buckets
-then connect the application to this supabase project : 
-project url : https://dfqfgqmfyqfsobhecsxs.supabase.co
-anon key : 
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmcWZncW1meXFmc29iaGVjc3hzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzMTc1NjIsImV4cCI6MjEwMDg5MzU2Mn0.2ITPu5TmmMTGAHIYDFBmVXVTFy2cD-GtcucM0mzwMao

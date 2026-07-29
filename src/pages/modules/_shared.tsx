@@ -129,7 +129,7 @@ export function ProductModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} icon={Package} size="lg"
+    <Modal open={open} onClose={onClose} icon={Package} size="xl" formScale
       title={isEdit ? 'Modifier le produit' : 'Nouveau produit'}
       subtitle="Informations du produit"
       footer={<>
@@ -335,7 +335,7 @@ export function ContactModal({
   };
 
   return (
-    <Modal open={open} onClose={onClose} icon={isSupplier ? Truck : User} size="md"
+    <Modal open={open} onClose={onClose} icon={isSupplier ? Truck : User} size="lg" formScale
       title={isEdit ? (isSupplier ? 'Modifier le fournisseur' : 'Modifier le client') : (isSupplier ? 'Nouveau fournisseur' : 'Nouveau client')}
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
@@ -370,23 +370,24 @@ export function PayDebtModal({
   const newRest = Math.max(0, rest - (Number(amount) || 0));
 
   return (
-    <Modal open={open} onClose={onClose} icon={Wallet} size="md" title={title} subtitle="Encaissement d'un règlement partiel ou total"
+    <Modal open={open} onClose={onClose} icon={Wallet} size="lg" formScale title={title} subtitle="Encaissement d'un règlement partiel ou total"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
         <button className="btn-primary" onClick={() => { if (amount > 0) onPay(Number(amount)); }} disabled={!amount || amount <= 0}>Enregistrer le paiement</button>
       </>}>
       <div className="space-y-4">
-        <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm">{fc(total)}</p></div>
-          <div className="rounded-xl bg-emerald-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Déjà payé</p><p className="font-black text-emerald-600 tabular-nums text-sm">{fc(alreadyPaid)}</p></div>
-          <div className="rounded-xl bg-red-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm">{fc(rest)}</p></div>
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{fc(total)}</p></div>
+          <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Déjà payé</p><p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{fc(alreadyPaid)}</p></div>
+          <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm sm:text-base">{fc(rest)}</p></div>
         </div>
         <Field label="Montant à payer cette fois (DA)">
-          <Input type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} max={rest} />
+          <Input type="number" inputMode="decimal" value={amount}
+            onChange={e => setAmount(Number(e.target.value))} max={rest} className="text-right" />
         </Field>
-        <div className="rounded-xl bg-[#001f5c] text-white p-4 flex items-center justify-between">
+        <div className="rounded-2xl bg-[#001f5c] text-white p-4 sm:p-5 flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-semibold text-blue-200">Nouveau reste</span>
-          <span className="text-xl font-black tabular-nums text-[#FFB800]">{fc(newRest)}</span>
+          <span className="text-2xl font-black tabular-nums text-[#FFB800]">{fc(newRest)}</span>
         </div>
       </div>
     </Modal>

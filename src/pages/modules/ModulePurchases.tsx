@@ -12,7 +12,7 @@ import { useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
   RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Select, Switch, FormSection,
-  money, formatDate,
+  StaticField, money, formatDate,
 } from '@/src/components/biz/Kit';
 import { ProductModal, ContactModal, PayDebtModal, printInvoice } from './_shared';
 
@@ -60,22 +60,26 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
       <PageHeader icon={ShoppingCart} title="Achats" subtitle={`${cfg.label} — factures fournisseurs`}
         actions={perm.creer ? <button className="btn-primary" onClick={() => { setEditing(null); setShowForm(true); }}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard icon={Receipt} label="Achats" value={stats.count} tone="blue" />
         <StatCard icon={CircleDollarSign} label="Total achats" value={money(stats.total)} tone="purple" />
         <StatCard icon={Wallet} label="Payé" value={money(stats.paid)} tone="green" />
         <StatCard icon={Wallet} label="Dettes fournisseurs" value={money(stats.rest)} tone="red" />
       </div>
 
-      <div className="card-glass p-4 flex flex-wrap items-center gap-3">
+      <div className="card-glass p-3 sm:p-4 flex flex-wrap items-center gap-3">
         <SearchInput value={search} onChange={setSearch} placeholder="Réf ou fournisseur…" />
-        <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
+        {/* The table needs room: on a phone the cards are the only sensible view. */}
+        <div className="ml-auto hidden md:block"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
       {filtered.length === 0 ? (
         <EmptyState icon={ShoppingCart} title="Aucun achat" message="Créez votre première facture d'achat."
           action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
-      ) : view === 'grid' ? (
+      ) : (
+        <>
+        {/* Cards — the only layout on a phone, and the default on desktop. */}
+        <div className={view === 'table' ? 'md:hidden' : ''}>
         <CardGrid>
           {filtered.map(p => (
             <GlassCard key={p.id}>
@@ -109,21 +113,25 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
             </GlassCard>
           ))}
         </CardGrid>
-      ) : (
+        </div>
+
+        {/* Table — desktop only, every column at a glance. */}
+        {view === 'table' && (
+        <div className="hidden md:block">
         <Table head={<>
           <th className="table-head">Réf</th><th className="table-head">Fournisseur</th><th className="table-head">Date</th>
-          <th className="table-head">Articles</th><th className="table-head">Total</th><th className="table-head">Payé</th>
-          <th className="table-head">Reste</th><th className="table-head text-right">Actions</th>
+          <th className="table-head text-right">Articles</th><th className="table-head text-right">Total</th><th className="table-head text-right">Payé</th>
+          <th className="table-head text-right">Reste</th><th className="table-head text-right">Actions</th>
         </>}>
           {filtered.map(p => (
             <tr key={p.id}>
               <td className="table-cell font-bold">{p.ref}</td>
               <td className="table-cell">{p.supplierName}</td>
-              <td className="table-cell">{formatDate(p.date)}</td>
-              <td className="table-cell tabular-nums">{p.items.length}</td>
-              <td className="table-cell tabular-nums">{money(p.total)}</td>
-              <td className="table-cell tabular-nums text-emerald-600">{money(p.paid)}</td>
-              <td className="table-cell tabular-nums text-red-600">{money(p.rest)}</td>
+              <td className="table-cell whitespace-nowrap">{formatDate(p.date)}</td>
+              <td className="table-cell tabular-nums text-right">{p.items.length}</td>
+              <td className="table-cell tabular-nums text-right font-bold">{money(p.total)}</td>
+              <td className="table-cell tabular-nums text-right text-emerald-600">{money(p.paid)}</td>
+              <td className="table-cell tabular-nums text-right text-red-600">{money(p.rest)}</td>
               <td className="table-cell">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
@@ -135,40 +143,44 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
             </tr>
           ))}
         </Table>
+        </div>
+        )}
+        </>
       )}
 
       {showForm && <PurchaseForm moduleKey={moduleKey} initial={editing} onClose={() => setShowForm(false)} />}
 
       {/* View */}
-      <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="xl" title={`Achat ${viewing?.ref || ''}`} subtitle={viewing?.supplierName}>
+      <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="2xl" title={`Achat ${viewing?.ref || ''}`} subtitle={viewing?.supplierName}>
         {viewing && (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Fournisseur</p><p className="font-bold text-slate-700">{viewing.supplierName}</p></div>
-              <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Date</p><p className="font-bold text-slate-700">{formatDate(viewing.date)}</p></div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 text-sm">
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Fournisseur</p><p className="font-bold text-slate-700 break-words">{viewing.supplierName}</p></div>
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Date</p><p className="font-bold text-slate-700">{formatDate(viewing.date)}</p></div>
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Articles</p><p className="font-bold text-slate-700">{viewing.items.length}</p></div>
             </div>
             <Table head={<>
-              <th className="table-head">Produit</th><th className="table-head">Qté</th>
-              <th className="table-head">Prix achat</th><th className="table-head">Prix vente</th>
-              <th className="table-head">Prix détail</th><th className="table-head">Total</th>
+              <th className="table-head">Produit</th><th className="table-head text-right">Qté</th>
+              <th className="table-head text-right">Prix achat</th><th className="table-head text-right">Prix vente</th>
+              <th className="table-head text-right">Prix détail</th><th className="table-head text-right">Total</th>
             </>}>
               {viewing.items.map((it, i) => (
                 <tr key={i}>
                   <td className="table-cell">{it.productName}</td>
-                  <td className="table-cell tabular-nums">{it.qty}</td>
-                  <td className="table-cell tabular-nums">{money(it.unitPrice)}</td>
-                  <td className="table-cell tabular-nums">{it.salePrice !== undefined ? money(it.salePrice) : '—'}</td>
-                  <td className="table-cell tabular-nums text-xs text-slate-500">
+                  <td className="table-cell tabular-nums text-right">{it.qty}</td>
+                  <td className="table-cell tabular-nums text-right">{money(it.unitPrice)}</td>
+                  <td className="table-cell tabular-nums text-right">{it.salePrice !== undefined ? money(it.salePrice) : '—'}</td>
+                  <td className="table-cell tabular-nums text-right text-xs text-slate-500 whitespace-nowrap">
                     {it.detailSalePrice ? `${money(it.detailSalePrice)} / ${it.detailUnit || 'L'}` : '—'}
                   </td>
-                  <td className="table-cell tabular-nums font-bold">{money(it.qty * it.unitPrice)}</td>
+                  <td className="table-cell tabular-nums text-right font-bold">{money(it.qty * it.unitPrice)}</td>
                 </tr>
               ))}
             </Table>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums">{money(viewing.total)}</p></div>
-              <div className="rounded-xl bg-emerald-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums">{money(viewing.paid)}</p></div>
-              <div className="rounded-xl bg-red-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums">{money(viewing.rest)}</p></div>
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{money(viewing.total)}</p></div>
+              <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{money(viewing.paid)}</p></div>
+              <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm sm:text-base">{money(viewing.rest)}</p></div>
             </div>
           </div>
         )}
@@ -278,11 +290,11 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
 
   return (
     <>
-      <Modal open onClose={onClose} icon={ShoppingCart} size="3xl"
+      <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale
         title={isEdit ? 'Modifier l\'achat' : 'Nouvel achat'}
         subtitle="Produits reçus, prix de vente, fournisseur et paiement"
         footer={<>
-          <div className="mr-auto flex items-center gap-4 text-xs font-bold">
+          <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
             <span className="text-slate-400 uppercase tracking-widest">{items.length} produit(s)</span>
             <span className="text-[#002d87]">Total {money(total)}</span>
             {rest > 0 && <span className="text-red-600">Dette {money(rest)}</span>}
@@ -290,26 +302,46 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
           <button className="btn-ghost" onClick={onClose}>Annuler</button>
           <button className="btn-primary" onClick={save}>{isEdit ? 'Enregistrer' : 'Créer l\'achat'}</button>
         </>}>
-        <div className="space-y-4">
+        <div className="space-y-4 sm:space-y-5">
+          {/* Récapitulatif de l'achat — repris en permanence dans le pied de page. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5">
+              <p className="text-[10px] uppercase font-black text-slate-400">Produits</p>
+              <p className="font-black tabular-nums text-slate-700 text-sm sm:text-lg">{items.length}</p>
+            </div>
+            <div className="rounded-xl bg-[#eef3fc] border border-[#003087]/15 px-3 py-2.5">
+              <p className="text-[10px] uppercase font-black text-slate-400">Total</p>
+              <p className="font-black tabular-nums text-[#002d87] text-sm sm:text-lg">{money(total)}</p>
+            </div>
+            <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2.5">
+              <p className="text-[10px] uppercase font-black text-slate-400">Payé</p>
+              <p className="font-black tabular-nums text-emerald-600 text-sm sm:text-lg">{money(paid)}</p>
+            </div>
+            <div className={`rounded-xl border px-3 py-2.5 ${rest > 0 ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+              <p className="text-[10px] uppercase font-black text-slate-400">Reste</p>
+              <p className={`font-black tabular-nums text-sm sm:text-lg ${rest > 0 ? 'text-red-600' : 'text-slate-500'}`}>{money(rest)}</p>
+            </div>
+          </div>
+
           {/* 1. Produits — recherche puis saisie ligne par ligne */}
           <FormSection step={1} icon={Package} title="Produits achetés"
             hint="Cherchez un produit, sélectionnez-le, puis renseignez ses quantités et ses prix"
             action={
-              <button className="btn-secondary !py-1.5 !px-3 text-xs shrink-0" onClick={() => setShowProductModal(true)}>
-                <Plus className="w-3.5 h-3.5" /> Nouveau produit
+              <button className="btn-secondary !py-2 !px-3.5 text-xs w-full sm:w-auto" onClick={() => setShowProductModal(true)}>
+                <Plus className="w-4 h-4" /> Nouveau produit
               </button>
             }>
             <div className="relative mb-4">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input value={pQuery} onChange={e => setPQuery(e.target.value)}
-                placeholder="Rechercher un produit par nom ou code-barres…" className="input-field pl-9" />
+                placeholder="Rechercher un produit par nom ou code-barres…" className="input-field !pl-11" />
               {matches.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden max-h-72 overflow-y-auto custom-scrollbar">
+                <div className="absolute z-30 mt-1 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-h-80 overflow-y-auto custom-scrollbar">
                   {matches.map(p => {
                     const already = items.some(it => it.productId === p.id);
                     return (
                       <button key={p.id} onClick={() => addProduct(p)} disabled={already}
-                        className="w-full text-left px-3 py-2.5 hover:bg-slate-50 flex items-center justify-between gap-3 disabled:opacity-40 disabled:cursor-not-allowed border-b border-slate-50 last:border-0">
+                        className="w-full text-left px-4 py-3 hover:bg-slate-50 flex items-center justify-between gap-3 disabled:opacity-40 disabled:cursor-not-allowed border-b border-slate-50 last:border-0">
                         <span className="min-w-0">
                           <span className="block text-sm font-bold text-slate-700 truncate">{p.name}</span>
                           <span className="block text-[11px] text-slate-400 truncate">
@@ -329,9 +361,10 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
             </div>
 
             {items.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-400">
-                <Package className="w-8 h-8 mx-auto mb-2 text-slate-300" /> Aucun produit ajouté —
-                cherchez-en un ci-dessus pour commencer.
+              <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+                <Package className="w-9 h-9 mx-auto mb-2 text-slate-300" />
+                <p className="text-sm font-bold text-slate-500">Aucun produit ajouté</p>
+                <p className="text-xs text-slate-400 mt-1">Cherchez-en un ci-dessus pour commencer.</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -344,10 +377,10 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                   const capacity = Number(it.detailCapacity ?? prod?.detailCapacity) || 0;
                   const autoDetail = capacity > 0 ? (it.salePrice ?? 0) / capacity : 0;
                   return (
-                    <div key={it.productId} className="rounded-2xl border border-slate-200 bg-slate-50/70 overflow-hidden">
+                    <div key={it.productId} className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                       {/* Line header */}
-                      <div className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-slate-200">
-                        <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[10px] font-black shrink-0">
+                      <div className="flex items-center gap-3 px-3 sm:px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                        <span className="w-7 h-7 rounded-xl bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-xs font-black shrink-0">
                           {idx + 1}
                         </span>
                         <div className="min-w-0 flex-1">
@@ -358,42 +391,45 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                           </p>
                         </div>
                         <div className="text-right shrink-0 hidden sm:block">
-                          <p className="text-[10px] uppercase font-bold text-slate-400">Total ligne</p>
+                          <p className="text-[10px] uppercase font-black text-slate-400">Total ligne</p>
                           <p className="font-black tabular-nums text-[#002d87]">{money(lineTotal)}</p>
                         </div>
                         <button onClick={() => rmItem(it.productId)} title="Retirer le produit"
-                          className="text-red-500 hover:bg-red-50 p-2 rounded-lg shrink-0"><X className="w-4 h-4" /></button>
+                          className="w-9 h-9 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center shrink-0"><X className="w-4 h-4" /></button>
                       </div>
 
                       {/* Quantité + prix d'achat + prix de vente + seuil */}
-                      <div className="p-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
                         <Field label="Quantité reçue">
-                          <Input type="number" step="0.01" min={0} value={it.qty}
+                          <Input type="number" step="0.01" min={0} inputMode="decimal" value={it.qty}
                             onChange={e => updItem(it.productId, { qty: Number(e.target.value) })}
-                            className="text-right font-bold" />
+                            className="text-right" />
                         </Field>
                         <Field label="Prix d'achat (DA)">
-                          <Input type="number" step="0.01" min={0} value={it.unitPrice}
+                          <Input type="number" step="0.01" min={0} inputMode="decimal" value={it.unitPrice}
                             onChange={e => updItem(it.productId, { unitPrice: Number(e.target.value) })}
-                            className="text-right font-bold" />
+                            className="text-right" />
                         </Field>
                         <Field label="Prix de vente (DA)">
-                          <Input type="number" step="0.01" min={0} value={it.salePrice ?? 0}
+                          <Input type="number" step="0.01" min={0} inputMode="decimal" value={it.salePrice ?? 0}
                             onChange={e => updItem(it.productId, { salePrice: Number(e.target.value) })}
-                            className="text-right font-bold" />
+                            className="text-right" />
                         </Field>
                         <Field label="Quantité minimale">
-                          <Input type="number" step="1" min={0} value={it.minQty ?? 0}
+                          <Input type="number" step="1" min={0} inputMode="decimal" value={it.minQty ?? 0}
                             onChange={e => updItem(it.productId, { minQty: Number(e.target.value) })}
-                            className="text-right font-bold" />
+                            className="text-right" />
+                        </Field>
+                        <Field label="Total de la ligne">
+                          <StaticField tone="primary">{money(lineTotal)}</StaticField>
                         </Field>
                       </div>
 
                       {/* Vente au détail — uniquement si le produit a l'option activée */}
                       {prod?.sellByDetail && (
-                        <div className="mx-4 mb-4 rounded-xl border border-[#003087]/15 bg-[#eef3fc] p-3">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Droplet className="w-3.5 h-3.5 text-[#002d87]" />
+                        <div className="mx-3 sm:mx-4 mb-4 rounded-2xl border border-[#003087]/15 bg-[#eef3fc] p-3 sm:p-4">
+                          <div className="flex flex-wrap items-center gap-2 mb-3">
+                            <Droplet className="w-4 h-4 text-[#002d87]" />
                             <p className="text-[11px] font-black uppercase tracking-widest text-[#002d87]">
                               Vente au détail
                             </p>
@@ -401,15 +437,15 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                               1 {prod.unit || 'unité'} = {capacity.toLocaleString('fr-FR')} {detailUnit}
                             </span>
                           </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                             <Field label={`Prix de vente d'un ${detailUnit} (DA)`}
                               hint={capacity > 0 ? `Prix automatique : ${money(autoDetail)} (prix de vente ÷ ${capacity.toLocaleString('fr-FR')})` : undefined}>
-                              <Input type="number" step="0.01" min={0} value={it.detailSalePrice ?? 0}
+                              <Input type="number" step="0.01" min={0} inputMode="decimal" value={it.detailSalePrice ?? 0}
                                 onChange={e => updItem(it.productId, { detailSalePrice: Number(e.target.value) })}
-                                className="text-right font-bold" />
+                                className="text-right" />
                             </Field>
-                            <div className="flex items-end">
-                              <button type="button" className="btn-outline !py-2 !px-3 text-xs w-full"
+                            <div className="flex items-start sm:items-center">
+                              <button type="button" className="btn-outline !py-3 !px-4 text-xs w-full"
                                 onClick={() => updItem(it.productId, { detailSalePrice: Number(autoDetail.toFixed(2)) })}
                                 disabled={capacity <= 0}>
                                 Utiliser le prix automatique
@@ -420,16 +456,16 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                       )}
 
                       {/* Expiration + marge */}
-                      <div className="px-4 pb-4 flex flex-wrap items-center gap-4 justify-between">
-                        <div className="flex items-center gap-2.5">
+                      <div className="px-3 sm:px-4 pb-3 sm:pb-4 flex flex-wrap items-center gap-3 sm:gap-4 justify-between">
+                        <div className="flex flex-wrap items-center gap-2.5">
                           <Switch checked={!!it.hasExpiration} onChange={v => updItem(it.productId, { hasExpiration: v })} label="Date d'expiration" />
                           {it.hasExpiration && (
                             <input type="date" value={it.expirationDate || ''}
                               onChange={e => updItem(it.productId, { expirationDate: e.target.value })}
-                              className="input-field !py-1.5 !px-2 !w-auto text-xs" />
+                              className="input-field !py-2 !px-3 !w-auto !min-h-0 text-sm" />
                           )}
                         </div>
-                        <p className={`text-[11px] font-bold ${unitMargin < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        <p className={`text-[11px] sm:text-xs font-bold ${unitMargin < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                           Marge unitaire {money(unitMargin)}
                           {it.unitPrice > 0 ? ` (${marginPct.toFixed(1)} %)` : ''}
                           {' • '}sur la ligne {money(unitMargin * it.qty)}
@@ -444,14 +480,14 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
 
           {/* 2. Fournisseur & date */}
           <FormSection step={2} icon={Truck} title="Fournisseur & date">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
               <Field label="Fournisseur" required>
                 <div className="flex gap-2">
                   <Select value={supplierId} onChange={e => setSupplierId(e.target.value)}>
                     <option value="">— Sélectionner —</option>
                     {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </Select>
-                  <button className="btn-secondary !px-3 shrink-0" title="Nouveau fournisseur" onClick={() => setShowSupplierModal(true)}><Plus className="w-4 h-4" /></button>
+                  <button className="btn-secondary !px-3.5 shrink-0" title="Nouveau fournisseur" onClick={() => setShowSupplierModal(true)}><Plus className="w-4 h-4" /></button>
                 </div>
               </Field>
               <Field label="Date de l'achat"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
@@ -461,34 +497,34 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
           {/* 3. Paiement */}
           <FormSection step={3} icon={Banknote} title="Paiement"
             hint="Laissez le montant payé vide pour régler la totalité">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Montant payé (DA)">
-                  <Input type="number" step="0.01" value={paidStr} onChange={e => setPaidStr(e.target.value)}
-                    placeholder={String(total)} className="text-right font-bold" />
-                </Field>
-                <Field label="Reste à payer">
-                  <div className={`h-[46px] rounded-xl border flex items-center justify-end px-4 font-black tabular-nums ${rest > 0 ? 'bg-red-50 border-red-200 text-red-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}>
-                    {money(rest)}
-                  </div>
-                </Field>
-                <div className="sm:col-span-2 rounded-xl bg-slate-50 border border-slate-200 p-3 flex items-center justify-between">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className="space-y-3 sm:space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                  <Field label="Montant payé (DA)">
+                    <Input type="number" step="0.01" inputMode="decimal" value={paidStr} onChange={e => setPaidStr(e.target.value)}
+                      placeholder={String(total)} className="text-right" />
+                  </Field>
+                  <Field label="Reste à payer">
+                    <StaticField tone={rest > 0 ? 'danger' : 'success'}>{money(rest)}</StaticField>
+                  </Field>
+                </div>
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[11px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-                    <Tag className="w-3.5 h-3.5" /> Marge attendue
+                    <Tag className="w-4 h-4" /> Marge attendue
                   </span>
-                  <span className={`font-black tabular-nums ${expectedMargin < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  <span className={`font-black tabular-nums text-lg ${expectedMargin < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                     {money(expectedMargin)}
                   </span>
                 </div>
               </div>
 
-              <div className="rounded-2xl bg-[#001f5c] text-white p-5 space-y-2.5 text-sm self-start">
+              <div className="rounded-2xl bg-[#001f5c] text-white p-5 sm:p-6 space-y-3 text-sm self-start w-full">
                 <div className="flex justify-between"><span className="text-blue-200">Produits</span><span className="font-bold tabular-nums">{items.length}</span></div>
                 <div className="flex justify-between"><span className="text-blue-200">Payé</span><span className="font-bold tabular-nums">{money(paid)}</span></div>
                 <div className="flex justify-between"><span className="text-blue-200">Reste</span><span className="font-bold tabular-nums text-red-300">{money(rest)}</span></div>
-                <div className="flex justify-between pt-3 border-t border-white/20">
+                <div className="flex flex-wrap gap-2 justify-between items-baseline pt-3 border-t border-white/20">
                   <span className="font-semibold">Total de l'achat</span>
-                  <span className="text-2xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
+                  <span className="text-2xl sm:text-3xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
                 </div>
               </div>
             </div>

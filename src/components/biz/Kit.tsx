@@ -76,10 +76,16 @@ const modalSizes: Record<string, string> = {
   '3xl': 'max-w-[1600px]',
 };
 export function Modal({
-  open, onClose, title, subtitle, icon: Icon, size = 'md', children, footer,
+  open, onClose, title, subtitle, icon: Icon, size = 'md', formScale, children, footer,
 }: {
   open: boolean; onClose: () => void; title: string; subtitle?: string; icon?: React.ElementType;
-  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl'; children: React.ReactNode; footer?: React.ReactNode;
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl';
+  /**
+   * Long data-entry workspaces (achats, ventes…) opt into the larger control
+   * scale: taller inputs, bigger labels and full-width actions on a phone.
+   */
+  formScale?: boolean;
+  children: React.ReactNode; footer?: React.ReactNode;
 }) {
   return (
     <AnimatePresence>
@@ -90,7 +96,7 @@ export function Modal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.97, y: -10 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className={cn('modal-box', modalSizes[size])}
+            className={cn('modal-box', modalSizes[size], formScale && 'modal-form-lg')}
             onClick={e => e.stopPropagation()}
           >
             <div className="modal-header">
@@ -101,7 +107,7 @@ export function Modal({
                   </div>
                 )}
                 <div className="min-w-0">
-                  <h3 className="modal-title text-base font-black truncate">{title}</h3>
+                  <h3 className={cn('modal-title font-black truncate', formScale ? 'text-base sm:text-lg' : 'text-base')}>{title}</h3>
                   {subtitle && <p className="modal-subtitle text-xs truncate">{subtitle}</p>}
                 </div>
               </div>
@@ -109,7 +115,7 @@ export function Modal({
                 <X className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} />
               </button>
             </div>
-            <div className="p-6">{children}</div>
+            <div className={formScale ? 'p-3 sm:p-5 lg:p-6' : 'p-4 sm:p-6'}>{children}</div>
             {footer && <div className="modal-footer">{footer}</div>}
           </motion.div>
         </div>
@@ -131,24 +137,43 @@ export function FormSection({
   action?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white/70 overflow-hidden">
-      <header className="flex items-center gap-3 px-4 py-3 bg-slate-50/80 border-b border-slate-200">
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      {/* On a phone the action drops under the title instead of squeezing it. */}
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 sm:px-5 py-3 sm:py-3.5 bg-gradient-to-r from-slate-50 to-white border-b border-slate-200">
         {step !== undefined && (
-          <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[11px] font-black shrink-0">
+          <span className="w-7 h-7 rounded-xl bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-xs font-black shrink-0 shadow-sm">
             {step}
           </span>
         )}
         <div className="min-w-0 flex-1">
-          <h4 className="text-[11px] font-black uppercase tracking-widest text-[#002d87] flex items-center gap-1.5">
-            {Icon && <Icon className="w-3.5 h-3.5" />} {title}
+          <h4 className="text-xs sm:text-[13px] font-black uppercase tracking-wider text-[#002d87] flex items-center gap-2">
+            {Icon && <Icon className="w-4 h-4 shrink-0" />} <span className="truncate">{title}</span>
           </h4>
-          {hint && <p className="text-[11px] text-slate-400 mt-0.5">{hint}</p>}
+          {hint && <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">{hint}</p>}
         </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {action && <div className="shrink-0 w-full sm:w-auto">{action}</div>}
       </header>
-      <div className="p-4">{children}</div>
+      <div className="p-3 sm:p-5">{children}</div>
     </section>
   );
+}
+
+/**
+ * Read-only twin of an Input: a computed value (total de ligne, reste à payer…)
+ * that must line up with the fields next to it.
+ */
+export function StaticField({ children, tone = 'neutral', className }: {
+  children: React.ReactNode;
+  tone?: 'neutral' | 'success' | 'danger' | 'primary';
+  className?: string;
+}) {
+  const tones: Record<string, string> = {
+    neutral: '',
+    primary: 'bg-[#eef3fc] border-[#003087]/20 text-[#002d87]',
+    success: 'bg-emerald-50 border-emerald-200 text-emerald-600',
+    danger: 'bg-red-50 border-red-200 text-red-600',
+  };
+  return <div className={cn('field-static', tones[tone], className)}>{children}</div>;
 }
 
 // ─── ConfirmDialog ───────────────────────────────────────────────────────────

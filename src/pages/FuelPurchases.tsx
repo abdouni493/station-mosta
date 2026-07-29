@@ -31,7 +31,7 @@ import {
 } from '../store/AppContext';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
-  Table, EmptyState, SearchInput, RowActions, ActionBtn, FormSection,
+  Table, EmptyState, SearchInput, RowActions, ActionBtn, FormSection, StaticField,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '../components/biz/Kit';
 import { printInvoice, stationFromSettings } from './modules/_shared';
@@ -163,7 +163,7 @@ export default function FuelPurchases() {
           ? <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouvel achat</button>
           : undefined} />
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
         <StatCard icon={ShoppingCart} label="Achats" value={stats.count} tone="blue" />
         <StatCard icon={Droplets} label="Volume acheté" value={`${stats.liters.toLocaleString('fr-FR')} L`} tone="purple" />
         <StatCard icon={TrendingUp} label="Montant total" value={money(stats.total)} tone="slate" />
@@ -171,9 +171,14 @@ export default function FuelPurchases() {
         <StatCard icon={CircleDollarSign} label="Dette fournisseurs" value={money(stats.debt)} tone="red" />
       </div>
 
-      <div className="card-glass p-4 space-y-3">
+      <div className="card-glass p-3 sm:p-4 space-y-3">
         <SearchInput value={search} onChange={setSearch} placeholder="N° facture, n° BL ou fournisseur…" />
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
+        {filtered.length > 0 && (
+          <p className="text-xs text-slate-400 font-semibold">
+            {filtered.length} achat(s) affiché(s) — du plus récent au plus ancien
+          </p>
+        )}
       </div>
 
       {filtered.length === 0 ? (
@@ -181,43 +186,59 @@ export default function FuelPurchases() {
           message="Créez un achat : facture, bon de livraison, cuves livrées et paiements."
           action={perm.creer ? <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
       ) : (
-        <div className="card-glass overflow-hidden">
-          <Table head={<>
-            <th className="table-head">Date</th><th className="table-head">Facture</th><th className="table-head">BL</th>
-            <th className="table-head">Fournisseur</th><th className="table-head">Cuves</th>
-            <th className="table-head">Volume</th><th className="table-head">Total</th>
-            <th className="table-head">Payé</th><th className="table-head">Reste</th>
-            <th className="table-head">Statut</th><th className="table-head text-right">Actions</th>
-          </>}>
+        <>
+          {/* ── Mobile & tablet: one readable card per achat ─────────────── */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 xl:hidden">
             {filtered.map(p => {
               const supplier = suppliers.find(s => s.id === p.supplierId);
               const liters = (p.items || []).reduce((a, i) => a + (i.quantity || 0), 0);
               const cuveNames = (p.items || [])
                 .map(i => tanks.find(t => t.id === i.tankId)?.name)
                 .filter(Boolean).join(', ');
+              const appt = appointmentOf(p);
               return (
-                <tr key={p.id}>
-                  <td className="table-cell whitespace-nowrap">{formatDate(p.date)}</td>
-                  <td className="table-cell font-bold">{p.invoiceNumber || '—'}</td>
-                  <td className="table-cell">{p.blNumber || '—'}</td>
-                  <td className="table-cell">{supplier?.name || '—'}</td>
-                  <td className="table-cell text-xs text-slate-500 max-w-[180px]">{cuveNames || '—'}</td>
-                  <td className="table-cell tabular-nums">{liters.toLocaleString('fr-FR')} L</td>
-                  <td className="table-cell tabular-nums font-bold">{money(p.total)}</td>
-                  <td className="table-cell tabular-nums text-emerald-600">{money(p.amountPaid)}</td>
-                  <td className="table-cell tabular-nums text-red-600">{money(p.rest)}</td>
-                  <td className="table-cell">
-                    <div className="flex flex-col gap-1 items-start">
-                      <Badge tone={STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge>
-                      {appointmentOf(p) && (
-                        <span className={`badge ${apptTone(appointmentOf(p)!.daysLeft)} whitespace-nowrap`}>
-                          <CalendarClock className="w-3 h-3 inline mr-0.5" />
-                          {apptLabel(appointmentOf(p)!.daysLeft)} {formatDate(appointmentOf(p)!.date)}
-                        </span>
-                      )}
+                <div key={p.id} className="card-glass p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-black text-slate-800 truncate">
+                        {p.invoiceNumber || p.blNumber || 'Sans référence'}
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5 truncate">
+                        {formatDate(p.date)} • {supplier?.name || 'Fournisseur —'}
+                      </p>
                     </div>
-                  </td>
-                  <td className="table-cell">
+                    <Badge tone={STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 text-[11px] text-slate-500">
+                    {p.blNumber && <span className="badge badge-neutral">BL {p.blNumber}</span>}
+                    <span className="badge badge-info"><Droplets className="w-3 h-3" />{liters.toLocaleString('fr-FR')} L</span>
+                    {cuveNames && <span className="badge badge-neutral truncate max-w-full">{cuveNames}</span>}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-xl bg-slate-50 p-2.5 text-center">
+                      <p className="text-[9px] uppercase font-black text-slate-400">Total</p>
+                      <p className="font-black text-slate-700 tabular-nums text-sm">{money(p.total)}</p>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 p-2.5 text-center">
+                      <p className="text-[9px] uppercase font-black text-slate-400">Payé</p>
+                      <p className="font-black text-emerald-600 tabular-nums text-sm">{money(p.amountPaid)}</p>
+                    </div>
+                    <div className="rounded-xl bg-red-50 p-2.5 text-center">
+                      <p className="text-[9px] uppercase font-black text-slate-400">Reste</p>
+                      <p className="font-black text-red-600 tabular-nums text-sm">{money(p.rest)}</p>
+                    </div>
+                  </div>
+
+                  {appt && (
+                    <span className={`badge ${apptTone(appt.daysLeft)}`}>
+                      <CalendarClock className="w-3 h-3" />
+                      {apptLabel(appt.daysLeft)} {formatDate(appt.date)}
+                    </span>
+                  )}
+
+                  <div className="flex items-center justify-end pt-2 border-t border-slate-100">
                     <RowActions>
                       <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
                       <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(p)} />
@@ -225,12 +246,64 @@ export default function FuelPurchases() {
                       {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer la dette" onClick={() => setPaying(p)} />}
                       {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                     </RowActions>
-                  </td>
-                </tr>
+                  </div>
+                </div>
               );
             })}
-          </Table>
-        </div>
+          </div>
+
+          {/* ── Desktop: the full table, every column at a glance ────────── */}
+          <div className="hidden xl:block">
+            <Table head={<>
+              <th className="table-head">Date</th><th className="table-head">Facture</th><th className="table-head">BL</th>
+              <th className="table-head">Fournisseur</th><th className="table-head">Cuves</th>
+              <th className="table-head text-right">Volume</th><th className="table-head text-right">Total</th>
+              <th className="table-head text-right">Payé</th><th className="table-head text-right">Reste</th>
+              <th className="table-head">Statut</th><th className="table-head text-right">Actions</th>
+            </>}>
+              {filtered.map(p => {
+                const supplier = suppliers.find(s => s.id === p.supplierId);
+                const liters = (p.items || []).reduce((a, i) => a + (i.quantity || 0), 0);
+                const cuveNames = (p.items || [])
+                  .map(i => tanks.find(t => t.id === i.tankId)?.name)
+                  .filter(Boolean).join(', ');
+                return (
+                  <tr key={p.id}>
+                    <td className="table-cell whitespace-nowrap">{formatDate(p.date)}</td>
+                    <td className="table-cell font-bold">{p.invoiceNumber || '—'}</td>
+                    <td className="table-cell">{p.blNumber || '—'}</td>
+                    <td className="table-cell">{supplier?.name || '—'}</td>
+                    <td className="table-cell text-xs text-slate-500 max-w-[180px]">{cuveNames || '—'}</td>
+                    <td className="table-cell tabular-nums text-right">{liters.toLocaleString('fr-FR')} L</td>
+                    <td className="table-cell tabular-nums text-right font-bold">{money(p.total)}</td>
+                    <td className="table-cell tabular-nums text-right text-emerald-600">{money(p.amountPaid)}</td>
+                    <td className="table-cell tabular-nums text-right text-red-600">{money(p.rest)}</td>
+                    <td className="table-cell">
+                      <div className="flex flex-col gap-1 items-start">
+                        <Badge tone={STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge>
+                        {appointmentOf(p) && (
+                          <span className={`badge ${apptTone(appointmentOf(p)!.daysLeft)} whitespace-nowrap`}>
+                            <CalendarClock className="w-3 h-3 inline mr-0.5" />
+                            {apptLabel(appointmentOf(p)!.daysLeft)} {formatDate(appointmentOf(p)!.date)}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="table-cell">
+                      <RowActions>
+                        <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
+                        <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(p)} />
+                        {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(p)} />}
+                        {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer la dette" onClick={() => setPaying(p)} />}
+                        {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
+                      </RowActions>
+                    </td>
+                  </tr>
+                );
+              })}
+            </Table>
+          </div>
+        </>
       )}
 
       {(creating || editing) && (
@@ -491,11 +564,11 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
   const totalLiters = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
 
   return (
-    <Modal open onClose={onClose} icon={ShoppingCart} size="3xl"
+    <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale
       title={isEdit ? "Modifier l'achat carburant" : 'Nouvel achat carburant'}
       subtitle="Aucun champ n'est obligatoire — l'achat peut être enregistré en dette"
       footer={<>
-        <div className="mr-auto flex items-center gap-4 text-xs font-bold">
+        <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
           <span className="text-slate-400 uppercase tracking-widest">{totalLiters.toLocaleString('fr-FR')} L</span>
           <span className="text-[#002d87]">Total {money(total)}</span>
           {rest > 0 && <span className="text-red-600">Dette {money(rest)}</span>}
@@ -503,11 +576,32 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
         <button className="btn-primary" onClick={save}>{isEdit ? 'Enregistrer' : "Enregistrer l'achat"}</button>
       </>}>
-      <div className="space-y-4">
+      <div className="space-y-4 sm:space-y-5">
+        {/* Récapitulatif de l'achat — le pied de page reprend les mêmes chiffres
+            en permanence pendant le défilement. */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5">
+            <p className="text-[10px] uppercase font-black text-slate-400">Volume</p>
+            <p className="font-black tabular-nums text-slate-700 text-sm sm:text-lg">{totalLiters.toLocaleString('fr-FR')} L</p>
+          </div>
+          <div className="rounded-xl bg-[#eef3fc] border border-[#003087]/15 px-3 py-2.5">
+            <p className="text-[10px] uppercase font-black text-slate-400">Total</p>
+            <p className="font-black tabular-nums text-[#002d87] text-sm sm:text-lg">{money(total)}</p>
+          </div>
+          <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2.5">
+            <p className="text-[10px] uppercase font-black text-slate-400">Payé</p>
+            <p className="font-black tabular-nums text-emerald-600 text-sm sm:text-lg">{money(paid)}</p>
+          </div>
+          <div className={`rounded-xl border px-3 py-2.5 ${rest > 0 ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+            <p className="text-[10px] uppercase font-black text-slate-400">Reste</p>
+            <p className={`font-black tabular-nums text-sm sm:text-lg ${rest > 0 ? 'text-red-600' : 'text-slate-500'}`}>{money(rest)}</p>
+          </div>
+        </div>
+
         {/* 1. Références, date, fournisseur */}
         <FormSection step={1} icon={FileText} title="Références de la facture"
           hint="Facture, bon de livraison, date et fournisseur">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <Field label="N° de facture"><Input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} placeholder="FA-2026-001" /></Field>
             <Field label="N° bon de livraison"><Input value={blNumber} onChange={e => setBlNumber(e.target.value)} placeholder="BL-2026-001" /></Field>
             <Field label="Date"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
@@ -524,8 +618,8 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
         <FormSection step={2} icon={Droplets} title="Cuves livrées"
           hint="Le prix d'achat vient des paramètres de la station"
           action={
-            <button className="btn-secondary !py-1.5 !px-3 text-xs" onClick={addLine} disabled={tanks.length === 0}>
-              <Plus className="w-3.5 h-3.5" /> Ajouter une cuve
+            <button className="btn-secondary !py-2 !px-3.5 text-xs w-full sm:w-auto" onClick={addLine} disabled={tanks.length === 0}>
+              <Plus className="w-4 h-4" /> Ajouter une cuve
             </button>
           }>
           {tanks.length === 0 && (
@@ -533,68 +627,80 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
           )}
 
           {lines.length === 0 ? (
-            <p className="text-sm text-slate-400 rounded-xl bg-slate-50 border border-dashed border-slate-300 p-6 text-center">
-              Aucune cuve — ajoutez la première ligne de livraison.
-            </p>
+            <button onClick={addLine} disabled={tanks.length === 0}
+              className="w-full rounded-2xl bg-slate-50 border-2 border-dashed border-slate-300 p-8 text-center hover:border-[#003087]/40 hover:bg-[#eef3fc] transition-colors disabled:opacity-50">
+              <Droplets className="w-9 h-9 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm font-bold text-slate-500">Aucune cuve — ajoutez la première ligne de livraison.</p>
+            </button>
           ) : (
-            <div className="space-y-2">
-              {/* Column headers: one row per cuve, typed left to right. */}
-              <div className="hidden lg:grid grid-cols-12 gap-3 px-3 pb-1">
-                <span className="col-span-4 text-[10px] font-black uppercase tracking-widest text-slate-400">Cuve</span>
-                <span className="col-span-2 text-[10px] font-black uppercase tracking-widest text-slate-400">Quantité (L)</span>
-                <span className="col-span-2 text-[10px] font-black uppercase tracking-widest text-slate-400">Prix / L</span>
-                <span className="col-span-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Total ligne</span>
-                <span className="col-span-1" />
-              </div>
-              {lines.map(l => {
+            <div className="space-y-3">
+              {lines.map((l, idx) => {
                 const tank = tanks.find(t => t.id === l.tankId);
                 const qty = Number(l.quantity) || 0;
                 const price = Number(l.unitPrice) || 0;
                 const after = (tank?.current || 0) + qty;
                 const overflow = tank ? after > tank.capacity : false;
+                const fillPct = tank && tank.capacity > 0
+                  ? Math.min(100, (after / tank.capacity) * 100) : 0;
                 return (
-                  <div key={l.id} className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
-                      <div className="lg:col-span-4">
-                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Cuve</label>
+                  <div key={l.id} className="rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                    {/* Line header — numéro, cuve, total, retrait */}
+                    <div className="flex items-center gap-3 px-3 sm:px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                      <span className="w-7 h-7 rounded-xl bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-xs font-black shrink-0">
+                        {idx + 1}
+                      </span>
+                      <p className="min-w-0 flex-1 text-sm font-black text-slate-800 truncate">
+                        {tank ? `${tank.name} — ${tank.type}` : 'Cuve à choisir'}
+                      </p>
+                      <div className="text-right shrink-0 hidden sm:block">
+                        <p className="text-[10px] uppercase font-black text-slate-400">Total ligne</p>
+                        <p className="font-black tabular-nums text-[#002d87]">{money(qty * price)}</p>
+                      </div>
+                      <button onClick={() => rmLine(l.id)} title="Retirer la ligne"
+                        className="w-9 h-9 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center shrink-0">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+                      <Field label="Cuve">
                         <Select value={l.tankId} onChange={e => setLine(l.id, { tankId: e.target.value })}>
                           <option value="">— Choisir —</option>
                           {tanks.map(t => <option key={t.id} value={t.id}>{t.name} ({t.type})</option>)}
                         </Select>
-                      </div>
-                      <div className="lg:col-span-2">
-                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Quantité (L)</label>
-                        <Input type="number" step="0.01" value={l.quantity} onChange={e => setLine(l.id, { quantity: e.target.value })} placeholder="0" className="text-right font-bold" />
-                      </div>
-                      <div className="lg:col-span-2">
-                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Prix / L</label>
-                        <Input type="number" step="0.01" value={l.unitPrice} onChange={e => setLine(l.id, { unitPrice: e.target.value })} className="text-right font-bold" />
-                      </div>
-                      <div className="lg:col-span-3">
-                        <label className="text-[10px] font-bold uppercase text-slate-400 lg:hidden">Total ligne</label>
-                        <div className="h-[46px] rounded-xl bg-white border border-slate-200 flex items-center justify-end px-3 font-black tabular-nums text-[#002d87]">
-                          {money(qty * price)}
-                        </div>
-                      </div>
-                      <div className="lg:col-span-1 flex justify-end">
-                        <button onClick={() => rmLine(l.id)} title="Retirer la ligne"
-                          className="w-10 h-10 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center">
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
+                      </Field>
+                      <Field label="Quantité reçue (L)">
+                        <Input type="number" step="0.01" inputMode="decimal" value={l.quantity}
+                          onChange={e => setLine(l.id, { quantity: e.target.value })}
+                          placeholder="0" className="text-right" />
+                      </Field>
+                      <Field label="Prix d'achat / L (DA)">
+                        <Input type="number" step="0.01" inputMode="decimal" value={l.unitPrice}
+                          onChange={e => setLine(l.id, { unitPrice: e.target.value })} className="text-right" />
+                      </Field>
+                      <Field label="Total de la ligne">
+                        <StaticField tone="primary">{money(qty * price)}</StaticField>
+                      </Field>
                     </div>
+
                     {tank && (
-                      <p className={`text-[11px] mt-2 ${overflow ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
-                        Niveau actuel {tank.current.toLocaleString('fr-FR')} L → après livraison {after.toLocaleString('fr-FR')} L
-                        {' '}sur {tank.capacity.toLocaleString('fr-FR')} L
-                        {overflow ? ' — dépasse la capacité de la cuve' : ''}
-                      </p>
+                      <div className="px-3 sm:px-4 pb-3 sm:pb-4">
+                        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                          <div className={`h-full rounded-full transition-all ${overflow ? 'bg-red-500' : 'bg-[#003087]'}`}
+                            style={{ width: `${fillPct}%` }} />
+                        </div>
+                        <p className={`text-[11px] sm:text-xs mt-1.5 ${overflow ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
+                          Niveau actuel {tank.current.toLocaleString('fr-FR')} L → après livraison {after.toLocaleString('fr-FR')} L
+                          {' '}sur {tank.capacity.toLocaleString('fr-FR')} L
+                          {overflow ? ' — dépasse la capacité de la cuve' : ''}
+                        </p>
+                      </div>
                     )}
                   </div>
                 );
               })}
-              <div className="flex justify-end gap-6 px-3 pt-1 text-xs font-black">
-                <span className="text-slate-400 uppercase tracking-widest">Volume total</span>
+              <div className="flex justify-end items-center gap-4 px-1 pt-1 text-sm font-black">
+                <span className="text-slate-400 uppercase tracking-widest text-[11px]">Volume total</span>
                 <span className="text-[#002d87] tabular-nums">{totalLiters.toLocaleString('fr-FR')} L</span>
               </div>
             </div>
@@ -604,50 +710,66 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
         {/* 3. Total, TVA, remise */}
         <FormSection step={3} icon={Percent} title="Total, TVA & remise"
           hint="La TVA est appliquée après la remise">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-bold text-slate-700">Remise</p>
-                  <p className="text-xs text-slate-400">Déduite automatiquement du sous-total</p>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              {/* Remise */}
+              <div className={`rounded-2xl border p-4 space-y-3 transition-colors ${discountOn ? 'bg-amber-50/70 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-black text-slate-700 flex items-center gap-1.5"><Percent className="w-4 h-4" /> Remise</p>
+                    <p className="text-xs text-slate-400">Déduite automatiquement du sous-total</p>
+                  </div>
+                  <Switch checked={discountOn} onChange={setDiscountOn} />
                 </div>
-                <Switch checked={discountOn} onChange={setDiscountOn} />
+                {discountOn && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                    <Field label="Type">
+                      <Select value={discountType} onChange={e => setDiscountType(e.target.value as 'percent' | 'amount')}>
+                        <option value="percent">Pourcentage (%)</option>
+                        <option value="amount">Montant fixe (DA)</option>
+                      </Select>
+                    </Field>
+                    <Field label={discountType === 'percent' ? 'Valeur (%)' : 'Valeur (DA)'}>
+                      <Input type="number" step="0.01" inputMode="decimal" value={discountValue}
+                        onChange={e => setDiscountValue(e.target.value)} className="text-right" placeholder="0" />
+                    </Field>
+                    <Field label="Remise déduite">
+                      <StaticField className="!text-amber-700 !bg-white !border-amber-200">− {money(discountAmount)}</StaticField>
+                    </Field>
+                  </div>
+                )}
               </div>
-              {discountOn && (
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Type">
-                    <Select value={discountType} onChange={e => setDiscountType(e.target.value as 'percent' | 'amount')}>
-                      <option value="percent">Pourcentage (%)</option>
-                      <option value="amount">Montant fixe (DA)</option>
-                    </Select>
-                  </Field>
-                  <Field label={discountType === 'percent' ? 'Valeur (%)' : 'Valeur (DA)'}>
-                    <Input type="number" step="0.01" value={discountValue} onChange={e => setDiscountValue(e.target.value)} />
-                  </Field>
-                </div>
-              )}
 
-              <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-                <div>
-                  <p className="text-sm font-bold text-slate-700">TVA</p>
-                  <p className="text-xs text-slate-400">Appliquée après la remise</p>
+              {/* TVA */}
+              <div className={`rounded-2xl border p-4 space-y-3 transition-colors ${tvaActive ? 'bg-[#eef3fc] border-[#003087]/20' : 'bg-slate-50 border-slate-200'}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-black text-slate-700">TVA</p>
+                    <p className="text-xs text-slate-400">Appliquée après la remise</p>
+                  </div>
+                  <Switch checked={tvaActive} onChange={setTvaActive} />
                 </div>
-                <Switch checked={tvaActive} onChange={setTvaActive} />
+                {tvaActive && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <Field label="Taux de TVA (%)">
+                      <Input type="number" step="0.01" inputMode="decimal" value={tvaRate}
+                        onChange={e => setTvaRate(e.target.value)} className="text-right" />
+                    </Field>
+                    <Field label="Montant de la TVA">
+                      <StaticField tone="primary">{money(tvaAmount)}</StaticField>
+                    </Field>
+                  </div>
+                )}
               </div>
-              {tvaActive && (
-                <Field label="Taux de TVA (%)">
-                  <Input type="number" step="0.01" value={tvaRate} onChange={e => setTvaRate(e.target.value)} />
-                </Field>
-              )}
             </div>
 
-            <div className="rounded-2xl bg-[#001f5c] text-white p-5 space-y-2.5 text-sm self-start">
+            <div className="rounded-2xl bg-[#001f5c] text-white p-5 sm:p-6 space-y-3 text-sm self-start w-full">
               <div className="flex justify-between"><span className="text-blue-200">Sous-total</span><span className="font-bold tabular-nums">{money(subtotal)}</span></div>
               <div className="flex justify-between"><span className="text-blue-200">Remise</span><span className="font-bold tabular-nums text-[#FFB800]">− {money(discountAmount)}</span></div>
               <div className="flex justify-between"><span className="text-blue-200">TVA {tvaActive ? `(${tvaRate}%)` : ''}</span><span className="font-bold tabular-nums">{money(tvaAmount)}</span></div>
-              <div className="flex justify-between pt-3 border-t border-white/20">
+              <div className="flex flex-wrap gap-2 justify-between items-baseline pt-3 border-t border-white/20">
                 <span className="font-semibold">Total à payer</span>
-                <span className="text-2xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
+                <span className="text-2xl sm:text-3xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
               </div>
             </div>
           </div>
@@ -658,52 +780,54 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
           hint="Ajoutez autant de règlements que nécessaire : espèces, virement, plusieurs chèques… Le reste devient une dette fournisseur."
           action={
             <div className="flex flex-wrap gap-2">
-              <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addPay(CAISSE_ID)}>
-                <Wallet className="w-3.5 h-3.5" /> + Espèces
+              <button className="btn-outline !py-2 !px-3.5 text-xs flex-1 sm:flex-none" onClick={() => addPay(CAISSE_ID)}>
+                <Wallet className="w-4 h-4" /> Espèces
               </button>
               {bankAccounts.length > 0 && (
-                <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addPay(bankAccounts[0].id)}>
-                  <Landmark className="w-3.5 h-3.5" /> + Banque
+                <button className="btn-secondary !py-2 !px-3.5 text-xs flex-1 sm:flex-none" onClick={() => addPay(bankAccounts[0].id)}>
+                  <Landmark className="w-4 h-4" /> Compte bancaire
                 </button>
               )}
-              <button className="btn-secondary !py-1.5 !px-3 text-xs" onClick={() => addPay(CAISSE_ID)}>
-                <Plus className="w-3.5 h-3.5" /> Ajouter un paiement
-              </button>
             </div>
           }>
           {pays.length === 0 ? (
-            <p className="text-sm text-slate-400 rounded-xl bg-slate-50 border border-dashed border-slate-300 p-6 text-center">
-              Aucun paiement — l'achat sera enregistré entièrement en dette.
-            </p>
+            <button onClick={() => addPay(CAISSE_ID)}
+              className="w-full rounded-2xl bg-slate-50 border-2 border-dashed border-slate-300 p-8 text-center hover:border-[#003087]/40 hover:bg-[#eef3fc] transition-colors">
+              <Banknote className="w-9 h-9 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm font-bold text-slate-500">
+                Aucun paiement — l'achat sera enregistré entièrement en dette.
+              </p>
+              <p className="text-xs text-slate-400 mt-1">Touchez ici pour ajouter un règlement.</p>
+            </button>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {pays.map((p, i) => {
                 const value = Number(p.amount) || 0;
                 const before = accountBalance(p.accountId);
                 const insufficient = value > before;
                 return (
-                  <div key={p.id} className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-3">
-                    {/* Line header: number, account, mode, amount, remove */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[11px] font-black shrink-0">
+                  <div key={p.id} className="rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+                    {/* Line header: numéro, mode, montant, retrait */}
+                    <div className="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                      <span className="w-7 h-7 rounded-xl bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-xs font-black shrink-0">
                         {i + 1}
                       </span>
-                      <div className="flex gap-1.5">
+                      <div className="flex gap-1.5 flex-wrap">
                         {PAY_MODES.map(m => (
                           <button key={m.id} onClick={() => setPay(p.id, { mode: m.id })}
-                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold ${p.mode === m.id ? 'bg-[#003087] text-white' : 'bg-white text-slate-500 border border-slate-200'}`}>
+                            className={`px-3 py-2 rounded-xl text-xs font-bold transition-colors ${p.mode === m.id ? 'bg-[#003087] text-white shadow-sm' : 'bg-white text-slate-500 border border-slate-200 hover:border-[#003087]/40'}`}>
                             {m.label}
                           </button>
                         ))}
                       </div>
-                      <span className="ml-auto text-xs font-black tabular-nums text-[#002d87]">{money(value)}</span>
+                      <span className="ml-auto text-sm font-black tabular-nums text-[#002d87]">{money(value)}</span>
                       <button onClick={() => rmPay(p.id)} title="Retirer le paiement"
                         className="w-9 h-9 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center shrink-0">
                         <X className="w-4 h-4" />
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
                       <Field label="Compte débité">
                         <Select value={p.accountId} onChange={e => setPay(p.id, { accountId: e.target.value })}>
                           <option value={CAISSE_ID}>Espèces (caisse générale)</option>
@@ -711,12 +835,12 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                         </Select>
                       </Field>
                       <Field label="Montant payé (DA)">
-                        <div className="flex gap-1.5">
-                          <Input type="number" step="0.01" value={p.amount}
+                        <div className="flex gap-2">
+                          <Input type="number" step="0.01" inputMode="decimal" value={p.amount}
                             onChange={e => setPay(p.id, { amount: e.target.value })}
-                            placeholder="0" className="text-right font-bold" />
+                            placeholder="0" className="text-right" />
                           <button onClick={() => fillRest(p.id)} title="Solder le reste"
-                            className="btn-outline !px-2.5 shrink-0 text-[10px] font-black">RESTE</button>
+                            className="btn-outline !px-3 shrink-0 text-[10px] font-black">RESTE</button>
                         </div>
                       </Field>
                       <Field label="Date du règlement">
@@ -729,11 +853,13 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                       </Field>
                     </div>
 
-                    <p className={`text-[11px] flex items-center gap-1.5 ${insufficient ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
-                      {p.accountId === CAISSE_ID ? <Wallet className="w-3 h-3" /> : <Landmark className="w-3 h-3" />}
-                      Solde {accountLabel(p.accountId, bankAccounts)} : {money(before)}
-                      {' '}→ {money(before - value)} après paiement
-                      {insufficient ? ' — solde insuffisant' : ''}
+                    <p className={`px-3 sm:px-4 pb-3 text-[11px] sm:text-xs flex items-start gap-1.5 ${insufficient ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
+                      {p.accountId === CAISSE_ID ? <Wallet className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <Landmark className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                      <span>
+                        Solde {accountLabel(p.accountId, bankAccounts)} : {money(before)}
+                        {' '}→ {money(before - value)} après paiement
+                        {insufficient ? ' — solde insuffisant' : ''}
+                      </span>
                     </p>
                   </div>
                 );
@@ -741,31 +867,31 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-3">
-            <div className="rounded-xl bg-slate-50 p-3 text-center">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Total achat</p>
-              <p className="font-black text-slate-700 tabular-nums">{money(total)}</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 mt-4">
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center">
+              <p className="text-[10px] uppercase font-black text-slate-400">Total achat</p>
+              <p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{money(total)}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3 text-center">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Règlements</p>
-              <p className="font-black text-slate-700 tabular-nums">{pays.length}</p>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center">
+              <p className="text-[10px] uppercase font-black text-slate-400">Règlements</p>
+              <p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{pays.length}</p>
             </div>
-            <div className="rounded-xl bg-emerald-50 p-3 text-center">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Total payé</p>
-              <p className="font-black text-emerald-600 tabular-nums">{money(paid)}</p>
+            <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center">
+              <p className="text-[10px] uppercase font-black text-slate-400">Total payé</p>
+              <p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{money(paid)}</p>
             </div>
-            <div className="rounded-xl bg-red-50 p-3 text-center">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Reste (dette)</p>
-              <p className="font-black text-red-600 tabular-nums">{money(rest)}</p>
+            <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-center">
+              <p className="text-[10px] uppercase font-black text-slate-400">Reste (dette)</p>
+              <p className="font-black text-red-600 tabular-nums text-sm sm:text-base">{money(rest)}</p>
             </div>
           </div>
           {paid > total && (
-            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-3 mt-3">
+            <p className="text-xs sm:text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3 mt-3">
               Les règlements dépassent le total de l'achat de {money(paid - total)}.
             </p>
           )}
           {rest > 0 && (
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3">
+            <p className="text-xs sm:text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3 mt-3">
               L'achat sera enregistré avec le statut « {statusFor(total, paid)} » — le reste de {money(rest)} reste dû au fournisseur.
             </p>
           )}
@@ -774,16 +900,16 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
         {/* 5. Rendez-vous de paiement */}
         <FormSection step={5} icon={CalendarClock} title="Rendez-vous de paiement"
           hint="Programmez la date à laquelle le reste doit être payé — un rappel s'affiche en haut du tableau de bord">
-          <div className="rounded-xl border border-slate-200 p-4 space-y-3"
+          <div className="rounded-2xl border border-slate-200 p-4 space-y-4"
             style={{ background: 'linear-gradient(135deg, rgba(0,48,135,0.04), rgba(255,184,0,0.07))' }}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"
                   style={{ background: 'linear-gradient(135deg, #001f5c, #003087)' }}>
                   <BellRing className="w-5 h-5 text-[#FFB800]" />
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-[#002d87]">Activer le rendez-vous de paiement</p>
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-[#002d87]">Activer le rendez-vous de paiement</p>
                   <p className="text-xs text-slate-500">
                     Une alerte apparaîtra en haut du tableau de bord jusqu'au règlement de la dette.
                   </p>
@@ -794,30 +920,30 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
 
             {apptOn && (
               rest <= 0 ? (
-                <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+                <p className="text-xs sm:text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
                   Cet achat est entièrement payé — aucun rendez-vous n'est nécessaire.
                   Le rappel s'activera automatiquement s'il reste une dette.
                 </p>
               ) : (
                 <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-200">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4 pt-4 border-t border-slate-200">
                     <Field label="Date du rendez-vous" required>
                       <Input type="date" value={apptDate} min={todayISO()} onChange={e => setApptDate(e.target.value)} />
                     </Field>
                     <Field label="Montant attendu (DA)" hint={`Laissez vide pour le reste dû (${money(rest)}).`}>
-                      <Input type="number" step="0.01" value={apptAmount}
-                        onChange={e => setApptAmount(e.target.value)} placeholder={String(Math.round(rest))} />
+                      <Input type="number" step="0.01" inputMode="decimal" value={apptAmount}
+                        onChange={e => setApptAmount(e.target.value)} placeholder={String(Math.round(rest))} className="text-right" />
+                    </Field>
+                    <Field label="Note du rendez-vous" >
+                      <Input value={apptNotes} onChange={e => setApptNotes(e.target.value)}
+                        placeholder="Ex: régler par chèque à l'agence…" />
                     </Field>
                   </div>
-                  <Field label="Note du rendez-vous">
-                    <Input value={apptNotes} onChange={e => setApptNotes(e.target.value)}
-                      placeholder="Ex: régler par chèque à l'agence, contacter M. Kaddour…" />
-                  </Field>
-                  <div className="rounded-xl bg-[#001f5c] text-white p-3 flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-blue-200">
+                  <div className="rounded-xl bg-[#001f5c] text-white p-4 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs sm:text-sm font-semibold text-blue-200">
                       Rappel {apptDate ? `le ${formatDate(apptDate)}` : '— choisissez une date'}
                     </span>
-                    <span className="text-lg font-black tabular-nums text-[#FFB800]">
+                    <span className="text-xl font-black tabular-nums text-[#FFB800]">
                       {money(apptAmount === '' ? rest : Number(apptAmount) || 0)}
                     </span>
                   </div>
@@ -829,7 +955,8 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
 
         {/* 6. Notes */}
         <FormSection step={6} icon={FileText} title="Observations" hint="Reprises sur la facture imprimée">
-          <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Notes internes ou mentions à imprimer…" />
+          <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4}
+            placeholder="Notes internes ou mentions à imprimer…" />
         </FormSection>
       </div>
     </Modal>
@@ -844,33 +971,33 @@ function PurchaseDetail({ purchase, onClose, onPrint }: {
   const supplier = suppliers.find(s => s.id === purchase.supplierId);
   const appt = appointmentOf(purchase);
   return (
-    <Modal open onClose={onClose} icon={ShoppingCart} size="xl"
+    <Modal open onClose={onClose} icon={ShoppingCart} size="2xl"
       title={`Achat ${purchase.invoiceNumber || purchase.blNumber || ''}`.trim()}
       subtitle={`${supplier?.name || 'Fournisseur'} — ${formatDate(purchase.date)}`}
       footer={<button className="btn-outline" onClick={onPrint}><Printer className="w-4 h-4" /> Imprimer</button>}>
       <div className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">N° facture</p><p className="font-bold text-slate-700 text-sm">{purchase.invoiceNumber || '—'}</p></div>
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">N° BL</p><p className="font-bold text-slate-700 text-sm">{purchase.blNumber || '—'}</p></div>
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Date</p><p className="font-bold text-slate-700 text-sm">{formatDate(purchase.date)}</p></div>
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Statut</p><p className="font-bold text-slate-700 text-sm">{purchase.status}</p></div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">N° facture</p><p className="font-bold text-slate-700 text-sm break-words">{purchase.invoiceNumber || '—'}</p></div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">N° BL</p><p className="font-bold text-slate-700 text-sm break-words">{purchase.blNumber || '—'}</p></div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Date</p><p className="font-bold text-slate-700 text-sm">{formatDate(purchase.date)}</p></div>
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Statut</p><p className="font-bold text-slate-700 text-sm">{purchase.status}</p></div>
         </div>
 
-        <Table head={<><th className="table-head">Cuve</th><th className="table-head">Quantité</th><th className="table-head">Prix / L</th><th className="table-head text-right">Total</th></>}>
+        <Table head={<><th className="table-head">Cuve</th><th className="table-head text-right">Quantité</th><th className="table-head text-right">Prix / L</th><th className="table-head text-right">Total</th></>}>
           {(purchase.items || []).map((i, idx) => {
             const tank = tanks.find(t => t.id === i.tankId);
             return (
               <tr key={idx}>
                 <td className="table-cell">{tank ? `${tank.name} (${tank.type})` : i.productName}</td>
-                <td className="table-cell tabular-nums">{i.quantity.toLocaleString('fr-FR')} L</td>
-                <td className="table-cell tabular-nums">{money(i.buyPrice)}</td>
+                <td className="table-cell tabular-nums text-right">{i.quantity.toLocaleString('fr-FR')} L</td>
+                <td className="table-cell tabular-nums text-right">{money(i.buyPrice)}</td>
                 <td className="table-cell text-right tabular-nums font-bold">{money(i.total)}</td>
               </tr>
             );
           })}
         </Table>
 
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
           <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Sous-total</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(purchase.subtotal ?? purchase.total)}</p></div>
           <div className="rounded-xl bg-amber-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Remise</p><p className="font-black text-amber-600 tabular-nums text-sm">{money(purchase.discountAmount || 0)}</p></div>
           <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">TVA</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(purchase.tvaAmount || 0)}</p></div>
@@ -1026,11 +1153,11 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
   };
 
   return (
-    <Modal open onClose={onClose} icon={Wallet} size="xl"
+    <Modal open onClose={onClose} icon={Wallet} size="2xl" formScale
       title="Payer la dette fournisseur"
       subtitle={`${purchase.invoiceNumber || purchase.blNumber || 'Achat'} — reste ${money(purchase.rest)}`}
       footer={<>
-        <div className="mr-auto flex items-center gap-4 text-xs font-bold">
+        <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
           <span className="text-slate-400 uppercase tracking-widest">{lines.length} règlement(s)</span>
           <span className="text-emerald-600">Total {money(value)}</span>
           <span className={newRest > 0 ? 'text-red-600' : 'text-emerald-600'}>Nouveau reste {money(newRest)}</span>
@@ -1041,46 +1168,46 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
         </button>
       </>}>
       <div className="space-y-4">
-        <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(purchase.total)}</p></div>
-          <div className="rounded-xl bg-emerald-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Déjà payé</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(purchase.amountPaid)}</p></div>
-          <div className="rounded-xl bg-red-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm">{money(purchase.rest)}</p></div>
+        <div className="grid grid-cols-3 gap-2 sm:gap-3">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{money(purchase.total)}</p></div>
+          <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Déjà payé</p><p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{money(purchase.amountPaid)}</p></div>
+          <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm sm:text-base">{money(purchase.rest)}</p></div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[11px] font-black uppercase tracking-widest text-[#002d87] flex items-center gap-1.5">
-            <Banknote className="w-3.5 h-3.5 text-[#FFB800]" /> Modes de paiement
+          <p className="text-xs font-black uppercase tracking-wider text-[#002d87] flex items-center gap-1.5">
+            <Banknote className="w-4 h-4 text-[#FFB800]" /> Modes de paiement
           </p>
-          <div className="flex flex-wrap gap-2">
-            <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine(CAISSE_ID)}>
-              <Wallet className="w-3.5 h-3.5" /> + Espèces
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+            <button className="btn-outline !py-2 !px-3.5 text-xs flex-1 sm:flex-none" onClick={() => addLine(CAISSE_ID)}>
+              <Wallet className="w-4 h-4" /> Espèces
             </button>
             {bankAccounts.length > 0 && (
-              <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine(bankAccounts[0].id)}>
-                <Landmark className="w-3.5 h-3.5" /> + Banque
+              <button className="btn-secondary !py-2 !px-3.5 text-xs flex-1 sm:flex-none" onClick={() => addLine(bankAccounts[0].id)}>
+                <Landmark className="w-4 h-4" /> Compte bancaire
               </button>
             )}
           </div>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           {lines.map((l, i) => {
             const v = Number(l.amount) || 0;
             const before = balanceOf(l.accountId);
             const insufficient = v > before;
             return (
-              <div key={l.id} className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[11px] font-black shrink-0">{i + 1}</span>
-                  <div className="flex gap-1.5">
+              <div key={l.id} className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+                <div className="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                  <span className="w-7 h-7 rounded-xl bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-xs font-black shrink-0">{i + 1}</span>
+                  <div className="flex gap-1.5 flex-wrap">
                     {PAY_MODES.map(m => (
                       <button key={m.id} onClick={() => setLine(l.id, { mode: m.id })}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold ${l.mode === m.id ? 'bg-[#003087] text-white' : 'bg-white text-slate-500 border border-slate-200'}`}>
+                        className={`px-3 py-2 rounded-xl text-xs font-bold transition-colors ${l.mode === m.id ? 'bg-[#003087] text-white shadow-sm' : 'bg-white text-slate-500 border border-slate-200 hover:border-[#003087]/40'}`}>
                         {m.label}
                       </button>
                     ))}
                   </div>
-                  <span className="ml-auto text-xs font-black tabular-nums text-[#002d87]">{money(v)}</span>
+                  <span className="ml-auto text-sm font-black tabular-nums text-[#002d87]">{money(v)}</span>
                   {lines.length > 1 && (
                     <button onClick={() => rmLine(l.id)} title="Retirer ce règlement"
                       className="w-9 h-9 rounded-xl text-red-500 hover:bg-red-50 flex items-center justify-center shrink-0">
@@ -1088,7 +1215,7 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
                   <Field label="Payer depuis">
                     <Select value={l.accountId} onChange={e => setLine(l.id, { accountId: e.target.value })}>
                       <option value={CAISSE_ID}>Espèces (caisse générale)</option>
@@ -1096,8 +1223,8 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
                     </Select>
                   </Field>
                   <Field label="Montant (DA)">
-                    <Input type="number" step="0.01" value={l.amount}
-                      onChange={e => setLine(l.id, { amount: e.target.value })} className="text-right font-bold" />
+                    <Input type="number" step="0.01" inputMode="decimal" value={l.amount}
+                      onChange={e => setLine(l.id, { amount: e.target.value })} className="text-right" />
                   </Field>
                   <Field label="Date"><Input type="date" value={l.date} onChange={e => setLine(l.id, { date: e.target.value })} /></Field>
                   <Field label={l.mode === 'CHEQUE' ? 'N° chèque' : 'N° bordereau'}>
@@ -1106,10 +1233,12 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
                       : <Input value={l.bordereauNumber} onChange={e => setLine(l.id, { bordereauNumber: e.target.value })} placeholder="Optionnel" />}
                   </Field>
                 </div>
-                <p className={`text-[11px] flex items-center gap-1.5 ${insufficient ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
-                  {l.accountId === CAISSE_ID ? <Wallet className="w-3 h-3" /> : <Landmark className="w-3 h-3" />}
-                  Solde {accountLabel(l.accountId, bankAccounts)} : {money(before)} → {money(before - v)} après paiement
-                  {insufficient ? ' — solde insuffisant' : ''}
+                <p className={`px-3 sm:px-4 pb-3 text-[11px] sm:text-xs flex items-start gap-1.5 ${insufficient ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
+                  {l.accountId === CAISSE_ID ? <Wallet className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <Landmark className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                  <span>
+                    Solde {accountLabel(l.accountId, bankAccounts)} : {money(before)} → {money(before - v)} après paiement
+                    {insufficient ? ' — solde insuffisant' : ''}
+                  </span>
                 </p>
               </div>
             );
@@ -1122,16 +1251,17 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
           </p>
         )}
 
-        <div className="rounded-xl bg-[#001f5c] text-white p-4 flex items-center justify-between">
-          <div>
+        <div className="rounded-2xl bg-[#001f5c] text-white p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
             <span className="text-sm font-semibold text-blue-200">Nouveau reste</span>
             {newRest <= 0 && (
-              <p className="text-[11px] text-emerald-300 flex items-center gap-1 mt-0.5">
-                <CheckCircle2 className="w-3 h-3" /> Dette soldée — le rappel de paiement sera retiré du tableau de bord
+              <p className="text-[11px] text-emerald-300 flex items-start gap-1 mt-0.5">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>Dette soldée — le rappel de paiement sera retiré du tableau de bord</span>
               </p>
             )}
           </div>
-          <span className="text-xl font-black tabular-nums text-[#FFB800]">{money(newRest)}</span>
+          <span className="text-2xl font-black tabular-nums text-[#FFB800]">{money(newRest)}</span>
         </div>
       </div>
     </Modal>
