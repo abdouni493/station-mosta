@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { motion } from "motion/react";
+import { ModalPortal } from "./biz/Kit";
 
 interface Props {
   title: string;
@@ -15,9 +16,13 @@ interface Props {
 const ConfirmDialog = ({ title, message, onConfirm, onCancel, confirmLabel = "Confirmer", danger = true, isOpen = true }: Props) => {
   if (!isOpen) return null;
   return (
-  <div className="modal-overlay" onClick={onCancel}>
-    <motion.div initial={{ opacity: 0, scale: 0.9, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }}
-      className="modal-box max-w-sm" onClick={e => e.stopPropagation()}>
+  <ModalPortal>
+  <div className="modal-shell z-[60]">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+      onClick={onCancel} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
+    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      className="modal-box max-w-sm relative z-10" onClick={e => e.stopPropagation()}>
       <div className="p-6">
         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 ${danger ? "bg-red-100" : "bg-amber-100"}`}>
           <AlertTriangle className={`w-6 h-6 ${danger ? "text-red-600" : "text-amber-600"}`} />
@@ -34,6 +39,7 @@ const ConfirmDialog = ({ title, message, onConfirm, onCancel, confirmLabel = "Co
       </div>
     </motion.div>
   </div>
+  </ModalPortal>
   );
 };
 

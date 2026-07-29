@@ -7,9 +7,25 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Search, LayoutGrid, List, Inbox, Eye, Edit2, Trash2, Plus } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/src/lib/utils';
+
+/**
+ * Renders a dialog straight into <body>.
+ *
+ * Every page wrapper is a potential trap for a `position: fixed` overlay: an
+ * ancestor carrying a transform, a filter or — as on the pages using
+ * `animate-fade-in` — a CSS animation on `opacity` establishes a stacking
+ * context, and the dialog inside it can no longer rise above the sidebar
+ * (z-50) no matter how high its own z-index is. Escaping to <body> is the only
+ * fix that does not depend on what the page above happens to do.
+ */
+export function ModalPortal({ children }: { children: React.ReactNode }) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(children, document.body);
+}
 
 export { formatCurrency, formatDate };
 export const money = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
@@ -93,16 +109,26 @@ export function Modal({
   fullHeight?: boolean;
   children: React.ReactNode; footer?: React.ReactNode;
 }) {
+  // Same shell, same backdrop and same entrance as the « Nouvelle Brigade »
+  // assistant: a transparent scroll layer, a blurred backdrop pinned to the
+  // viewport, and the box fading in while it scales up from 0.95.
   return (
+    <ModalPortal>
     <AnimatePresence>
       {open && (
-        <div className="modal-overlay" onClick={onClose}>
+        <div className="modal-shell z-[60]">
           <motion.div
-            initial={{ opacity: 0, scale: 0.97, y: -16 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.97, y: -10 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            onClick={onClose}
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            className={cn('modal-box', modalSizes[size], formScale && 'modal-form-lg', fullHeight && 'modal-box-full')}
+            className={cn('modal-box relative z-10', modalSizes[size], formScale && 'modal-form-lg', fullHeight && 'modal-box-full')}
             onClick={e => e.stopPropagation()}
           >
             <div className="modal-header">
@@ -127,6 +153,7 @@ export function Modal({
         </div>
       )}
     </AnimatePresence>
+    </ModalPortal>
   );
 }
 
@@ -188,9 +215,13 @@ export function Confirm({
 }: { open: boolean; title: string; message: string; onConfirm: () => void; onCancel: () => void; confirmLabel?: string; danger?: boolean }) {
   if (!open) return null;
   return (
-    <div className="modal-overlay" onClick={onCancel} style={{ zIndex: 70 }}>
-      <motion.div initial={{ opacity: 0, scale: 0.95, y: -12 }} animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="modal-box max-w-sm" onClick={e => e.stopPropagation()}>
+    <ModalPortal>
+    <div className="modal-shell" style={{ zIndex: 70 }}>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+        onClick={onCancel} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
+      <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+        className="modal-box max-w-sm relative z-10" onClick={e => e.stopPropagation()}>
         <div className="p-6">
           <div className={cn('w-12 h-12 rounded-2xl flex items-center justify-center mb-4', danger ? 'bg-red-100' : 'bg-amber-100')}>
             <Trash2 className={cn('w-6 h-6', danger ? 'text-red-600' : 'text-amber-600')} />
@@ -208,6 +239,7 @@ export function Confirm({
         </div>
       </motion.div>
     </div>
+    </ModalPortal>
   );
 }
 

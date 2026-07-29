@@ -11,7 +11,7 @@ import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
 import { BizProduct, BizContact } from '@/src/lib/bizConfig';
-import { Modal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
+import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import { uploadFile } from '@/src/lib/supabase';
 
 // ─── Barcode helpers ──────────────────────────────────────────────────────────
@@ -664,8 +664,10 @@ export function AskPrintModal({
 }) {
   if (!open) return null;
   return (
-    <div className="modal-overlay" style={{ zIndex: 80 }} onClick={onSkip}>
-      <div className="modal-box max-w-sm" onClick={e => e.stopPropagation()}>
+    <ModalPortal>
+    <div className="modal-shell" style={{ zIndex: 80 }} onClick={onSkip}>
+      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
+      <div className="modal-box modal-box-anim max-w-sm relative z-10" onClick={e => e.stopPropagation()}>
         <div className="p-6">
           <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center mb-4">
             <Printer className="w-6 h-6 text-[#003087]" />
@@ -683,6 +685,7 @@ export function AskPrintModal({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }
 

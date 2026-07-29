@@ -105,3 +105,5 @@ fix the interface of pos on lavage add for it new option for activate remise wit
  
 fix the interface of pos of cafeteria and pos of lavage make on it option for organize the order of displaying products make it user can select the products that have to display on the begin of the interface as products that selling too much to quick access
 
+make sure to make the interfaces of purchase lavage and cafeteria and purchase carburant large exactly like the interface of create new brigade
+then push all updates to repo

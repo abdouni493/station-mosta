@@ -408,8 +408,12 @@ tr:hover .table-cell { background: rgba(0,48,135,0.025); }
   background: white;
   border: 1px solid rgba(0,48,135,0.10);
   box-shadow: 0 32px 80px rgba(0,18,51,0.35), 0 0 0 1px rgba(255,255,255,0.6) inset;
-  animation: modalDrop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* Entrance for the dialogs that are NOT driven by motion. A CSS animation
+   overrides inline styles while it runs, so keeping it on every .modal-box
+   fought framer-motion's own transform; only the plain ones opt in now. */
+.modal-box-anim { animation: modalDrop 0.28s cubic-bezier(0.16, 1, 0.3, 1); }
 
 /* Full-height workspace — same geometry as the « Nouvelle Brigade » assistant:
    the dialog always fills the available height, the header and the footer stay
@@ -428,7 +432,9 @@ tr:hover .table-cell { background: rgba(0,48,135,0.025); }
 .modal-box-full > .modal-header,
 .modal-box-full > .modal-footer { flex-shrink: 0; }
 
-@keyframes modalDrop { from { opacity: 0; transform: translateY(-18px) scale(0.97); } to { opacity: 1; transform: none; } }
+/* Same entrance as the « Nouvelle Brigade » assistant: fade in while scaling
+   up from 0.95. */
+@keyframes modalDrop { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
 
 /* Navy header with the sidebar's gradient + yellow accent */
 .modal-header {
