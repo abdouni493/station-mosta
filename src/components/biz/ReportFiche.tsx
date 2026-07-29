@@ -19,6 +19,12 @@ export const da = (n: number) => (n || 0).toLocaleString('fr-FR', { minimumFract
 export const lit = (n: number) => (n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
 const shortDate = (s: string) => { if (!s) return '—'; const d = new Date(s); return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString('fr-FR'); };
 
+/** Colour of a purchase status label on the printed sheet. */
+const statusColor = (s: string) => s === 'Payé' ? '#15803d' : s === 'Partiel' ? '#b45309' : s === 'En attente livraison' ? '#64748b' : '#dc2626';
+
+/** Human labels for the payment modes carried by an achat carburant. */
+export const PAY_MODE_LABEL: Record<string, string> = { ESPECES: 'Espèces', CHEQUE: 'Chèque', VIREMENT: 'Virement' };
+
 // ─── Print helper ────────────────────────────────────────────────────────────
 export function printFiche(el: HTMLElement | null) {
   if (!el) return;
@@ -486,3 +492,165 @@ export const GlobalFiche = React.forwardRef<HTMLDivElement, { global: GlobalRepo
   );
 });
 GlobalFiche.displayName = 'GlobalFiche';
+
+// ─── Fuel-purchases fiche (Achats carburant, fully detailed) ─────────────────
+/** One règlement of an achat carburant, with its mode and its references. */
+export interface FuelPurchasePaymentDetail {
+  mode: string;                 // ESPECES | CHEQUE | VIREMENT
+  amount: number;
+  chequeNumber?: string;
+  bordereauNumber?: string;
+  account: string;              // libellé du compte débité (caisse ou banque)
+  date: string;
+  notes?: string;
+}
+/** A single achat carburant with everything needed to print/inspect it. */
+export interface FuelPurchaseDetail {
+  id: string;
+  invoiceNumber?: string;
+  blNumber?: string;
+  date: string;
+  supplier: string;
+  status: string;
+  items: { name: string; qty: number; unitPrice: number; total: number }[];
+  subtotal: number;
+  discountAmount: number;
+  tvaAmount: number;
+  total: number;
+  paid: number;
+  rest: number;
+  liters: number;
+  payments: FuelPurchasePaymentDetail[];
+}
+
+/**
+ * Printable "Achats Carburant" sheet — same Fiche-Journalière shell (banner, KPI
+ * strip, numbered striped parts, signature footer) as every other fiche. Lists
+ * every fuel purchase of the period with its cuves, and — crucially — the mode de
+ * paiement and the n° de chèque / bordereau of each règlement.
+ */
+export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
+  purchases: FuelPurchaseDetail[]; from: string; to: string; settings: any;
+}>(({ purchases, from, to, settings }, ref) => {
+  const period = `Du ${shortDate(from)} au ${shortDate(to)}`;
+  const title = 'Achats Carburant';
+  const totals = purchases.reduce(
+    (a, p) => ({ total: a.total + p.total, paid: a.paid + p.paid, rest: a.rest + p.rest, liters: a.liters + p.liters }),
+    { total: 0, paid: 0, rest: 0, liters: 0 },
+  );
+  const allPayments = purchases.flatMap(p =>
+    p.payments.map(pay => ({ ...pay, ref: p.invoiceNumber || p.blNumber || p.id.slice(0, 8), supplier: p.supplier })));
+  const paymentsByMode: Record<string, number> = {};
+  allPayments.forEach(p => { paymentsByMode[p.mode] = (paymentsByMode[p.mode] || 0) + p.amount; });
+
+  return (
+    <div aria-hidden="true" style={hiddenWrap}>
+      <div ref={ref} className="not-italic" style={sheetStyle}>
+        <Banner settings={settings} badge="Achats · Carburant" period={period} />
+        <KpiStrip kpis={[
+          { label: 'Nombre d\'achats', value: `${purchases.length}`, col: C.blue700 },
+          { label: 'Volume acheté', value: `${lit(totals.liters)} L`, col: '#7c3aed' },
+          { label: 'Total achats', value: `${da(totals.total)} DA`, col: '#c2410c' },
+          { label: 'Payé', value: `${da(totals.paid)} DA`, col: '#047857' },
+          { label: 'Reste (dette)', value: `${da(totals.rest)} DA`, col: totals.rest > 0 ? '#dc2626' : '#94a3b8' },
+        ]} />
+
+        {/* PART 1 — Liste des achats */}
+        <Part num="1" label="Achats carburant" accent="#c2410c">
+          <table style={tableStyle}>
+            <thead><tr style={theadRow}>
+              <TH>Facture</TH><TH>BL</TH><TH>Date</TH><TH>Fournisseur</TH>
+              <TH align="right">Volume</TH><TH align="right">Total</TH><TH align="right">Payé</TH><TH align="right">Reste</TH><TH>Statut</TH>
+            </tr></thead>
+            <tbody>
+              {purchases.length === 0 && (
+                <tr><TD color="#94a3b8">Aucun achat carburant sur la période</TD><TD /><TD /><TD /><TD align="right">0</TD><TD align="right">0</TD><TD align="right">0</TD><TD align="right">0</TD><TD /></tr>
+              )}
+              {purchases.map((p, i) => (
+                <tr key={p.id} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
+                  <TD bold>{p.invoiceNumber || '—'}</TD>
+                  <TD>{p.blNumber || '—'}</TD>
+                  <TD>{shortDate(p.date)}</TD>
+                  <TD>{p.supplier}</TD>
+                  <TD align="right">{lit(p.liters)} L</TD>
+                  <TD align="right" bold color={C.blue900}>{da(p.total)} DA</TD>
+                  <TD align="right" color="#15803d">{da(p.paid)} DA</TD>
+                  <TD align="right" color={p.rest > 0 ? '#dc2626' : '#94a3b8'}>{da(p.rest)} DA</TD>
+                  <TD bold color={statusColor(p.status)}>{p.status}</TD>
+                </tr>
+              ))}
+              <tr style={{ background: '#fff7ed' }}>
+                <TD bold color="#9a3412">TOTAL</TD><TD /><TD /><TD />
+                <TD align="right" bold color="#9a3412">{lit(totals.liters)} L</TD>
+                <TD align="right" bold color="#9a3412">{da(totals.total)} DA</TD>
+                <TD align="right" bold color="#15803d">{da(totals.paid)} DA</TD>
+                <TD align="right" bold color="#dc2626">{da(totals.rest)} DA</TD>
+                <TD />
+              </tr>
+            </tbody>
+          </table>
+        </Part>
+
+        {/* PART 2 — Règlements & modes de paiement (chèque / bordereau / compte) */}
+        <Part num="2" label="Règlements & modes de paiement" accent={C.blue700}>
+          <table style={tableStyle}>
+            <thead><tr style={theadRow}>
+              <TH>Achat</TH><TH>Fournisseur</TH><TH>Mode</TH><TH>Compte débité</TH><TH>N° chèque / bordereau</TH><TH>Date</TH><TH align="right">Montant</TH>
+            </tr></thead>
+            <tbody>
+              {allPayments.length === 0 && (
+                <tr><TD color="#94a3b8">Aucun règlement enregistré</TD><TD /><TD /><TD /><TD /><TD /><TD align="right">0</TD></tr>
+              )}
+              {allPayments.map((p, i) => (
+                <tr key={i} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
+                  <TD bold>{p.ref}</TD>
+                  <TD>{p.supplier}</TD>
+                  <TD bold color={p.mode === 'CHEQUE' ? '#1d4ed8' : p.mode === 'VIREMENT' ? '#7c3aed' : '#047857'}>{PAY_MODE_LABEL[p.mode] || p.mode}</TD>
+                  <TD>{p.account}</TD>
+                  <TD>{p.chequeNumber ? `Chèque n° ${p.chequeNumber}` : p.bordereauNumber ? `Bordereau n° ${p.bordereauNumber}` : '—'}</TD>
+                  <TD>{shortDate(p.date)}</TD>
+                  <TD align="right" bold color={C.blue900}>{da(p.amount)} DA</TD>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {Object.keys(paymentsByMode).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 10 }}>
+              {Object.entries(paymentsByMode).map(([mode, amt]) => (
+                <span key={mode} style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#334155' }}>
+                  {PAY_MODE_LABEL[mode] || mode} : {da(amt)} DA
+                </span>
+              ))}
+            </div>
+          )}
+        </Part>
+
+        {/* PART 3 — Cuves livrées (détail ligne par ligne) */}
+        <Part num="3" label="Cuves livrées (détail)" accent="#047857">
+          <table style={tableStyle}>
+            <thead><tr style={theadRow}>
+              <TH>Achat</TH><TH>Cuve / Produit</TH><TH align="right">Quantité</TH><TH align="right">Prix / L</TH><TH align="right">Total</TH>
+            </tr></thead>
+            <tbody>
+              {purchases.length === 0 && (
+                <tr><TD color="#94a3b8">Aucune livraison</TD><TD /><TD align="right">0</TD><TD align="right">0</TD><TD align="right">0</TD></tr>
+              )}
+              {purchases.flatMap((p, pi) => p.items.map((it, ii) => (
+                <tr key={`${pi}-${ii}`} style={{ background: (pi + ii) % 2 ? '#f8fafc' : '#fff' }}>
+                  <TD bold>{p.invoiceNumber || p.blNumber || p.id.slice(0, 8)}</TD>
+                  <TD>{it.name}</TD>
+                  <TD align="right">{lit(it.qty)} L</TD>
+                  <TD align="right" color="#b45309">{da(it.unitPrice)} DA</TD>
+                  <TD align="right" bold color="#1d4ed8">{da(it.total)} DA</TD>
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        </Part>
+
+        <Footer settings={settings} title={title} />
+      </div>
+    </div>
+  );
+});
+PurchasesFiche.displayName = 'PurchasesFiche';
