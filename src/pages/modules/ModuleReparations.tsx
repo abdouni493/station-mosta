@@ -466,11 +466,13 @@ function ReparationForm({
       : l));
 
   // ── Products — search by name OR barcode ───────────────────────────────────
+  // Products out of stock stay searchable: an intervention may consume them and
+  // drive the stock negative (rattrapé au prochain achat), like the POS comptoir.
   const productMatches = useMemo(() => {
     const q = pQuery.trim().toLowerCase();
     if (!q) return [];
     return products
-      .filter(p => p.currentQty > 0 && (p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)))
+      .filter(p => p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q))
       .slice(0, 8);
   }, [products, pQuery]);
 
@@ -557,7 +559,9 @@ function ReparationForm({
     if (shouldDeduct) {
       used.forEach(u => {
         const p = products.find(x => x.id === u.productId);
-        if (p) biz.update('products', { ...p, currentQty: Math.max(0, p.currentQty - u.qty) });
+        // Oversell allowed: the stock may go negative and is recovered on the
+        // next purchase (e.g. −5 en stock + 15 reçus = 10), as in the POS.
+        if (p) biz.update('products', { ...p, currentQty: p.currentQty - u.qty });
       });
     }
 
