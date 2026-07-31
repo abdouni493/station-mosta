@@ -25,6 +25,15 @@ const statusColor = (s: string) => s === 'Payé' ? '#15803d' : s === 'Partiel' ?
 /** Human labels for the payment modes carried by an achat carburant. */
 export const PAY_MODE_LABEL: Record<string, string> = { ESPECES: 'Espèces', CHEQUE: 'Chèque', VIREMENT: 'Virement' };
 
+/** Human labels for the fuel types a cuve can hold. */
+export const FUEL_TYPE_LABEL: Record<string, string> = {
+  ESSENCE: 'Essence', GASOIL: 'Gasoil', GPL: 'GPL', DIESEL: 'Diesel', SUPER: 'Super', AUTRE: 'Autre',
+};
+/** Print colours per fuel type (kept sober for the black-and-white fiche). */
+export const FUEL_TYPE_COLOR: Record<string, string> = {
+  ESSENCE: '#15803d', GASOIL: '#b45309', GPL: '#7c3aed', DIESEL: '#0e7490', SUPER: '#b91c1c', AUTRE: '#475569',
+};
+
 // ─── Print helper ────────────────────────────────────────────────────────────
 export function printFiche(el: HTMLElement | null) {
   if (!el) return;
@@ -76,7 +85,7 @@ function TH({ children, align }: { children?: React.ReactNode; align?: 'left' | 
 function TD({ children, align, bold, color }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center'; bold?: boolean; color?: string }) {
   return <td style={{ padding: '5px 9px', textAlign: align || 'left', fontSize: 10.5, fontWeight: bold ? 900 : 600, color: color || '#1e293b', borderBottom: '1px solid #eef2f7' }}>{children}</td>;
 }
-function Part({ num, label, accent, children }: { num: string; label: string; accent: string; children: React.ReactNode }) {
+function Part({ num, label, accent, children }: { num: string; label: string; accent: string; children: React.ReactNode; key?: React.Key }) {
   return (
     <section style={{ borderTop: `2px solid ${accent}`, margin: '0 14px 14px 14px', breakInside: 'avoid' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', background: '#fff', borderBottom: '1px solid #e2e8f0' }}>
@@ -514,7 +523,7 @@ export interface FuelPurchaseDetail {
   date: string;
   supplier: string;
   status: string;
-  items: { name: string; qty: number; unitPrice: number; total: number }[];
+  items: { name: string; qty: number; unitPrice: number; total: number; type?: string }[];
   /** Cuves livrées, en une ligne : « Cuve 1 (Essence), Cuve 2 (Gasoil) ». */
   cuves: string;
   subtotal: number;
@@ -527,15 +536,18 @@ export interface FuelPurchaseDetail {
   payments: FuelPurchasePaymentDetail[];
 }
 
+/** Anything that carries a list of règlements (un achat entier ou une tranche par carburant). */
+interface HasPayments { payments: FuelPurchasePaymentDetail[] }
+
 /** Modes de règlement d'un achat, résumés en une ligne : « Chèque, Espèces ». */
-export const payModesOf = (p: FuelPurchaseDetail): string =>
+export const payModesOf = (p: HasPayments): string =>
   Array.from(new Set(p.payments.map(pay => PAY_MODE_LABEL[pay.mode] || pay.mode))).join(', ') || '—';
 
 /**
  * Références du règlement, en une ligne : compte débité + n° de chèque /
  * bordereau. C'est l'information que le gérant recherche sur la fiche imprimée.
  */
-export const payInfoOf = (p: FuelPurchaseDetail): string => {
+export const payInfoOf = (p: HasPayments): string => {
   if (p.payments.length === 0) return 'Aucun règlement (dette)';
   return p.payments.map(pay => [
     pay.account,
@@ -543,6 +555,109 @@ export const payInfoOf = (p: FuelPurchaseDetail): string => {
     pay.bordereauNumber ? `bordereau n° ${pay.bordereauNumber}` : '',
   ].filter(Boolean).join(' · ')).join(' | ');
 };
+
+// ─── Regroupement des achats par TYPE de carburant ────────────────────────────
+/**
+ * Un achat vu du côté d'UN carburant : la part de cet achat qui concerne ce
+ * carburant. Un achat mono-carburant (le cas courant) donne une seule tranche
+ * égale à l'achat entier ; un achat qui remplit des cuves de types différents est
+ * réparti au prorata de la valeur de chaque type (montants, payé, reste et
+ * règlements sont proratisés pour que la somme des tranches redonne l'achat).
+ */
+export interface FuelPurchaseSlice {
+  id: string;          // id de l'achat parent (partagé entre les tranches d'un achat multi-types)
+  ref: string;
+  date: string;
+  supplier: string;
+  status: string;
+  cuves: string;       // cuves de CE type uniquement
+  liters: number;      // litres de CE type
+  total: number;       // montant attribué à CE type
+  paid: number;
+  rest: number;
+  payments: FuelPurchasePaymentDetail[]; // règlements (montant = part attribuée à ce type)
+  multiType: boolean;  // vrai si l'achat parent couvre plusieurs carburants
+}
+/** Tous les achats d'un même carburant, avec ses totaux et son récap de règlements. */
+export interface FuelTypeGroup {
+  type: string;        // ESSENCE | GASOIL | GPL | DIESEL | SUPER | AUTRE
+  label: string;
+  color: string;
+  liters: number;
+  total: number;
+  paid: number;
+  rest: number;
+  count: number;       // nombre d'achats touchant ce carburant
+  slices: FuelPurchaseSlice[];
+  /** Récapitulatif des règlements par mode, pour ce carburant. */
+  paymentsByMode: Record<string, { amount: number; count: number }>;
+}
+
+/**
+ * Regroupe une liste d'achats carburant par TYPE de carburant. Les totaux (litres,
+ * montant, payé, reste) et les règlements sont calculés au niveau du carburant :
+ * un achat qui remplit plusieurs types est réparti au prorata de la valeur livrée
+ * de chaque type. Les groupes sont triés du plus gros total au plus petit.
+ */
+export function groupPurchasesByFuelType(purchases: FuelPurchaseDetail[]): FuelTypeGroup[] {
+  const groups = new Map<string, FuelTypeGroup>();
+  const ensure = (type: string): FuelTypeGroup => {
+    let g = groups.get(type);
+    if (!g) {
+      g = { type, label: FUEL_TYPE_LABEL[type] || type, color: FUEL_TYPE_COLOR[type] || FUEL_TYPE_COLOR.AUTRE,
+        liters: 0, total: 0, paid: 0, rest: 0, count: 0, slices: [], paymentsByMode: {} };
+      groups.set(type, g);
+    }
+    return g;
+  };
+
+  for (const p of purchases) {
+    // Valeur, litres et cuves par type, à partir des lignes de l'achat.
+    const byType = new Map<string, { liters: number; value: number; cuves: Set<string> }>();
+    for (const it of p.items) {
+      const t = it.type || 'AUTRE';
+      const e = byType.get(t) || { liters: 0, value: 0, cuves: new Set<string>() };
+      e.liters += it.qty || 0;
+      e.value += it.total || 0;
+      if (it.name) e.cuves.add(it.name);
+      byType.set(t, e);
+    }
+    // Achat sans ligne de cuve exploitable : tout sur « Autre » pour ne rien perdre.
+    if (byType.size === 0) byType.set('AUTRE', { liters: p.liters, value: p.total, cuves: new Set<string>() });
+
+    const totalValue = Array.from(byType.values()).reduce((s, e) => s + e.value, 0) || 1;
+    const multiType = byType.size > 1;
+
+    for (const [t, e] of byType) {
+      const share = multiType ? e.value / totalValue : 1;
+      const g = ensure(t);
+      const sliceTotal = multiType ? p.total * share : p.total;
+      const slicePaid = multiType ? p.paid * share : p.paid;
+      const sliceRest = multiType ? p.rest * share : p.rest;
+      const slicePayments = p.payments.map(pay => ({ ...pay, amount: multiType ? pay.amount * share : pay.amount }));
+
+      g.liters += e.liters;
+      g.total += sliceTotal;
+      g.paid += slicePaid;
+      g.rest += sliceRest;
+      g.count += 1;
+      g.slices.push({
+        id: p.id, ref: p.ref, date: p.date, supplier: p.supplier, status: p.status,
+        cuves: Array.from(e.cuves).join(', '), liters: e.liters,
+        total: sliceTotal, paid: slicePaid, rest: sliceRest, payments: slicePayments, multiType,
+      });
+      slicePayments.forEach(pay => {
+        const cur = g.paymentsByMode[pay.mode] || { amount: 0, count: 0 };
+        g.paymentsByMode[pay.mode] = { amount: cur.amount + pay.amount, count: cur.count + 1 };
+      });
+    }
+  }
+
+  const arr = Array.from(groups.values());
+  arr.forEach(g => g.slices.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+  arr.sort((a, b) => b.total - a.total);
+  return arr;
+}
 
 /**
  * Compact cells for the achats table: 11 columns have to fit the A4 portrait
@@ -556,16 +671,56 @@ function TDc({ children, align, bold, color }: { children?: React.ReactNode; ali
   return <td style={{ padding: '4px 6px', textAlign: align || 'left', fontSize: 9.5, fontWeight: bold ? 900 : 600, color: color || '#1e293b', borderBottom: '1px solid #eef2f7', wordBreak: 'break-word' }}>{children}</td>;
 }
 
+/** Récap des règlements par mode + la dette, en pastilles sous un tableau. */
+function PaymentModeChips({ byMode, rest }: { byMode: Record<string, { amount: number; count: number }>; rest: number }) {
+  const entries = Object.entries(byMode);
+  if (entries.length === 0 && rest <= 0) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 10 }}>
+      {entries.map(([mode, agg]) => (
+        <span key={mode} style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#334155' }}>
+          {PAY_MODE_LABEL[mode] || mode} : {da(agg.amount)} DA ({agg.count} règlement{agg.count > 1 ? 's' : ''})
+        </span>
+      ))}
+      {rest > 0 && (
+        <span style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c' }}>
+          Dette fournisseurs : {da(rest)} DA
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Bandeau de totaux d'un carburant, sous le titre de sa section. */
+function FuelTypeSummary({ g }: { g: FuelTypeGroup }) {
+  const cells: { label: string; value: string; col: string }[] = [
+    { label: 'Achats', value: `${g.count}`, col: C.blue700 },
+    { label: 'Volume', value: `${lit(g.liters)} L`, col: '#7c3aed' },
+    { label: 'Total achats', value: `${da(g.total)} DA`, col: g.color },
+    { label: 'Payé', value: `${da(g.paid)} DA`, col: '#047857' },
+    { label: 'Reste (dette)', value: `${da(g.rest)} DA`, col: g.rest > 0 ? '#dc2626' : '#94a3b8' },
+  ];
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, margin: '0 0 10px 0' }}>
+      {cells.map(c => (
+        <div key={c.label} style={{ borderLeft: `3px solid ${c.col}`, background: '#f8fafc', borderRadius: '0 6px 6px 0', padding: '6px 10px' }}>
+          <p style={{ margin: 0, fontSize: 8, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#94a3b8' }}>{c.label}</p>
+          <p style={{ margin: '2px 0 0 0', fontSize: 13.5, fontWeight: 900, color: c.col }}>{c.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
  * Printable "Achats Carburant" sheet — same Fiche-Journalière shell (banner, KPI
  * strip, signature footer) as every other fiche.
  *
- * ONE consolidated table, one line per achat — deliberately NOT a page of
- * per-achat blocks. Each line carries what the gérant actually checks: la
- * référence de l'achat, la cuve, la quantité, le mode de règlement et SES
- * références (compte débité, n° de chèque / bordereau), et le total. Les détails
- * fins (prix au litre, sous-total, TVA, remise) restent sur la facture de l'achat
- * lui-même et n'encombrent pas cette liste.
+ * Les achats sont regroupés PAR TYPE DE CARBURANT : une section par carburant
+ * (Essence, Gasoil, …), chacune avec ses totaux, la liste de ses achats et le
+ * récapitulatif de ses règlements par mode. Chaque ligne porte ce que le gérant
+ * vérifie : la référence, la cuve, la quantité, le mode de règlement et SES
+ * références (compte débité, n° de chèque / bordereau), et le total.
  */
 export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
   purchases: FuelPurchaseDetail[]; from: string; to: string; settings: any;
@@ -576,12 +731,7 @@ export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
     (a, p) => ({ total: a.total + p.total, paid: a.paid + p.paid, rest: a.rest + p.rest, liters: a.liters + p.liters }),
     { total: 0, paid: 0, rest: 0, liters: 0 },
   );
-  // Récapitulatif par mode de règlement, sous le tableau.
-  const paymentsByMode: Record<string, { amount: number; count: number }> = {};
-  purchases.forEach(p => p.payments.forEach(pay => {
-    const cur = paymentsByMode[pay.mode] || { amount: 0, count: 0 };
-    paymentsByMode[pay.mode] = { amount: cur.amount + pay.amount, count: cur.count + 1 };
-  }));
+  const groups = groupPurchasesByFuelType(purchases);
 
   return (
     <div aria-hidden="true" style={hiddenWrap}>
@@ -595,72 +745,66 @@ export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
           { label: 'Reste (dette)', value: `${da(totals.rest)} DA`, col: totals.rest > 0 ? '#dc2626' : '#94a3b8' },
         ]} />
 
-        <Part num="1" label="Liste des achats carburant" accent="#c2410c">
-          <table style={tableStyle}>
-            <thead><tr style={theadRow}>
-              <THc>N° achat</THc>
-              <THc>Date</THc>
-              <THc>Fournisseur</THc>
-              <THc>Cuve</THc>
-              <THc align="right">Quantité</THc>
-              <THc>Mode de paiement</THc>
-              <THc>Références du règlement</THc>
-              <THc align="right">Total</THc>
-              <THc align="right">Payé</THc>
-              <THc align="right">Reste</THc>
-              <THc>Statut</THc>
-            </tr></thead>
-            <tbody>
-              {purchases.length === 0 && (
-                <tr>
-                  <TDc color="#94a3b8">Aucun achat carburant sur la période</TDc>
-                  <TDc /><TDc /><TDc /><TDc align="right">0</TDc><TDc /><TDc />
-                  <TDc align="right">0</TDc><TDc align="right">0</TDc><TDc align="right">0</TDc><TDc />
-                </tr>
-              )}
-              {purchases.map((p, i) => (
-                <tr key={p.id} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
-                  <TDc bold color={C.blue900}>{p.ref}</TDc>
-                  <TDc>{shortDate(p.date)}</TDc>
-                  <TDc>{p.supplier}</TDc>
-                  <TDc>{p.cuves || '—'}</TDc>
-                  <TDc align="right" bold>{lit(p.liters)} L</TDc>
-                  <TDc bold color={p.payments.length === 0 ? '#dc2626' : C.blue700}>{payModesOf(p)}</TDc>
-                  <TDc color="#475569">{payInfoOf(p)}</TDc>
-                  <TDc align="right" bold color={C.blue900}>{da(p.total)} DA</TDc>
-                  <TDc align="right" color="#15803d">{da(p.paid)} DA</TDc>
-                  <TDc align="right" color={p.rest > 0 ? '#dc2626' : '#94a3b8'}>{da(p.rest)} DA</TDc>
-                  <TDc bold color={statusColor(p.status)}>{p.status}</TDc>
-                </tr>
-              ))}
-              <tr style={{ background: '#fff7ed' }}>
-                <TDc bold color="#9a3412">TOTAL</TDc>
-                <TDc /><TDc /><TDc />
-                <TDc align="right" bold color="#9a3412">{lit(totals.liters)} L</TDc>
-                <TDc /><TDc />
-                <TDc align="right" bold color="#9a3412">{da(totals.total)} DA</TDc>
-                <TDc align="right" bold color="#15803d">{da(totals.paid)} DA</TDc>
-                <TDc align="right" bold color="#dc2626">{da(totals.rest)} DA</TDc>
-                <TDc />
-              </tr>
-            </tbody>
-          </table>
+        {groups.length === 0 && (
+          <Part num="1" label="Achats carburant" accent="#c2410c">
+            <EmptyLine text="Aucun achat carburant sur la période" />
+          </Part>
+        )}
 
-          {Object.keys(paymentsByMode).length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 10 }}>
-              {Object.entries(paymentsByMode).map(([mode, agg]) => (
-                <span key={mode} style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#334155' }}>
-                  {PAY_MODE_LABEL[mode] || mode} : {da(agg.amount)} DA ({agg.count} règlement{agg.count > 1 ? 's' : ''})
-                </span>
-              ))}
-              {totals.rest > 0 && (
-                <span style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c' }}>
-                  Dette fournisseurs : {da(totals.rest)} DA
-                </span>
-              )}
-            </div>
-          )}
-        </Part>
+        {groups.map((g, gi) => (
+          <Part key={g.type} num={`${gi + 1}`} label={`Achats ${g.label}`} accent={g.color}>
+            <FuelTypeSummary g={g} />
+            <table style={tableStyle}>
+              <thead><tr style={theadRow}>
+                <THc>N° achat</THc>
+                <THc>Date</THc>
+                <THc>Fournisseur</THc>
+                <THc>Cuve</THc>
+                <THc align="right">Quantité</THc>
+                <THc>Mode de paiement</THc>
+                <THc>Références du règlement</THc>
+                <THc align="right">Total</THc>
+                <THc align="right">Payé</THc>
+                <THc align="right">Reste</THc>
+                <THc>Statut</THc>
+              </tr></thead>
+              <tbody>
+                {g.slices.map((s, i) => (
+                  <tr key={s.id + '-' + i} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
+                    <TDc bold color={C.blue900}>{s.ref}{s.multiType ? ' *' : ''}</TDc>
+                    <TDc>{shortDate(s.date)}</TDc>
+                    <TDc>{s.supplier}</TDc>
+                    <TDc>{s.cuves || '—'}</TDc>
+                    <TDc align="right" bold>{lit(s.liters)} L</TDc>
+                    <TDc bold color={s.payments.length === 0 ? '#dc2626' : C.blue700}>{payModesOf(s)}</TDc>
+                    <TDc color="#475569">{payInfoOf(s)}</TDc>
+                    <TDc align="right" bold color={C.blue900}>{da(s.total)} DA</TDc>
+                    <TDc align="right" color="#15803d">{da(s.paid)} DA</TDc>
+                    <TDc align="right" color={s.rest > 0 ? '#dc2626' : '#94a3b8'}>{da(s.rest)} DA</TDc>
+                    <TDc bold color={statusColor(s.status)}>{s.status}</TDc>
+                  </tr>
+                ))}
+                <tr style={{ background: '#fff7ed' }}>
+                  <TDc bold color="#9a3412">TOTAL {g.label.toUpperCase()}</TDc>
+                  <TDc /><TDc /><TDc />
+                  <TDc align="right" bold color="#9a3412">{lit(g.liters)} L</TDc>
+                  <TDc /><TDc />
+                  <TDc align="right" bold color="#9a3412">{da(g.total)} DA</TDc>
+                  <TDc align="right" bold color="#15803d">{da(g.paid)} DA</TDc>
+                  <TDc align="right" bold color="#dc2626">{da(g.rest)} DA</TDc>
+                  <TDc />
+                </tr>
+              </tbody>
+            </table>
+            <PaymentModeChips byMode={g.paymentsByMode} rest={g.rest} />
+          </Part>
+        ))}
+
+        {groups.some(g => g.slices.some(s => s.multiType)) && (
+          <p style={{ margin: '0 14px 10px 14px', fontSize: 9, color: '#94a3b8', fontStyle: 'italic' }}>
+            * Achat couvrant plusieurs carburants — montants répartis au prorata de la valeur livrée de chaque type.
+          </p>
+        )}
 
         <Footer settings={settings} title={title} />
       </div>

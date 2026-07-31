@@ -19,7 +19,7 @@ import WorkforceView from '@/src/components/biz/WorkforceView';
 import TreasuryView from '@/src/components/biz/TreasuryView';
 import {
   ModuleFiche, GlobalFiche, PurchasesFiche, PAY_MODE_LABEL, printFiche,
-  FuelPurchaseDetail, payInfoOf,
+  FuelPurchaseDetail, FuelTypeGroup, payInfoOf, groupPurchasesByFuelType,
 } from '@/src/components/biz/ReportFiche';
 import { deleteFuelPurchase, tankDeltasOf, describeTankDeltas, litersOf } from '@/src/lib/fuelPurchase';
 import { toast } from 'react-hot-toast';
@@ -113,6 +113,8 @@ export default function GeneralReports() {
       const tank = tanks.find(t => t.id === i.tankId);
       return tank ? `${tank.name}${tank.type ? ` (${tank.type})` : ''}` : (i.productName || 'Cuve');
     };
+    // Type de carburant d'une ligne, pris sur la cuve — sert à regrouper les achats.
+    const cuveType = (i: any): string => tanks.find(t => t.id === i.tankId)?.type || 'AUTRE';
     return (app.purchases || [])
       .filter((p: any) => within(p.date, range.from, range.to))
       // Only fuel purchases (they always carry a cuve), like the Achats Carburant screen.
@@ -131,6 +133,7 @@ export default function GeneralReports() {
           qty: i.quantity || 0,
           unitPrice: i.buyPrice || 0,
           total: i.total ?? (i.quantity || 0) * (i.buyPrice || 0),
+          type: cuveType(i),
         })),
         cuves: Array.from(new Set((p.items || []).filter((i: any) => i.tankId).map(cuveLabel))).join(', '),
         subtotal: p.subtotal || 0,
@@ -495,7 +498,7 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
       {/* KPI cards — chaque carte est cliquable et ouvre le détail de son calcul */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <OverviewCard icon={TrendingUp} tone="green" label="Ventes totales" value={money(g.salesTotal)} sub={`${g.counts.sales} opérations`} onClick={() => onOpenCard('salesTotal')} cta="Voir le détail" />
-        <OverviewCard icon={ShoppingCart} tone="purple" label="Achats totaux" value={money(g.purchasesTotal)} sub={`${g.counts.purchases} factures`} onClick={onOpenPurchases} cta="Détail carburant" />
+        <OverviewCard icon={ShoppingCart} tone="purple" label="Achats totaux" value={money(g.purchasesTotal)} sub={`${g.counts.purchases} factures`} onClick={onOpenPurchases} cta="Détail par carburant" />
         <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(g.expensesTotal + g.salariesPaid)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
         <OverviewCard icon={CircleDollarSign} tone={g.netGain >= 0 ? 'green' : 'red'} label="Bénéfice net global" value={money(g.netGain)} onClick={() => onOpenCard('netGain')} cta="Décomposition" />
         <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
@@ -707,11 +710,182 @@ const PAY_MODE_TONE: Record<string, string> = {
   VIREMENT: 'text-purple-700 bg-purple-50 border-purple-200',
 };
 
+/** Habillage (couleurs) d'un carburant dans le détail à l'écran. */
+const FUEL_TONE: Record<string, { text: string; bg: string; border: string; dot: string }> = {
+  ESSENCE: { text: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', dot: '#16a34a' },
+  GASOIL:  { text: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', dot: '#d97706' },
+  GPL:     { text: 'text-violet-700', bg: 'bg-violet-50', border: 'border-violet-200', dot: '#7c3aed' },
+  DIESEL:  { text: 'text-cyan-700', bg: 'bg-cyan-50', border: 'border-cyan-200', dot: '#0e7490' },
+  SUPER:   { text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200', dot: '#dc2626' },
+  AUTRE:   { text: 'text-slate-700', bg: 'bg-slate-50', border: 'border-slate-200', dot: '#475569' },
+};
+
 /**
- * Drill-down of the « Achats totaux » card: the list of fuel purchases of the
- * period, laid out as ONE table — the same columns as the printed fiche, so what
- * is read on screen is what comes out of the printer. A row can be expanded to
- * reveal its cuve lines and its règlements one by one.
+ * Une section de carburant dans le détail « Achats totaux » : l'entête avec ses
+ * totaux, le récapitulatif des règlements par mode, puis la liste de ses achats.
+ * Chaque ligne se déroule pour montrer ses règlements un par un (compte débité,
+ * n° de chèque / bordereau) — l'information de paiement que le gérant recherche.
+ */
+function FuelTypeSection({ group: g, expanded, onToggle, onDelete }: {
+  group: FuelTypeGroup;
+  expanded: string | null;
+  onToggle: (key: string) => void;
+  onDelete: (id: string) => void;
+  key?: React.Key;
+}) {
+  const tone = FUEL_TONE[g.type] || FUEL_TONE.AUTRE;
+  return (
+    <section className="rounded-2xl border border-slate-100 overflow-hidden shadow-sm">
+      {/* Entête du carburant */}
+      <div className={cn('flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-3 border-b', tone.bg, tone.border)}>
+        <div className="flex items-center gap-2">
+          <span className="w-8 h-8 rounded-xl flex items-center justify-center text-white shrink-0" style={{ background: tone.dot }}>
+            <Fuel className="w-4 h-4" />
+          </span>
+          <div>
+            <p className={cn('font-black text-sm leading-none', tone.text)}>{g.label}</p>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wide mt-0.5">
+              {g.count} achat(s) · {g.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L
+            </p>
+          </div>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs sm:text-sm font-bold">
+          <span className="text-[#002d87]">Total {money(g.total)}</span>
+          <span className="text-emerald-600">Payé {money(g.paid)}</span>
+          {g.rest > 0 && <span className="text-red-600">Reste {money(g.rest)}</span>}
+        </div>
+      </div>
+
+      {/* Récapitulatif des règlements par mode — pour ce carburant */}
+      <div className="flex flex-wrap gap-1.5 px-4 py-2.5 bg-white border-b border-slate-100">
+        {Object.entries(g.paymentsByMode).map(([mode, agg]) => (
+          <span key={mode} className={cn('badge border', PAY_MODE_TONE[mode] || 'text-slate-600 bg-white border-slate-200')}>
+            {PAY_MODE_LABEL[mode] || mode} · {money(agg.amount)} ({agg.count})
+          </span>
+        ))}
+        {g.rest > 0 && <span className="badge badge-danger">Dette {money(g.rest)}</span>}
+        {Object.keys(g.paymentsByMode).length === 0 && g.rest <= 0 && (
+          <span className="text-[11px] text-slate-400 italic">Aucun règlement enregistré.</span>
+        )}
+      </div>
+
+      {/* Liste des achats de ce carburant */}
+      <div className="overflow-x-auto custom-scrollbar">
+        <table className="w-full border-collapse">
+          <thead><tr>
+            <th className="table-head">N° achat</th>
+            <th className="table-head">Date</th>
+            <th className="table-head">Fournisseur</th>
+            <th className="table-head">Cuve</th>
+            <th className="table-head text-right">Quantité</th>
+            <th className="table-head">Paiement</th>
+            <th className="table-head text-right">Total</th>
+            <th className="table-head text-right">Payé</th>
+            <th className="table-head text-right">Reste</th>
+            <th className="table-head">Statut</th>
+            <th className="table-head text-right">Action</th>
+          </tr></thead>
+          <tbody>
+            {g.slices.map((s, i) => {
+              const key = `${g.type}:${s.id}`;
+              const isOpen = expanded === key;
+              return (
+                <React.Fragment key={key}>
+                  <tr className="hover:bg-slate-50 cursor-pointer border-t border-slate-100" onClick={() => onToggle(key)}>
+                    <td className="table-cell font-black text-[#002d87] whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1">
+                        <ChevronRight className={cn('w-3.5 h-3.5 text-slate-300 transition-transform', isOpen && 'rotate-90')} />
+                        {s.ref}
+                        {s.multiType && <span title="Achat multi-carburants — réparti au prorata de la valeur livrée" className="text-[10px] font-black text-amber-500">*</span>}
+                      </span>
+                    </td>
+                    <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(s.date)}</td>
+                    <td className="table-cell">{s.supplier}</td>
+                    <td className="table-cell text-xs text-slate-500 max-w-[170px]">{s.cuves || '—'}</td>
+                    <td className="table-cell text-right tabular-nums font-bold">{s.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
+                    <td className="table-cell">
+                      <div className="flex flex-wrap gap-1">
+                        {s.payments.length === 0
+                          ? <span className="badge badge-danger">Dette</span>
+                          : Array.from(new Set(s.payments.map(pay => pay.mode))).map(mode => (
+                            <span key={mode} className={cn('badge border', PAY_MODE_TONE[mode] || 'text-slate-600 bg-white border-slate-200')}>
+                              {PAY_MODE_LABEL[mode] || mode}
+                            </span>
+                          ))}
+                      </div>
+                      {s.payments.length > 0 && (
+                        <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px]">{payInfoOf(s)}</div>
+                      )}
+                    </td>
+                    <td className="table-cell text-right tabular-nums font-black">{money(s.total)}</td>
+                    <td className="table-cell text-right tabular-nums text-emerald-600">{money(s.paid)}</td>
+                    <td className="table-cell text-right tabular-nums text-red-600">{money(s.rest)}</td>
+                    <td className="table-cell"><Badge tone={PURCHASE_STATUS_TONE[s.status] || 'neutral'}>{s.status}</Badge></td>
+                    <td className="table-cell text-right">
+                      <button onClick={e => { e.stopPropagation(); onDelete(s.id); }} title="Supprimer cet achat"
+                        className="p-2 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
+                    </td>
+                  </tr>
+
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={11} className="bg-slate-50/70 px-4 py-4">
+                        <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1">
+                          <CreditCard className="w-3.5 h-3.5" /> Règlements & modes de paiement
+                        </p>
+                        {s.payments.length === 0 ? (
+                          <p className="text-xs text-slate-400 italic px-1">Aucun règlement — achat enregistré en dette.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {s.payments.map((pay, j) => (
+                              <div key={j} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-100 bg-white px-3 py-2">
+                                <span className={cn('badge border', PAY_MODE_TONE[pay.mode] || 'text-slate-600 bg-white border-slate-200')}>
+                                  {PAY_MODE_LABEL[pay.mode] || pay.mode}
+                                </span>
+                                <span className="text-xs text-slate-500 flex items-center gap-1"><Wallet className="w-3 h-3" />{pay.account}</span>
+                                {pay.chequeNumber && <span className="badge badge-info"><Hash className="w-3 h-3" />Chèque n° {pay.chequeNumber}</span>}
+                                {pay.bordereauNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Bordereau n° {pay.bordereauNumber}</span>}
+                                <span className="text-xs text-slate-400">{formatDate(pay.date)}</span>
+                                <span className="ml-auto font-black tabular-nums text-[#002d87]">{money(pay.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {s.multiType && (
+                          <p className="text-[10px] text-amber-600 italic mt-2">
+                            Achat couvrant plusieurs carburants — les montants de cette section sont la part {g.label} de l'achat, répartie au prorata de la valeur livrée.
+                          </p>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+
+            {/* Sous-total du carburant */}
+            <tr className="bg-blue-50/60 border-t border-slate-200">
+              <td className="table-cell font-black text-[#002d87]" colSpan={4}>TOTAL {g.label}</td>
+              <td className="table-cell text-right tabular-nums font-black">{g.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
+              <td className="table-cell" />
+              <td className="table-cell text-right tabular-nums font-black text-[#002d87]">{money(g.total)}</td>
+              <td className="table-cell text-right tabular-nums font-black text-emerald-600">{money(g.paid)}</td>
+              <td className="table-cell text-right tabular-nums font-black text-red-600">{money(g.rest)}</td>
+              <td className="table-cell" colSpan={2} />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Drill-down of the « Achats totaux » card: the fuel purchases of the period,
+ * GROUPED BY FUEL TYPE. Each carburant (Essence, Gasoil, …) is its own section
+ * with its totals, its règlements-by-mode recap and the list of its achats — and
+ * for each achat, the payment mode and its references. What is on screen is what
+ * the printed fiche (`PurchasesFiche`) carries, section for section.
  */
 function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDelete, impactOf }: {
   open: boolean;
@@ -725,15 +899,19 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDele
 }) {
   const [toDelete, setToDelete] = useState<FuelPurchaseDetail | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const groups = useMemo(() => groupPurchasesByFuelType(purchases), [purchases]);
   const totals = useMemo(() => purchases.reduce(
     (a, p) => ({ total: a.total + p.total, paid: a.paid + p.paid, rest: a.rest + p.rest, liters: a.liters + p.liters }),
     { total: 0, paid: 0, rest: 0, liters: 0 },
   ), [purchases]);
+  // Deleting works on the whole achat (all its cuves) — look the full purchase up
+  // by id so the confirmation shows its real total and litres, even for a slice.
+  const requestDelete = (id: string) => setToDelete(purchases.find(p => p.id === id) || null);
 
   return (
     <Modal open={open} onClose={onClose} icon={ShoppingCart} size="2xl" fullHeight
-      title="Achats Carburant — liste de la période"
-      subtitle={`Du ${formatDate(range.from)} au ${formatDate(range.to)} · ${purchases.length} achat(s)`}
+      title="Achats Carburant — par type de carburant"
+      subtitle={`Du ${formatDate(range.from)} au ${formatDate(range.to)} · ${purchases.length} achat(s) · ${groups.length} carburant(s)`}
       footer={<>
         <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
           <span className="text-slate-400 uppercase tracking-widest">{totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</span>
@@ -747,7 +925,7 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDele
         </button>
       </>}>
       <div className="space-y-5">
-        {/* Summary strip */}
+        {/* Bandeau des totaux — toutes activités carburant confondues */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
           {[
             { icon: ShoppingCart, label: 'Achats', value: String(purchases.length), tone: 'from-[#003087] to-[#0044bb]' },
@@ -772,144 +950,16 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDele
         ) : (
           <>
             <p className="text-[11px] text-slate-400 italic px-1">
-              Cliquez une ligne pour dérouler le détail des cuves et de chaque règlement.
+              Chaque carburant a sa propre section : son total d'achats, ses règlements par mode, et le détail de chaque achat. Cliquez une ligne pour dérouler ses règlements un par un.
             </p>
-            <Table head={<>
-              <th className="table-head">N° achat</th>
-              <th className="table-head">Date</th>
-              <th className="table-head">Fournisseur</th>
-              <th className="table-head">Cuve</th>
-              <th className="table-head text-right">Quantité</th>
-              <th className="table-head">Paiement</th>
-              <th className="table-head text-right">Total</th>
-              <th className="table-head text-right">Payé</th>
-              <th className="table-head text-right">Reste</th>
-              <th className="table-head">Statut</th>
-              <th className="table-head text-right">Action</th>
-            </>}>
-              {purchases.map(p => {
-                const isOpen = expanded === p.id;
-                return (
-                  <React.Fragment key={p.id}>
-                    <tr className="hover:bg-slate-50 cursor-pointer"
-                      onClick={() => setExpanded(isOpen ? null : p.id)}>
-                      <td className="table-cell font-black text-[#002d87] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1">
-                          <ChevronRight className={cn('w-3.5 h-3.5 text-slate-300 transition-transform', isOpen && 'rotate-90')} />
-                          {p.ref}
-                        </span>
-                      </td>
-                      <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(p.date)}</td>
-                      <td className="table-cell">{p.supplier}</td>
-                      <td className="table-cell text-xs text-slate-500 max-w-[170px]">{p.cuves || '—'}</td>
-                      <td className="table-cell text-right tabular-nums font-bold">{p.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
-                      <td className="table-cell">
-                        <div className="flex flex-wrap gap-1">
-                          {p.payments.length === 0
-                            ? <span className="badge badge-danger">Dette</span>
-                            : Array.from(new Set(p.payments.map(pay => pay.mode))).map(mode => (
-                              <span key={mode} className={cn('badge border', PAY_MODE_TONE[mode] || 'text-slate-600 bg-white border-slate-200')}>
-                                {PAY_MODE_LABEL[mode] || mode}
-                              </span>
-                            ))}
-                        </div>
-                        {p.payments.length > 0 && (
-                          <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px]">{payInfoOf(p)}</div>
-                        )}
-                      </td>
-                      <td className="table-cell text-right tabular-nums font-black">{money(p.total)}</td>
-                      <td className="table-cell text-right tabular-nums text-emerald-600">{money(p.paid)}</td>
-                      <td className="table-cell text-right tabular-nums text-red-600">{money(p.rest)}</td>
-                      <td className="table-cell"><Badge tone={PURCHASE_STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge></td>
-                      <td className="table-cell text-right">
-                        <button onClick={e => { e.stopPropagation(); setToDelete(p); }} title="Supprimer cet achat"
-                          className="p-2 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
-                      </td>
-                    </tr>
-
-                    {isOpen && (
-                      <tr>
-                        <td colSpan={11} className="bg-slate-50/70 px-4 py-4">
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            {/* Cuves livrées */}
-                            <div>
-                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1">
-                                <Droplets className="w-3.5 h-3.5" /> Cuves livrées
-                              </p>
-                              <div className="rounded-xl border border-slate-100 bg-white overflow-hidden">
-                                <table className="w-full border-collapse text-sm">
-                                  <thead><tr className="bg-slate-50">
-                                    <th className="text-left px-3 py-2 text-[10px] font-black uppercase text-slate-400">Cuve</th>
-                                    <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Quantité</th>
-                                    <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Prix / L</th>
-                                    <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Total</th>
-                                  </tr></thead>
-                                  <tbody>
-                                    {p.items.length === 0 && (
-                                      <tr><td colSpan={4} className="px-3 py-2 text-xs text-slate-400 italic">Aucune ligne de cuve.</td></tr>
-                                    )}
-                                    {p.items.map((it, i) => (
-                                      <tr key={i} className="border-t border-slate-100">
-                                        <td className="px-3 py-2 font-bold text-slate-700">{it.name}</td>
-                                        <td className="px-3 py-2 text-right tabular-nums">{it.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
-                                        <td className="px-3 py-2 text-right tabular-nums text-amber-700">{money(it.unitPrice)}</td>
-                                        <td className="px-3 py-2 text-right tabular-nums font-bold text-blue-700">{money(it.total)}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                              <div className="flex flex-wrap gap-1.5 text-[11px] mt-2">
-                                {p.invoiceNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Facture {p.invoiceNumber}</span>}
-                                {p.blNumber && <span className="badge badge-neutral">BL {p.blNumber}</span>}
-                                {p.discountAmount > 0 && <span className="badge badge-warning">Remise {money(p.discountAmount)}</span>}
-                                {p.tvaAmount > 0 && <span className="badge badge-info">TVA {money(p.tvaAmount)}</span>}
-                              </div>
-                            </div>
-
-                            {/* Règlements */}
-                            <div>
-                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1">
-                                <CreditCard className="w-3.5 h-3.5" /> Règlements & modes de paiement
-                              </p>
-                              {p.payments.length === 0 ? (
-                                <p className="text-xs text-slate-400 italic px-1">Aucun règlement — achat enregistré en dette.</p>
-                              ) : (
-                                <div className="space-y-2">
-                                  {p.payments.map((pay, i) => (
-                                    <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-100 bg-white px-3 py-2">
-                                      <span className={cn('badge border', PAY_MODE_TONE[pay.mode] || 'text-slate-600 bg-white border-slate-200')}>
-                                        {PAY_MODE_LABEL[pay.mode] || pay.mode}
-                                      </span>
-                                      <span className="text-xs text-slate-500 flex items-center gap-1"><Wallet className="w-3 h-3" />{pay.account}</span>
-                                      {pay.chequeNumber && <span className="badge badge-info"><Hash className="w-3 h-3" />Chèque n° {pay.chequeNumber}</span>}
-                                      {pay.bordereauNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Bordereau n° {pay.bordereauNumber}</span>}
-                                      <span className="text-xs text-slate-400">{formatDate(pay.date)}</span>
-                                      <span className="ml-auto font-black tabular-nums text-[#002d87]">{money(pay.amount)}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-
-              {/* Ligne de total — mêmes colonnes que la fiche imprimée */}
-              <tr className="bg-blue-50/60">
-                <td className="table-cell font-black text-[#002d87]" colSpan={4}>TOTAL — {purchases.length} achat(s)</td>
-                <td className="table-cell text-right tabular-nums font-black">{totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
-                <td className="table-cell" />
-                <td className="table-cell text-right tabular-nums font-black text-[#002d87]">{money(totals.total)}</td>
-                <td className="table-cell text-right tabular-nums font-black text-emerald-600">{money(totals.paid)}</td>
-                <td className="table-cell text-right tabular-nums font-black text-red-600">{money(totals.rest)}</td>
-                <td className="table-cell" colSpan={2} />
-              </tr>
-            </Table>
+            <div className="space-y-5">
+              {groups.map(g => (
+                <FuelTypeSection key={g.type} group={g}
+                  expanded={expanded}
+                  onToggle={key => setExpanded(expanded === key ? null : key)}
+                  onDelete={requestDelete} />
+              ))}
+            </div>
           </>
         )}
       </div>
