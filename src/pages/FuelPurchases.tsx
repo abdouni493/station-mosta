@@ -36,6 +36,9 @@ import {
 } from '../components/biz/Kit';
 import { printInvoice, stationFromSettings } from './modules/_shared';
 import { appointmentOf, apptTone, apptLabel } from '../lib/paymentAppointments';
+import {
+  deleteFuelPurchase, tankDeltasBetween, tankDeltasOf, describeTankDeltas, litersOf,
+} from '../lib/fuelPurchase';
 
 const todayISO = () => new Date().toISOString().split('T')[0];
 
@@ -110,20 +113,29 @@ export default function FuelPurchases() {
     liters: fuelPurchases.reduce((s, p) => s + (p.items || []).reduce((a, i) => a + (i.quantity || 0), 0), 0),
   }), [fuelPurchases]);
 
-  /** Removes a purchase: rolls back its cuve levels and its treasury lines. */
+  /**
+   * Removes a purchase: the litres it delivered are taken back OUT of the cuves
+   * and its treasury lines are cancelled. The purchase is re-read from the live
+   * state first, so the rollback always uses the current cuve lines even if the
+   * row was edited (in another tab, say) after this list was rendered.
+   */
   const del = () => {
     if (!toDelete) return;
-    const deltas = (toDelete.items || [])
-      .filter(i => i.tankId)
-      .map(i => ({ tankId: i.tankId!, deltaLiters: -(i.quantity || 0) }));
-    if (deltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: deltas });
-    treasuryTransactions
-      .filter(t => t.refType === 'purchase' && t.refId === toDelete.id)
-      .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
-    dispatch({ type: 'DELETE_PURCHASE', payload: toDelete.id });
-    toast.success('Achat supprimé — niveaux de cuve rétablis');
+    const fresh = purchases.find(p => p.id === toDelete.id) || toDelete;
+    const deltas = deleteFuelPurchase(fresh, treasuryTransactions, dispatch);
+    const liters = litersOf(fresh);
+    toast.success(deltas.length
+      ? `Achat supprimé — ${liters.toLocaleString('fr-FR')} L retirés des cuves`
+      : 'Achat supprimé');
     setToDelete(null);
   };
+
+  /** Cuve impact of the pending deletion, shown in the confirmation dialog. */
+  const deleteImpact = useMemo(() => {
+    if (!toDelete) return '';
+    const fresh = purchases.find(p => p.id === toDelete.id) || toDelete;
+    return describeTankDeltas(tankDeltasOf(fresh, -1), tanks);
+  }, [toDelete, purchases, tanks]);
 
   const doPrint = (p: Purchase) => {
     const supplier = suppliers.find(s => s.id === p.supplierId);
@@ -313,7 +325,9 @@ export default function FuelPurchases() {
       {paying && <PayPurchaseDebtModal purchase={paying} onClose={() => setPaying(null)} />}
 
       <Confirm open={!!toDelete} title="Supprimer l'achat"
-        message="Les quantités seront retirées des cuves et les paiements annulés. Confirmer ?"
+        message={`Les quantités livrées seront RETIRÉES des cuves et les règlements annulés (l'argent revient en caisse / en banque).${
+          deleteImpact ? `\n\n${deleteImpact}` : ''
+        }\n\nConfirmer la suppression ?`}
         onConfirm={del} onCancel={() => setToDelete(null)} />
     </div>
   );
@@ -342,28 +356,37 @@ function statusFor(total: number, paid: number): Purchase['status'] {
 function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose: () => void }) {
   const state = useAppState();
   const dispatch = useAppDispatch();
-  const { suppliers, tanks, bankAccounts, treasuryTransactions, settings, currentUserName } = state;
+  const { purchases, suppliers, tanks, bankAccounts, treasuryTransactions, settings, currentUserName } = state;
   const isEdit = !!initial;
+  /**
+   * Baseline of the edit: the achat AS IT IS STORED RIGHT NOW. The cuve rollback
+   * subtracts these quantities, so reading them from the live store (and not from
+   * the row snapshot captured when the modal opened) keeps the cuves exact even
+   * if the achat changed meanwhile.
+   */
+  const stored = isEdit ? (purchases.find(p => p.id === initial!.id) || initial) : null;
 
-  const [invoiceNumber, setInvoiceNumber] = useState(initial?.invoiceNumber || '');
-  const [blNumber, setBlNumber] = useState(initial?.blNumber || '');
-  const [date, setDate] = useState(initial ? initial.date.split('T')[0] : todayISO());
-  const [supplierId, setSupplierId] = useState(initial?.supplierId || '');
-  const [notes, setNotes] = useState(initial?.notes || '');
+  // The form is seeded from that same stored version, so what the user edits and
+  // what the rollback subtracts are always the same set of cuve lines.
+  const [invoiceNumber, setInvoiceNumber] = useState(stored?.invoiceNumber || '');
+  const [blNumber, setBlNumber] = useState(stored?.blNumber || '');
+  const [date, setDate] = useState(stored ? stored.date.split('T')[0] : todayISO());
+  const [supplierId, setSupplierId] = useState(stored?.supplierId || '');
+  const [notes, setNotes] = useState(stored?.notes || '');
 
   const [lines, setLines] = useState<CuveLine[]>(() =>
-    (initial?.items || []).filter(i => i.tankId).map(i => ({
+    (stored?.items || []).filter(i => i.tankId).map(i => ({
       id: newId(), tankId: i.tankId!, quantity: String(i.quantity ?? ''), unitPrice: String(i.buyPrice ?? ''),
     })));
 
-  const [tvaActive, setTvaActive] = useState(!!initial?.tvaActive);
-  const [tvaRate, setTvaRate] = useState(String(initial?.tvaRate ?? 19));
-  const [discountOn, setDiscountOn] = useState(!!initial?.discountAmount);
-  const [discountType, setDiscountType] = useState<'percent' | 'amount'>(initial?.discountType || 'percent');
-  const [discountValue, setDiscountValue] = useState(String(initial?.discountValue ?? ''));
+  const [tvaActive, setTvaActive] = useState(!!stored?.tvaActive);
+  const [tvaRate, setTvaRate] = useState(String(stored?.tvaRate ?? 19));
+  const [discountOn, setDiscountOn] = useState(!!stored?.discountAmount);
+  const [discountType, setDiscountType] = useState<'percent' | 'amount'>(stored?.discountType || 'percent');
+  const [discountValue, setDiscountValue] = useState(String(stored?.discountValue ?? ''));
 
   const [pays, setPays] = useState<PayLine[]>(() =>
-    (initial?.payments || []).map(p => ({
+    (stored?.payments || []).map(p => ({
       id: p.id, accountId: p.accountId || CAISSE_ID, amount: String(p.amount ?? ''),
       mode: p.mode || modeForAccount(p.accountId || CAISSE_ID),
       chequeNumber: p.chequeNumber || '', bordereauNumber: p.bordereauNumber || '',
@@ -373,11 +396,11 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
     })));
 
   // ── Rendez-vous de paiement ────────────────────────────────────────────────
-  const [apptOn, setApptOn] = useState(!!initial?.appointmentActive);
-  const [apptDate, setApptDate] = useState(initial?.appointmentDate || '');
+  const [apptOn, setApptOn] = useState(!!stored?.appointmentActive);
+  const [apptDate, setApptDate] = useState(stored?.appointmentDate || '');
   const [apptAmount, setApptAmount] = useState(
-    initial?.appointmentAmount != null ? String(initial.appointmentAmount) : '');
-  const [apptNotes, setApptNotes] = useState(initial?.appointmentNotes || '');
+    stored?.appointmentAmount != null ? String(stored.appointmentAmount) : '');
+  const [apptNotes, setApptNotes] = useState(stored?.appointmentNotes || '');
 
   // ── Money ────────────────────────────────────────────────────────────────
   const subtotal = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0), 0);
@@ -392,6 +415,33 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
   const rest = Math.max(0, total - paid);
 
   // ── Cuve lines ───────────────────────────────────────────────────────────
+  /** The cuve lines as they will be SAVED — also drives the live cuve preview. */
+  const items = useMemo<PurchaseItem[]>(() => lines
+    .filter(l => l.tankId)
+    .map(l => {
+      const tank = tanks.find(t => t.id === l.tankId);
+      const quantity = Number(l.quantity) || 0;
+      const buyPrice = Number(l.unitPrice) || 0;
+      return {
+        productName: `${tank?.name || 'Cuve'} — ${tank?.type || ''}`.trim(),
+        quantity, buyPrice, sellingPrice: 0,
+        unit: 'L', total: quantity * buyPrice, tankId: l.tankId,
+        tvaActive, tvaRate: Number(tvaRate) || 0,
+      };
+    }), [lines, tanks, tvaActive, tvaRate]);
+
+  /**
+   * Litres that saving will actually ADD TO (or REMOVE FROM) each cuve. On a new
+   * achat this is simply the quantity received; on an edit it is the difference
+   * with what the achat had already put in the cuve — which is why the preview
+   * must not naively add the typed quantity to the current level.
+   */
+  const pendingDeltas = useMemo(
+    () => tankDeltasBetween(stored, { items, tankId: undefined } as Purchase),
+    [stored, items]);
+  const deltaForTank = (tankId: string) =>
+    pendingDeltas.find(d => d.tankId === tankId)?.deltaLiters || 0;
+
   const addLine = () => {
     const used = new Set(lines.map(l => l.tankId));
     const tank = tanks.find(t => !used.has(t.id)) || tanks[0];
@@ -452,20 +502,6 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
     }
     const purchaseId = initial?.id || newId();
 
-    const items: PurchaseItem[] = lines
-      .filter(l => l.tankId)
-      .map(l => {
-        const tank = tanks.find(t => t.id === l.tankId);
-        const quantity = Number(l.quantity) || 0;
-        const buyPrice = Number(l.unitPrice) || 0;
-        return {
-          productName: `${tank?.name || 'Cuve'} — ${tank?.type || ''}`.trim(),
-          quantity, buyPrice, sellingPrice: 0,
-          unit: 'L', total: quantity * buyPrice, tankId: l.tankId,
-          tvaActive, tvaRate: Number(tvaRate) || 0,
-        };
-      });
-
     const payments: PurchasePayment[] = pays
       .filter(p => (Number(p.amount) || 0) > 0)
       .map(p => ({
@@ -509,18 +545,14 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
         ? (apptAmount === '' ? rest : Number(apptAmount) || 0)
         : undefined,
       appointmentNotes: apptOn && rest > 0 ? (apptNotes || undefined) : undefined,
-      appointmentPaid: rest <= 0 ? true : (initial?.appointmentPaid ?? false),
-      appointmentPaidAt: rest <= 0 ? (initial?.appointmentPaidAt || new Date().toISOString()) : undefined,
+      appointmentPaid: rest <= 0 ? true : (stored?.appointmentPaid ?? false),
+      appointmentPaidAt: rest <= 0 ? (stored?.appointmentPaidAt || new Date().toISOString()) : undefined,
     };
 
-    // 1. Cuve levels — on edit we only apply the difference with the old lines.
-    const oldByTank: Record<string, number> = {};
-    (initial?.items || []).forEach(i => { if (i.tankId) oldByTank[i.tankId] = (oldByTank[i.tankId] || 0) + (i.quantity || 0); });
-    const newByTank: Record<string, number> = {};
-    items.forEach(i => { if (i.tankId) newByTank[i.tankId] = (newByTank[i.tankId] || 0) + i.quantity; });
-    const deltas = Array.from(new Set([...Object.keys(oldByTank), ...Object.keys(newByTank)]))
-      .map(tankId => ({ tankId, deltaLiters: (newByTank[tankId] || 0) - (oldByTank[tankId] || 0) }))
-      .filter(d => Math.abs(d.deltaLiters) > 0.0001);
+    // 1. Cuve levels — on edit only the DIFFERENCE with the stored lines is
+    //    applied: quantities removed from a cuve (or moved to another cuve, or
+    //    lowered) are taken back out of it, exactly like a deletion would.
+    const deltas = tankDeltasBetween(stored, purchase);
     if (deltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: deltas });
 
     // 2. The purchase itself.
@@ -553,11 +585,17 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
     const apptMsg = apptOn && rest > 0 && apptDate
       ? ` — rendez-vous de paiement le ${formatDate(apptDate)}, rappel affiché sur le tableau de bord`
       : '';
+    // Net movement applied to the cuves, so an edit that LOWERS a quantity says
+    // so explicitly instead of the vague « cuves mises à jour ».
+    const net = deltas.reduce((s, d) => s + d.deltaLiters, 0);
+    const cuveMsg = deltas.length === 0
+      ? 'cuves inchangées'
+      : `${net >= 0 ? '+' : '−'}${Math.abs(net).toLocaleString('fr-FR')} L sur ${deltas.length > 1 ? `${deltas.length} cuves` : 'la cuve'}`;
     toast.success((isEdit
-      ? 'Achat modifié — cuves et trésorerie mises à jour'
+      ? `Achat modifié — ${cuveMsg}, trésorerie mise à jour`
       : rest > 0
-        ? `Achat enregistré avec une dette de ${money(rest)}`
-        : 'Achat enregistré — cuves mises à jour') + apptMsg);
+        ? `Achat enregistré avec une dette de ${money(rest)} — ${cuveMsg}`
+        : `Achat enregistré — ${cuveMsg}`) + apptMsg);
     onClose();
   };
 
@@ -638,7 +676,11 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                 const tank = tanks.find(t => t.id === l.tankId);
                 const qty = Number(l.quantity) || 0;
                 const price = Number(l.unitPrice) || 0;
-                const after = (tank?.current || 0) + qty;
+                // The cuve already holds what this achat delivered, so the level
+                // after saving moves by the PENDING DELTA, not by the raw
+                // quantity — otherwise an edit would show a doubled level.
+                const delta = tank ? deltaForTank(tank.id) : 0;
+                const after = Math.max(0, (tank?.current || 0) + delta);
                 const overflow = tank ? after > tank.capacity : false;
                 const fillPct = tank && tank.capacity > 0
                   ? Math.min(100, (after / tank.capacity) * 100) : 0;
@@ -690,8 +732,14 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
                             style={{ width: `${fillPct}%` }} />
                         </div>
                         <p className={`text-[11px] sm:text-xs mt-1.5 ${overflow ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
-                          Niveau actuel {tank.current.toLocaleString('fr-FR')} L → après livraison {after.toLocaleString('fr-FR')} L
+                          Niveau actuel {tank.current.toLocaleString('fr-FR')} L → après enregistrement {after.toLocaleString('fr-FR')} L
                           {' '}sur {tank.capacity.toLocaleString('fr-FR')} L
+                          {delta !== 0 && (
+                            <span className={delta > 0 ? 'text-emerald-600 font-bold' : 'text-red-600 font-bold'}>
+                              {' '}({delta > 0 ? '+' : '−'}{Math.abs(delta).toLocaleString('fr-FR')} L
+                              {isEdit ? (delta > 0 ? ' ajoutés' : ' retirés') : ''})
+                            </span>
+                          )}
                           {overflow ? ' — dépasse la capacité de la cuve' : ''}
                         </p>
                       </div>
@@ -702,6 +750,36 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
               <div className="flex justify-end items-center gap-4 px-1 pt-1 text-sm font-black">
                 <span className="text-slate-400 uppercase tracking-widest text-[11px]">Volume total</span>
                 <span className="text-[#002d87] tabular-nums">{totalLiters.toLocaleString('fr-FR')} L</span>
+              </div>
+            </div>
+          )}
+
+          {/* Impact réel sur les cuves — indispensable en modification : une cuve
+              retirée de l'achat n'a plus de ligne, mais son volume doit quand
+              même en être retiré. */}
+          {pendingDeltas.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-[#003087]/20 bg-[#eef3fc] p-4">
+              <p className="text-[10px] font-black uppercase tracking-wide text-[#002d87] mb-2 flex items-center gap-1.5">
+                <Droplets className="w-3.5 h-3.5" /> Mouvement appliqué aux cuves à l'enregistrement
+              </p>
+              <div className="space-y-1.5">
+                {pendingDeltas.map(d => {
+                  const tank = tanks.find(t => t.id === d.tankId);
+                  const before = tank?.current || 0;
+                  return (
+                    <div key={d.tankId} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-bold text-slate-700">
+                        {tank ? `${tank.name} (${tank.type})` : 'Cuve supprimée'}
+                      </span>
+                      <span className="text-slate-500 tabular-nums">
+                        {before.toLocaleString('fr-FR')} L → {Math.max(0, before + d.deltaLiters).toLocaleString('fr-FR')} L
+                        <span className={`ml-2 font-black ${d.deltaLiters > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {d.deltaLiters > 0 ? '+' : '−'}{Math.abs(d.deltaLiters).toLocaleString('fr-FR')} L
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

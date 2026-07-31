@@ -1715,6 +1715,38 @@ function mapPurchase(r: any): Purchase {
     appointmentNotes: r.appointment_notes ?? undefined, appointmentPaid: r.appointment_paid ?? undefined,
     appointmentPaidAt: r.appointment_paid_at ?? undefined };
 }
+/**
+ * Sub-records of an achat. `mapPurchase` leaves `items` / `payments` empty, so
+ * EVERY path that rebuilds the purchases slice must re-attach them through this
+ * helper. A lossy refetch used to drop `items`, and a later edit or delete then
+ * rolled back nothing at all on the cuves (the rollback reads `items`).
+ */
+function mapPurchaseItemRow(i: any): PurchaseItem {
+  return {
+    productId: i.product_id, productName: i.product_name, quantity: +i.quantity,
+    buyPrice: +i.buy_price, sellingPrice: +i.selling_price,
+    minStock: i.min_stock ? +i.min_stock : undefined, unit: i.unit, total: +i.total,
+    tankId: i.tank_id, tvaActive: i.tva_active, tvaRate: +(i.tva_rate ?? 0),
+  };
+}
+function mapPurchasePaymentRow(pay: any): PurchasePayment {
+  return {
+    id: pay.id, date: pay.date, amount: +pay.amount, mode: pay.mode,
+    chequeNumber: pay.cheque_number ?? undefined,
+    bordereauNumber: pay.bordereau_number ?? undefined,
+    accountId: pay.account_id ?? undefined,
+    notes: pay.notes ?? undefined,
+  };
+}
+/** Rebuilds the full purchases slice (header + cuve lines + règlements). */
+function buildPurchases(rows: any[], itemRows: any[], paymentRows: any[]): Purchase[] {
+  return (rows ?? []).map(p => {
+    const m = mapPurchase(p);
+    m.items    = (itemRows    ?? []).filter((i: any)   => i.purchase_id === p.id).map(mapPurchaseItemRow);
+    m.payments = (paymentRows ?? []).filter((pay: any) => pay.purchase_id === p.id).map(mapPurchasePaymentRow);
+    return m;
+  });
+}
 function mapExpense(r: any): Expense {
   return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, bordereauNumber: r.bordereau_number ?? undefined, accountId: r.account_id ?? undefined, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by };
 }
@@ -2545,12 +2577,8 @@ async function refetchEntityAfterAction(
         const { data: itemsData }    = await supabase.from('purchase_items').select('*');
         const { data: paymentsData } = await supabase.from('purchase_payments').select('*');
         if (purchasesData) {
-          const purchases = (purchasesData as any[]).map(p => {
-            const m = mapPurchase(p);
-            m.items    = ((itemsData ?? []) as any[]).filter((i: any) => i.purchase_id === p.id).map((i: any) => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, buyPrice: +i.buy_price, sellingPrice: +i.selling_price, minStock: i.min_stock ? +i.min_stock : undefined, unit: i.unit, total: +i.total, tankId: i.tank_id, tvaActive: i.tva_active, tvaRate: +(i.tva_rate ?? 0) }));
-            m.payments = ((paymentsData ?? []) as any[]).filter((pay: any) => pay.purchase_id === p.id).map((pay: any) => ({ id: pay.id, date: pay.date, amount: +pay.amount, mode: pay.mode, chequeNumber: pay.cheque_number, bordereauNumber: pay.bordereau_number ?? undefined, accountId: pay.account_id ?? undefined, notes: pay.notes }));
-            return m;
-          });
+          const purchases = buildPurchases(
+            purchasesData as any[], (itemsData ?? []) as any[], (paymentsData ?? []) as any[]);
           dispatch({ type: 'HYDRATE', payload: { purchases } });
         }
         break;
@@ -2908,12 +2936,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           return m;
         });
 
-        const purchases = (purchasesRaw as any[]).map(p => {
-          const m = mapPurchase(p);
-          m.items    = (purchaseItemsRaw    as any[]).filter(i => i.purchase_id === p.id).map(i => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, buyPrice: +i.buy_price, sellingPrice: +i.selling_price, minStock: i.min_stock ? +i.min_stock : undefined, unit: i.unit, total: +i.total, tankId: i.tank_id, tvaActive: i.tva_active, tvaRate: +(i.tva_rate ?? 0) }));
-          m.payments = (purchasePaymentsRaw as any[]).filter(pay => pay.purchase_id === p.id).map(pay => ({ id: pay.id, date: pay.date, amount: +pay.amount, mode: pay.mode, chequeNumber: pay.cheque_number, notes: pay.notes }));
-          return m;
-        });
+        const purchases = buildPurchases(
+          purchasesRaw as any[], purchaseItemsRaw as any[], purchasePaymentsRaw as any[]);
 
         const expenses     = (expensesRaw     as any[]).map(mapExpense);
         const inventories  = (inventoriesRaw  as any[]).map(mapInventory);
@@ -3112,8 +3136,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return { deliveryNotes };
       },
       purchases: async () => {
-        const { data } = await supabase.from('purchases').select('*').order('created_at', { ascending: false }).limit(500);
-        return { purchases: ((data ?? []) as any[]).map(mapPurchase) };
+        // Rebuild WITH sub-records — exactly like `delivery_notes` above. Mapping
+        // the header alone dropped `items` and `payments` from EVERY achat as soon
+        // as any realtime event fired, and a later edit or delete then rolled back
+        // nothing at all on the cuves (the rollback reads `items`).
+        // Every write path touches the `purchases` row itself, so this one
+        // subscription is enough to cover item/payment changes too.
+        const { data }        = await supabase.from('purchases').select('*').order('created_at', { ascending: false }).limit(500);
+        const { data: items } = await supabase.from('purchase_items').select('*');
+        const { data: pays }  = await supabase.from('purchase_payments').select('*');
+        return { purchases: buildPurchases((data ?? []) as any[], (items ?? []) as any[], (pays ?? []) as any[]) };
       },
     };
 

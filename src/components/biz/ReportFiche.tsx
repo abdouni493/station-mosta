@@ -507,12 +507,16 @@ export interface FuelPurchasePaymentDetail {
 /** A single achat carburant with everything needed to print/inspect it. */
 export interface FuelPurchaseDetail {
   id: string;
+  /** Référence de l'achat : n° de facture, à défaut n° de BL, à défaut l'id court. */
+  ref: string;
   invoiceNumber?: string;
   blNumber?: string;
   date: string;
   supplier: string;
   status: string;
   items: { name: string; qty: number; unitPrice: number; total: number }[];
+  /** Cuves livrées, en une ligne : « Cuve 1 (Essence), Cuve 2 (Gasoil) ». */
+  cuves: string;
   subtotal: number;
   discountAmount: number;
   tvaAmount: number;
@@ -523,11 +527,45 @@ export interface FuelPurchaseDetail {
   payments: FuelPurchasePaymentDetail[];
 }
 
+/** Modes de règlement d'un achat, résumés en une ligne : « Chèque, Espèces ». */
+export const payModesOf = (p: FuelPurchaseDetail): string =>
+  Array.from(new Set(p.payments.map(pay => PAY_MODE_LABEL[pay.mode] || pay.mode))).join(', ') || '—';
+
+/**
+ * Références du règlement, en une ligne : compte débité + n° de chèque /
+ * bordereau. C'est l'information que le gérant recherche sur la fiche imprimée.
+ */
+export const payInfoOf = (p: FuelPurchaseDetail): string => {
+  if (p.payments.length === 0) return 'Aucun règlement (dette)';
+  return p.payments.map(pay => [
+    pay.account,
+    pay.chequeNumber ? `chèque n° ${pay.chequeNumber}` : '',
+    pay.bordereauNumber ? `bordereau n° ${pay.bordereauNumber}` : '',
+  ].filter(Boolean).join(' · ')).join(' | ');
+};
+
+/**
+ * Compact cells for the achats table: 11 columns have to fit the A4 portrait
+ * width, so this sheet uses tighter padding and a smaller type size than the
+ * shared `TH` / `TD`, and lets long references wrap instead of overflowing.
+ */
+function THc({ children, align, width }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center'; width?: string }) {
+  return <th style={{ padding: '5px 6px', width, textAlign: align || 'left', fontSize: 8.5, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.2, color: '#fff' }}>{children}</th>;
+}
+function TDc({ children, align, bold, color }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center'; bold?: boolean; color?: string }) {
+  return <td style={{ padding: '4px 6px', textAlign: align || 'left', fontSize: 9.5, fontWeight: bold ? 900 : 600, color: color || '#1e293b', borderBottom: '1px solid #eef2f7', wordBreak: 'break-word' }}>{children}</td>;
+}
+
 /**
  * Printable "Achats Carburant" sheet — same Fiche-Journalière shell (banner, KPI
- * strip, numbered striped parts, signature footer) as every other fiche. Lists
- * every fuel purchase of the period with its cuves, and — crucially — the mode de
- * paiement and the n° de chèque / bordereau of each règlement.
+ * strip, signature footer) as every other fiche.
+ *
+ * ONE consolidated table, one line per achat — deliberately NOT a page of
+ * per-achat blocks. Each line carries what the gérant actually checks: la
+ * référence de l'achat, la cuve, la quantité, le mode de règlement et SES
+ * références (compte débité, n° de chèque / bordereau), et le total. Les détails
+ * fins (prix au litre, sous-total, TVA, remise) restent sur la facture de l'achat
+ * lui-même et n'encombrent pas cette liste.
  */
 export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
   purchases: FuelPurchaseDetail[]; from: string; to: string; settings: any;
@@ -538,10 +576,12 @@ export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
     (a, p) => ({ total: a.total + p.total, paid: a.paid + p.paid, rest: a.rest + p.rest, liters: a.liters + p.liters }),
     { total: 0, paid: 0, rest: 0, liters: 0 },
   );
-  const allPayments = purchases.flatMap(p =>
-    p.payments.map(pay => ({ ...pay, ref: p.invoiceNumber || p.blNumber || p.id.slice(0, 8), supplier: p.supplier })));
-  const paymentsByMode: Record<string, number> = {};
-  allPayments.forEach(p => { paymentsByMode[p.mode] = (paymentsByMode[p.mode] || 0) + p.amount; });
+  // Récapitulatif par mode de règlement, sous le tableau.
+  const paymentsByMode: Record<string, { amount: number; count: number }> = {};
+  purchases.forEach(p => p.payments.forEach(pay => {
+    const cur = paymentsByMode[pay.mode] || { amount: 0, count: 0 };
+    paymentsByMode[pay.mode] = { amount: cur.amount + pay.amount, count: cur.count + 1 };
+  }));
 
   return (
     <div aria-hidden="true" style={hiddenWrap}>
@@ -555,97 +595,71 @@ export const PurchasesFiche = React.forwardRef<HTMLDivElement, {
           { label: 'Reste (dette)', value: `${da(totals.rest)} DA`, col: totals.rest > 0 ? '#dc2626' : '#94a3b8' },
         ]} />
 
-        {/* PART 1 — Liste des achats */}
-        <Part num="1" label="Achats carburant" accent="#c2410c">
+        <Part num="1" label="Liste des achats carburant" accent="#c2410c">
           <table style={tableStyle}>
             <thead><tr style={theadRow}>
-              <TH>Facture</TH><TH>BL</TH><TH>Date</TH><TH>Fournisseur</TH>
-              <TH align="right">Volume</TH><TH align="right">Total</TH><TH align="right">Payé</TH><TH align="right">Reste</TH><TH>Statut</TH>
+              <THc>N° achat</THc>
+              <THc>Date</THc>
+              <THc>Fournisseur</THc>
+              <THc>Cuve</THc>
+              <THc align="right">Quantité</THc>
+              <THc>Mode de paiement</THc>
+              <THc>Références du règlement</THc>
+              <THc align="right">Total</THc>
+              <THc align="right">Payé</THc>
+              <THc align="right">Reste</THc>
+              <THc>Statut</THc>
             </tr></thead>
             <tbody>
               {purchases.length === 0 && (
-                <tr><TD color="#94a3b8">Aucun achat carburant sur la période</TD><TD /><TD /><TD /><TD align="right">0</TD><TD align="right">0</TD><TD align="right">0</TD><TD align="right">0</TD><TD /></tr>
+                <tr>
+                  <TDc color="#94a3b8">Aucun achat carburant sur la période</TDc>
+                  <TDc /><TDc /><TDc /><TDc align="right">0</TDc><TDc /><TDc />
+                  <TDc align="right">0</TDc><TDc align="right">0</TDc><TDc align="right">0</TDc><TDc />
+                </tr>
               )}
               {purchases.map((p, i) => (
                 <tr key={p.id} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
-                  <TD bold>{p.invoiceNumber || '—'}</TD>
-                  <TD>{p.blNumber || '—'}</TD>
-                  <TD>{shortDate(p.date)}</TD>
-                  <TD>{p.supplier}</TD>
-                  <TD align="right">{lit(p.liters)} L</TD>
-                  <TD align="right" bold color={C.blue900}>{da(p.total)} DA</TD>
-                  <TD align="right" color="#15803d">{da(p.paid)} DA</TD>
-                  <TD align="right" color={p.rest > 0 ? '#dc2626' : '#94a3b8'}>{da(p.rest)} DA</TD>
-                  <TD bold color={statusColor(p.status)}>{p.status}</TD>
+                  <TDc bold color={C.blue900}>{p.ref}</TDc>
+                  <TDc>{shortDate(p.date)}</TDc>
+                  <TDc>{p.supplier}</TDc>
+                  <TDc>{p.cuves || '—'}</TDc>
+                  <TDc align="right" bold>{lit(p.liters)} L</TDc>
+                  <TDc bold color={p.payments.length === 0 ? '#dc2626' : C.blue700}>{payModesOf(p)}</TDc>
+                  <TDc color="#475569">{payInfoOf(p)}</TDc>
+                  <TDc align="right" bold color={C.blue900}>{da(p.total)} DA</TDc>
+                  <TDc align="right" color="#15803d">{da(p.paid)} DA</TDc>
+                  <TDc align="right" color={p.rest > 0 ? '#dc2626' : '#94a3b8'}>{da(p.rest)} DA</TDc>
+                  <TDc bold color={statusColor(p.status)}>{p.status}</TDc>
                 </tr>
               ))}
               <tr style={{ background: '#fff7ed' }}>
-                <TD bold color="#9a3412">TOTAL</TD><TD /><TD /><TD />
-                <TD align="right" bold color="#9a3412">{lit(totals.liters)} L</TD>
-                <TD align="right" bold color="#9a3412">{da(totals.total)} DA</TD>
-                <TD align="right" bold color="#15803d">{da(totals.paid)} DA</TD>
-                <TD align="right" bold color="#dc2626">{da(totals.rest)} DA</TD>
-                <TD />
+                <TDc bold color="#9a3412">TOTAL</TDc>
+                <TDc /><TDc /><TDc />
+                <TDc align="right" bold color="#9a3412">{lit(totals.liters)} L</TDc>
+                <TDc /><TDc />
+                <TDc align="right" bold color="#9a3412">{da(totals.total)} DA</TDc>
+                <TDc align="right" bold color="#15803d">{da(totals.paid)} DA</TDc>
+                <TDc align="right" bold color="#dc2626">{da(totals.rest)} DA</TDc>
+                <TDc />
               </tr>
             </tbody>
           </table>
-        </Part>
 
-        {/* PART 2 — Règlements & modes de paiement (chèque / bordereau / compte) */}
-        <Part num="2" label="Règlements & modes de paiement" accent={C.blue700}>
-          <table style={tableStyle}>
-            <thead><tr style={theadRow}>
-              <TH>Achat</TH><TH>Fournisseur</TH><TH>Mode</TH><TH>Compte débité</TH><TH>N° chèque / bordereau</TH><TH>Date</TH><TH align="right">Montant</TH>
-            </tr></thead>
-            <tbody>
-              {allPayments.length === 0 && (
-                <tr><TD color="#94a3b8">Aucun règlement enregistré</TD><TD /><TD /><TD /><TD /><TD /><TD align="right">0</TD></tr>
-              )}
-              {allPayments.map((p, i) => (
-                <tr key={i} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
-                  <TD bold>{p.ref}</TD>
-                  <TD>{p.supplier}</TD>
-                  <TD bold color={p.mode === 'CHEQUE' ? '#1d4ed8' : p.mode === 'VIREMENT' ? '#7c3aed' : '#047857'}>{PAY_MODE_LABEL[p.mode] || p.mode}</TD>
-                  <TD>{p.account}</TD>
-                  <TD>{p.chequeNumber ? `Chèque n° ${p.chequeNumber}` : p.bordereauNumber ? `Bordereau n° ${p.bordereauNumber}` : '—'}</TD>
-                  <TD>{shortDate(p.date)}</TD>
-                  <TD align="right" bold color={C.blue900}>{da(p.amount)} DA</TD>
-                </tr>
-              ))}
-            </tbody>
-          </table>
           {Object.keys(paymentsByMode).length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 10 }}>
-              {Object.entries(paymentsByMode).map(([mode, amt]) => (
+              {Object.entries(paymentsByMode).map(([mode, agg]) => (
                 <span key={mode} style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#f8fafc', border: '1px solid #e2e8f0', color: '#334155' }}>
-                  {PAY_MODE_LABEL[mode] || mode} : {da(amt)} DA
+                  {PAY_MODE_LABEL[mode] || mode} : {da(agg.amount)} DA ({agg.count} règlement{agg.count > 1 ? 's' : ''})
                 </span>
               ))}
+              {totals.rest > 0 && (
+                <span style={{ fontWeight: 800, fontSize: 10.5, padding: '5px 11px', borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c' }}>
+                  Dette fournisseurs : {da(totals.rest)} DA
+                </span>
+              )}
             </div>
           )}
-        </Part>
-
-        {/* PART 3 — Cuves livrées (détail ligne par ligne) */}
-        <Part num="3" label="Cuves livrées (détail)" accent="#047857">
-          <table style={tableStyle}>
-            <thead><tr style={theadRow}>
-              <TH>Achat</TH><TH>Cuve / Produit</TH><TH align="right">Quantité</TH><TH align="right">Prix / L</TH><TH align="right">Total</TH>
-            </tr></thead>
-            <tbody>
-              {purchases.length === 0 && (
-                <tr><TD color="#94a3b8">Aucune livraison</TD><TD /><TD align="right">0</TD><TD align="right">0</TD><TD align="right">0</TD></tr>
-              )}
-              {purchases.flatMap((p, pi) => p.items.map((it, ii) => (
-                <tr key={`${pi}-${ii}`} style={{ background: (pi + ii) % 2 ? '#f8fafc' : '#fff' }}>
-                  <TD bold>{p.invoiceNumber || p.blNumber || p.id.slice(0, 8)}</TD>
-                  <TD>{it.name}</TD>
-                  <TD align="right">{lit(it.qty)} L</TD>
-                  <TD align="right" color="#b45309">{da(it.unitPrice)} DA</TD>
-                  <TD align="right" bold color="#1d4ed8">{da(it.total)} DA</TD>
-                </tr>
-              )))}
-            </tbody>
-          </table>
         </Part>
 
         <Footer settings={settings} title={title} />

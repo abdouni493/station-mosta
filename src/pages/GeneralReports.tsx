@@ -3,7 +3,7 @@ import {
   FileBarChart, Globe2, Fuel, ChevronRight, Printer, Calendar, TrendingUp, ShoppingCart,
   CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
   UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
-  Droplets, Wallet, Receipt, Hash, X, Trash2, Flame,
+  Droplets, Wallet, Hash, X, Trash2, Flame,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -17,7 +17,12 @@ import { computeTreasuryReport } from '@/src/lib/treasuryReporting';
 import ReportView from '@/src/components/biz/ReportView';
 import WorkforceView from '@/src/components/biz/WorkforceView';
 import TreasuryView from '@/src/components/biz/TreasuryView';
-import { ModuleFiche, GlobalFiche, PurchasesFiche, PAY_MODE_LABEL, printFiche, FuelPurchaseDetail } from '@/src/components/biz/ReportFiche';
+import {
+  ModuleFiche, GlobalFiche, PurchasesFiche, PAY_MODE_LABEL, printFiche,
+  FuelPurchaseDetail, payInfoOf,
+} from '@/src/components/biz/ReportFiche';
+import { deleteFuelPurchase, tankDeltasOf, describeTankDeltas, litersOf } from '@/src/lib/fuelPurchase';
+import { toast } from 'react-hot-toast';
 
 type ActiveKey = 'global' | 'carburant' | 'employes' | 'tresorerie' | ModuleKey;
 
@@ -102,6 +107,12 @@ export default function GeneralReports() {
     const bankAccounts: any[] = app.bankAccounts || [];
     const acctLabel = (id?: string) =>
       !id || id === CAISSE_ID ? 'Espèces (caisse)' : (bankAccounts.find(a => a.id === id)?.name || 'Compte bancaire');
+    // Nom lisible d'une cuve, pris sur la cuve ACTUELLE quand elle existe encore
+    // (le libellé figé dans la ligne d'achat peut dater d'un ancien nom).
+    const cuveLabel = (i: any) => {
+      const tank = tanks.find(t => t.id === i.tankId);
+      return tank ? `${tank.name}${tank.type ? ` (${tank.type})` : ''}` : (i.productName || 'Cuve');
+    };
     return (app.purchases || [])
       .filter((p: any) => within(p.date, range.from, range.to))
       // Only fuel purchases (they always carry a cuve), like the Achats Carburant screen.
@@ -109,17 +120,19 @@ export default function GeneralReports() {
       .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())
       .map((p: any): FuelPurchaseDetail => ({
         id: p.id,
+        ref: p.invoiceNumber || p.blNumber || p.id.slice(0, 8).toUpperCase(),
         invoiceNumber: p.invoiceNumber,
         blNumber: p.blNumber,
         date: p.date,
         supplier: suppliers.find(s => s.id === p.supplierId)?.name || '—',
         status: p.status || '—',
         items: (p.items || []).map((i: any) => ({
-          name: i.productName || tanks.find(t => t.id === i.tankId)?.name || 'Cuve',
+          name: cuveLabel(i),
           qty: i.quantity || 0,
           unitPrice: i.buyPrice || 0,
           total: i.total ?? (i.quantity || 0) * (i.buyPrice || 0),
         })),
+        cuves: Array.from(new Set((p.items || []).filter((i: any) => i.tankId).map(cuveLabel))).join(', '),
         subtotal: p.subtotal || 0,
         discountAmount: p.discountAmount || 0,
         tvaAmount: p.tvaAmount || 0,
@@ -296,6 +309,29 @@ export default function GeneralReports() {
   const activeInfo = SECTIONS.find(s => s.id === active)!;
   const ActiveIcon = activeInfo.icon;
 
+  /**
+   * Deleting an achat from this report does the SAME full rollback as the Achats
+   * Carburant screen: the litres delivered are taken back out of the cuves and
+   * the règlements are refunded to the caisse / bank accounts. Dropping the row
+   * alone used to leave the cuve levels permanently inflated.
+   */
+  const deletePurchase = (id: string) => {
+    const purchase = (app.purchases || []).find((p: any) => p.id === id);
+    if (!purchase) return;
+    const deltas = deleteFuelPurchase(purchase, app.treasuryTransactions || [], dispatch);
+    const liters = litersOf(purchase);
+    toast.success(deltas.length
+      ? `Achat supprimé — ${liters.toLocaleString('fr-FR')} L retirés des cuves`
+      : 'Achat supprimé');
+  };
+
+  /** Cuve levels an achat deletion would restore, shown in the confirm dialog. */
+  const purchaseImpact = (id: string) => {
+    const purchase = (app.purchases || []).find((p: any) => p.id === id);
+    if (!purchase) return '';
+    return describeTankDeltas(tankDeltasOf(purchase, -1), app.tanks || []);
+  };
+
   const generate = () => setRange({ from, to });
   // The two cross-cutting sections have no dedicated printable sheet: they fall
   // back to the consolidated one, which already carries their headline numbers.
@@ -401,7 +437,8 @@ export default function GeneralReports() {
         purchases={fuelPurchases}
         range={range}
         onPrint={handlePrintPurchases}
-        onDelete={id => dispatch({ type: 'DELETE_PURCHASE', payload: id })}
+        onDelete={deletePurchase}
+        impactOf={purchaseImpact}
       />
 
       {/* Drill-down d'une carte KPI — liste détaillée + suppression */}
@@ -670,15 +707,24 @@ const PAY_MODE_TONE: Record<string, string> = {
   VIREMENT: 'text-purple-700 bg-purple-50 border-purple-200',
 };
 
-function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDelete }: {
+/**
+ * Drill-down of the « Achats totaux » card: the list of fuel purchases of the
+ * period, laid out as ONE table — the same columns as the printed fiche, so what
+ * is read on screen is what comes out of the printer. A row can be expanded to
+ * reveal its cuve lines and its règlements one by one.
+ */
+function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDelete, impactOf }: {
   open: boolean;
   onClose: () => void;
   purchases: FuelPurchaseDetail[];
   range: { from: string; to: string };
   onPrint: () => void;
   onDelete: (id: string) => void;
+  /** Cuve levels the deletion of an achat would restore (confirmation dialog). */
+  impactOf: (id: string) => string;
 }) {
   const [toDelete, setToDelete] = useState<FuelPurchaseDetail | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const totals = useMemo(() => purchases.reduce(
     (a, p) => ({ total: a.total + p.total, paid: a.paid + p.paid, rest: a.rest + p.rest, liters: a.liters + p.liters }),
     { total: 0, paid: 0, rest: 0, liters: 0 },
@@ -686,17 +732,18 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDele
 
   return (
     <Modal open={open} onClose={onClose} icon={ShoppingCart} size="2xl" fullHeight
-      title="Achats Carburant — détail complet"
+      title="Achats Carburant — liste de la période"
       subtitle={`Du ${formatDate(range.from)} au ${formatDate(range.to)} · ${purchases.length} achat(s)`}
       footer={<>
         <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
+          <span className="text-slate-400 uppercase tracking-widest">{totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</span>
           <span className="text-[#002d87]">Total {money(totals.total)}</span>
           <span className="text-emerald-600">Payé {money(totals.paid)}</span>
           {totals.rest > 0 && <span className="text-red-600">Reste {money(totals.rest)}</span>}
         </div>
         <button className="btn-ghost" onClick={onClose}>Fermer</button>
         <button className="btn-primary" onClick={onPrint} disabled={purchases.length === 0}>
-          <Printer className="w-4 h-4" /> Imprimer la fiche
+          <Printer className="w-4 h-4" /> Imprimer la liste
         </button>
       </>}>
       <div className="space-y-5">
@@ -723,109 +770,156 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDele
             <p className="text-sm font-bold text-slate-400">Aucun achat carburant sur cette période.</p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {purchases.map(p => (
-              <div key={p.id} className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                {/* Header */}
-                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-gradient-to-r from-slate-50 to-white border-b border-slate-200">
-                  <div className="min-w-0">
-                    <h4 className="font-black text-slate-800 flex items-center gap-2 truncate">
-                      <Receipt className="w-4 h-4 text-[#003087] shrink-0" />
-                      {p.invoiceNumber || p.blNumber || 'Sans référence'}
-                    </h4>
-                    <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
-                      <Truck className="w-3 h-3" /> {p.supplier} · {formatDate(p.date)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone={PURCHASE_STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge>
-                    <button onClick={() => setToDelete(p)} title="Supprimer cet achat"
-                      className="p-2 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-                </div>
-
-                <div className="p-4 space-y-4">
-                  {/* Chips */}
-                  <div className="flex flex-wrap gap-1.5 text-[11px]">
-                    {p.invoiceNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Facture {p.invoiceNumber}</span>}
-                    {p.blNumber && <span className="badge badge-neutral">BL {p.blNumber}</span>}
-                    <span className="badge badge-info"><Droplets className="w-3 h-3" />{p.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</span>
-                  </div>
-
-                  {/* Totals */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="rounded-xl bg-slate-50 p-2.5 text-center">
-                      <p className="text-[9px] uppercase font-black text-slate-400">Total</p>
-                      <p className="font-black text-slate-700 tabular-nums text-sm">{money(p.total)}</p>
-                    </div>
-                    <div className="rounded-xl bg-emerald-50 p-2.5 text-center">
-                      <p className="text-[9px] uppercase font-black text-slate-400">Payé</p>
-                      <p className="font-black text-emerald-600 tabular-nums text-sm">{money(p.paid)}</p>
-                    </div>
-                    <div className="rounded-xl bg-red-50 p-2.5 text-center">
-                      <p className="text-[9px] uppercase font-black text-slate-400">Reste</p>
-                      <p className="font-black text-red-600 tabular-nums text-sm">{money(p.rest)}</p>
-                    </div>
-                  </div>
-
-                  {/* Cuves livrées */}
-                  {p.items.length > 0 && (
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1"><Droplets className="w-3.5 h-3.5" /> Cuves livrées</p>
-                      <div className="overflow-x-auto custom-scrollbar rounded-xl border border-slate-100">
-                        <table className="w-full border-collapse text-sm">
-                          <thead><tr className="bg-slate-50">
-                            <th className="text-left px-3 py-2 text-[10px] font-black uppercase text-slate-400">Cuve / Produit</th>
-                            <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Quantité</th>
-                            <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Prix / L</th>
-                            <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Total</th>
-                          </tr></thead>
-                          <tbody>
-                            {p.items.map((it, i) => (
-                              <tr key={i} className="border-t border-slate-100">
-                                <td className="px-3 py-2 font-bold text-slate-700">{it.name}</td>
-                                <td className="px-3 py-2 text-right tabular-nums">{it.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
-                                <td className="px-3 py-2 text-right tabular-nums text-amber-700">{money(it.unitPrice)}</td>
-                                <td className="px-3 py-2 text-right tabular-nums font-bold text-blue-700">{money(it.total)}</td>
-                              </tr>
+          <>
+            <p className="text-[11px] text-slate-400 italic px-1">
+              Cliquez une ligne pour dérouler le détail des cuves et de chaque règlement.
+            </p>
+            <Table head={<>
+              <th className="table-head">N° achat</th>
+              <th className="table-head">Date</th>
+              <th className="table-head">Fournisseur</th>
+              <th className="table-head">Cuve</th>
+              <th className="table-head text-right">Quantité</th>
+              <th className="table-head">Paiement</th>
+              <th className="table-head text-right">Total</th>
+              <th className="table-head text-right">Payé</th>
+              <th className="table-head text-right">Reste</th>
+              <th className="table-head">Statut</th>
+              <th className="table-head text-right">Action</th>
+            </>}>
+              {purchases.map(p => {
+                const isOpen = expanded === p.id;
+                return (
+                  <React.Fragment key={p.id}>
+                    <tr className="hover:bg-slate-50 cursor-pointer"
+                      onClick={() => setExpanded(isOpen ? null : p.id)}>
+                      <td className="table-cell font-black text-[#002d87] whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1">
+                          <ChevronRight className={cn('w-3.5 h-3.5 text-slate-300 transition-transform', isOpen && 'rotate-90')} />
+                          {p.ref}
+                        </span>
+                      </td>
+                      <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(p.date)}</td>
+                      <td className="table-cell">{p.supplier}</td>
+                      <td className="table-cell text-xs text-slate-500 max-w-[170px]">{p.cuves || '—'}</td>
+                      <td className="table-cell text-right tabular-nums font-bold">{p.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
+                      <td className="table-cell">
+                        <div className="flex flex-wrap gap-1">
+                          {p.payments.length === 0
+                            ? <span className="badge badge-danger">Dette</span>
+                            : Array.from(new Set(p.payments.map(pay => pay.mode))).map(mode => (
+                              <span key={mode} className={cn('badge border', PAY_MODE_TONE[mode] || 'text-slate-600 bg-white border-slate-200')}>
+                                {PAY_MODE_LABEL[mode] || mode}
+                              </span>
                             ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
+                        </div>
+                        {p.payments.length > 0 && (
+                          <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px]">{payInfoOf(p)}</div>
+                        )}
+                      </td>
+                      <td className="table-cell text-right tabular-nums font-black">{money(p.total)}</td>
+                      <td className="table-cell text-right tabular-nums text-emerald-600">{money(p.paid)}</td>
+                      <td className="table-cell text-right tabular-nums text-red-600">{money(p.rest)}</td>
+                      <td className="table-cell"><Badge tone={PURCHASE_STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge></td>
+                      <td className="table-cell text-right">
+                        <button onClick={e => { e.stopPropagation(); setToDelete(p); }} title="Supprimer cet achat"
+                          className="p-2 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
+                      </td>
+                    </tr>
 
-                  {/* Règlements — mode de paiement + n° chèque / bordereau */}
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1"><CreditCard className="w-3.5 h-3.5" /> Règlements & modes de paiement</p>
-                    {p.payments.length === 0 ? (
-                      <p className="text-xs text-slate-400 italic px-1">Aucun règlement — achat enregistré en dette.</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {p.payments.map((pay, i) => (
-                          <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2">
-                            <span className={cn('badge border', PAY_MODE_TONE[pay.mode] || 'text-slate-600 bg-white border-slate-200')}>
-                              {PAY_MODE_LABEL[pay.mode] || pay.mode}
-                            </span>
-                            <span className="text-xs text-slate-500 flex items-center gap-1"><Wallet className="w-3 h-3" />{pay.account}</span>
-                            {pay.chequeNumber && <span className="badge badge-info"><Hash className="w-3 h-3" />Chèque n° {pay.chequeNumber}</span>}
-                            {pay.bordereauNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Bordereau n° {pay.bordereauNumber}</span>}
-                            <span className="text-xs text-slate-400">{formatDate(pay.date)}</span>
-                            <span className="ml-auto font-black tabular-nums text-[#002d87]">{money(pay.amount)}</span>
+                    {isOpen && (
+                      <tr>
+                        <td colSpan={11} className="bg-slate-50/70 px-4 py-4">
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            {/* Cuves livrées */}
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1">
+                                <Droplets className="w-3.5 h-3.5" /> Cuves livrées
+                              </p>
+                              <div className="rounded-xl border border-slate-100 bg-white overflow-hidden">
+                                <table className="w-full border-collapse text-sm">
+                                  <thead><tr className="bg-slate-50">
+                                    <th className="text-left px-3 py-2 text-[10px] font-black uppercase text-slate-400">Cuve</th>
+                                    <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Quantité</th>
+                                    <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Prix / L</th>
+                                    <th className="text-right px-3 py-2 text-[10px] font-black uppercase text-slate-400">Total</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {p.items.length === 0 && (
+                                      <tr><td colSpan={4} className="px-3 py-2 text-xs text-slate-400 italic">Aucune ligne de cuve.</td></tr>
+                                    )}
+                                    {p.items.map((it, i) => (
+                                      <tr key={i} className="border-t border-slate-100">
+                                        <td className="px-3 py-2 font-bold text-slate-700">{it.name}</td>
+                                        <td className="px-3 py-2 text-right tabular-nums">{it.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
+                                        <td className="px-3 py-2 text-right tabular-nums text-amber-700">{money(it.unitPrice)}</td>
+                                        <td className="px-3 py-2 text-right tabular-nums font-bold text-blue-700">{money(it.total)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              <div className="flex flex-wrap gap-1.5 text-[11px] mt-2">
+                                {p.invoiceNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Facture {p.invoiceNumber}</span>}
+                                {p.blNumber && <span className="badge badge-neutral">BL {p.blNumber}</span>}
+                                {p.discountAmount > 0 && <span className="badge badge-warning">Remise {money(p.discountAmount)}</span>}
+                                {p.tvaAmount > 0 && <span className="badge badge-info">TVA {money(p.tvaAmount)}</span>}
+                              </div>
+                            </div>
+
+                            {/* Règlements */}
+                            <div>
+                              <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-1">
+                                <CreditCard className="w-3.5 h-3.5" /> Règlements & modes de paiement
+                              </p>
+                              {p.payments.length === 0 ? (
+                                <p className="text-xs text-slate-400 italic px-1">Aucun règlement — achat enregistré en dette.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {p.payments.map((pay, i) => (
+                                    <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-100 bg-white px-3 py-2">
+                                      <span className={cn('badge border', PAY_MODE_TONE[pay.mode] || 'text-slate-600 bg-white border-slate-200')}>
+                                        {PAY_MODE_LABEL[pay.mode] || pay.mode}
+                                      </span>
+                                      <span className="text-xs text-slate-500 flex items-center gap-1"><Wallet className="w-3 h-3" />{pay.account}</span>
+                                      {pay.chequeNumber && <span className="badge badge-info"><Hash className="w-3 h-3" />Chèque n° {pay.chequeNumber}</span>}
+                                      {pay.bordereauNumber && <span className="badge badge-neutral"><Hash className="w-3 h-3" />Bordereau n° {pay.bordereauNumber}</span>}
+                                      <span className="text-xs text-slate-400">{formatDate(pay.date)}</span>
+                                      <span className="ml-auto font-black tabular-nums text-[#002d87]">{money(pay.amount)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+                        </td>
+                      </tr>
                     )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+                  </React.Fragment>
+                );
+              })}
+
+              {/* Ligne de total — mêmes colonnes que la fiche imprimée */}
+              <tr className="bg-blue-50/60">
+                <td className="table-cell font-black text-[#002d87]" colSpan={4}>TOTAL — {purchases.length} achat(s)</td>
+                <td className="table-cell text-right tabular-nums font-black">{totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L</td>
+                <td className="table-cell" />
+                <td className="table-cell text-right tabular-nums font-black text-[#002d87]">{money(totals.total)}</td>
+                <td className="table-cell text-right tabular-nums font-black text-emerald-600">{money(totals.paid)}</td>
+                <td className="table-cell text-right tabular-nums font-black text-red-600">{money(totals.rest)}</td>
+                <td className="table-cell" colSpan={2} />
+              </tr>
+            </Table>
+          </>
         )}
       </div>
 
       <Confirm open={!!toDelete} title="Supprimer l'achat"
-        message={`Supprimer l'achat « ${toDelete?.invoiceNumber || toDelete?.blNumber || 'Sans référence'} » de ${money(toDelete?.total || 0)} ? Cette action est définitive.`}
+        message={`Achat « ${toDelete?.ref || ''} » de ${money(toDelete?.total || 0)}.\n\nLes ${
+          (toDelete?.liters || 0).toLocaleString('fr-FR')
+        } L livrés seront RETIRÉS des cuves et les règlements annulés (l'argent revient en caisse / en banque).${
+          toDelete && impactOf(toDelete.id) ? `\n\n${impactOf(toDelete.id)}` : ''
+        }\n\nCette action est définitive.`}
         onConfirm={() => { if (toDelete) onDelete(toDelete.id); setToDelete(null); }}
         onCancel={() => setToDelete(null)} />
     </Modal>

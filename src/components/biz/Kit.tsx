@@ -227,7 +227,9 @@ export function Confirm({
             <Trash2 className={cn('w-6 h-6', danger ? 'text-red-600' : 'text-amber-600')} />
           </div>
           <h3 className="text-base font-black text-[#002d87] mb-2">{title}</h3>
-          <p className="text-sm text-slate-500">{message}</p>
+          {/* `whitespace-pre-line`: a message may spell out its consequences on
+              several lines (e.g. the cuve levels an achat rollback will restore). */}
+          <p className="text-sm text-slate-500 whitespace-pre-line">{message}</p>
         </div>
         <div className="p-6 pt-0 flex gap-3">
           <button onClick={onCancel} className="btn-ghost flex-1">Annuler</button>
