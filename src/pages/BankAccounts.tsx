@@ -16,7 +16,8 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
   useAppState, useAppDispatch, useModulePermission,
-  BankAccount, TreasuryTransaction, CAISSE_ID, bankBalanceOf, caisseBalanceOf,
+  BankAccount, TreasuryTransaction, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
+  accountLabelOf, bankBalanceOf, caisseBalanceOf,
 } from '../store/AppContext';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
@@ -234,15 +235,18 @@ function TransferModal({
   onTransfer: (tx: TreasuryTransaction) => void;
 }) {
   const others = accounts.filter(a => a.id !== from.id);
+  // The money can also go straight to the caisse of one activity.
+  const cashTargets = [CAISSE_ID, ...Object.values(CAISSE_PART_ID)];
   const [target, setTarget] = useState<string>(CAISSE_ID);
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState('');
 
   const value = Number(amount) || 0;
-  const targetLabel = target === CAISSE_ID
-    ? 'Caisse générale'
-    : (others.find(a => a.id === target)?.name || '—');
+  const targetLabel = accountLabelOf(target, others, '—');
+  const targetBalance = target === CAISSE_ID
+    ? caisseBalance
+    : (others.find(a => a.id === target)?.balance ?? 0);
 
   const submit = () => {
     if (value <= 0) { toast.error('Montant requis'); return; }
@@ -280,10 +284,20 @@ function TransferModal({
           </div>
         </div>
 
-        <Field label="Destination" required>
+        <Field label="Destination" required hint="Une caisse de la station, ou un autre compte bancaire.">
           <Select value={target} onChange={e => setTarget(e.target.value)}>
-            <option value={CAISSE_ID}>Caisse générale (espèces)</option>
-            {others.map(a => <option key={a.id} value={a.id}>{a.name} — {money(a.balance)}</option>)}
+            <optgroup label="Caisses de la station">
+              {cashTargets.map(id => (
+                <option key={id} value={id}>
+                  {CASH_ACCOUNT_LABEL[id]}{id === CAISSE_ID ? ` — ${money(caisseBalance)}` : ''}
+                </option>
+              ))}
+            </optgroup>
+            {others.length > 0 && (
+              <optgroup label="Comptes bancaires">
+                {others.map(a => <option key={a.id} value={a.id}>{a.name} — {money(a.balance)}</option>)}
+              </optgroup>
+            )}
           </Select>
         </Field>
 
@@ -293,12 +307,16 @@ function TransferModal({
         </div>
         <Field label="Description"><Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Motif du virement" /></Field>
 
-        <div className="rounded-xl bg-[#001f5c] text-white p-4 flex items-center justify-between">
-          <span className="text-sm font-semibold text-blue-200">
-            {target === CAISSE_ID ? 'Nouvelle caisse générale' : `Nouveau solde ${targetLabel}`}
+        <div className="rounded-xl bg-[#001f5c] text-white p-4 flex items-center justify-between gap-3">
+          <span className="text-sm font-semibold text-blue-200 min-w-0">
+            {Object.values(CAISSE_PART_ID).includes(target as any)
+              ? `Crédité sur ${targetLabel}`
+              : `Nouveau solde ${targetLabel}`}
           </span>
-          <span className="text-lg font-black tabular-nums text-[#FFB800]">
-            {money((target === CAISSE_ID ? caisseBalance : (others.find(a => a.id === target)?.balance || 0)) + value)}
+          <span className="text-lg font-black tabular-nums text-[#FFB800] shrink-0">
+            {Object.values(CAISSE_PART_ID).includes(target as any)
+              ? `+${money(value)}`
+              : money(targetBalance + value)}
           </span>
         </div>
       </div>
@@ -318,11 +336,9 @@ function AccountHistory({
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
 
-  const label = (id?: string) => {
-    if (!id) return 'Externe';
-    if (id === CAISSE_ID) return 'Caisse générale';
-    return accounts.find(a => a.id === id)?.name || '—';
-  };
+  // A movement can come from / go to a bank account, any caisse of the station
+  // (générale, Carburant, Cafétéria, Lavage) or the outside world.
+  const label = (id?: string) => accountLabelOf(id, accounts, id ? '—' : 'Externe');
 
   const rows = useMemo(() => txs
     .filter(t => (t.accountFrom === account.id || t.accountTo === account.id) && inPeriod(t.date, period, from, to))

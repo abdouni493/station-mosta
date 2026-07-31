@@ -327,16 +327,40 @@ export interface BizComptoirItem {
   sourceProductionId?: string;
 }
 
+/**
+ * Un produit retiré des stocks parce qu'il est perdu : périmé, cassé, volé…
+ *
+ * La destruction peut venir de DEUX endroits, et `source` dit lequel — c'est ce
+ * qui permet de la récupérer au bon endroit et de n'afficher, sur chaque écran,
+ * que son propre historique :
+ *   • 'comptoir' (défaut historique) → un produit prêt à la vente au comptoir
+ *   • 'stock'                        → un produit du catalogue (Gestion de stock)
+ *
+ * `unitPrice` est le coût unitaire retenu pour valoriser la perte : le PRIX
+ * D'ACHAT côté stock (ce que le produit a réellement coûté), le prix du comptoir
+ * côté comptoir. `value` = qty × unitPrice et alimente le résultat de la partie
+ * (caisse et rapports).
+ */
 export interface BizDestruction {
   id: string;
+  /** D'où vient le produit détruit. Absent = ancienne destruction du comptoir. */
+  source?: 'stock' | 'comptoir';
+  /** Produit du catalogue concerné, quand la destruction vient du stock. */
+  productId?: string;
   productName: string;
+  categoryName?: string;
   qty: number;
+  unit?: string;
+  /** Coût unitaire retenu pour valoriser la perte. */
   unitPrice: number;
   value: number;
   reason?: string;
   date: string;
   createdBy?: string;
   recovered?: boolean;
+  /** Quand le produit a été remis en stock / au comptoir. */
+  recoveredAt?: string;
+  notes?: string;
 }
 
 // ─── POS work sessions (session de travail) ────────────────────────────────────

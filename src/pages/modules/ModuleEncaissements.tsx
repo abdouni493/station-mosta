@@ -8,7 +8,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import {
-  BellRing, Plus, Car, User, Check, X, Clock, Wallet, Trash2, CircleDollarSign,
+  BellRing, Plus, Car, User, Check, CheckCheck, X, Clock, Wallet, Trash2, CircleDollarSign,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -40,6 +40,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [creating, setCreating] = useState(false);
   const [toDelete, setToDelete] = useState<BizPayRequest | null>(null);
+  const [confirmAll, setConfirmAll] = useState(false);
 
   const filtered = useMemo(() => [...payRequests].filter(r => {
     const q = search.trim().toLowerCase();
@@ -63,13 +64,30 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
     };
   }, [payRequests]);
 
+  /**
+   * Valider une demande = l'argent est reçu par la caisse. Elle passe en
+   * « encaissée », quitte la liste des demandes en attente et l'alerte rouge de
+   * la barre latérale se décrémente aussitôt.
+   */
   const collect = (r: BizPayRequest) => {
     biz.update('payRequests', {
       ...r, status: 'collected',
       collectedAt: new Date().toISOString(),
       collectedBy: currentUserName || 'Caisse',
     });
-    toast.success('Encaissement confirmé');
+    toast.success(`Demande ${r.ref} validée — ${money(r.amount)} encaissés`);
+  };
+
+  /** Valide d'un coup toutes les demandes en attente (l'alerte retombe à zéro). */
+  const collectAll = () => {
+    const pending = payRequests.filter(r => r.status === 'pending');
+    if (pending.length === 0) return;
+    const at = new Date().toISOString();
+    pending.forEach(r => biz.update('payRequests', {
+      ...r, status: 'collected', collectedAt: at, collectedBy: currentUserName || 'Caisse',
+    }));
+    toast.success(`${pending.length} demande(s) validée(s) — ${money(pending.reduce((s, r) => s + r.amount, 0))}`);
+    setConfirmAll(false);
   };
   const cancel = (r: BizPayRequest) => {
     biz.update('payRequests', { ...r, status: 'canceled' });
@@ -80,9 +98,49 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={BellRing} title="Demandes d'encaissement" subtitle={`${cfg.label} — du laveur vers la caisse`}
-        actions={perm.creer
-          ? <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouvelle demande</button>
-          : undefined} />
+        actions={(perm.creer || perm.modifier) ? <div className="flex flex-wrap gap-2">
+          {perm.modifier && stats.pending > 0 && (
+            <button onClick={() => setConfirmAll(true)}
+              className="h-11 px-4 rounded-xl font-black text-sm text-white flex items-center gap-2 transition-transform active:scale-[0.98]"
+              style={{ background: 'linear-gradient(135deg, #059669, #10b981)', boxShadow: '0 4px 14px rgba(16,185,129,0.35)' }}
+              title="Valider toutes les demandes en attente">
+              <CheckCheck className="w-4 h-4" /> Tout valider ({stats.pending})
+            </button>
+          )}
+          {perm.creer && (
+            <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouvelle demande</button>
+          )}
+        </div> : undefined} />
+
+      {/* Alerte — des demandes attendent d'être encaissées. */}
+      {stats.pending > 0 && (
+        <div className="rounded-2xl p-4 flex flex-wrap items-center gap-3"
+          style={{ background: 'linear-gradient(135deg, #b45309, #f59e0b)', boxShadow: '0 8px 24px rgba(245,158,11,0.28)' }}>
+          <span className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+            <BellRing className="w-5 h-5 text-white animate-pulse" />
+          </span>
+          <div className="min-w-0">
+            <p className="font-black text-white">
+              {stats.pending} demande{stats.pending > 1 ? 's' : ''} en attente d'encaissement
+            </p>
+            <p className="text-[12px] text-amber-50">
+              {money(stats.pendingAmount)} à encaisser — une pastille rouge reste affichée dans le menu tant qu'il en reste.
+            </p>
+          </div>
+          <div className="ml-auto flex flex-wrap gap-2 shrink-0">
+            <button onClick={() => setStatus('pending')}
+              className="text-xs font-black text-white bg-white/20 hover:bg-white/30 rounded-lg px-3 py-2 transition-colors">
+              Voir les demandes
+            </button>
+            {perm.modifier && (
+              <button onClick={() => setConfirmAll(true)}
+                className="text-xs font-black text-amber-700 bg-white hover:bg-amber-50 rounded-lg px-3 py-2 flex items-center gap-1.5 transition-colors">
+                <CheckCheck className="w-4 h-4" /> Tout valider
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Clock} label="En attente" value={stats.pending} tone="amber" />
@@ -94,13 +152,20 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
       <div className="card-glass p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <SearchInput value={search} onChange={setSearch} placeholder="Client, immatriculation, employé…" />
-          <div className="flex gap-1.5">
-            {(['pending', 'collected', 'canceled', 'all'] as const).map(s => (
-              <button key={s} onClick={() => setStatus(s)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold ${status === s ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500'}`}>
-                {s === 'all' ? 'Toutes' : STATUS_META[s].label}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-1.5">
+            {(['pending', 'collected', 'canceled', 'all'] as const).map(s => {
+              const n = s === 'all' ? payRequests.length : payRequests.filter(r => r.status === s).length;
+              return (
+                <button key={s} onClick={() => setStatus(s)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors ${status === s ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                  {s === 'all' ? 'Toutes' : STATUS_META[s].label}
+                  <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-black tabular-nums ${
+                    status === s ? 'bg-white/20' : (s === 'pending' && n > 0 ? 'bg-amber-500 text-white' : 'bg-white text-slate-400')}`}>
+                    {n}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
@@ -112,7 +177,8 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
       ) : (
         <CardGrid>
           {filtered.map(r => (
-            <GlassCard key={r.id}>
+            <GlassCard key={r.id}
+              className={r.status === 'pending' ? '!border-amber-300 ring-1 ring-amber-200' : undefined}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <h3 className="font-black text-slate-800">{r.ref}</h3>
@@ -134,20 +200,33 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
                 Par {r.workerName} • {formatDate(r.createdAt)}
                 {r.collectedAt && <> • encaissé par {r.collectedBy} le {formatDate(r.collectedAt)}</>}
               </p>
-              <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
-                {r.status === 'pending' && perm.modifier ? (
-                  <div className="flex gap-2">
-                    <button className="btn-secondary !px-2.5 !py-1.5 text-xs" onClick={() => collect(r)}>
-                      <Check className="w-4 h-4" /> Encaisser
+              <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                {/* Une demande en attente met ses deux décisions en avant,
+                    pleine largeur : encaisser (l'argent est reçu) ou annuler. */}
+                {r.status === 'pending' && perm.modifier && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      className="col-span-2 h-10 rounded-xl font-black text-sm text-white flex items-center justify-center gap-1.5 transition-transform active:scale-[0.98]"
+                      style={{ background: 'linear-gradient(135deg, #059669, #10b981)', boxShadow: '0 4px 12px rgba(16,185,129,0.35)' }}
+                      onClick={() => collect(r)}
+                      title="Valider : l'argent est reçu — la demande sort de l'alerte du menu">
+                      <Check className="w-4 h-4" /> Valider {money(r.amount)}
                     </button>
-                    <button className="btn-ghost !px-2.5 !py-1.5 text-xs" onClick={() => cancel(r)}>
+                    <button
+                      className="h-10 rounded-xl font-bold text-sm text-red-600 bg-red-50 hover:bg-red-100 flex items-center justify-center gap-1.5 transition-colors"
+                      onClick={() => cancel(r)}>
                       <X className="w-4 h-4" /> Annuler
                     </button>
                   </div>
-                ) : <span />}
-                <RowActions>
-                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
-                </RowActions>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-400">
+                    {r.status === 'pending' ? 'En attente de la caisse' : STATUS_META[r.status].label}
+                  </span>
+                  <RowActions>
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
+                  </RowActions>
+                </div>
               </div>
             </GlassCard>
           ))}
@@ -166,6 +245,10 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
       )}
       <Confirm open={!!toDelete} title="Supprimer la demande"
         message={`Supprimer la demande ${toDelete?.ref} ?`} onConfirm={del} onCancel={() => setToDelete(null)} />
+      <Confirm open={confirmAll} danger={false} confirmLabel="Tout valider"
+        title="Valider toutes les demandes"
+        message={`Marquer ${stats.pending} demande(s) comme encaissée(s), pour un total de ${money(stats.pendingAmount)} ? L'alerte du menu disparaîtra.`}
+        onConfirm={collectAll} onCancel={() => setConfirmAll(false)} />
     </div>
   );
 }

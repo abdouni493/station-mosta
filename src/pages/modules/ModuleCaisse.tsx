@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   Wallet, PiggyBank, ArrowDownCircle, ArrowUpCircle, Plus, TrendingUp, TrendingDown, Layers,
   Edit2, Trash2, Boxes, ShoppingCart, CreditCard, Banknote, Beaker,
-  Clock, UserCheck, PlayCircle, StopCircle, Scale, Eye,
+  Clock, UserCheck, PlayCircle, StopCircle, Scale, Eye, Flame,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -19,7 +19,7 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'caisse');
-  const { caisse, sales, purchases, expenses, workers, products, comptoir } = biz.state;
+  const { caisse, sales, purchases, expenses, workers, products, comptoir, destructions } = biz.state;
 
   const [tab, setTab] = useState<'tresorerie' | 'sessions'>('tresorerie');
   const [period, setPeriod] = useState<Period>('month');
@@ -29,6 +29,12 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const [catFilter, setCatFilter] = useState<string | null>(null);
 
   // ── Global totals (for balance) ──
+  //
+  // Les DESTRUCTIONS (produits périmés, cassés, volés — enregistrées depuis la
+  // Gestion de stock ou le Comptoir) ne sortent pas d'argent de la caisse : elles
+  // détruisent de la MARCHANDISE. Leur coût est donc suivi à part et retranché du
+  // résultat de la période, pas du solde d'espèces — la valeur du stock a déjà
+  // baissé d'autant.
   const totals = useMemo(() => {
     const deposits = caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0);
     const withdrawals = caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0);
@@ -39,8 +45,12 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
     const balance = deposits + salesPaid - withdrawals - purchasesPaid - exp - salaries;
     const stockValue = products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0);
     const comptoirValue = comptoir.reduce((s, c) => s + c.qty * c.unitPrice, 0);
-    return { deposits, withdrawals, salesPaid, purchasesPaid, exp, salaries, balance, stockValue, comptoirValue, tresorerie: balance + stockValue + comptoirValue };
-  }, [caisse, sales, purchases, expenses, workers, products, comptoir]);
+    const destroyed = (destructions || []).filter(d => !d.recovered).reduce((s, d) => s + d.value, 0);
+    return {
+      deposits, withdrawals, salesPaid, purchasesPaid, exp, salaries, balance,
+      stockValue, comptoirValue, destroyed, tresorerie: balance + stockValue + comptoirValue,
+    };
+  }, [caisse, sales, purchases, expenses, workers, products, comptoir, destructions]);
 
   // ── Period flows ──
   const flow = useMemo(() => {
@@ -52,6 +62,14 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
     const inTotal = inTx + salesIn; const outTotal = outTx + purchOut + expOut;
     return { inTotal, outTotal, net: inTotal - outTotal };
   }, [caisse, sales, purchases, expenses, period, from, to]);
+
+  // ── Destructions de la période (pertes de marchandise) ─────────────────────
+  const destructionsInPeriod = useMemo(
+    () => (destructions || [])
+      .filter(d => !d.recovered && inPeriod(d.date, period, from, to))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+    [destructions, period, from, to]);
+  const destroyedInPeriod = destructionsInPeriod.reduce((s, d) => s + d.value, 0);
 
   // ── Category breakdown ──
   const byCat = (type: 'deposit' | 'withdraw') => {
@@ -103,6 +121,12 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
             <div className="rounded-xl bg-white/10 p-2.5"><p className="text-[10px] uppercase text-emerald-100 font-bold">Comptoir</p><p className="font-black tabular-nums">{money(totals.comptoirValue)}</p></div>
             <div className="rounded-xl bg-white/10 p-2.5"><p className="text-[10px] uppercase text-emerald-100 font-bold">Stock</p><p className="font-black tabular-nums">{money(totals.stockValue)}</p></div>
           </div>
+          {totals.destroyed > 0 && (
+            <p className="text-[11px] text-emerald-100 mt-3">
+              Dont <span className="font-black text-red-200">{money(totals.destroyed)}</span> de marchandise détruite,
+              déjà retirée du stock.
+            </p>
+          )}
         </div>
       </div>
 
@@ -110,18 +134,66 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
       <div className="card-glass p-4"><PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} /></div>
 
       {/* Flow cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="card-glass p-5"><div className="flex items-center gap-2 text-emerald-600"><ArrowDownCircle className="w-5 h-5" /><span className="text-xs font-bold uppercase">Entrées</span></div><p className="text-2xl font-black tabular-nums text-emerald-600 mt-2">+{money(flow.inTotal)}</p></div>
         <div className="card-glass p-5"><div className="flex items-center gap-2 text-red-600"><ArrowUpCircle className="w-5 h-5" /><span className="text-xs font-bold uppercase">Sorties</span></div><p className="text-2xl font-black tabular-nums text-red-600 mt-2">−{money(flow.outTotal)}</p></div>
         <div className="card-glass p-5"><div className="flex items-center gap-2 text-[#003087]"><TrendingUp className="w-5 h-5" /><span className="text-xs font-bold uppercase">Flux net</span></div><p className={`text-2xl font-black tabular-nums mt-2 ${flow.net >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(flow.net)}</p></div>
+        <div className="card-glass p-5">
+          <div className="flex items-center gap-2 text-amber-600"><Flame className="w-5 h-5" /><span className="text-xs font-bold uppercase">Résultat après pertes</span></div>
+          <p className={`text-2xl font-black tabular-nums mt-2 ${flow.net - destroyedInPeriod >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(flow.net - destroyedInPeriod)}</p>
+          <p className="text-[11px] text-slate-400 mt-1">Flux net − {money(destroyedInPeriod)} de destructions</p>
+        </div>
       </div>
 
       {/* Business stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard icon={TrendingUp} label="Ventes encaissées" value={money(totals.salesPaid)} tone="green" />
         <StatCard icon={ShoppingCart} label="Achats payés" value={money(totals.purchasesPaid)} tone="purple" />
         <StatCard icon={CreditCard} label="Dépenses" value={money(totals.exp)} tone="red" />
         <StatCard icon={Banknote} label="Salaires versés" value={money(totals.salaries)} tone="amber" />
+        <StatCard icon={Flame} label="Destructions" value={money(totals.destroyed)} tone="red" sub="marchandise perdue" />
+      </div>
+
+      {/* Destructions de la période — le détail de la marchandise perdue */}
+      <div className="card-glass overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+          <h3 className="font-black text-[#002d87] flex items-center gap-2">
+            <Flame className="w-5 h-5" /> Destructions de la période
+          </h3>
+          <span className="font-black tabular-nums text-red-600">−{money(destroyedInPeriod)}</span>
+        </div>
+        {destructionsInPeriod.length === 0 ? (
+          <p className="text-center text-slate-400 text-sm py-8">Aucune destruction sur la période</p>
+        ) : (
+          <>
+            <Table head={<>
+              <th className="table-head">Date</th><th className="table-head">Produit</th>
+              <th className="table-head">Provenance</th><th className="table-head">Quantité</th>
+              <th className="table-head">Motif</th><th className="table-head">Agent</th>
+              <th className="table-head text-right">Coût</th>
+            </>}>
+              {destructionsInPeriod.slice(0, 100).map(d => (
+                <tr key={d.id}>
+                  <td className="table-cell whitespace-nowrap">{formatDate(d.date)}</td>
+                  <td className="table-cell font-bold text-slate-700">{d.productName}</td>
+                  <td className="table-cell">
+                    <Badge tone={d.source === 'stock' ? 'primary' : 'neutral'}>
+                      {d.source === 'stock' ? 'Gestion de stock' : 'Comptoir'}
+                    </Badge>
+                  </td>
+                  <td className="table-cell tabular-nums">{d.qty} <span className="text-xs text-slate-400">{d.unit}</span></td>
+                  <td className="table-cell text-slate-500">{d.reason || '—'}</td>
+                  <td className="table-cell text-slate-500">{d.createdBy || '—'}</td>
+                  <td className="table-cell text-right tabular-nums font-bold text-red-600">{money(d.value)}</td>
+                </tr>
+              ))}
+            </Table>
+            <p className="px-5 py-3 border-t border-slate-100 text-[11px] text-slate-400">
+              La marchandise détruite ne sort pas d'espèces de la caisse : elle diminue la valeur du stock et le
+              résultat de la partie. Le détail complet est dans « Gestion de stock → Historique destructions ».
+            </p>
+          </>
+        )}
       </div>
 
       {/* Category breakdowns */}

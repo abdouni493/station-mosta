@@ -153,20 +153,29 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Car} title="Réparations & Lavage" subtitle={`${cfg.label} — atelier & interventions`}
-        actions={perm.creer ? <div className="flex flex-wrap gap-2">
-          <button className="btn-outline !py-2" onClick={() => setCreating({ kind: 'lavage', pending: true })}>
-            <Hourglass className="w-4 h-4" /> En attente
-          </button>
-          <button className="btn-secondary" onClick={() => setCreating({ kind: 'lavage', pending: false })}>
-            <Droplets className="w-4 h-4" /> Lavage
-          </button>
-          <button className="btn-secondary" onClick={() => setCreating({ kind: 'reparation', pending: false })}>
-            <Wrench className="w-4 h-4" /> Réparation
-          </button>
-          <button className="btn-primary" onClick={() => setCreating({ kind: 'mixte', pending: false })}>
-            <Layers className="w-4 h-4" /> Lavage + Réparation
-          </button>
-        </div> : undefined} />
+        actions={perm.creer ? <NewInterventionActions onPick={setCreating} /> : undefined} />
+
+      {/* Alerte — des interventions attendent d'être finalisées. */}
+      {stats.pending > 0 && (
+        <button onClick={() => setStatus('pending')}
+          className="w-full text-left rounded-2xl p-4 flex flex-wrap items-center gap-3 transition-transform hover:-translate-y-0.5"
+          style={{ background: 'linear-gradient(135deg, #b45309, #f59e0b)', boxShadow: '0 8px 24px rgba(245,158,11,0.28)' }}>
+          <span className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+            <Hourglass className="w-5 h-5 text-white animate-pulse" />
+          </span>
+          <span className="min-w-0">
+            <span className="block font-black text-white">
+              {stats.pending} intervention{stats.pending > 1 ? 's' : ''} en attente
+            </span>
+            <span className="block text-[12px] text-amber-50">
+              Lavages / réparations à finaliser — cliquez pour n'afficher que celles-ci.
+            </span>
+          </span>
+          <span className="ml-auto text-xs font-black text-white bg-white/20 rounded-lg px-3 py-1.5 shrink-0">
+            Voir les interventions
+          </span>
+        </button>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Car} label="Interventions" value={stats.total} tone="blue" />
@@ -178,13 +187,20 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
       <div className="card-glass p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <SearchInput value={search} onChange={setSearch} placeholder="Client, téléphone, réf ou immatriculation…" />
-          <div className="flex gap-1.5">
-            {(['all', 'pending', 'finalized', 'canceled'] as const).map(s => (
-              <button key={s} onClick={() => setStatus(s)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold ${status === s ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500'}`}>
-                {s === 'all' ? 'Tous' : STATUS_META[s].label}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-1.5">
+            {(['all', 'pending', 'finalized', 'canceled'] as const).map(s => {
+              const n = s === 'all' ? reparations.length : reparations.filter(r => r.status === s).length;
+              return (
+                <button key={s} onClick={() => setStatus(s)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors ${status === s ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                  {s === 'all' ? 'Tous' : STATUS_META[s].label}
+                  <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-black tabular-nums ${
+                    status === s ? 'bg-white/20' : (s === 'pending' && n > 0 ? 'bg-amber-500 text-white' : 'bg-white text-slate-400')}`}>
+                    {n}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
@@ -197,7 +213,8 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
           {filtered.map(r => {
             const KM = KIND_META[r.kind]; const KIcon = KM.icon;
             return (
-              <GlassCard key={r.id}>
+              <GlassCard key={r.id}
+                className={r.status === 'pending' ? '!border-amber-300 ring-1 ring-amber-200' : undefined}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5"><KIcon className="w-4 h-4 text-[#003087]" /><h3 className="font-black text-slate-800">{r.ref}</h3></div>
@@ -234,9 +251,15 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                   <div className="rounded-xl bg-emerald-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(r.paid)}</p></div>
                   <div className="rounded-xl bg-red-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm">{money(r.rest)}</p></div>
                 </div>
-                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-slate-100">
                   {r.status === 'pending' && perm.modifier
-                    ? <button className="btn-secondary !px-2.5 !py-1.5 text-xs" onClick={() => setEditing(r)}><CheckCircle2 className="w-4 h-4" /> Finaliser</button>
+                    ? (
+                      <button onClick={() => setEditing(r)}
+                        className="h-9 px-3 rounded-xl font-black text-xs text-white flex items-center gap-1.5 transition-transform active:scale-[0.98]"
+                        style={{ background: 'linear-gradient(135deg, #059669, #10b981)', boxShadow: '0 4px 12px rgba(16,185,129,0.3)' }}>
+                        <CheckCircle2 className="w-4 h-4" /> Finaliser
+                      </button>
+                    )
                     : <span />}
                   <RowActions>
                     <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
@@ -278,6 +301,49 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
       <PayDebtModal open={!!paying} onClose={() => setPaying(null)} total={paying?.total || 0} alreadyPaid={paying?.paid || 0} onPay={onPay} />
       <Confirm open={!!toDelete} title="Supprimer" message={`Supprimer ${toDelete?.ref} ?`} onConfirm={del} onCancel={() => setToDelete(null)} />
+    </div>
+  );
+}
+
+// ─── Header actions ────────────────────────────────────────────────────────────
+/**
+ * The four ways to open the intervention form, grouped so the choice reads at a
+ * glance instead of four look-alike buttons wrapping onto two lines:
+ *   • un segment « Nouvelle intervention » — Lavage / Réparation / les deux
+ *   • un bouton distinct « En attente » — le véhicule est pris en charge et
+ *     l'intervention sera finalisée plus tard.
+ */
+function NewInterventionActions({
+  onPick,
+}: { onPick: (v: { kind: BizRepKind; pending: boolean }) => void }) {
+  const TYPES: { kind: BizRepKind; label: string; short: string; icon: React.ElementType; cls: string }[] = [
+    { kind: 'lavage', label: 'Lavage', short: 'Lavage', icon: Droplets, cls: 'text-cyan-700 hover:bg-cyan-600 hover:text-white' },
+    { kind: 'reparation', label: 'Réparation', short: 'Répar.', icon: Wrench, cls: 'text-violet-700 hover:bg-violet-700 hover:text-white' },
+    { kind: 'mixte', label: 'Lavage + Réparation', short: 'Les deux', icon: Layers, cls: 'bg-[#003087] text-white hover:bg-[#001f5c]' },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-1 rounded-2xl bg-white border border-slate-200 p-1 shadow-sm">
+        <span className="hidden md:block pl-2 pr-1 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">
+          Nouvelle
+        </span>
+        {TYPES.map(t => {
+          const Icon = t.icon;
+          return (
+            <button key={t.kind} onClick={() => onPick({ kind: t.kind, pending: false })}
+              title={`Nouvelle intervention — ${t.label}`}
+              className={`px-3 h-9 rounded-xl text-xs font-black flex items-center gap-1.5 transition-colors ${t.cls}`}>
+              <Icon className="w-4 h-4" />
+              <span className="hidden sm:inline">{t.label}</span>
+              <span className="sm:hidden">{t.short}</span>
+            </button>
+          );
+        })}
+      </div>
+      <button className="btn-outline !py-2 !h-11" onClick={() => onPick({ kind: 'lavage', pending: true })}
+        title="Enregistrer une intervention à finaliser plus tard">
+        <Hourglass className="w-4 h-4" /> En attente
+      </button>
     </div>
   );
 }

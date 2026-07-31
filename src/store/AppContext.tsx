@@ -541,6 +541,46 @@ export interface BankAccount {
 export const CAISSE_ID = 'CAISSE' as const;
 
 /**
+ * Pseudo-account id of the cash box of ONE activity of the station. Money can
+ * be moved from the caisse of a part (Carburant, Cafétéria, Lavage) to a bank
+ * account or to another caisse exactly like from the caisse générale: the
+ * movement is a single `TRANSFER` line whose `accountFrom` / `accountTo` hold
+ * these ids, so both sides can never disagree.
+ */
+export const CAISSE_PART_ID = {
+  carburant: 'CAISSE_CARBURANT',
+  cafeteria: 'CAISSE_CAFETERIA',
+  lavage: 'CAISSE_LAVAGE',
+} as const;
+
+/** Every cash box of the station, general one included. */
+export const CASH_ACCOUNT_IDS: string[] = [CAISSE_ID, ...Object.values(CAISSE_PART_ID)];
+
+/** Display name of any account id used in the ledger. */
+export const CASH_ACCOUNT_LABEL: Record<string, string> = {
+  [CAISSE_ID]: 'Caisse générale',
+  [CAISSE_PART_ID.carburant]: 'Caisse Carburant',
+  [CAISSE_PART_ID.cafeteria]: 'Caisse Cafétéria',
+  [CAISSE_PART_ID.lavage]: 'Caisse Lavage & Réparation',
+};
+
+/** `true` when the id designates a cash box rather than a bank account. */
+export const isCashAccount = (id?: string): boolean => !!id && CASH_ACCOUNT_IDS.includes(id);
+
+/**
+ * Readable name of an `accountFrom` / `accountTo`: a cash box, a bank account,
+ * or the outside world when the id is empty.
+ */
+export function accountLabelOf(
+  id: string | undefined,
+  accounts: Pick<BankAccount, 'id' | 'name'>[],
+  fallback = 'Externe',
+): string {
+  if (!id) return fallback;
+  return CASH_ACCOUNT_LABEL[id] || accounts.find(a => a.id === id)?.name || fallback;
+}
+
+/**
  * The nature of a treasury movement. `DEPOSIT` / `WITHDRAW` are manual cash
  * operations on the general caisse; `TRANSFER` moves money between the caisse
  * and a bank account (or between two bank accounts); the remaining kinds are

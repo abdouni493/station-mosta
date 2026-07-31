@@ -13,6 +13,7 @@ import {
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { useAppState, UserPermissions, ModuleWorkerSession, AppUserRole } from "../store/AppContext";
+import { useBizAll } from "../store/BizContext";
 import { MODULES, ModuleKey } from "../lib/bizConfig";
 
 // --- Types ---
@@ -188,6 +189,46 @@ const WORKER_GROUP_ORDER: { id: string; label?: string }[] = [
 const WORKER_NAV_OVERRIDES: Record<string, Record<string, { label?: string; path?: string }>> = {};
 
 const DASHBOARD_ITEM: NavItem = { label: "Tableau de Bord", icon: LayoutDashboard, path: "/dashboard", moduleId: "Tableau de bord" };
+
+// --- Sidebar alerts ---
+//
+// Some screens hold work that is WAITING for someone: a demande d'encaissement
+// the caisse has not collected yet, a lavage/réparation left "en attente". The
+// sidebar shows that count on the button itself (and on the collapsed section
+// header), so nobody has to open the page to notice there is something to do.
+
+/** Number of pending items per route path, e.g. `{ "/lavage/reparations": 3 }`. */
+function useNavAlerts(): Record<string, number> {
+  const biz = useBizAll();
+  return useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const key of Object.keys(MODULES) as ModuleKey[]) {
+      const mod = biz[key];
+      const base = MODULES[key].base;
+      if (!mod) continue;
+      const demandes = (mod.payRequests || []).filter(r => r.status === "pending").length;
+      const interventions = (mod.reparations || []).filter(r => r.status === "pending").length;
+      if (demandes > 0) out[`${base}/encaissements`] = demandes;
+      if (interventions > 0) out[`${base}/reparations`] = interventions;
+    }
+    return out;
+  }, [biz]);
+}
+
+/** Red pill carrying the number of pending items. */
+const AlertBadge = ({ count, small }: { count: number; small?: boolean }) => (
+  <span
+    className={cn(
+      "relative flex items-center justify-center rounded-full font-black text-white tabular-nums flex-shrink-0",
+      small ? "min-w-[16px] h-4 px-1 text-[9px]" : "min-w-[20px] h-5 px-1.5 text-[10px]"
+    )}
+    style={{ background: "linear-gradient(135deg, #ef4444, #b91c1c)", boxShadow: "0 0 0 2px rgba(239,68,68,0.25)" }}
+    title={`${count} en attente`}
+  >
+    <span className="absolute inset-0 rounded-full bg-red-500 animate-ping opacity-40" />
+    <span className="relative">{count > 99 ? "99+" : count}</span>
+  </span>
+);
 
 /**
  * Build a worker's sidebar purely from their permissions. Every module with
@@ -369,6 +410,11 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
     [userRole, userPermissions, moduleWorker]
   );
 
+  // Pending demandes d'encaissement / interventions, shown on the buttons.
+  const alerts = useNavAlerts();
+  const groupAlerts = (group: NavGroup) =>
+    group.items.reduce((sum, item) => sum + (alerts[item.path] || 0), 0);
+
   // A part employee has a single section — open it as soon as it resolves,
   // otherwise their whole menu would look empty behind a collapsed header.
   useEffect(() => {
@@ -468,13 +514,19 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
                 {group.label && (
                   <button
                     onClick={() => toggleGroup(group.id)}
-                    className="w-full flex items-center justify-between px-3 py-2 mt-3 rounded-lg transition-colors hover:bg-white/5"
+                    className="w-full flex items-center justify-between gap-2 px-3 py-2 mt-3 rounded-lg transition-colors hover:bg-white/5"
                     style={{ color: "rgba(147,197,253,0.5)" }}
                   >
-                    <span className="text-[9px] font-black uppercase tracking-[0.22em]">{trGroup(group.label)}</span>
-                    <ChevronDown
-                      className={cn("w-3 h-3 transition-transform duration-200", expandedGroups.includes(group.id) ? "rotate-0" : "-rotate-90")}
-                    />
+                    <span className="text-[9px] font-black uppercase tracking-[0.22em] truncate">{trGroup(group.label)}</span>
+                    <span className="flex items-center gap-1.5 flex-shrink-0">
+                      {/* Collapsed sections must still shout when work is waiting. */}
+                      {!expandedGroups.includes(group.id) && groupAlerts(group) > 0 && (
+                        <AlertBadge count={groupAlerts(group)} small />
+                      )}
+                      <ChevronDown
+                        className={cn("w-3 h-3 transition-transform duration-200", expandedGroups.includes(group.id) ? "rotate-0" : "-rotate-90")}
+                      />
+                    </span>
                   </button>
                 )}
 
@@ -491,6 +543,7 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
                         {group.items.map((item) => {
                           const isActive = activePath === item.path;
                           const Icon = item.icon;
+                          const alert = alerts[item.path] || 0;
                           return (
                             <motion.button
                               key={item.path}
@@ -499,13 +552,17 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
                               className={cn("sidebar-link", isActive ? "sidebar-link-active" : "sidebar-link-inactive")}
                             >
                               <div className={cn(
-                                "w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all",
+                                "relative w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all",
                                 isActive ? "bg-[#001f5c]/20" : "bg-white/6"
                               )}>
                                 <Icon className={cn("w-3.5 h-3.5", isActive ? "text-[#001f5c]" : "text-blue-200")} />
+                                {alert > 0 && (
+                                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[#001f5c]" />
+                                )}
                               </div>
-                              <span className="text-sm leading-none flex-1">{trLabel(item.label)}</span>
-                              {isActive && (
+                              <span className="text-sm leading-none flex-1 truncate">{trLabel(item.label)}</span>
+                              {alert > 0 && <AlertBadge count={alert} />}
+                              {isActive && alert === 0 && (
                                 <ChevronRight className="w-3 h-3 text-[#001f5c]/50 flex-shrink-0" />
                               )}
                             </motion.button>

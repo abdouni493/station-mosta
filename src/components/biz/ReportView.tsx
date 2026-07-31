@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
-import { Modal, money, formatDate, Table } from '@/src/components/biz/Kit';
+import { Modal, money, formatDate, Table, Badge } from '@/src/components/biz/Kit';
 import { PartReport } from '@/src/lib/bizReporting';
 
 const fmtDate = (s: string) => (s ? formatDate(s) : '—');
@@ -254,18 +254,43 @@ function MiniList({ title, items, empty, tone }: { title: string; empty: string;
 
 function DestructionTable({ rows }: { rows: PartReport['destructions'] }) {
   if (!rows.length) return <Empty text="Aucune destruction" />;
+  const total = rows.reduce((s, d) => s + d.value, 0);
   return (
-    <Table head={<><th className="table-head">Produit</th><th className="table-head text-right">Quantité</th><th className="table-head">Motif</th><th className="table-head">Date</th><th className="table-head text-right">Valeur</th></>}>
-      {rows.map(d => (
-        <tr key={d.id}>
-          <td className="table-cell font-bold">{d.name}</td>
-          <td className="table-cell tabular-nums text-right">{d.qty}</td>
-          <td className="table-cell text-slate-500">{d.reason || '—'}</td>
-          <td className="table-cell whitespace-nowrap">{fmtDate(d.date)}</td>
-          <td className="table-cell tabular-nums text-right font-bold text-red-600">{money(d.value)}</td>
-        </tr>
-      ))}
-    </Table>
+    <>
+      <Table head={<>
+        <th className="table-head">Produit</th><th className="table-head">Provenance</th>
+        <th className="table-head text-right">Quantité</th><th className="table-head text-right">Coût unitaire</th>
+        <th className="table-head">Motif</th><th className="table-head">Agent</th>
+        <th className="table-head">Date</th><th className="table-head text-right">Coût</th>
+      </>}>
+        {rows.map(d => (
+          <tr key={d.id}>
+            <td className="table-cell">
+              <div className="font-bold">{d.name}</div>
+              {d.category && <div className="text-[11px] text-slate-400">{d.category}</div>}
+              {d.notes && <div className="text-[11px] text-slate-400 italic">{d.notes}</div>}
+            </td>
+            <td className="table-cell">
+              <Badge tone={d.source === 'stock' ? 'primary' : 'neutral'}>
+                {d.source === 'stock' ? 'Gestion de stock' : 'Comptoir'}
+              </Badge>
+            </td>
+            <td className="table-cell tabular-nums text-right">{d.qty} <span className="text-xs text-slate-400">{d.unit}</span></td>
+            <td className="table-cell tabular-nums text-right text-slate-500">{money(d.unitPrice)}</td>
+            <td className="table-cell text-slate-500">{d.reason || '—'}</td>
+            <td className="table-cell text-slate-500">{d.createdBy || '—'}</td>
+            <td className="table-cell whitespace-nowrap">{fmtDate(d.date)}</td>
+            <td className="table-cell tabular-nums text-right font-bold text-red-600">{money(d.value)}</td>
+          </tr>
+        ))}
+      </Table>
+      <div className="card-glass px-5 py-3 flex items-center justify-between">
+        <span className="text-xs text-slate-400">
+          {rows.length} destruction(s) — coût déduit du bénéfice net de la période.
+        </span>
+        <span className="font-black tabular-nums text-red-600">−{money(total)}</span>
+      </div>
+    </>
   );
 }
 

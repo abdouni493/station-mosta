@@ -3,7 +3,7 @@ import {
   FileBarChart, Globe2, Fuel, ChevronRight, Printer, Calendar, TrendingUp, ShoppingCart,
   CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
   UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
-  Droplets, Wallet, Receipt, Hash, X, Trash2,
+  Droplets, Wallet, Receipt, Hash, X, Trash2, Flame,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -35,7 +35,7 @@ const PART_SECTIONS: ActiveKey[] = ['carburant', 'cafeteria', 'lavage'];
 
 // ─── Card drill-downs ─────────────────────────────────────────────────────────
 /** The KPI cards that open a detail list (Achats has its own richer modal). */
-type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'clientDebt' | 'supplierDebt' | 'alerts';
+type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions' | 'clientDebt' | 'supplierDebt' | 'alerts';
 
 /** One line of a card's underlying list. `onDelete` is absent for derived rows. */
 interface DetailRow {
@@ -199,9 +199,27 @@ export default function GeneralReports() {
     // ── Bénéfice net — décomposition par activité (lecture seule) ──
     const netRows: DetailRow[] = global.parts.map(p => ({
       id: p.key, label: `${p.emoji} ${p.label}`,
-      sub: `Marge ${money(p.grossMargin)} − charges ${money(p.expensesTotal + p.salariesPaid)}`,
+      sub: `Marge ${money(p.grossMargin)} − charges ${money(p.expensesTotal + p.salariesPaid)}`
+        + (p.destroyedValue > 0 ? ` − destructions ${money(p.destroyedValue)}` : ''),
       amount: p.netGain, amountTone: p.netGain >= 0 ? 'green' : 'red',
     }));
+
+    // ── Destructions — marchandise perdue (stock + comptoir), avec son détail ──
+    const destructionRows: DetailRow[] = [];
+    (['cafeteria', 'lavage'] as const).forEach(k => reports[k].destructions.forEach(d => destructionRows.push({
+      id: `${k}-${d.id}`, date: d.date,
+      label: `${reports[k].emoji} ${d.name}`,
+      sub: [
+        `${d.qty} ${d.unit || ''} × ${money(d.unitPrice)}`.trim(),
+        d.reason,
+        d.createdBy ? `par ${d.createdBy}` : undefined,
+      ].filter(Boolean).join(' · '),
+      badge: { text: d.source === 'stock' ? 'Stock' : 'Comptoir', tone: d.source === 'stock' ? 'info' : 'neutral' },
+      amount: d.value, amountTone: 'red',
+      onDelete: () => bizOf(k).remove('destructions', d.id),
+      confirmMessage: `Retirer la destruction de « ${d.name} » (${money(d.value)}) de l'historique ? Le stock n'est pas modifié.`,
+    })));
+    destructionRows.sort(byDateDesc);
 
     // ── Valeur du stock — produits valorisés ──
     const stockRows: DetailRow[] = [];
@@ -265,6 +283,7 @@ export default function GeneralReports() {
       expenses:     { title: 'Dépenses + salaires', icon: CreditCard, subtitle: 'Dépenses et salaires de la période', rows: expenseRows, total: global.expensesTotal + global.salariesPaid, totalLabel: 'Total charges', note: 'Les salaires sont calculés par la paie — supprimez-les depuis la fiche employé.' },
       netGain:      { title: 'Bénéfice net global', icon: CircleDollarSign, subtitle: 'Décomposition par activité', rows: netRows, total: global.netGain, totalLabel: 'Bénéfice net', note: 'Lignes calculées — non supprimables.' },
       stockValue:   { title: 'Valeur du stock', icon: Boxes, subtitle: "Produits en stock valorisés au prix d'achat", rows: stockRows, total: global.stockValue, totalLabel: 'Valeur totale' },
+      destructions: { title: 'Destructions', icon: Flame, subtitle: 'Marchandise perdue (périmée, cassée, volée) — stock & comptoir', rows: destructionRows, total: global.destroyedValue, totalLabel: 'Coût total des pertes', note: 'Le coût des destructions est déduit du bénéfice net. Supprimer une ligne ne remet PAS la quantité en stock — utilisez « Récupérer » depuis la Gestion de stock.' },
       clientDebt:   { title: 'Dettes clients', icon: Users, subtitle: 'Encours clients (toutes dates)', rows: clientDebtRows, total: global.clientDebtTotal, totalLabel: 'Total encours' },
       supplierDebt: { title: 'Dettes fournisseurs', icon: Truck, subtitle: 'Encours fournisseurs (toutes dates)', rows: supplierDebtRows, total: global.supplierDebtTotal, totalLabel: 'Total encours' },
       alerts:       { title: 'Alertes', icon: AlertTriangle, subtitle: 'Stock bas et péremptions', rows: alertRows, total: alertRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Valeur concernée', note: 'Alertes calculées — non supprimables.' },
@@ -443,6 +462,7 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
         <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(g.expensesTotal + g.salariesPaid)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
         <OverviewCard icon={CircleDollarSign} tone={g.netGain >= 0 ? 'green' : 'red'} label="Bénéfice net global" value={money(g.netGain)} onClick={() => onOpenCard('netGain')} cta="Décomposition" />
         <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
+        <OverviewCard icon={Flame} tone="red" label="Destructions" value={money(g.destroyedValue)} sub="marchandise perdue" onClick={() => onOpenCard('destructions')} cta="Voir le détail" />
         <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} onClick={() => onOpenCard('clientDebt')} cta="Voir le détail" />
         <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} onClick={() => onOpenCard('supplierDebt')} cta="Voir le détail" />
         <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} onClick={() => onOpenCard('alerts')} cta="Voir le détail" />

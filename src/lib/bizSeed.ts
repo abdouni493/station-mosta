@@ -103,7 +103,9 @@ function seedCafeteria(): ModuleState {
     comptoir(m, 3, 'Croissant', 'Viennoiseries', 45, 'unité', 60, 25, `${m}-prod-6`),
   ];
   s.destructions = [
-    { id: `${m}-dst-1`, productName: 'Croissant', qty: 6, unitPrice: 60, value: 360, reason: 'Rassis', date: daysAgo(1), createdBy: 'Admin', recovered: false },
+    { id: `${m}-dst-1`, source: 'comptoir', productName: 'Croissant', categoryName: 'Viennoiseries', qty: 6, unit: 'unité', unitPrice: 60, value: 360, reason: 'Rassis', date: daysAgo(1), createdBy: 'Admin', recovered: false },
+    // Destruction venue de la Gestion de stock, valorisée au prix d'achat.
+    { id: `${m}-dst-2`, source: 'stock', productId: `${m}-prod-2`, productName: 'Lait', categoryName: 'Jus & Boissons', qty: 4, unit: 'L', unitPrice: 90, value: 360, reason: 'Périmé', date: daysAgo(3), createdBy: 'Admin', recovered: false },
   ];
   s.expenses = [
     expense(m, 1, 'Électricité', 'Facture Sonelgaz', 6800, 8, 'Charges'),

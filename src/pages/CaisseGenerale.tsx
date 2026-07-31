@@ -8,21 +8,25 @@
  *    computed from its own documents.
  *  • Journal des opérations — every movement of the station in one list: achats,
  *    ventes, virements, dépôts, retraits, dépenses, encaissements de brigade.
- *  • Actions — dépôt / retrait (montant, description, date) and virement de la
- *    caisse générale vers un compte bancaire.
+ *  • Actions — dépôt / retrait (montant, description, date) and virement: the
+ *    user picks WHICH caisse the money leaves (générale, Carburant, Cafétéria,
+ *    Lavage) and WHERE it goes (a bank account or another caisse). The movement
+ *    is a single ledger line, so it also shows up in the destination account's
+ *    historique with the right sign.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { useMemo, useState } from 'react';
 import {
   PiggyBank, Plus, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Layers,
   Fuel, Coffee, Droplets, Landmark, Trash2, Edit2, ShoppingCart, Receipt,
-  CreditCard, Target, Wallet, TrendingUp, TrendingDown,
+  CreditCard, Target, Wallet, TrendingUp, TrendingDown, ArrowRight, Check,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
   useAppState, useAppDispatch, useModulePermission,
-  TreasuryTransaction, TreasuryPart, CAISSE_ID, bankBalanceOf, caisseBalanceOf,
+  TreasuryTransaction, TreasuryPart, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
+  accountLabelOf, isCashAccount, ledgerNetFor, bankBalanceOf, caisseBalanceOf,
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey } from '../lib/bizConfig';
@@ -87,7 +91,10 @@ export default function CaisseGenerale() {
     [bankAccounts, treasuryTransactions]);
   const totalBank = accounts.reduce((s, a) => s + a.balance, 0);
 
-  /** Cash position of one business part, from its own documents. */
+  /**
+   * Cash position of one business part: its own documents PLUS every virement
+   * the ledger recorded on that caisse (money sent to a bank leaves it).
+   */
   const partBalance = (key: ModuleKey) => {
     const m = biz[key];
     if (!m) return 0;
@@ -98,39 +105,38 @@ export default function CaisseGenerale() {
     const purchasesPaid = m.purchases.reduce((s, x) => s + x.paid, 0);
     const exp = m.expenses.reduce((s, x) => s + x.amount, 0);
     const salaries = m.workers.reduce((s, w) => s + w.payments.reduce((a, p) => a + p.amount, 0), 0);
-    return deposits + salesPaid + repPaid - withdrawals - purchasesPaid - exp - salaries;
+    return deposits + salesPaid + repPaid - withdrawals - purchasesPaid - exp - salaries
+      + ledgerNetFor(CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID], treasuryTransactions);
   };
 
   const carburantBalance = useMemo(() => {
     const cash = brigadeAccountings.reduce((s, a) => s + (a.cashReceived || 0), 0);
     const purchasesPaid = purchases.reduce((s, p) => s + (p.amountPaid || 0), 0);
     const exp = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-    return cash - purchasesPaid - exp;
-  }, [brigadeAccountings, purchases, expenses]);
+    return cash - purchasesPaid - exp + ledgerNetFor(CAISSE_PART_ID.carburant, treasuryTransactions);
+  }, [brigadeAccountings, purchases, expenses, treasuryTransactions]);
 
   const partBalances = useMemo(() => ({
     carburant: carburantBalance,
     cafeteria: partBalance('cafeteria'),
     lavage: partBalance('lavage'),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [carburantBalance, biz]);
+  }), [carburantBalance, biz, treasuryTransactions]);
 
   // ── Consolidated journal ───────────────────────────────────────────────────
   const movements = useMemo<Movement[]>(() => {
     const out: Movement[] = [];
-    const accName = (id?: string) => {
-      if (!id) return undefined;
-      if (id === CAISSE_ID) return 'Caisse générale';
-      return accounts.find(a => a.id === id)?.name;
-    };
+    const accName = (id?: string) => (id ? accountLabelOf(id, accounts, '') || undefined : undefined);
 
-    // 1. Treasury ledger — the only rows that move the caisse générale.
+    // 1. Treasury ledger — the only rows that move the caisses of the station.
     for (const t of treasuryTransactions) {
       const nature = TX_LABEL[t.kind] || t.kind;
-      // A transfer is signed from the caisse's point of view when it touches it.
+      // A transfer is signed from the cash boxes' point of view: it is a
+      // décaissement when the money leaves one of them, an encaissement when it
+      // arrives, and neutral between two bank accounts.
       let amount = t.amount;
       if (t.kind === 'WITHDRAW') amount = -t.amount;
-      else if (t.kind === 'TRANSFER') amount = t.accountFrom === CAISSE_ID ? -t.amount : (t.accountTo === CAISSE_ID ? t.amount : 0);
+      else if (t.kind === 'TRANSFER') amount = isCashAccount(t.accountFrom) ? -t.amount : (isCashAccount(t.accountTo) ? t.amount : 0);
       else if (['PURCHASE', 'EXPENSE', 'SALARY'].includes(t.kind)) amount = -t.amount;
       out.push({
         id: t.id,
@@ -238,7 +244,7 @@ export default function CaisseGenerale() {
       <PageHeader icon={PiggyBank} title="Caisse Générale" subtitle="Finance — trésorerie consolidée de la station"
         actions={perm.creer ? <div className="flex gap-2">
           <button className="btn-secondary" onClick={() => setTransferring(true)}>
-            <ArrowLeftRight className="w-4 h-4" /> Virement vers banque
+            <ArrowLeftRight className="w-4 h-4" /> Virement d'une caisse
           </button>
           <button className="btn-primary" onClick={() => setTxForm('new')}>
             <Plus className="w-4 h-4" /> Dépôt / Retrait
@@ -390,6 +396,7 @@ export default function CaisseGenerale() {
         <CaisseTransferModal
           accounts={accounts}
           caisseBalance={caisse}
+          partBalances={partBalances}
           createdBy={currentUserName}
           onClose={() => setTransferring(false)}
           onSave={tx => {
@@ -469,7 +476,8 @@ function CashTxModal({
           <Field label="Montant (DA)" required><Input type="number" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
           <Field label="Date"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
         </div>
-        <Field label="Partie concernée">
+        <Field label="Partie concernée"
+          hint="Classement du mouvement dans le journal — l'argent entre ou sort de la caisse générale.">
           <Select value={part} onChange={e => setPart(e.target.value as TreasuryPart)}>
             {(Object.keys(PART_META) as TreasuryPart[]).map(p => <option key={p} value={p}>{PART_META[p].label}</option>)}
           </Select>
@@ -480,80 +488,173 @@ function CashTxModal({
   );
 }
 
-// ─── Virement caisse → banque ──────────────────────────────────────────────────
+// ─── Virement : d'une caisse vers un compte bancaire (ou une autre caisse) ─────
+/**
+ * The user chooses BOTH sides of the movement:
+ *   • la caisse source — générale, Carburant, Cafétéria ou Lavage & Réparation
+ *   • la destination   — n'importe quel compte bancaire, ou une autre caisse
+ *
+ * One single `TRANSFER` line is written, so the money leaves the chosen caisse
+ * and shows up in the historique of the destination account with the same
+ * amount — the two soldes can never disagree.
+ */
 function CaisseTransferModal({
-  accounts, caisseBalance, createdBy, onClose, onSave,
+  accounts, caisseBalance, partBalances, createdBy, onClose, onSave,
 }: {
   accounts: { id: string; name: string; balance: number }[];
   caisseBalance: number;
+  partBalances: Record<'carburant' | 'cafeteria' | 'lavage', number>;
   createdBy?: string;
   onClose: () => void;
   onSave: (tx: TreasuryTransaction) => void;
 }) {
-  const [target, setTarget] = useState(accounts[0]?.id || '');
+  /** Every cash box the money can leave, with its live solde. */
+  const sources = useMemo(() => ([
+    { id: CAISSE_ID, label: CASH_ACCOUNT_LABEL[CAISSE_ID], part: 'systeme' as TreasuryPart, icon: PiggyBank, balance: caisseBalance },
+    ...(['carburant', 'cafeteria', 'lavage'] as const).map(k => ({
+      id: CAISSE_PART_ID[k],
+      label: PART_META[k].label,
+      part: k as TreasuryPart,
+      icon: PART_META[k].icon,
+      balance: partBalances[k],
+    })),
+  ]), [caisseBalance, partBalances]);
+
+  const [fromId, setFromId] = useState<string>(CAISSE_ID);
+  const [toId, setToId] = useState<string>(accounts[0]?.id || '');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState('');
+
   const value = Number(amount) || 0;
-  const account = accounts.find(a => a.id === target);
+  const source = sources.find(s => s.id === fromId)!;
+  const otherCaisses = sources.filter(s => s.id !== fromId);
+  const targetBank = accounts.find(a => a.id === toId);
+  const targetCaisse = otherCaisses.find(s => s.id === toId);
+  const targetLabel = targetBank?.name || targetCaisse?.label || '';
+  const targetBalance = targetBank?.balance ?? targetCaisse?.balance ?? 0;
+  const overdraft = value > source.balance;
+
+  // Changing the source must never leave the destination pointing at itself.
+  const pickSource = (id: string) => {
+    setFromId(id);
+    if (toId === id) setToId(accounts[0]?.id || sources.find(s => s.id !== id)!.id);
+  };
 
   const save = () => {
-    if (!target) { toast.error('Créez d\'abord un compte bancaire'); return; }
+    if (!toId) { toast.error('Choisissez la destination du virement'); return; }
     if (value <= 0) { toast.error('Montant requis'); return; }
     onSave({
       id: newId(),
       date: new Date(date).toISOString(),
       kind: 'TRANSFER',
       amount: value,
-      description: description.trim() || `Virement caisse générale → ${account?.name || ''}`.trim(),
-      accountFrom: CAISSE_ID,
-      accountTo: target,
-      part: 'systeme',
+      description: description.trim() || `Virement ${source.label} → ${targetLabel}`,
+      accountFrom: fromId,
+      accountTo: toId,
+      // The movement belongs to the activity whose caisse pays.
+      part: source.part,
       createdBy,
       createdAt: new Date().toISOString(),
     });
   };
 
   return (
-    <Modal open onClose={onClose} icon={ArrowLeftRight} size="md"
-      title="Virement vers un compte bancaire" subtitle="Depuis la caisse générale"
+    <Modal open onClose={onClose} icon={ArrowLeftRight} size="lg"
+      title="Virement d'une caisse" subtitle="Choisissez la caisse source et la destination"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={save} disabled={value <= 0 || !target}>Valider le virement</button>
+        <button className="btn-primary" onClick={save} disabled={value <= 0 || !toId}>Valider le virement</button>
       </>}>
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-[10px] uppercase font-bold text-slate-400">Caisse générale</p>
-            <p className="font-black text-slate-700 tabular-nums">{money(caisseBalance)}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-[10px] uppercase font-bold text-slate-400">Après virement</p>
-            <p className="font-black text-slate-700 tabular-nums">{money(caisseBalance - value)}</p>
+      <div className="space-y-5">
+        {/* 1. Which caisse the money leaves */}
+        <div>
+          <label className="label-field">1. Caisse source</label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {sources.map(s => {
+              const Icon = s.icon; const on = s.id === fromId;
+              return (
+                <button key={s.id} onClick={() => pickSource(s.id)}
+                  className={`rounded-xl p-3 text-left border transition-all ${on
+                    ? 'border-[#003087] bg-[#003087]/5 ring-2 ring-[#003087]/20'
+                    : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                  <div className="flex items-center gap-1.5">
+                    <Icon className={`w-4 h-4 ${on ? 'text-[#003087]' : 'text-slate-400'}`} />
+                    {on && <Check className="w-3 h-3 text-[#003087] ml-auto" />}
+                  </div>
+                  <p className={`text-[11px] font-bold mt-1.5 leading-tight ${on ? 'text-[#002d87]' : 'text-slate-500'}`}>{s.label}</p>
+                  <p className={`text-sm font-black tabular-nums ${s.balance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(s.balance)}</p>
+                </button>
+              );
+            })}
           </div>
         </div>
-        {accounts.length === 0 ? (
+
+        {/* 2. Where it goes */}
+        <Field label="2. Destination du virement" required
+          hint="Un compte bancaire, ou une autre caisse de la station.">
+          <Select value={toId} onChange={e => setToId(e.target.value)}>
+            <option value="">— Sélectionner —</option>
+            {accounts.length > 0 && (
+              <optgroup label="Comptes bancaires">
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.name} — {money(a.balance)}</option>)}
+              </optgroup>
+            )}
+            <optgroup label="Caisses de la station">
+              {otherCaisses.map(s => <option key={s.id} value={s.id}>{s.label} — {money(s.balance)}</option>)}
+            </optgroup>
+          </Select>
+        </Field>
+
+        {accounts.length === 0 && (
           <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm text-amber-700">
-            Aucun compte bancaire. Créez-en un depuis « Comptes Bancaires ».
+            Aucun compte bancaire enregistré. Créez-en un depuis « Comptes Bancaires » pour virer l'argent en banque.
           </div>
-        ) : (
-          <Field label="Compte bancaire" required>
-            <Select value={target} onChange={e => setTarget(e.target.value)}>
-              {accounts.map(a => <option key={a.id} value={a.id}>{a.name} — {money(a.balance)}</option>)}
-            </Select>
-          </Field>
         )}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Montant (DA)" required><Input type="number" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+
+        {/* 3. Amount */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="Montant (DA)" required>
+            <div className="flex gap-2">
+              <Input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" />
+              <button className="btn-outline !px-3 shrink-0 text-xs whitespace-nowrap"
+                onClick={() => setAmount(String(Math.max(0, source.balance)))}
+                title="Virer la totalité du solde de la caisse">Tout</button>
+            </div>
+          </Field>
           <Field label="Date"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
         </div>
-        <Field label="Description"><Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Motif du virement" /></Field>
-        {account && (
-          <div className="rounded-xl bg-[#001f5c] text-white p-4 flex items-center justify-between">
-            <span className="text-sm font-semibold text-blue-200">Nouveau solde {account.name}</span>
-            <span className="text-lg font-black tabular-nums text-[#FFB800]">{money(account.balance + value)}</span>
+
+        <Field label="Description">
+          <Textarea value={description} onChange={e => setDescription(e.target.value)}
+            placeholder={`Virement ${source.label} → ${targetLabel || '…'}`} />
+        </Field>
+
+        {overdraft && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm text-amber-700">
+            Le montant dépasse le solde de « {source.label} » — la caisse passera en négatif.
           </div>
         )}
+
+        {/* Recap */}
+        <div className="rounded-2xl bg-[#001f5c] text-white p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] uppercase font-bold text-blue-200 truncate">{source.label}</p>
+              <p className="font-black tabular-nums text-sm">{money(source.balance)}</p>
+              <p className="text-[11px] text-red-300 tabular-nums">→ {money(source.balance - value)}</p>
+            </div>
+            <div className="shrink-0 flex flex-col items-center">
+              <ArrowRight className="w-5 h-5 text-[#FFB800]" />
+              <span className="text-[11px] font-black tabular-nums text-[#FFB800]">{money(value)}</span>
+            </div>
+            <div className="flex-1 min-w-0 text-right">
+              <p className="text-[10px] uppercase font-bold text-blue-200 truncate">{targetLabel || 'Destination'}</p>
+              <p className="font-black tabular-nums text-sm">{money(targetBalance)}</p>
+              <p className="text-[11px] text-emerald-300 tabular-nums">→ {money(targetBalance + value)}</p>
+            </div>
+          </div>
+        </div>
       </div>
     </Modal>
   );

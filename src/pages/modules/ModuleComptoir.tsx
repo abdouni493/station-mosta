@@ -14,7 +14,12 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'comptoir');
-  const { comptoir, destructions } = biz.state;
+  // Le stock a désormais ses propres destructions : chaque écran n'affiche que
+  // les siennes (une ligne sans `source` vient du comptoir, avant la séparation).
+  const { comptoir } = biz.state;
+  const destructions = useMemo(
+    () => biz.state.destructions.filter(d => d.source !== 'stock'),
+    [biz.state.destructions]);
   const [tab, setTab] = useState<'avail' | 'destroy'>('avail');
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('all');
@@ -34,7 +39,9 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
     const amount = Math.min(destroying.qty, qty);
     biz.update('comptoir', { ...destroying, qty: destroying.qty - amount });
     biz.add('destructions', {
-      id: newId(), productName: destroying.productName, qty: amount, unitPrice: destroying.unitPrice,
+      id: newId(), source: 'comptoir', productName: destroying.productName,
+      categoryName: destroying.categoryName, qty: amount, unit: destroying.unit,
+      unitPrice: destroying.unitPrice,
       value: amount * destroying.unitPrice, reason, date: new Date().toISOString(), createdBy: 'Admin', recovered: false,
     } as BizDestruction);
     toast.success('Destruction enregistrée');
@@ -42,7 +49,7 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
   };
 
   const recover = (d: BizDestruction) => {
-    biz.update('destructions', { ...d, recovered: true });
+    biz.update('destructions', { ...d, recovered: true, recoveredAt: new Date().toISOString() });
     // Return qty to comptoir (find matching item or create)
     const existing = comptoir.find(c => c.productName === d.productName);
     if (existing) biz.update('comptoir', { ...existing, qty: existing.qty + d.qty });

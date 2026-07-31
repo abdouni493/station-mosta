@@ -47,7 +47,16 @@ export interface WorkerRow {
   net: number;
 }
 export interface CaisseRow { id: string; type: 'deposit' | 'withdraw'; amount: number; date: string; description?: string; category?: string; }
-export interface DestructionRow { id: string; name: string; qty: number; value: number; reason?: string; date: string; }
+export interface DestructionRow {
+  id: string; name: string; qty: number; value: number; reason?: string; date: string;
+  /** D'où vient le produit détruit : le catalogue (stock) ou le comptoir. */
+  source: 'stock' | 'comptoir';
+  unit?: string;
+  unitPrice: number;
+  category?: string;
+  createdBy?: string;
+  notes?: string;
+}
 export interface ProductionRow { id: string; name: string; date: string; outputQuantity: number; unit?: string; totalValue: number; totalCost: number; hasLoss: boolean; lossQuantity: number; lossValue: number; }
 
 // ─── Aggregate report ────────────────────────────────────────────────────────
@@ -237,8 +246,16 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
     .map(c => ({ id: c.id, type: c.type, amount: c.amount, date: c.date, description: c.description, category: c.category }))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+  // Les destructions viennent de la Gestion de stock ET du Comptoir : les deux
+  // sont des pertes de marchandise qui pèsent sur le résultat de la partie.
   const destructions: DestructionRow[] = destructionsInRange
-    .map(d => ({ id: d.id, name: d.productName, qty: d.qty, value: d.value, reason: d.reason, date: d.date }));
+    .map(d => ({
+      id: d.id, name: d.productName, qty: d.qty, value: d.value, reason: d.reason, date: d.date,
+      source: (d.source === 'stock' ? 'stock' : 'comptoir') as 'stock' | 'comptoir',
+      unit: d.unit, unitPrice: d.unitPrice, category: d.categoryName,
+      createdBy: d.createdBy, notes: d.notes,
+    }))
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const productions: ProductionRow[] = productionsInRange
     .map(p => ({ id: p.id, name: p.name, date: p.date, outputQuantity: p.outputQuantity, unit: p.unit, totalValue: p.totalValue, totalCost: p.totalCost, hasLoss: p.hasLoss, lossQuantity: p.lossQuantity, lossValue: p.lossValue }));
 
