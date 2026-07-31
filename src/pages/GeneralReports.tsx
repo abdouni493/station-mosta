@@ -1,16 +1,16 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileBarChart, Globe2, Fuel, ChevronRight, Printer, Calendar, TrendingUp, ShoppingCart,
   CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
   UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
-  Droplets, Wallet, Receipt, Hash, X,
+  Droplets, Wallet, Receipt, Hash, X, Trash2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { ModuleKey } from '@/src/lib/bizConfig';
-import { useBizAll } from '@/src/store/BizContext';
-import { useAppState, CAISSE_ID } from '@/src/store/AppContext';
-import { money, formatDate, Modal, Badge } from '@/src/components/biz/Kit';
+import { useBizAll, useBiz } from '@/src/store/BizContext';
+import { useAppState, useAppDispatch, CAISSE_ID } from '@/src/store/AppContext';
+import { money, formatDate, Modal, Badge, Confirm, Table } from '@/src/components/biz/Kit';
 import { computeModuleReport, computeCarburantReport, consolidate, within, PartReport, GlobalReport } from '@/src/lib/bizReporting';
 import { computeWorkforce } from '@/src/lib/workforceReporting';
 import { computeTreasuryReport } from '@/src/lib/treasuryReporting';
@@ -33,9 +33,38 @@ const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType; hint: s
 /** Sections that are a per-activity `PartReport` (the others have their own view). */
 const PART_SECTIONS: ActiveKey[] = ['carburant', 'cafeteria', 'lavage'];
 
+// ─── Card drill-downs ─────────────────────────────────────────────────────────
+/** The KPI cards that open a detail list (Achats has its own richer modal). */
+type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'clientDebt' | 'supplierDebt' | 'alerts';
+
+/** One line of a card's underlying list. `onDelete` is absent for derived rows. */
+interface DetailRow {
+  id: string;
+  date?: string;
+  label: string;
+  sub?: string;
+  badge?: { text: string; tone: 'success' | 'warning' | 'danger' | 'info' | 'neutral' };
+  amount: number;
+  amountTone?: 'green' | 'red' | 'blue' | 'amber' | 'slate';
+  onDelete?: () => void;
+  confirmMessage?: string;
+}
+interface CardDetail {
+  title: string;
+  subtitle?: string;
+  icon: React.ElementType;
+  rows: DetailRow[];
+  total: number;
+  totalLabel: string;
+  note?: string;
+}
+
 export default function GeneralReports() {
   const biz = useBizAll();
   const app = useAppState();
+  const dispatch = useAppDispatch();
+  const cafeteriaBiz = useBiz('cafeteria');
+  const lavageBiz = useBiz('lavage');
   const settings = app.settings;
   const globalFicheRef = useRef<HTMLDivElement>(null);
   const moduleFicheRef = useRef<HTMLDivElement>(null);
@@ -47,6 +76,8 @@ export default function GeneralReports() {
   const [range, setRange] = useState({ from, to });
   const [active, setActive] = useState<ActiveKey>('global');
   const [showPurchases, setShowPurchases] = useState(false);
+  // Which KPI card's drill-down is open (every card is clickable → its detail list).
+  const [activeCard, setActiveCard] = useState<CardKey | null>(null);
 
   const reports = useMemo(() => ({
     carburant: computeCarburantReport(app, range.from, range.to),
@@ -107,6 +138,138 @@ export default function GeneralReports() {
         })),
       }));
   }, [app, range]);
+
+  // Underlying list behind every KPI card. Rows carry their own delete action so
+  // the user can drill in and remove an entry (a sale, an expense, a product…);
+  // derived rows (bénéfice net, alertes) are shown read-only.
+  const cardDetails = useMemo<Record<CardKey, CardDetail>>(() => {
+    const bizOf = (k: 'cafeteria' | 'lavage') => (k === 'cafeteria' ? cafeteriaBiz : lavageBiz);
+    const stateOf = (k: 'cafeteria' | 'lavage') => (k === 'cafeteria' ? biz.cafeteria : biz.lavage);
+    const clientName = (id?: string) => app.clients?.find((c: any) => c.id === id)?.name;
+    const byDateDesc = (a: DetailRow, b: DetailRow) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime();
+
+    // ── Ventes totales — fuel + shop (carburant) + biz sales/reparations ──
+    const salesRows: DetailRow[] = [];
+    (app.fuelSales || []).filter((s: any) => within(s.date, range.from, range.to)).forEach((s: any) => salesRows.push({
+      id: `fuel-${s.id}`, date: s.date,
+      label: `⛽ Carburant — ${(s.liters || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`,
+      sub: clientName(s.clientId) || 'Comptoir', amount: s.total || 0, amountTone: 'green',
+      onDelete: () => dispatch({ type: 'DELETE_FUEL_SALE', payload: s.id }),
+      confirmMessage: `Supprimer cette vente carburant de ${money(s.total || 0)} ? Le mouvement sera retiré définitivement.`,
+    }));
+    (app.shopSales || []).filter((s: any) => within(s.date, range.from, range.to)).forEach((s: any) => salesRows.push({
+      id: `shop-${s.id}`, date: s.date,
+      label: `🛒 Magasin — ${(s.items || []).length} article(s)`,
+      sub: clientName(s.clientId) || 'Comptoir', amount: s.total || 0, amountTone: 'green',
+      onDelete: () => dispatch({ type: 'DELETE_SHOP_SALE', payload: s.id }),
+      confirmMessage: `Supprimer cette vente magasin de ${money(s.total || 0)} ?`,
+    }));
+    (['cafeteria', 'lavage'] as const).forEach(k => reports[k].sales.forEach(s => {
+      const isRep = s.kind !== 'Vente';
+      salesRows.push({
+        id: `${k}-${s.id}`, date: s.date,
+        label: `${reports[k].emoji} ${s.kind}${s.ref ? ' · ' + s.ref : ''}`,
+        sub: s.client || 'Comptoir', amount: s.total, amountTone: 'green',
+        onDelete: () => bizOf(k).remove(isRep ? 'reparations' : 'sales', s.id),
+        confirmMessage: `Supprimer « ${s.ref || s.kind} » (${money(s.total)}) ?`,
+      });
+    }));
+    salesRows.sort(byDateDesc);
+
+    // ── Dépenses + salaires — dépenses supprimables, salaires en lecture seule ──
+    const expenseRows: DetailRow[] = [];
+    reports.carburant.expenses.forEach(e => expenseRows.push({
+      id: `carb-${e.id}`, date: e.date, label: `💸 ${e.label}`, sub: e.description, amount: e.amount, amountTone: 'red',
+      onDelete: () => dispatch({ type: 'DELETE_EXPENSE', payload: e.id }),
+      confirmMessage: `Supprimer la dépense « ${e.label} » (${money(e.amount)}) ?`,
+    }));
+    (['cafeteria', 'lavage'] as const).forEach(k => reports[k].expenses.forEach(e => {
+      if (e.kind === 'Dépense') expenseRows.push({
+        id: `${k}-${e.id}`, date: e.date, label: `${reports[k].emoji} ${e.label}`, sub: e.description, amount: e.amount, amountTone: 'red',
+        onDelete: () => bizOf(k).remove('expenses', e.id),
+        confirmMessage: `Supprimer la dépense « ${e.label} » (${money(e.amount)}) ?`,
+      });
+      else if (e.kind === 'Salaire') expenseRows.push({
+        id: `${k}-${e.id}`, date: e.date, label: `${reports[k].emoji} Salaire — ${e.label}`, sub: e.description, amount: e.amount, amountTone: 'amber',
+        badge: { text: 'Salaire', tone: 'info' },
+      });
+    }));
+    expenseRows.sort(byDateDesc);
+
+    // ── Bénéfice net — décomposition par activité (lecture seule) ──
+    const netRows: DetailRow[] = global.parts.map(p => ({
+      id: p.key, label: `${p.emoji} ${p.label}`,
+      sub: `Marge ${money(p.grossMargin)} − charges ${money(p.expensesTotal + p.salariesPaid)}`,
+      amount: p.netGain, amountTone: p.netGain >= 0 ? 'green' : 'red',
+    }));
+
+    // ── Valeur du stock — produits valorisés ──
+    const stockRows: DetailRow[] = [];
+    (app.products || []).forEach((p: any) => stockRows.push({
+      id: `carb-${p.id}`, label: `⛽ ${p.name}`,
+      sub: `${(p.stock || 0).toLocaleString('fr-FR')} ${p.unit || ''} × ${money(p.buyPrice || 0)}`,
+      amount: (p.stock || 0) * (p.buyPrice || 0), amountTone: 'blue',
+      onDelete: () => dispatch({ type: 'DELETE_PRODUCT', payload: p.id }),
+      confirmMessage: `Supprimer le produit « ${p.name} » ? Il disparaîtra de l'inventaire.`,
+    }));
+    (['cafeteria', 'lavage'] as const).forEach(k => (stateOf(k).products || []).forEach((p: any) => stockRows.push({
+      id: `${k}-${p.id}`, label: `${reports[k].emoji} ${p.name}`,
+      sub: `${(p.currentQty || 0).toLocaleString('fr-FR')} ${p.unit || ''} × ${money(p.purchasePrice || 0)}`,
+      amount: (p.currentQty || 0) * (p.purchasePrice || 0), amountTone: 'blue',
+      onDelete: () => bizOf(k).remove('products', p.id),
+      confirmMessage: `Supprimer le produit « ${p.name} » ?`,
+    })));
+    stockRows.sort((a, b) => b.amount - a.amount);
+
+    // ── Dettes clients ──
+    const clientDebtRows: DetailRow[] = [];
+    (app.clients || []).filter((c: any) => (c.debt || 0) > 0).forEach((c: any) => clientDebtRows.push({
+      id: `carb-${c.id}`, label: `👤 ${c.name}`, sub: c.phone || c.type, amount: c.debt, amountTone: 'red',
+      onDelete: () => dispatch({ type: 'DELETE_CLIENT', payload: c.id }),
+      confirmMessage: `Supprimer le client « ${c.name} » et tout son historique ? Cette action est définitive.`,
+    }));
+    (['cafeteria', 'lavage'] as const).forEach(k => reports[k].clientDebts.forEach(d => clientDebtRows.push({
+      id: `${k}-${d.id}`, label: `${reports[k].emoji} ${d.name}`, sub: d.ref, amount: d.rest, amountTone: 'red',
+    })));
+    clientDebtRows.sort((a, b) => b.amount - a.amount);
+
+    // ── Dettes fournisseurs ──
+    const supplierDebtRows: DetailRow[] = [];
+    (app.suppliers || []).filter((s: any) => (s.balance || 0) > 0).forEach((s: any) => supplierDebtRows.push({
+      id: `carb-${s.id}`, label: `🚚 ${s.name}`, sub: s.phone, amount: s.balance, amountTone: 'red',
+      onDelete: () => dispatch({ type: 'DELETE_SUPPLIER', payload: s.id }),
+      confirmMessage: `Supprimer le fournisseur « ${s.name} » et son historique ? Action définitive.`,
+    }));
+    (['cafeteria', 'lavage'] as const).forEach(k => reports[k].supplierDebts.forEach(d => supplierDebtRows.push({
+      id: `${k}-${d.id}`, label: `${reports[k].emoji} ${d.name}`, sub: d.ref, amount: d.rest, amountTone: 'red',
+    })));
+    supplierDebtRows.sort((a, b) => b.amount - a.amount);
+
+    // ── Alertes — stock bas + péremptions (lecture seule) ──
+    const alertRows: DetailRow[] = [];
+    global.parts.forEach(p => {
+      p.stockAlerts.forEach(a => alertRows.push({
+        id: `stk-${p.key}-${a.id}`, label: `${p.emoji} ${a.name}`,
+        sub: `Stock ${a.currentQty} ${a.unit || ''} ≤ min ${a.minQty}`, amount: a.value, amountTone: 'amber',
+        badge: { text: 'Stock bas', tone: 'warning' },
+      }));
+      p.expiryAlerts.forEach(a => alertRows.push({
+        id: `exp-${p.key}-${a.id}`, label: `${p.emoji} ${a.name}`,
+        sub: `${a.status === 'expired' ? 'Expiré' : 'Expire bientôt'} · ${formatDate(a.expirationDate)}`,
+        amount: a.value, amountTone: 'red', badge: { text: a.status === 'expired' ? 'Expiré' : 'Bientôt', tone: 'danger' },
+      }));
+    });
+
+    return {
+      salesTotal:   { title: 'Ventes totales', icon: TrendingUp, subtitle: 'Détail de toutes les ventes de la période', rows: salesRows, total: global.salesTotal, totalLabel: 'Total ventes' },
+      expenses:     { title: 'Dépenses + salaires', icon: CreditCard, subtitle: 'Dépenses et salaires de la période', rows: expenseRows, total: global.expensesTotal + global.salariesPaid, totalLabel: 'Total charges', note: 'Les salaires sont calculés par la paie — supprimez-les depuis la fiche employé.' },
+      netGain:      { title: 'Bénéfice net global', icon: CircleDollarSign, subtitle: 'Décomposition par activité', rows: netRows, total: global.netGain, totalLabel: 'Bénéfice net', note: 'Lignes calculées — non supprimables.' },
+      stockValue:   { title: 'Valeur du stock', icon: Boxes, subtitle: "Produits en stock valorisés au prix d'achat", rows: stockRows, total: global.stockValue, totalLabel: 'Valeur totale' },
+      clientDebt:   { title: 'Dettes clients', icon: Users, subtitle: 'Encours clients (toutes dates)', rows: clientDebtRows, total: global.clientDebtTotal, totalLabel: 'Total encours' },
+      supplierDebt: { title: 'Dettes fournisseurs', icon: Truck, subtitle: 'Encours fournisseurs (toutes dates)', rows: supplierDebtRows, total: global.supplierDebtTotal, totalLabel: 'Total encours' },
+      alerts:       { title: 'Alertes', icon: AlertTriangle, subtitle: 'Stock bas et péremptions', rows: alertRows, total: alertRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Valeur concernée', note: 'Alertes calculées — non supprimables.' },
+    };
+  }, [global, reports, app, biz, range, dispatch, cafeteriaBiz, lavageBiz]);
 
   const activeReport: PartReport | null = PART_SECTIONS.includes(active)
     ? reports[active as 'carburant' | ModuleKey]
@@ -201,7 +364,7 @@ export default function GeneralReports() {
             <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar">
               <AnimatePresence mode="wait">
                 <motion.div key={active} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} />}
+                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} />}
                   {active === 'employes' && <WorkforceView report={workforce} />}
                   {active === 'tresorerie' && <TreasuryView report={treasury} />}
                   {activeReport && <ReportView report={activeReport} />}
@@ -219,6 +382,13 @@ export default function GeneralReports() {
         purchases={fuelPurchases}
         range={range}
         onPrint={handlePrintPurchases}
+        onDelete={id => dispatch({ type: 'DELETE_PURCHASE', payload: id })}
+      />
+
+      {/* Drill-down d'une carte KPI — liste détaillée + suppression */}
+      <CardDetailModal
+        detail={activeCard ? cardDetails[activeCard] : null}
+        onClose={() => setActiveCard(null)}
       />
 
       {/* Off-screen printable fiches */}
@@ -256,25 +426,26 @@ function OverviewCard({ icon: Icon, label, value, sub, tone = 'blue', onClick, c
   return <div className="rounded-2xl border border-slate-100 p-4 bg-white shadow-sm">{inner}</div>;
 }
 
-function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOpenPurchases }: {
+function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOpenPurchases, onOpenCard }: {
   global: GlobalReport;
   workforce: ReturnType<typeof computeWorkforce>;
   treasury: ReturnType<typeof computeTreasuryReport>;
   onSelect: (k: ActiveKey) => void;
   onOpenPurchases: () => void;
+  onOpenCard: (k: CardKey) => void;
 }) {
   return (
     <div className="space-y-8">
-      {/* KPI cards */}
+      {/* KPI cards — chaque carte est cliquable et ouvre le détail de son calcul */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <OverviewCard icon={TrendingUp} tone="green" label="Ventes totales" value={money(g.salesTotal)} sub={`${g.counts.sales} opérations`} />
+        <OverviewCard icon={TrendingUp} tone="green" label="Ventes totales" value={money(g.salesTotal)} sub={`${g.counts.sales} opérations`} onClick={() => onOpenCard('salesTotal')} cta="Voir le détail" />
         <OverviewCard icon={ShoppingCart} tone="purple" label="Achats totaux" value={money(g.purchasesTotal)} sub={`${g.counts.purchases} factures`} onClick={onOpenPurchases} cta="Détail carburant" />
-        <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(g.expensesTotal + g.salariesPaid)} />
-        <OverviewCard icon={CircleDollarSign} tone={g.netGain >= 0 ? 'green' : 'red'} label="Bénéfice net global" value={money(g.netGain)} />
-        <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} />
-        <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} />
-        <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} />
-        <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} />
+        <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(g.expensesTotal + g.salariesPaid)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
+        <OverviewCard icon={CircleDollarSign} tone={g.netGain >= 0 ? 'green' : 'red'} label="Bénéfice net global" value={money(g.netGain)} onClick={() => onOpenCard('netGain')} cta="Décomposition" />
+        <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
+        <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} onClick={() => onOpenCard('clientDebt')} cta="Voir le détail" />
+        <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} onClick={() => onOpenCard('supplierDebt')} cta="Voir le détail" />
+        <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} onClick={() => onOpenCard('alerts')} cta="Voir le détail" />
       </div>
 
       {/* Trésorerie — raccourci vers la section dédiée */}
@@ -401,6 +572,74 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
   );
 }
 
+// ─── Card drill-down — detail list of one KPI card, with per-row delete ────────
+const AMOUNT_TONE: Record<string, string> = {
+  green: 'text-emerald-600', red: 'text-red-600', blue: 'text-blue-700', amber: 'text-amber-600', slate: 'text-slate-700',
+};
+
+function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClose: () => void }) {
+  const [confirmRow, setConfirmRow] = useState<DetailRow | null>(null);
+  // Drop any pending confirmation when the opened card changes.
+  useEffect(() => { setConfirmRow(null); }, [detail]);
+  if (!detail) return null;
+  const Icon = detail.icon;
+  const deletable = detail.rows.some(r => r.onDelete);
+  return (
+    <Modal open onClose={onClose} icon={Icon} size="2xl" fullHeight
+      title={detail.title} subtitle={detail.subtitle || `${detail.rows.length} ligne(s)`}
+      footer={<>
+        <div className="mr-auto flex items-center gap-2 text-sm font-black text-[#002d87]">
+          <span className="text-slate-400 font-bold text-xs uppercase tracking-wide">{detail.totalLabel}</span> {money(detail.total)}
+        </div>
+        <button className="btn-ghost" onClick={onClose}>Fermer</button>
+      </>}>
+      <div className="space-y-4">
+        {detail.note && <p className="text-[11px] text-slate-400 italic px-1">{detail.note}</p>}
+        {detail.rows.length === 0 ? (
+          <div className="rounded-2xl border-2 border-dashed border-slate-200 p-10 text-center">
+            <FileBarChart className="w-10 h-10 mx-auto mb-3 text-slate-200" />
+            <p className="text-sm font-bold text-slate-400">Aucune ligne sur cette période.</p>
+          </div>
+        ) : (
+          <Table head={<>
+            <th className="table-head">Date</th>
+            <th className="table-head">Libellé</th>
+            <th className="table-head text-right">Montant</th>
+            {deletable && <th className="table-head text-right">Action</th>}
+          </>}>
+            {detail.rows.map(r => (
+              <tr key={r.id} className="hover:bg-slate-50">
+                <td className="table-cell whitespace-nowrap text-slate-500">{r.date ? formatDate(r.date) : '—'}</td>
+                <td className="table-cell">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-slate-700">{r.label}</span>
+                    {r.badge && <Badge tone={r.badge.tone}>{r.badge.text}</Badge>}
+                  </div>
+                  {r.sub && <div className="text-[11px] text-slate-400">{r.sub}</div>}
+                </td>
+                <td className={cn('table-cell text-right tabular-nums font-black', AMOUNT_TONE[r.amountTone || 'slate'])}>{money(r.amount)}</td>
+                {deletable && (
+                  <td className="table-cell text-right">
+                    {r.onDelete
+                      ? <button onClick={() => setConfirmRow(r)} title="Supprimer"
+                          className="p-2 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
+                      : <span className="text-[10px] text-slate-300 italic pr-2">calculé</span>}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </Table>
+        )}
+      </div>
+
+      <Confirm open={!!confirmRow} title="Confirmer la suppression"
+        message={confirmRow?.confirmMessage || 'Supprimer cette ligne ?'}
+        onConfirm={() => { confirmRow?.onDelete?.(); setConfirmRow(null); }}
+        onCancel={() => setConfirmRow(null)} />
+    </Modal>
+  );
+}
+
 // ─── Achats carburant — détail complet (drill-down du carte « Achats totaux ») ──
 const PURCHASE_STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
   'Payé': 'success', 'Partiel': 'warning', 'À payer': 'danger', 'En attente livraison': 'neutral',
@@ -411,13 +650,15 @@ const PAY_MODE_TONE: Record<string, string> = {
   VIREMENT: 'text-purple-700 bg-purple-50 border-purple-200',
 };
 
-function PurchasesDetailModal({ open, onClose, purchases, range, onPrint }: {
+function PurchasesDetailModal({ open, onClose, purchases, range, onPrint, onDelete }: {
   open: boolean;
   onClose: () => void;
   purchases: FuelPurchaseDetail[];
   range: { from: string; to: string };
   onPrint: () => void;
+  onDelete: (id: string) => void;
 }) {
+  const [toDelete, setToDelete] = useState<FuelPurchaseDetail | null>(null);
   const totals = useMemo(() => purchases.reduce(
     (a, p) => ({ total: a.total + p.total, paid: a.paid + p.paid, rest: a.rest + p.rest, liters: a.liters + p.liters }),
     { total: 0, paid: 0, rest: 0, liters: 0 },
@@ -476,7 +717,11 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint }: {
                       <Truck className="w-3 h-3" /> {p.supplier} · {formatDate(p.date)}
                     </p>
                   </div>
-                  <Badge tone={PURCHASE_STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge tone={PURCHASE_STATUS_TONE[p.status] || 'neutral'}>{p.status}</Badge>
+                    <button onClick={() => setToDelete(p)} title="Supprimer cet achat"
+                      className="p-2 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all"><Trash2 className="w-4 h-4" /></button>
+                  </div>
                 </div>
 
                 <div className="p-4 space-y-4">
@@ -558,6 +803,11 @@ function PurchasesDetailModal({ open, onClose, purchases, range, onPrint }: {
           </div>
         )}
       </div>
+
+      <Confirm open={!!toDelete} title="Supprimer l'achat"
+        message={`Supprimer l'achat « ${toDelete?.invoiceNumber || toDelete?.blNumber || 'Sans référence'} » de ${money(toDelete?.total || 0)} ? Cette action est définitive.`}
+        onConfirm={() => { if (toDelete) onDelete(toDelete.id); setToDelete(null); }}
+        onCancel={() => setToDelete(null)} />
     </Modal>
   );
 }
