@@ -21,23 +21,89 @@ export function genBarcode(): string {
   return code;
 }
 
+/**
+ * Code 128 (subset B) symbol widths — one 6-module pattern per value (0-106).
+ * Each pattern is bar/space/bar/space/bar/space; the stop symbol (106) carries an
+ * extra terminating bar. This is the standard, scanner-readable Code 128 table.
+ */
+const CODE128_PATTERNS = [
+  '212222', '222122', '222221', '121223', '121322', '131222', '122213', '122312', '132212', '221213',
+  '221312', '231212', '112232', '122132', '122231', '113222', '123122', '123221', '223211', '221132',
+  '221231', '213212', '223112', '312131', '311222', '321122', '321221', '312212', '322112', '322211',
+  '212123', '212321', '232121', '111323', '131123', '131321', '112313', '132113', '132311', '211313',
+  '231113', '231311', '112133', '112331', '132131', '113123', '113321', '133121', '313121', '211331',
+  '231131', '213113', '213311', '213131', '311123', '311321', '331121', '312113', '312311', '332111',
+  '314111', '221411', '431111', '111224', '111422', '121124', '121421', '141122', '141221', '112214',
+  '112412', '122114', '122411', '142112', '142211', '241211', '221114', '413111', '241112', '134111',
+  '111242', '121142', '121241', '114212', '124112', '124211', '411212', '421112', '421211', '212141',
+  '214121', '412121', '111143', '111341', '131141', '114113', '114311', '411113', '411311', '113141',
+  '114131', '311141', '411131', '211412', '211214', '211232', '2331112',
+];
+const CODE128_START_B = 104;
+const CODE128_STOP = 106;
+
+/** Turn any text into a scannable Code 128-B barcode rendered as crisp SVG. */
+export function barcodeSVG(text: string, moduleWidth = 2, height = 70): string {
+  // Keep only printable ASCII (32-126); Code 128-B cannot encode anything else.
+  const clean = String(text).replace(/[^\x20-\x7E]/g, '');
+  if (!clean) return '';
+  const codes: number[] = [CODE128_START_B];
+  for (const ch of clean) codes.push(ch.charCodeAt(0) - 32);
+  let checksum = CODE128_START_B;
+  for (let i = 1; i < codes.length; i++) checksum += codes[i] * i;
+  codes.push(checksum % 103);
+  codes.push(CODE128_STOP);
+
+  const widths = codes.map((c) => CODE128_PATTERNS[c]).join('');
+  const quiet = 10 * moduleWidth; // Code 128 needs a ≥10-module quiet zone each side
+  let x = quiet;
+  let isBar = true;
+  let rects = '';
+  for (const ch of widths) {
+    const w = parseInt(ch, 10) * moduleWidth;
+    if (isBar) rects += `<rect x="${x}" y="0" width="${w}" height="${height}"/>`;
+    x += w;
+    isBar = !isBar;
+  }
+  const total = x + quiet;
+  return `<svg width="${total}" height="${height}" viewBox="0 0 ${total} ${height}" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges"><rect x="0" y="0" width="${total}" height="${height}" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
+}
+
 export function printBarcode(product: { name: string; barcode?: string; salePrice?: number }) {
-  const bars = (product.barcode || '')
-    .split('')
-    .map((d) => `<span style="display:inline-block;width:${1 + (parseInt(d) % 3)}px;height:60px;background:#000;margin-right:1px"></span>`)
-    .join('');
-  const win = window.open('', '_blank', 'width=400,height=300');
+  const code = (product.barcode || '').trim();
+  if (!code) return;
+  const svg = barcodeSVG(code);
+  const price = typeof product.salePrice === 'number' && product.salePrice > 0 ? fc(product.salePrice) : '';
+  const win = window.open('', '_blank', 'width=460,height=360');
   if (!win) return;
   win.document.write(`
-    <html><head><title>Code-barres</title></head>
-    <body style="font-family:monospace;text-align:center;padding:24px">
-      <div style="font-weight:800;margin-bottom:8px">${product.name}</div>
-      <div style="white-space:nowrap;line-height:0">${bars}</div>
-      <div style="letter-spacing:3px;margin-top:6px;font-size:14px">${product.barcode || ''}</div>
-      ${product.salePrice ? `<div style="margin-top:8px;font-weight:700">${product.salePrice.toFixed(2)} DA</div>` : ''}
-      <script>window.onload=()=>{window.print();}</script>
+    <html><head><title>Code-barres</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:Arial,Helvetica,sans-serif;text-align:center;padding:20px}
+      .label{display:inline-block;padding:12px 16px;border:1px solid #eee;border-radius:8px}
+      .name{font-weight:800;font-size:15px;margin-bottom:8px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .bars svg{display:block;margin:0 auto}
+      .code{letter-spacing:4px;margin-top:4px;font-size:13px;font-family:'Courier New',monospace}
+      .price{margin-top:8px;font-weight:800;font-size:16px}
+      @media print{body{padding:0}.label{border:none}}
+    </style></head>
+    <body>
+      <div class="label">
+        <div class="name">${escapeHtml(product.name || '')}</div>
+        <div class="bars">${svg}</div>
+        <div class="code">${escapeHtml(code)}</div>
+        ${price ? `<div class="price">${escapeHtml(price)}</div>` : ''}
+      </div>
+      <script>window.onload=function(){window.focus();window.print();};</script>
     </body></html>`);
   win.document.close();
+}
+
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+  ));
 }
 
 // ─── Empty product template ────────────────────────────────────────────────────
