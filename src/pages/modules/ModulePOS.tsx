@@ -73,9 +73,13 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'pos');
-  const { settings, currentUserName, currentModuleWorker } = useAppState();
+  const { settings, currentUserName, currentModuleWorker, currentUserRole } = useAppState();
   const { comptoir, products, clients, fiches, sessions, workers } = biz.state;
   const pinned = biz.state.posPinned || [];
+
+  // Seul l'administrateur voit le théorique de la session (total vendu, espèces
+  // dues, décalage) ; l'employé qui tient la caisse vend sans jamais les voir.
+  const isAdmin = currentUserRole === 'admin';
 
   const openSession = useMemo(() => sessions.find(s => s.status === 'open') || null, [sessions]);
 
@@ -353,11 +357,13 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       )}
 
       {openSession && (
-        <div className="card-glass p-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className={`card-glass p-4 grid grid-cols-2 gap-3 ${isAdmin ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
           <div><p className="text-[10px] uppercase font-bold text-slate-400">Employé</p><p className="font-black text-slate-700 text-sm">{openSession.workerName}</p></div>
           <div><p className="text-[10px] uppercase font-bold text-slate-400">Ouverte le</p><p className="font-black text-slate-700 text-sm">{new Date(openSession.openedAt).toLocaleString('fr-DZ')}</p></div>
           <div><p className="text-[10px] uppercase font-bold text-slate-400">Fond de caisse</p><p className="font-black text-slate-700 text-sm tabular-nums">{money(openSession.openingCash)}</p></div>
-          <div><p className="text-[10px] uppercase font-bold text-slate-400">Ventes de la session</p><p className="font-black text-emerald-600 text-sm tabular-nums">{money(sessionFigures.total)}</p></div>
+          {isAdmin && (
+            <div><p className="text-[10px] uppercase font-bold text-slate-400">Ventes de la session</p><p className="font-black text-emerald-600 text-sm tabular-nums">{money(sessionFigures.total)}</p></div>
+          )}
         </div>
       )}
 
@@ -737,7 +743,9 @@ function OrganizeModal({ sources, pinned, sales, onSave, onClose }: {
 function DetailQtyModal({ source, onClose, onConfirm }: {
   source: Source; onClose: () => void; onConfirm: (qty: number) => void;
 }) {
-  const [qty, setQty] = useState('1');
+  // La quantité au détail démarre à zéro : le caissier saisit lui-même ce qu'il
+  // vend au lieu de partir d'une unité déjà comptée.
+  const [qty, setQty] = useState('');
   const value = Number(qty) || 0;
   // Selling more than the stock is allowed — the stock simply goes negative and
   // is recovered on the next purchase; we only inform the cashier.
@@ -751,7 +759,7 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
       </>}>
       <div className="space-y-4">
         <Field label={`Quantité à vendre (${source.detailUnit})`} required>
-          <Input type="number" step="0.01" min={0} value={qty} onChange={e => setQty(e.target.value)} autoFocus />
+          <Input type="number" step="0.01" min={0} value={qty} onChange={e => setQty(e.target.value)} placeholder="0" autoFocus />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl bg-slate-50 p-3">
@@ -839,6 +847,10 @@ function CloseSessionModal({ moduleKey, session, onClose }: {
   moduleKey: ModuleKey; session: BizSession; onClose: () => void;
 }) {
   const biz = useBiz(moduleKey);
+  const { currentUserRole } = useAppState();
+  // L'employé clôture en comptant simplement ses espèces ; le théorique et le
+  // décalage restent réservés à l'administrateur.
+  const isAdmin = currentUserRole === 'admin';
   const fig = figuresForSession(session, biz.state.sales);
   const [closingCash, setClosingCash] = useState('');
   const [notes, setNotes] = useState(session.notes || '');
@@ -870,37 +882,51 @@ function CloseSessionModal({ moduleKey, session, onClose }: {
         <button className="btn-primary" onClick={save}>Clôturer la session</button>
       </>}>
       <div className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Ventes</p><p className="font-black text-slate-700 tabular-nums">{fig.count}</p></div>
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Chiffre d'affaires</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(fig.total)}</p></div>
-          <div className="rounded-xl bg-emerald-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Théorique espèces</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(fig.cash)}</p></div>
-          <div className="rounded-xl bg-amber-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Crédits accordés</p><p className="font-black text-amber-600 tabular-nums text-sm">{money(fig.credit)}</p></div>
-        </div>
+        {isAdmin ? (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Ventes</p><p className="font-black text-slate-700 tabular-nums">{fig.count}</p></div>
+              <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Chiffre d'affaires</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(fig.total)}</p></div>
+              <div className="rounded-xl bg-emerald-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Théorique espèces</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(fig.cash)}</p></div>
+              <div className="rounded-xl bg-amber-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Crédits accordés</p><p className="font-black text-amber-600 tabular-nums text-sm">{money(fig.credit)}</p></div>
+            </div>
 
-        <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-xs text-blue-800 flex items-start gap-2">
-          <Wallet className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>
-            Le fond de caisse d'ouverture ({money(session.openingCash)}) est exclu du théorique :
-            l'employé ne doit que les {money(fig.cash)} encaissés pendant sa session.
-            Les {money(fig.credit)} laissés en dette justifient l'écart correspondant.
-          </span>
-        </div>
+            <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-xs text-blue-800 flex items-start gap-2">
+              <Wallet className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                Le fond de caisse d'ouverture ({money(session.openingCash)}) est exclu du théorique :
+                l'employé ne doit que les {money(fig.cash)} encaissés pendant sa session.
+                Les {money(fig.credit)} laissés en dette justifient l'écart correspondant.
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-xs text-blue-800 flex items-start gap-2">
+            <Wallet className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              Comptez les espèces présentes dans la caisse et saisissez le montant ci-dessous.
+              Le contrôle de la caisse (théorique et décalage) est réservé à l'administrateur.
+            </span>
+          </div>
+        )}
 
         <Field label="Espèces comptées à la fermeture (DA)" required>
           <Input type="number" value={closingCash} onChange={e => setClosingCash(e.target.value)} placeholder="0" autoFocus />
         </Field>
 
-        <div className={`rounded-2xl p-4 text-white ${Math.abs(decalage) < 0.01 ? 'bg-emerald-600' : decalage > 0 ? 'bg-[#003087]' : 'bg-red-600'}`}>
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold opacity-90">Décalage (compté − théorique)</span>
-            <span className="text-2xl font-black tabular-nums">{money(decalage)}</span>
+        {isAdmin && (
+          <div className={`rounded-2xl p-4 text-white ${Math.abs(decalage) < 0.01 ? 'bg-emerald-600' : decalage > 0 ? 'bg-[#003087]' : 'bg-red-600'}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold opacity-90">Décalage (compté − théorique)</span>
+              <span className="text-2xl font-black tabular-nums">{money(decalage)}</span>
+            </div>
+            <p className="text-[11px] opacity-80 mt-1">
+              {Math.abs(decalage) < 0.01
+                ? 'Caisse juste.'
+                : decalage > 0 ? 'Excédent en caisse.' : "Manque en caisse à justifier."}
+            </p>
           </div>
-          <p className="text-[11px] opacity-80 mt-1">
-            {Math.abs(decalage) < 0.01
-              ? 'Caisse juste.'
-              : decalage > 0 ? 'Excédent en caisse.' : "Manque en caisse à justifier."}
-          </p>
-        </div>
+        )}
 
         <Field label="Notes / justification"><Textarea value={notes} onChange={e => setNotes(e.target.value)} /></Field>
       </div>
