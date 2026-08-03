@@ -84,7 +84,16 @@ const Login = ({ onLogin }: LoginProps) => {
     setLoading(false);
 
     if ('error' in result && result.error) {
-      setLoginError(t('login.error_invalid'));
+      // Only a genuine credential rejection should say "identifiants invalides":
+      // reporting a blocked or rate-limited connection that way sends people
+      // hunting for a password problem that does not exist.
+      setLoginError(
+        result.reason === 'rate_limited'
+          ? "Trop de tentatives de connexion depuis ce réseau. Patientez une minute puis réessayez."
+          : result.reason === 'network'
+            ? "Serveur injoignable depuis ce poste. Vérifiez la connexion Internet, puis réessayez."
+            : t('login.error_invalid'),
+      );
       return;
     }
 

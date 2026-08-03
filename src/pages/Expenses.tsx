@@ -43,9 +43,9 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer,
   Legend
 } from "recharts";
+import ChartBox from "../components/ChartBox";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
 import {
@@ -642,30 +642,28 @@ const Expenses = () => {
                       <h3 className="text-xs font-black text-blue-900 uppercase tracking-[0.2em] italic">Répartition par Catégorie</h3>
                       <PieChartIcon className="w-6 h-6 text-slate-200" />
                    </div>
-                   <div className="h-[300px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                             <Pie
-                                data={pieData}
-                                cx="50%"
-                                cy="50%"
-                                innerRadius={60}
-                                outerRadius={100}
-                                paddingAngle={5}
-                                dataKey="value"
-                             >
-                                {pieData.map((entry, index) => (
-                                 <Cell key={`cell-${index}`} fill={entry.color} />
-                                ))}
-                             </Pie>
-                             <Tooltip 
-                               contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
-                               itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
-                             />
-                             <Legend verticalAlign="bottom" height={36}/>
-                          </PieChart>
-                      </ResponsiveContainer>
-                   </div>
+                   <ChartBox height={300}>
+                        <PieChart>
+                           <Pie
+                              data={pieData}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={60}
+                              outerRadius={100}
+                              paddingAngle={5}
+                              dataKey="value"
+                           >
+                              {pieData.map((entry, index) => (
+                               <Cell key={`cell-${index}`} fill={entry.color} />
+                              ))}
+                           </Pie>
+                           <Tooltip 
+                             contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
+                             itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                           />
+                           <Legend verticalAlign="bottom" height={36}/>
+                        </PieChart>
+                   </ChartBox>
                 </div>
 
                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-8">
@@ -673,20 +671,18 @@ const Expenses = () => {
                       <h3 className="text-xs font-black text-blue-900 uppercase tracking-[0.2em] italic">Évolution Mensuelle</h3>
                       <TrendingDown className="w-6 h-6 text-red-500" />
                    </div>
-                   <div className="h-[300px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={barData}>
-                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-                             <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 'bold', fill: '#94A3B8' }} />
-                             <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 'bold', fill: '#94A3B8' }} />
-                             <Tooltip 
-                               cursor={{ fill: '#F8FAFC' }}
-                               contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
-                             />
-                             <Bar dataKey="amount" fill="#003087" radius={[8, 8, 0, 0]} />
-                          </BarChart>
-                      </ResponsiveContainer>
-                   </div>
+                   <ChartBox height={300}>
+                        <BarChart data={barData}>
+                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                           <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 'bold', fill: '#94A3B8' }} />
+                           <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 'bold', fill: '#94A3B8' }} />
+                           <Tooltip 
+                             cursor={{ fill: '#F8FAFC' }}
+                             contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
+                           />
+                           <Bar dataKey="amount" fill="#003087" radius={[8, 8, 0, 0]} />
+                        </BarChart>
+                   </ChartBox>
                 </div>
              </div>
 

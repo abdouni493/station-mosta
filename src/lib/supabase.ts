@@ -20,14 +20,240 @@ const SUPABASE_ANON_KEY =
   (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1nbXRnZ3hqbGh6c2Vra3J4YXVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5MjI0MjIsImV4cCI6MjEwMDQ5ODQyMn0._SXlyMqNozPIt7Z8jVmKTbYt2caRQ45s3muLTfJbgmk';
 
+export const AUTH_STORAGE_KEY = 'stationpro.auth';
+
+/** Minimal shape the app reads off a session. */
+export interface PersistedSession {
+  access_token: string;
+  refresh_token?: string;
+  user: { id: string; email?: string; user_metadata?: Record<string, any> };
+}
+
+/**
+ * The session supabase-js keeps in localStorage, read synchronously.
+ *
+ * `supabase.auth.getSession()` is async and, on a slow or lossy link, can take
+ * seconds because it renews the token first. Nothing that only needs to know
+ * *whether* somebody is signed in should wait for that — waiting is what used to
+ * strand users on the login screen. Authorisation itself is never decided here:
+ * every query still goes through supabase-js (fresh token + RLS), and a session
+ * that turns out to be dead ends at SIGNED_OUT.
+ */
+export function readPersistedSession(): PersistedSession | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const session = parsed?.currentSession ?? parsed;
+    if (!session?.access_token || !session?.user?.id) return null;
+    return session as PersistedSession;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Network resilience layer ───────────────────────────────────────────────────
+/**
+ * Some client machines reach Supabase over a resolver / firewall that drops
+ * requests intermittently (`net::ERR_NAME_NOT_RESOLVED`) and share a public IP
+ * with other stations, which trips Supabase's per-IP rate limiter on
+ * `/auth/v1/token` (HTTP 429).
+ *
+ * Both used to be fatal on those PCs:
+ *   • a transient DNS/network blip made a query fail outright;
+ *   • a 429 on a token refresh is NOT in auth-js's retryable status list
+ *     ([502, 503, 504, 520…530]), so `_callRefreshToken()` fell through to
+ *     `_removeSession()` and destroyed the session mid-login — which is exactly
+ *     the "impossible to connect from that machine" symptom.
+ *
+ * `resilientFetch` makes both survivable:
+ *   1. concurrent refresh calls collapse into ONE network request (a burst of
+ *      refreshes is what trips the limiter in the first place);
+ *   2. a rate-limited or transient request is retried with backoff, honouring
+ *      `Retry-After`;
+ *   3. a refresh that is still rate-limited after the retries is reported as
+ *      503 so auth-js classifies it as retryable and KEEPS the session instead
+ *      of signing the user out.
+ *
+ * Retries are deliberately conservative: a request that may already have been
+ * applied server-side (POST/PATCH/DELETE that failed mid-flight) is never
+ * replayed, so no write is ever duplicated. Only 429s — which the limiter
+ * rejects before any processing — are retried for every method.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+const MAX_RETRIES = 3;
+// The refresh endpoint retries only once here. Every postgrest call awaits
+// getSession(), so a long backoff chain inside a refresh would stall the whole
+// app; auth-js has its own paced retry loop for the 503 we hand back, and that
+// is the better place to wait.
+const MAX_AUTH_RETRIES = 1;
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return (input as Request)?.url ?? '';
+}
+
+/** `POST /auth/v1/token?grant_type=refresh_token` — the rate-limited endpoint. */
+function isRefreshTokenRequest(url: string): boolean {
+  return url.includes('/auth/v1/token') && url.includes('grant_type=refresh_token');
+}
+
+/** Backoff delay, preferring the server's `Retry-After` when it sends one. */
+function retryDelayMs(attempt: number, res?: Response): number {
+  const retryAfter = res?.headers?.get('retry-after');
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs) && secs > 0) return Math.min(secs * 1000, 30_000);
+  }
+  // 1s → 2s → 4s, plus jitter so several tabs don't retry in lockstep.
+  return Math.min(1000 * 2 ** attempt, 8000) + Math.floor(Math.random() * 400);
+}
+
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  maxRetries: number = MAX_RETRIES,
+): Promise<Response> {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  // Only replay requests that cannot have taken effect server-side.
+  const replayable = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+  const callerSignal = init?.signal ?? undefined;
+
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Per-attempt timeout — a request that never settles must not wedge the app.
+    const controller = new AbortController();
+    const onCallerAbort = () => controller.abort();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    callerSignal?.addEventListener('abort', onCallerAbort);
+
+    try {
+      const res = await fetch(input, { ...init, signal: controller.signal });
+
+      // 429: rejected by the rate limiter before any processing → always safe to retry.
+      // 5xx: may have been applied → replay only idempotent methods.
+      const retryable = res.status === 429 || (replayable && res.status >= 500);
+      if (retryable && attempt < maxRetries) {
+        await sleep(retryDelayMs(attempt, res));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      // The caller aborted on purpose (component unmounted, request superseded).
+      if (callerSignal?.aborted) throw err;
+      if (!replayable || attempt >= maxRetries) throw err;
+      await sleep(retryDelayMs(attempt));
+    } finally {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
+  throw lastError;
+}
+
+/** In-flight refresh, shared by every caller so a burst becomes one request. */
+let refreshInFlight: Promise<Response> | null = null;
+
+async function resilientFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = urlOf(input);
+
+  if (!isRefreshTokenRequest(url)) return fetchWithRetry(input, init);
+
+  if (!refreshInFlight) {
+    refreshInFlight = fetchWithRetry(input, init, MAX_AUTH_RETRIES)
+      .finally(() => { refreshInFlight = null; });
+  }
+
+  // Every caller — including the first — reads a clone, so the shared response
+  // body is never consumed and can be cloned again by the next waiter.
+  const shared = await refreshInFlight;
+
+  if (shared.status === 429) {
+    // Still rate limited. Surfacing the 429 would make auth-js drop the session;
+    // 503 is in its retryable list, so the session survives and it retries later.
+    const body = await shared.clone().text().catch(() => '');
+    console.warn('[auth] Rafraîchissement du jeton limité (429) — session conservée, nouvel essai plus tard.');
+    return new Response(
+      body || JSON.stringify({ error: 'rate_limited', error_description: 'Too many refresh attempts' }),
+      { status: 503, statusText: 'Rate limited', headers: new Headers(shared.headers) },
+    );
+  }
+
+  return shared.clone();
+}
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: true,
-    storageKey: 'stationpro.auth',
+    // No OAuth / magic-link redirect flow in this app — skip the URL parsing.
+    detectSessionInUrl: false,
+    storageKey: AUTH_STORAGE_KEY,
+  },
+  global: { fetch: resilientFetch },
+  realtime: {
+    // Backoff ladder for the websocket. The default tops out at 10 s, which on a
+    // machine whose DNS/firewall blocks `wss://` produced an endless stream of
+    // ERR_NAME_NOT_RESOLVED in the console. Capped at 2 min instead: the app
+    // still heals itself when the network returns, without flooding the log.
+    reconnectAfterMs: (tries: number) => {
+      const ladder = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 120_000];
+      return ladder[Math.min(Math.max(tries, 1), ladder.length) - 1];
+    },
+    heartbeatIntervalMs: 30_000,
+    timeout: 20_000,
   },
 });
+
+// ─── Realtime health ────────────────────────────────────────────────────────────
+/**
+ * Live updates are a nice-to-have: on networks that block websockets the app must
+ * still work, just without push. Channels report their subscribe status here; once
+ * enough of them fail the app switches to periodic polling (see AppContext) and
+ * tells the user once, instead of silently showing stale data.
+ */
+export type RealtimeHealth = 'connecting' | 'online' | 'offline';
+
+const REALTIME_FAILURE_THRESHOLD = 3;
+
+let realtimeHealth: RealtimeHealth = 'connecting';
+let realtimeFailures = 0;
+const realtimeListeners = new Set<(health: RealtimeHealth) => void>();
+
+export function getRealtimeHealth(): RealtimeHealth {
+  return realtimeHealth;
+}
+
+/** Subscribes to health changes; fires immediately with the current value. */
+export function onRealtimeHealthChange(cb: (health: RealtimeHealth) => void): () => void {
+  realtimeListeners.add(cb);
+  cb(realtimeHealth);
+  return () => { realtimeListeners.delete(cb); };
+}
+
+function setRealtimeHealth(next: RealtimeHealth) {
+  if (next === realtimeHealth) return;
+  realtimeHealth = next;
+  realtimeListeners.forEach(l => { try { l(next); } catch { /* listener errors are not ours */ } });
+}
+
+function reportRealtimeStatus(status: string) {
+  if (status === 'SUBSCRIBED') {
+    realtimeFailures = 0;
+    setRealtimeHealth('online');
+    return;
+  }
+  if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+    realtimeFailures += 1;
+    if (realtimeFailures >= REALTIME_FAILURE_THRESHOLD) setRealtimeHealth('offline');
+  }
+}
 
 // ─── Storage bucket names (unchanged public API) ────────────────────────────────
 export const BUCKETS = {
@@ -124,9 +350,16 @@ async function resolveRole(): Promise<string | null> {
   }
 }
 
+/** Why a sign-in failed — the login page shows a different message per reason. */
+export type SignInFailure = 'credentials' | 'rate_limited' | 'network';
+
 /**
  * Sign in with an email OR a username (+ password). Returns the resolved role so
- * the login page can route the user; returns `{ error }` on failure.
+ * the login page can route the user; returns `{ error, reason }` on failure.
+ *
+ * `reason` matters: a rate-limited or unreachable server used to be reported as
+ * "identifiants invalides", which sent people hunting for a password problem
+ * that did not exist.
  */
 export async function signIn(identifier: string, password: string) {
   let email = (identifier || '').trim();
@@ -140,7 +373,14 @@ export async function signIn(identifier: string, password: string) {
   }
 
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) return { error: error.message };
+  if (error) {
+    const status = (error as any)?.status as number | undefined;
+    const reason: SignInFailure =
+      status === 429 ? 'rate_limited'
+      : (!status || status === 0 || status >= 500) ? 'network'
+      : 'credentials';
+    return { error: error.message, reason };
+  }
 
   const role = await resolveRole();
   return { user: data.user, session: data.session, role, profile: null };
@@ -680,7 +920,9 @@ export function subscribeTable(
         callback({ eventType: payload.eventType, new: payload.new, old: payload.old });
       }
     )
-    .subscribe();
+    // The status feeds the health tracker above: when the websocket cannot be
+    // reached at all, the app falls back to polling instead of going stale.
+    .subscribe((status: string) => reportRealtimeStatus(status));
 
   return () => { supabase.removeChannel(channel); };
 }

@@ -20,7 +20,8 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, orNull } from "@/src/lib/utils";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+import ChartBox from "../components/ChartBox";
 import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType, pumpTankIds, nozzleTankId, pumpsInCreationOrder } from "../store/AppContext";
 import toast from "react-hot-toast";
 
@@ -709,21 +710,19 @@ const Pumps = () => {
                                   <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                                     <TrendingUp className="w-4 h-4 text-blue-600" /> Volumes par Brigade
                                   </h4>
-                                  <div className="h-[200px]">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                      <BarChart data={chartData}>
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                                        <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 'bold' }} />
-                                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 'bold' }} />
-                                        <Tooltip
-                                          contentStyle={{ borderRadius: '12px', border: '2px solid #003087', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', fontWeight: 'bold', fontSize: 12 }}
-                                          cursor={{ fill: 'rgba(26, 60, 110, 0.04)' }}
-                                          formatter={(v: number) => [`${v.toFixed(2)} L`, 'Volume']}
-                                        />
-                                        <Bar dataKey="liters" fill="#003087" radius={[6, 6, 0, 0]} />
-                                      </BarChart>
-                                    </ResponsiveContainer>
-                                  </div>
+                                  <ChartBox height={200}>
+                                    <BarChart data={chartData}>
+                                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                                      <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 'bold' }} />
+                                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 'bold' }} />
+                                      <Tooltip
+                                        contentStyle={{ borderRadius: '12px', border: '2px solid #003087', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', fontWeight: 'bold', fontSize: 12 }}
+                                        cursor={{ fill: 'rgba(26, 60, 110, 0.04)' }}
+                                        formatter={(v: number) => [`${v.toFixed(2)} L`, 'Volume']}
+                                      />
+                                      <Bar dataKey="liters" fill="#003087" radius={[6, 6, 0, 0]} />
+                                    </BarChart>
+                                  </ChartBox>
                                 </div>
                               )}
 

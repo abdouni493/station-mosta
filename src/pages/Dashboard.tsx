@@ -8,9 +8,9 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip
 } from "recharts";
+import ChartBox from "../components/ChartBox";
 import { useAppState, useAppDispatch } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import AlertsWidget, { useDismissedAlerts, useDashboardAlerts } from "../components/AlertsWidget";
@@ -707,29 +707,27 @@ const Dashboard = () => {
                 ))}
               </div>
             </div>
-            <div style={{ height: 200 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                  <defs>
-                    <linearGradient id="gFuel" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%"   stopColor="#003087" stopOpacity={0.18} />
-                      <stop offset="100%" stopColor="#003087" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="gShop" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%"   stopColor="#FFB800" stopOpacity={0.18} />
-                      <stop offset="100%" stopColor="#FFB800" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: "#94a3b8" }} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: "#94a3b8" }} />
-                  <Tooltip contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 8px 32px rgba(0,48,135,0.12)", fontSize: 12, fontWeight: 700 }}
-                    cursor={{ stroke: "#003087", strokeWidth: 1.5, strokeDasharray: "4 4" }} />
-                  <Area type="monotone" dataKey="Carburant" stroke="#003087" strokeWidth={2.5} fill="url(#gFuel)" dot={false} activeDot={{ r: 5, fill: "#003087" }} />
-                  <Area type="monotone" dataKey="Magasin"   stroke="#FFB800" strokeWidth={2.5} fill="url(#gShop)" dot={false} activeDot={{ r: 5, fill: "#FFB800" }} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <ChartBox height={200}>
+              <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                <defs>
+                  <linearGradient id="gFuel" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%"   stopColor="#003087" stopOpacity={0.18} />
+                    <stop offset="100%" stopColor="#003087" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gShop" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%"   stopColor="#FFB800" stopOpacity={0.18} />
+                    <stop offset="100%" stopColor="#FFB800" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: "#94a3b8" }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 700, fill: "#94a3b8" }} />
+                <Tooltip contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 8px 32px rgba(0,48,135,0.12)", fontSize: 12, fontWeight: 700 }}
+                  cursor={{ stroke: "#003087", strokeWidth: 1.5, strokeDasharray: "4 4" }} />
+                <Area type="monotone" dataKey="Carburant" stroke="#003087" strokeWidth={2.5} fill="url(#gFuel)" dot={false} activeDot={{ r: 5, fill: "#003087" }} />
+                <Area type="monotone" dataKey="Magasin"   stroke="#FFB800" strokeWidth={2.5} fill="url(#gShop)" dot={false} activeDot={{ r: 5, fill: "#FFB800" }} />
+              </AreaChart>
+            </ChartBox>
           </motion.div>
 
           <TanksPanel tanks={tanks} delay={0.25} />

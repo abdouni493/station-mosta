@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { supabase, signOut } from '../lib/supabase';
+import { supabase, signOut, readPersistedSession } from '../lib/supabase';
 
 // Minimal local auth types (previously from @supabase/supabase-js).
 // The demo backend is fully offline, so only the fields the app reads are kept.
@@ -46,6 +46,9 @@ export function useAuth() {
   // Prevent state updates after the component unmounts
   const mountedRef = useRef(true);
   const profileFetchRef = useRef<Promise<void> | null>(null);
+  // True once fetchRole() has answered — the safety backstop below must not
+  // release the UI with the default 'admin' role while it is still pending.
+  const roleResolved = useRef(false);
   // Always-current snapshot of `auth`, so the onAuthStateChange listener
   // (registered once, see the empty dependency array below) can read the
   // latest auth state without re-subscribing on every change.
@@ -177,11 +180,14 @@ export function useAuth() {
 
     async function initAuth() {
       try {
-        // Step 1: Try to get session from Supabase (with 3s timeout)
+        // Step 1: Try to get session from Supabase. The timeout is generous
+        // (12 s) because on a slow link getSession() first renews the token;
+        // cutting it short is what used to send signed-in users to the login page.
         const getSessionPromise = supabase.auth.getSession();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Session fetch timeout')), 3000)
-        );
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Session fetch timeout')), 12000);
+        });
 
         let session: Session | null = null;
         try {
@@ -193,9 +199,18 @@ export function useAuth() {
           if (sessionError) {
             console.error('[useAuth] getSession error:', sessionError.message);
           }
-          session = sess;
+          session = sess ?? readPersistedSession();
         } catch (err) {
-          console.warn('[useAuth] Session fetch timed out or failed:', err);
+          // Timed out or the network is down: trust the stored session rather
+          // than logging the user out. supabase-js keeps renewing it in the
+          // background and emits SIGNED_OUT if it is genuinely dead.
+          session = readPersistedSession();
+          console.warn(
+            '[useAuth] Session fetch timed out or failed:', err,
+            session ? '— using the stored session' : '— no stored session',
+          );
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
         }
 
         if (!mountedRef.current) return;
@@ -215,10 +230,12 @@ export function useAuth() {
 
           // Step 3: Fetch role in background, then release loader
           profileFetchRef.current = fetchRole(session.user.id).then((role) => {
+            roleResolved.current = true;
             if (mountedRef.current) {
               setAuth(prev => ({ ...prev, userRole: role, isLoading: false }));
             }
           }).catch(() => {
+            roleResolved.current = true;
             if (mountedRef.current) {
               setAuth(prev => ({ ...prev, isLoading: false }));
             }
@@ -245,13 +262,22 @@ export function useAuth() {
       }
     }
 
-    // Safety timeout: force clear loading if init takes too long
+    // Safety backstop: never leave the user stuck on the spinner for ever.
+    //
+    // It fires AFTER initAuth's own 12 s budget, so by then the session state has
+    // already been decided (live session, stored session, or none) and clearing
+    // the spinner cannot dump a signed-in user on the login page any more.
+    // If only the role lookup is still pending we release the UI with the least
+    // privileged role — never 'admin' — and let fetchRole correct it.
     safetyTimeout = setTimeout(() => {
-      if (mountedRef.current && !initComplete) {
-        console.warn('[useAuth] Safety timeout — forcing loading state clear');
-        setAuth(prev => ({ ...prev, isLoading: false }));
-      }
-    }, 3000);
+      if (!mountedRef.current || initComplete) return;
+      console.warn('[useAuth] Safety timeout — forcing loading state clear');
+      setAuth(prev => ({
+        ...prev,
+        userRole:  prev.isAuthenticated && !roleResolved.current ? 'pompiste' : prev.userRole,
+        isLoading: false,
+      }));
+    }, 15000);
 
     initAuth();
 
@@ -307,10 +333,12 @@ export function useAuth() {
           });
 
           profileFetchRef.current = fetchRole(session.user.id).then((role) => {
+            roleResolved.current = true;
             if (mountedRef.current) {
               setAuth(prev => ({ ...prev, userRole: role, isLoading: false }));
             }
           }).catch(() => {
+            roleResolved.current = true;
             if (mountedRef.current) {
               setAuth(prev => ({ ...prev, isLoading: false }));
             }

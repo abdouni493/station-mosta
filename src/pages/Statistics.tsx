@@ -7,8 +7,9 @@ import {
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend
 } from "recharts";
+import ChartBox from "../components/ChartBox";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useModulePermission } from "../store/AppContext";
@@ -323,45 +324,41 @@ const Statistics = () => {
                   ))}
                 </div>
               }>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={fuelChartData} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
-                    <defs>
-                      <linearGradient id="gGasoil" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={C.blue600} stopOpacity={0.35} />
-                        <stop offset="95%" stopColor={C.blue600} stopOpacity={0}    />
-                      </linearGradient>
-                      <linearGradient id="gSuper" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={C.red} stopOpacity={0.3} />
-                        <stop offset="95%" stopColor={C.red} stopOpacity={0}   />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dy={8} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dx={-6} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Area type="monotone" dataKey="gasoil"  name="Gasoil"   stroke={C.blue600} strokeWidth={3} fill="url(#gGasoil)" />
-                    <Area type="monotone" dataKey="super95" name="Super 95" stroke={C.red}     strokeWidth={3} fill="url(#gSuper)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartBox height={288}>
+                <AreaChart data={fuelChartData} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="gGasoil" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor={C.blue600} stopOpacity={0.35} />
+                      <stop offset="95%" stopColor={C.blue600} stopOpacity={0}    />
+                    </linearGradient>
+                    <linearGradient id="gSuper" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor={C.red} stopOpacity={0.3} />
+                      <stop offset="95%" stopColor={C.red} stopOpacity={0}   />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dy={8} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dx={-6} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Area type="monotone" dataKey="gasoil"  name="Gasoil"   stroke={C.blue600} strokeWidth={3} fill="url(#gGasoil)" />
+                  <Area type="monotone" dataKey="super95" name="Super 95" stroke={C.red}     strokeWidth={3} fill="url(#gSuper)" />
+                </AreaChart>
+              </ChartBox>
             </Section>
           )}
 
           {/* Pump performance bar chart */}
           {(dataType === "Tous" || dataType === "Carburant") && pumpPerf.length > 0 && (
             <Section title="Performance Pompes — Volume Distribué" icon={Wrench}>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={pumpPerf} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dy={8} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dx={-6} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="liters" name="Litres" fill={C.blue600} radius={[8, 8, 0, 0]} barSize={36} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartBox height={256}>
+                <BarChart data={pumpPerf} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dy={8} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} dx={-6} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="liters" name="Litres" fill={C.blue600} radius={[8, 8, 0, 0]} barSize={36} />
+                </BarChart>
+              </ChartBox>
               {/* Pump detail cards */}
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-2">
                 {pumpPerf.map((p, i) => (
@@ -433,17 +430,15 @@ const Statistics = () => {
           {/* Shop sales bar chart */}
           {(dataType === "Tous" || dataType === "Magasin") && topProds.length > 0 && (
             <Section title="Ventes Magasin — Top Articles" icon={ShoppingCart}>
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={topProds.slice(0, 6)} layout="vertical" margin={{ top: 0, right: 24, bottom: 0, left: 80 }}>
-                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                    <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} />
-                    <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#1e293b" }} />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar dataKey="sold" name="Vendus" fill={C.gold} radius={[0, 8, 8, 0]} barSize={24} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartBox height={256}>
+                <BarChart data={topProds.slice(0, 6)} layout="vertical" margin={{ top: 0, right: 24, bottom: 0, left: 80 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                  <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#94a3b8" }} />
+                  <YAxis type="category" dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: "#1e293b" }} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="sold" name="Vendus" fill={C.gold} radius={[0, 8, 8, 0]} barSize={24} />
+                </BarChart>
+              </ChartBox>
             </Section>
           )}
         </div>
@@ -454,19 +449,17 @@ const Statistics = () => {
           {/* Revenue donut */}
           <Section title="Répartition du Chiffre d'Affaires" icon={BarChart2}>
             {catData.length > 0 ? (
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={catData} cx="50%" cy="50%" innerRadius={60} outerRadius={90}
-                         paddingAngle={6} dataKey="value" stroke="none">
-                      {catData.map((e, i) => <Cell key={i} fill={e.color} />)}
-                    </Pie>
-                    <Tooltip content={<CustomTooltip />} />
-                    <Legend verticalAlign="bottom" iconType="circle"
-                            wrapperStyle={{ paddingTop: "12px", fontSize: "10px", fontWeight: 900, textTransform: "uppercase" }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartBox height={224}>
+                <PieChart>
+                  <Pie data={catData} cx="50%" cy="50%" innerRadius={60} outerRadius={90}
+                       paddingAngle={6} dataKey="value" stroke="none">
+                    {catData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend verticalAlign="bottom" iconType="circle"
+                          wrapperStyle={{ paddingTop: "12px", fontSize: "10px", fontWeight: 900, textTransform: "uppercase" }} />
+                </PieChart>
+              </ChartBox>
             ) : (
               <p className="text-center text-slate-300 font-black text-sm py-8 uppercase tracking-widest">Aucune donnée</p>
             )}

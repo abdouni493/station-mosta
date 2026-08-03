@@ -272,10 +272,15 @@ export default function App() {
   // While checking session
   if (auth.isLoading) return <AppLoader />;
 
+  // The `key` ties the store's lifetime to the signed-in user. Both branches
+  // below render an <AppProvider> at the same position, so without it React
+  // reuses the same instance across login/logout and the previous session's
+  // data stays in memory for the next person to sign in on this machine.
+
   // Not authenticated — show login
   if (!auth.isAuthenticated) {
     return (
-      <AppProvider>
+      <AppProvider key="anon">
         <Login
           onLogin={(role, userId) => auth.setManualAuth(role, userId)}
         />
@@ -285,7 +290,7 @@ export default function App() {
 
   // Authenticated — load app with Supabase-connected state
   return (
-    <AppProvider>
+    <AppProvider key={auth.userId ?? 'session'}>
       <BizProvider>
         <AppContent
           userRole={auth.userRole}

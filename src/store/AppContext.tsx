@@ -7,9 +7,14 @@ import React, {
   useCallback,
   useMemo,
   useRef,
+  useState,
 } from 'react';
 import { ToastMessage, ToastType } from '../components/Toast';
-import { db, supabase, subscribeTable, uploadFile, uploadBase64, BUCKETS } from '../lib/supabase';
+import {
+  db, supabase, subscribeTable, uploadFile, uploadBase64, BUCKETS,
+  onRealtimeHealthChange, readPersistedSession,
+} from '../lib/supabase';
+import type { RealtimeHealth } from '../lib/supabase';
 import { newId, degreesFromLiters } from '../lib/utils';
 
 // ─── Null-or-zero sanitizer ────────────────────────────────────────────────────
@@ -2630,24 +2635,89 @@ async function refetchEntityAfterAction(
 
 // ─── AppProvider ──────────────────────────────────────────────────────────────
 
-export const AppProvider = ({ children }: { children: ReactNode }) => {
+interface AppProviderProps {
+  children: ReactNode;
+  /**
+   * Remounts the store when the signed-in user changes (see App.tsx). React
+   * strips `key` before props reach the component, so it is declared only
+   * because this project has no @types/react to supply JSX.IntrinsicAttributes.
+   */
+  key?: string;
+}
+
+export const AppProvider = ({ children }: AppProviderProps) => {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
-  // Guard against double-invocation (StrictMode dev or React 18 Concurrent Mode).
-  // Even though StrictMode has been removed from main.tsx, this ref makes the
-  // hydration truly idempotent and safe to re-enable later.
-  const hydrationStarted = useRef(false);
+  // Id of the user the store has been hydrated for. Doubles as the
+  // double-invocation guard (StrictMode / Concurrent Mode) the old
+  // `hydrationStarted` ref provided, while still allowing a genuine re-hydration
+  // when a different user signs in.
+  const hydratedForUser = useRef<string | null>(null);
   // Prevents concurrent re-hydrations (e.g. TOKEN_REFRESHED fires while initial
   // hydrate is still in progress).
   const isHydrating = useRef(false);
 
+  // ── Auth session gate ──────────────────────────────────────────────────────
+  // AppProvider also wraps the login screen (it supplies the station name and
+  // logo), so hydration must not fire its ~40 table reads before anyone is
+  // signed in: RLS returns nothing to an anonymous visitor anyway, and that
+  // burst of requests only slowed the login down — and on a shared IP it helped
+  // trip Supabase's rate limiter, which is what produced the 429 on
+  // `/auth/v1/token`.
+  //
+  // It also means a login always hydrates, even when React keeps this provider
+  // mounted across the login → app transition (both branches of App render an
+  // <AppProvider> at the same position, so the instance is reused and a one-shot
+  // guard would have left the store frozen on its logged-out contents).
+  //
+  // Seeded synchronously from localStorage so hydration starts on the first
+  // frame instead of waiting on getSession(); every query still goes through
+  // supabase-js, which renews the token and applies RLS before answering.
+  // `null` = signed out.
+  const [sessionUserId, setSessionUserId] = useState<string | null>(
+    () => readPersistedSession()?.user?.id ?? null,
+  );
+
+  useEffect(() => {
+    let alive = true;
+
+    supabase.auth.getSession()
+      .then(({ data }) => { if (alive) setSessionUserId(data.session?.user?.id ?? null); })
+      .catch(() => { /* keep whatever the stored session said */ });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Same id → React bails out, so token refreshes never re-trigger a hydrate.
+      if (alive) setSessionUserId(session?.user?.id ?? null);
+    });
+
+    return () => { alive = false; subscription.unsubscribe(); };
+  }, []);
+
   // ── Initial hydration from Supabase (two-phase progressive loading) ────────
   useEffect(() => {
-    if (hydrationStarted.current) return;
-    hydrationStarted.current = true;
-
     let cancelled = false;
     let phase1Timeout: ReturnType<typeof setTimeout>;
+
+    // Signed out: the login screen only needs the station branding.
+    if (sessionUserId === null) {
+      hydratedForUser.current = null;
+      (async () => {
+        try {
+          const raw = await db.getSettings();
+          if (!cancelled && raw) {
+            dispatch({ type: 'HYDRATE', payload: { settings: mapSettings(raw) } });
+          }
+        } catch {
+          /* branding is cosmetic — the login form works without it */
+        } finally {
+          if (!cancelled) dispatch({ type: 'SET_LOADING', payload: false });
+        }
+      })();
+      return () => { cancelled = true; };
+    }
+
+    if (hydratedForUser.current === sessionUserId) return;
+    hydratedForUser.current = sessionUserId;
 
     async function hydrate() {
       dispatch({ type: 'SET_LOADING', payload: true });
@@ -3067,12 +3137,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       cancelled = true;
       clearTimeout(phase1Timeout);
     };
-  }, [dispatch]);
+  }, [dispatch, sessionUserId]);
 
   // ── Realtime subscriptions ────────────────────────────────────────────────
   // Wire up the existing subscribeTable() helper so DB changes DZDe by other
   // sessions (or directly in the Supabase dashboard) reflect in the app live.
   useEffect(() => {
+    // Nothing to watch until someone is signed in — RLS would reject the joins
+    // anyway, and opening the socket from the login screen only adds noise.
+    if (!sessionUserId) return;
+
     // Map each table to a lightweight re-fetch that returns the new state slice
     type SliceFn = () => Promise<Partial<AppState>>;
     const tableMap: Record<string, SliceFn> = {
@@ -3164,8 +3238,96 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       );
     }
 
-    return () => unsubs.forEach(u => u());
-  }, [dispatch]);
+    // ── Fallback when the websocket cannot be reached ────────────────────────
+    // Some machines sit behind a resolver or firewall that blocks `wss://`
+    // (net::ERR_NAME_NOT_RESOLVED, repeated for every reconnect attempt). Live
+    // push is then impossible, but the app must not quietly serve stale data:
+    // poll the volatile tables instead, and only while the tab is on screen.
+    const POLLED_TABLES = [
+      'tanks', 'products', 'fuel_sales', 'shop_sales', 'purchases',
+      'expenses', 'treasury_transactions', 'brigades', 'clients',
+    ];
+    const POLL_INTERVAL_MS = 60_000;
+    const POLL_MIN_GAP_MS  = 20_000;
+    const WARN_AFTER_MS    = 30_000;
+
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let warnTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastPollAt = 0;
+    let pollInFlight = false;
+    let warnedOffline = false;
+
+    const refreshPolledTables = async () => {
+      if (pollInFlight || document.visibilityState !== 'visible') return;
+      pollInFlight = true;
+      lastPollAt = Date.now();
+      try {
+        for (const table of POLLED_TABLES) {
+          const sliceFn = tableMap[table];
+          if (!sliceFn) continue;
+          try {
+            dispatch({ type: 'HYDRATE', payload: await sliceFn() });
+          } catch (err) {
+            console.warn(`[poll] Refresh failed for ${table}:`, err);
+          }
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    // Returning to the tab is when stale data is most obvious — refresh then too.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastPollAt > POLL_MIN_GAP_MS) {
+        refreshPolledTables();
+      }
+    };
+
+    const startPolling = () => {
+      if (pollTimer) return;
+      pollTimer = setInterval(refreshPolledTables, POLL_INTERVAL_MS);
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      refreshPolledTables();
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+
+    const unwatchHealth = onRealtimeHealthChange((health: RealtimeHealth) => {
+      if (health === 'offline') {
+        startPolling();
+        // Warn only if it stays down: a brief blip reconnects on its own and
+        // does not deserve a message blaming the machine's network.
+        if (!warnedOffline && !warnTimer) {
+          warnTimer = setTimeout(() => {
+            warnedOffline = true;
+            warnTimer = null;
+            dispatch({
+              type: 'ADD_TOAST',
+              payload: {
+                type: 'warning',
+                message:
+                  'Mise à jour en direct indisponible sur ce poste. ' +
+                  'Les données sont actualisées automatiquement chaque minute.',
+              },
+            });
+          }, WARN_AFTER_MS);
+        }
+      } else if (health === 'online') {
+        if (warnTimer) { clearTimeout(warnTimer); warnTimer = null; }
+        stopPolling();
+      }
+    });
+
+    return () => {
+      unsubs.forEach(u => u());
+      unwatchHealth();
+      stopPolling();
+      if (warnTimer) clearTimeout(warnTimer);
+    };
+  }, [dispatch, sessionUserId]);
 
   // NOTE: We deliberately do NOT re-hydrate on the Supabase 'TOKEN_REFRESHED'
   // event. That event fires whenever the JWT is silently renewed — including
