@@ -180,12 +180,44 @@ export interface BizSale {
   /** Set on a refund: the money handed back to the client. */
   refundedAmount?: number;
   refundedAt?: string;
+  /** Motif du retour, saisi au moment de le valider. */
+  returnReason?: string;
   /** Set on the replacement sale created by an exchange. */
   exchangeOfSaleId?: string;
   /** Set on the original sale once it has been exchanged. */
   exchangedIntoSaleId?: string;
   /** Difference settled at exchange time (>0 client pays, <0 station refunds). */
   exchangeDelta?: number;
+}
+
+/**
+ * Une vente ANNULÉE — la marchandise n'est plus chez le client.
+ *
+ *  • `retournée` : le client a rendu les articles, ils sont revenus en stock (ou
+ *    au comptoir) et il a été remboursé.
+ *  • `échangée`  : les articles sont revenus et une vente de REMPLACEMENT a été
+ *    créée ; c'est elle qui porte le panier, l'encaissement et le gain.
+ *
+ * Dans les deux cas la vente d'origine ne doit plus compter comme un chiffre
+ * d'affaires ni générer le moindre gain : sans ce filtre, les rapports
+ * facturaient une marchandise revenue en stock — elle était comptée deux fois
+ * (une fois en vente, une fois en valeur de stock).
+ */
+export const isReversedSale = (s: Pick<BizSale, 'status'>): boolean =>
+  s.status === 'retournée' || s.status === 'échangée';
+
+/**
+ * Argent réellement resté en caisse pour une vente :
+ *  • vente normale   → ce que le client a payé ;
+ *  • vente retournée → payé − remboursé (0 quand le remboursement est total,
+ *    le reliquat quand la station a gardé des frais) ;
+ *  • vente échangée  → 0, la vente de remplacement porte tout l'encaissement
+ *    (y compris ce qui avait déjà été payé sur l'originale).
+ */
+export function netCashOfSale(s: BizSale): number {
+  if (s.status === 'échangée') return 0;
+  if (s.status === 'retournée') return (s.paid || 0) - (s.refundedAmount || 0);
+  return s.paid || 0;
 }
 
 export interface BizContact {

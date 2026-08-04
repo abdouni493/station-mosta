@@ -5,7 +5,10 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizSale, BizLineItem, BizProduct, detailPrice, isSellableProduct } from '@/src/lib/bizConfig';
+import {
+  ModuleKey, MODULES, BizSale, BizLineItem, BizProduct, BizFiche,
+  detailPrice, isSellableProduct, isReversedSale, netCashOfSale, roundQty, formatQty,
+} from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
@@ -43,12 +46,20 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [sales, clients, search, period, from, to]);
 
-  const stats = useMemo(() => ({
-    count: sales.length,
-    total: sales.reduce((s, x) => s + x.total, 0),
-    paid: sales.reduce((s, x) => s + x.paid, 0),
-    rest: sales.reduce((s, x) => s + x.rest, 0),
-  }), [sales]);
+  // Une vente retournée ou échangée n'est plus un chiffre d'affaires : la
+  // marchandise est revenue. Elle reste dans la liste (avec son état) mais elle
+  // sort des compteurs — c'est ce que les rapports comptent aussi.
+  const stats = useMemo(() => {
+    const effective = sales.filter(s => !isReversedSale(s));
+    return {
+      count: effective.length,
+      reversed: sales.length - effective.length,
+      total: effective.reduce((s, x) => s + x.total, 0),
+      paid: sales.reduce((s, x) => s + netCashOfSale(x), 0),
+      refunded: sales.reduce((s, x) => s + (x.status === 'retournée' ? (x.refundedAmount || 0) : 0), 0),
+      rest: effective.reduce((s, x) => s + x.rest, 0),
+    };
+  }, [sales]);
 
   const del = () => { if (toDelete) { biz.remove('sales', toDelete.id); toast.success('Vente supprimée'); setToDelete(null); } };
   const onPay = (amount: number) => {
@@ -63,9 +74,12 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
       <PageHeader icon={Receipt} title="Ventes" subtitle={`${cfg.label} — factures de vente`} />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard icon={ShoppingBag} label="Ventes" value={stats.count} tone="blue" />
-        <StatCard icon={TrendingUp} label="Chiffre d'affaires" value={money(stats.total)} tone="green" />
-        <StatCard icon={Wallet} label="Encaissé" value={money(stats.paid)} tone="purple" />
+        <StatCard icon={ShoppingBag} label="Ventes" value={stats.count} tone="blue"
+          sub={stats.reversed ? `${stats.reversed} retour(s) / échange(s) exclus` : undefined} />
+        <StatCard icon={TrendingUp} label="Chiffre d'affaires" value={money(stats.total)} tone="green"
+          sub="hors ventes annulées" />
+        <StatCard icon={Wallet} label="Encaissé" value={money(stats.paid)} tone="purple"
+          sub={stats.refunded ? `${money(stats.refunded)} remboursé(s)` : undefined} />
         <StatCard icon={CircleDollarSign} label="Dettes clients" value={money(stats.rest)} tone="red" />
       </div>
 
@@ -133,6 +147,20 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
       <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="lg" title={`Vente ${viewing?.ref || ''}`} subtitle={viewing?.clientName}>
         {viewing && (
           <div className="space-y-4">
+            {/* Vente annulée : elle ne compte plus nulle part, on le dit ici. */}
+            {isReversedSale(viewing) && (
+              <div className="rounded-xl bg-slate-100 border border-slate-200 p-3 text-xs text-slate-600 flex items-start gap-2">
+                <Undo2 className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Vente {viewing.status}</strong>
+                  {viewing.refundedAt ? ` le ${formatDate(viewing.refundedAt)}` : ''}
+                  {viewing.status === 'retournée' ? ` — ${money(viewing.refundedAmount || 0)} rendu(s) au client` : ''}
+                  {viewing.returnReason ? ` (${viewing.returnReason})` : ''}.
+                  {' '}La marchandise est revenue en stock : cette facture est exclue du chiffre
+                  d'affaires et des gains des rapports.
+                </span>
+              </div>
+            )}
             <Table head={<><th className="table-head">Produit</th><th className="table-head">Qté</th><th className="table-head">P.U</th><th className="table-head">Total</th></>}>
               {viewing.items.map((it, i) => <tr key={i}><td className="table-cell">{it.productName}</td><td className="table-cell tabular-nums">{it.qty}</td><td className="table-cell tabular-nums">{money(it.unitPrice)}</td><td className="table-cell tabular-nums font-bold">{money((it.total ?? it.qty * it.unitPrice))}</td></tr>)}
             </Table>
@@ -186,12 +214,141 @@ function StatusBadge({ sale }: { sale: BizSale }) {
   return <Badge tone="success">Payée</Badge>;
 }
 
-/** Puts the sold quantities back into stock (handles detail lines). */
-function restockLines(biz: ReturnType<typeof useBiz>, lines: BizLineItem[]) {
+/**
+ * Remet en stock TOUT ce qui a été vendu, quelle que soit la provenance de la
+ * ligne. Le point de vente vend trois choses, et chacune revient ailleurs :
+ *
+ *   • un produit du catalogue        → sa quantité remonte en Gestion de stock ;
+ *   • une production du comptoir     → la quantité remonte sur sa ligne de
+ *     comptoir (la ligne est recréée si elle avait disparu, une fois écoulée) ;
+ *   • une fiche technique en vente directe → ce sont ses INGRÉDIENTS qui
+ *     reviennent en stock, puisque ce sont eux qui en étaient sortis à la vente.
+ *
+ * Auparavant seul le premier cas était traité : rendre un café au lait ou un
+ * croissant remboursait le client sans jamais rendre la moindre marchandise.
+ *
+ * Les quantités sont cumulées AVANT d'être écrites — deux lignes qui touchent la
+ * même matière première (deux fiches qui partagent un ingrédient) repartiraient
+ * sinon du même stock lu au début et la seconde écrasserait la première.
+ */
+interface RestockPlan {
+  /** productId → quantité à rendre au catalogue (négatif = sortie). */
+  stock: Map<string, number>;
+  /** id de ligne comptoir → quantité à rendre au comptoir. */
+  comptoir: Map<string, number>;
+  /** Production dont la ligne de comptoir n'existe plus : elle sera recréée. */
+  orphans: BizLineItem[];
+}
+
+const bump = (m: Map<string, number>, id: string, qty: number) =>
+  m.set(id, (m.get(id) || 0) + qty);
+
+/** D'où sortait une ligne vendue — donc où sa quantité doit revenir. */
+type SaleOrigin =
+  | { kind: 'product'; id: string }
+  | { kind: 'comptoir'; id: string }
+  | { kind: 'fiche'; fiche: BizFiche }
+  | null;
+
+/**
+ * L'IDENTIFIANT d'abord, sur les trois collections, AVANT tout rapprochement par
+ * nom : une production mise au comptoir porte le nom de sa fiche technique, et
+ * chercher par nom trop tôt renverrait une fiche vendue en direct vers cette
+ * ligne de comptoir au lieu de rendre ses ingrédients au stock.
+ */
+function originOf(state: ReturnType<typeof useBiz>['state'], l: BizLineItem): SaleOrigin {
+  const { products, comptoir, fiches } = state;
+  const id = l.productId;
+  if (products.some(p => p.id === id)) return { kind: 'product', id };
+  if (comptoir.some(c => c.id === id)) return { kind: 'comptoir', id };
+  const f = fiches.find(x => x.id === id);
+  if (f) return { kind: 'fiche', fiche: f };
+
+  // Repli par nom — pour les lignes d'avant les identifiants stables.
+  const pn = products.find(x => x.name === l.productName);
+  if (pn) return { kind: 'product', id: pn.id };
+  const cn = comptoir.find(x => x.productName === l.productName);
+  if (cn) return { kind: 'comptoir', id: cn.id };
+  const fn = fiches.find(x => x.name === l.productName);
+  if (fn) return { kind: 'fiche', fiche: fn };
+  return null;
+}
+
+/** Ce que des lignes vendues rendent — calculé, rien n'est encore écrit. */
+function restockPlan(state: ReturnType<typeof useBiz>['state'], lines: BizLineItem[]): RestockPlan {
+  const plan: RestockPlan = { stock: new Map(), comptoir: new Map(), orphans: [] };
+
   lines.forEach(l => {
-    const p = biz.state.products.find(x => x.id === l.productId);
-    if (p) biz.update('products', { ...p, currentQty: p.currentQty + l.qty });
+    const origin = originOf(state, l);
+    if (!origin) { plan.orphans.push(l); return; }
+    if (origin.kind === 'product') { bump(plan.stock, origin.id, l.qty); return; }
+    if (origin.kind === 'comptoir') { bump(plan.comptoir, origin.id, l.qty); return; }
+
+    const f = origin.fiche;
+    const per = Math.max(1, f.outputQuantity);
+    f.ingredients.forEach(ing => {
+      // Un semi-fini (autre fiche) n'a pas de ligne de stock : rien à rendre.
+      if (ing.sourceType === 'fiche') return;
+      bump(plan.stock, ing.productId, ing.quantityUsed * l.qty / per);
+    });
   });
+
+  return plan;
+}
+
+/** Écrit un plan. Chaque produit n'est touché qu'UNE fois, delta déjà cumulé. */
+function applyRestock(biz: ReturnType<typeof useBiz>, plan: RestockPlan) {
+  const { products, comptoir } = biz.state;
+  plan.stock.forEach((qty, productId) => {
+    const p = products.find(x => x.id === productId);
+    if (p) biz.update('products', { ...p, currentQty: roundQty(p.currentQty + qty) });
+  });
+  plan.comptoir.forEach((qty, lineId) => {
+    const c = comptoir.find(x => x.id === lineId);
+    if (c) biz.update('comptoir', { ...c, qty: roundQty(c.qty + qty) });
+  });
+  // Production dont la ligne de comptoir n'existe plus : on la recrée avec le
+  // coût figé sur la vente, comme le fait la récupération d'une destruction.
+  plan.orphans.forEach(l => biz.add('comptoir', {
+    id: newId(), productName: l.productName, qty: roundQty(l.qty),
+    unitPrice: l.unitPrice, purchasePrice: l.unitCost || 0,
+    date: new Date().toISOString(),
+  }));
+}
+
+function restockLines(biz: ReturnType<typeof useBiz>, lines: BizLineItem[]) {
+  applyRestock(biz, restockPlan(biz.state, lines));
+}
+
+/**
+ * Where one sold line goes back to — used to tell the user, BEFORE they confirm,
+ * exactly which quantity is about to reappear and on which screen.
+ */
+function restockTargetOf(
+  biz: ReturnType<typeof useBiz>, l: BizLineItem,
+): { label: string; detail: string } {
+  const { products, comptoir } = biz.state;
+  const origin = originOf(biz.state, l);
+  if (!origin) return { label: 'Comptoir (ligne recréée)', detail: formatQty(l.qty) };
+
+  if (origin.kind === 'product') {
+    const p = products.find(x => x.id === origin.id);
+    return { label: 'Gestion de stock', detail: `${formatQty(l.qty)} ${p?.unit || ''}`.trim() };
+  }
+  if (origin.kind === 'comptoir') {
+    const c = comptoir.find(x => x.id === origin.id);
+    return { label: 'Comptoir', detail: `${formatQty(l.qty)} ${c?.unit || ''}`.trim() };
+  }
+
+  const f = origin.fiche;
+  const per = Math.max(1, f.outputQuantity);
+  const ings = f.ingredients.filter(i => i.sourceType !== 'fiche');
+  return {
+    label: 'Gestion de stock (ingrédients)',
+    detail: ings.length
+      ? ings.map(i => `${i.productName} ${formatQty(i.quantityUsed * l.qty / per)} ${i.unit || ''}`.trim()).join(' • ')
+      : 'aucun ingrédient de stock',
+  };
 }
 
 /**
@@ -211,8 +368,9 @@ function ReturnModal({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sale:
       refundedAmount: amount,
       refundedAt: new Date().toISOString(),
       rest: 0,
+      returnReason: reason.trim() || undefined,
     });
-    toast.success('Retour enregistré — produits remis en stock');
+    toast.success('Retour enregistré — marchandise remise en stock, vente sortie du chiffre d\'affaires');
     onClose();
   };
 
@@ -225,16 +383,28 @@ function ReturnModal({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sale:
       </>}>
       <div className="space-y-4">
         <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-xs text-blue-800">
-          Les articles ci-dessous sont remis en stock et le client est remboursé du montant indiqué.
+          Chaque article revient là d'où il était sorti — un produit du catalogue en Gestion de stock,
+          une production au Comptoir, une fiche technique sous forme de ses ingrédients. La vente
+          quitte alors le chiffre d'affaires et les gains des rapports.
         </div>
-        <Table head={<><th className="table-head">Produit</th><th className="table-head">Qté remise</th><th className="table-head text-right">Montant</th></>}>
-          {sale.items.map((it, i) => (
-            <tr key={i}>
-              <td className="table-cell">{it.productName}</td>
-              <td className="table-cell tabular-nums">{it.detailQty ? `${it.detailQty} ${it.detailUnit || ''}` : it.qty}</td>
-              <td className="table-cell text-right tabular-nums">{money(it.total ?? it.qty * it.unitPrice)}</td>
-            </tr>
-          ))}
+        <Table head={<>
+          <th className="table-head">Produit</th><th className="table-head">Qté remise</th>
+          <th className="table-head">Retour vers</th><th className="table-head text-right">Montant</th>
+        </>}>
+          {sale.items.map((it, i) => {
+            const target = restockTargetOf(biz, it);
+            return (
+              <tr key={i}>
+                <td className="table-cell">{it.productName}</td>
+                <td className="table-cell tabular-nums">{it.detailQty ? `${formatQty(it.detailQty)} ${it.detailUnit || ''}` : formatQty(it.qty)}</td>
+                <td className="table-cell">
+                  <Badge tone="info">{target.label}</Badge>
+                  <div className="text-[11px] text-slate-400 mt-0.5">{target.detail}</div>
+                </td>
+                <td className="table-cell text-right tabular-nums">{money(it.total ?? it.qty * it.unitPrice)}</td>
+              </tr>
+            );
+          })}
         </Table>
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl bg-slate-50 p-3">
@@ -307,13 +477,14 @@ function ExchangeModal({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sal
   const confirm = () => {
     if (lines.length === 0) { toast.error('Sélectionnez au moins un produit de remplacement'); return; }
 
-    // 1. The returned goods go back to stock.
-    restockLines(biz, sale.items);
-    // 2. The replacement goods leave the stock.
-    lines.forEach(l => {
-      const p = (products as BizProduct[]).find(x => x.id === l.productId);
-      if (p) biz.update('products', { ...p, currentQty: Math.max(0, p.currentQty - l.qty) });
-    });
+    // Retour ET remplacement dans le MÊME plan : un produit repris puis
+    // redonné en remplacement était sinon écrit deux fois depuis le même stock
+    // lu au début, et la reprise disparaissait purement et simplement.
+    // Pas de plancher à zéro non plus : comme au point de vente, un manque
+    // descend en négatif et se rattrape au prochain achat.
+    const plan = restockPlan(biz.state, sale.items);
+    lines.forEach(l => bump(plan.stock, l.productId, -l.qty));
+    applyRestock(biz, plan);
 
     // 3. A replacement invoice carries the new basket; the original is closed.
     const replacement: BizSale = {

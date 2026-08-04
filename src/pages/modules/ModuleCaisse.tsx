@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale, netCashOfSale } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { useBizSessions } from '@/src/hooks/useBizSessions';
@@ -40,7 +40,11 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const totals = useMemo(() => {
     const deposits = caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0);
     const withdrawals = caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0);
-    const salesPaid = sales.reduce((s, x) => s + x.paid, 0);
+    // `netCashOfSale` : une vente retournée ne laisse dans le tiroir que ce qui
+    // n'a pas été remboursé, une vente échangée rien du tout (son remplacement
+    // porte l'encaissement). Compter `paid` brut gonflait la caisse d'un argent
+    // déjà rendu au client.
+    const salesPaid = sales.reduce((s, x) => s + netCashOfSale(x), 0);
     const purchasesPaid = purchases.reduce((s, x) => s + x.paid, 0);
     const exp = expenses.reduce((s, x) => s + x.amount, 0);
     const salaries = workers.reduce((s, w) => s + w.payments.reduce((a, p) => a + p.amount, 0), 0);
@@ -57,7 +61,7 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   // ── Period flows ──
   const flow = useMemo(() => {
     const inTx = caisse.filter(c => c.type === 'deposit' && inPeriod(c.date, period, from, to)).reduce((s, c) => s + c.amount, 0);
-    const salesIn = sales.filter(s => inPeriod(s.date, period, from, to)).reduce((s, x) => s + x.paid, 0);
+    const salesIn = sales.filter(s => inPeriod(s.date, period, from, to)).reduce((s, x) => s + netCashOfSale(x), 0);
     const outTx = caisse.filter(c => c.type === 'withdraw' && inPeriod(c.date, period, from, to)).reduce((s, c) => s + c.amount, 0);
     const purchOut = purchases.filter(p => inPeriod(p.date, period, from, to)).reduce((s, x) => s + x.paid, 0);
     const expOut = expenses.filter(e => inPeriod(e.date, period, from, to)).reduce((s, x) => s + x.amount, 0);

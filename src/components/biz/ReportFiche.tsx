@@ -203,6 +203,36 @@ export const ModuleFiche = React.forwardRef<HTMLDivElement, { report: PartReport
               </tr>
             </tbody>
           </table>
+
+          {/* Ventes ANNULÉES — retirées du tableau ci-dessus : la marchandise est
+              revenue en stock, donc ni chiffre d'affaires ni gain. Elles sont
+              listées pour justifier l'écart avec ce qui a été encaissé. */}
+          {r.returns.length > 0 && (
+            <>
+              <p style={{ margin: '10px 0 5px 0', fontSize: 10, fontWeight: 900, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Retours &amp; échanges — {r.returns.length} vente(s) annulée(s), exclue(s) du tableau ci-dessus
+              </p>
+              <table style={tableStyle}>
+                <thead><tr style={theadRow}><TH>Réf</TH><TH>Type</TH><TH>Client</TH><TH>Date</TH><TH align="right">CA annulé</TH><TH align="right">Remboursé</TH><TH align="right">Remis en stock</TH></tr></thead>
+                <tbody>
+                  {r.returns.map((rt, i) => (
+                    <tr key={rt.id} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
+                      <TD bold>{rt.ref}</TD><TD>{rt.kind}</TD><TD>{rt.client}</TD><TD>{shortDate(rt.date)}</TD>
+                      <TD align="right" color="#64748b">{da(rt.total)} DA</TD>
+                      <TD align="right" color="#dc2626">{da(rt.refunded)} DA</TD>
+                      <TD align="right" color="#15803d">{da(rt.restockedCost)} DA</TD>
+                    </tr>
+                  ))}
+                  <tr style={totalRow}>
+                    <TD bold color={C.blue900}>TOTAL</TD><TD /><TD /><TD />
+                    <TD align="right" bold color="#64748b">{da(r.returnsTotal)} DA</TD>
+                    <TD align="right" bold color="#dc2626">{da(r.refundedTotal)} DA</TD>
+                    <TD align="right" bold color="#15803d">{da(r.restockedCost)} DA</TD>
+                  </tr>
+                </tbody>
+              </table>
+            </>
+          )}
         </Part>
 
         {/* PART 2 — FACTURES / ACHATS */}
@@ -351,6 +381,11 @@ export const ModuleFiche = React.forwardRef<HTMLDivElement, { report: PartReport
             <div>
               <p style={{ margin: 0, fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 1 }}>Bénéfice net de la période</p>
               <p style={{ margin: '2px 0 0 0', fontSize: 9, opacity: 0.85 }}>Marge brute − Dépenses − Salaires − Destructions − Pertes</p>
+              {r.returns.length > 0 && (
+                <p style={{ margin: '2px 0 0 0', fontSize: 9, opacity: 0.85 }}>
+                  Hors {r.returns.length} vente(s) annulée(s) ({da(r.returnsTotal)} DA) — marchandise revenue en stock
+                </p>
+              )}
             </div>
             <p style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>{da(r.netGain)} DA</p>
           </div>

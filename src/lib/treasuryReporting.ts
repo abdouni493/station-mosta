@@ -15,7 +15,7 @@
  * so the general report can never disagree with them.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { BizState, ModuleKey, MODULES } from './bizConfig';
+import { BizState, ModuleKey, MODULES, netCashOfSale } from './bizConfig';
 import { within } from './bizReporting';
 
 export const CAISSE_ID = 'CAISSE';
@@ -183,9 +183,14 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     const m = biz[key];
     if (!m) return;
     const part = key as TreasuryPartKey;
+    // `netCashOfSale` : une vente retournée n'a laissé dans le tiroir que ce qui
+    // n'a pas été remboursé, une vente échangée rien du tout (le remplacement
+    // porte l'encaissement). Le journal montre donc le mouvement RÉEL.
     (m.sales || []).forEach(s => push({
       id: `${key}-sale-${s.id}`, date: s.date, nature: 'Vente', part, isLedger: false,
-      label: `Vente ${s.ref} — ${s.clientName}`, amount: num(s.paid),
+      label: `Vente ${s.ref} — ${s.clientName}`
+        + (s.status === 'retournée' ? ' (retournée)' : s.status === 'échangée' ? ' (échangée)' : ''),
+      amount: netCashOfSale(s),
     }));
     (m.reparations || []).filter(r => r.paid > 0).forEach(r => push({
       id: `${key}-rep-${r.id}`, date: r.date, nature: 'Vente', part, isLedger: false,
@@ -222,7 +227,7 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     if (!m) return 0;
     const dep = (m.caisse || []).filter(c => c.type === 'deposit').reduce((s, c) => s + num(c.amount), 0);
     const wit = (m.caisse || []).filter(c => c.type === 'withdraw').reduce((s, c) => s + num(c.amount), 0);
-    const salesPaid = (m.sales || []).reduce((s, x) => s + num(x.paid), 0);
+    const salesPaid = (m.sales || []).reduce((s, x) => s + netCashOfSale(x), 0);
     const repPaid = (m.reparations || []).reduce((s, r) => s + num(r.paid), 0);
     const purPaid = (m.purchases || []).reduce((s, x) => s + num(x.paid), 0);
     const exp = (m.expenses || []).reduce((s, x) => s + num(x.amount), 0);

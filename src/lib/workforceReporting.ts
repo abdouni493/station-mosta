@@ -20,7 +20,7 @@
  */
 import {
   BizState, ModuleKey, MODULES, BizWorker, BizReparation, BizSession, BizSale,
-  WORKER_KIND_META, prestationsOf, workerShareOf,
+  WORKER_KIND_META, prestationsOf, workerShareOf, isReversedSale, netCashOfSale,
 } from './bizConfig';
 import { within } from './bizReporting';
 
@@ -231,10 +231,13 @@ function bizWorker(
         openingCash: num(s.openingCash), closingCash: s.closingCash,
         theoretical: num(s.theoretical), credit: num(s.credit), decalage: num(s.decalage),
         durationH: hoursBetween(s.openedAt, s.closedAt),
-        salesCount: sSales.length,
-        salesTotal: sSales.reduce((a, x) => a + x.total, 0),
-        salesPaid: sSales.reduce((a, x) => a + x.paid, 0),
-        salesRest: sSales.reduce((a, x) => a + x.rest, 0),
+        // Une vente annulée (retour / échange) ne compte pas dans l'activité de
+        // la session : la marchandise est revenue, et l'argent d'un retour est
+        // ressorti du tiroir. Elle reste listée ci-dessous avec son état.
+        salesCount: sSales.filter(x => !isReversedSale(x)).length,
+        salesTotal: sSales.filter(x => !isReversedSale(x)).reduce((a, x) => a + x.total, 0),
+        salesPaid: sSales.reduce((a, x) => a + netCashOfSale(x), 0),
+        salesRest: sSales.filter(x => !isReversedSale(x)).reduce((a, x) => a + x.rest, 0),
         sales: sSales
           .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
           .map(x => ({
@@ -313,7 +316,11 @@ function bizWorker(
     sessions: wfSessions, sessionsCount: wfSessions.length, sessionsSales, sessionsDecalage,
     brigades: [], brigadesCount: 0,
     liters: 0, theoretical: 0, collected: 0, decalage: sessionsDecalage,
-    sales: wfSales, salesCount: wfSales.length, salesAmount: wfSales.reduce((s, x) => s + x.total, 0),
+    sales: wfSales,
+    // Le CA d'un employé ne retient que ses ventes effectives — un retour ne lui
+    // est ni compté ni reproché.
+    salesCount: mySales.filter(s => !isReversedSale(s)).length,
+    salesAmount: mySales.filter(s => !isReversedSale(s)).reduce((s, x) => s + x.total, 0),
     highlights,
   };
 }

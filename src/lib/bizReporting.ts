@@ -8,7 +8,7 @@
  * printable "Fiche Journalière"-style sheet render from a single source of truth.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { ModuleState, ModuleKey, MODULES, prestationsOf } from './bizConfig';
+import { ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale } from './bizConfig';
 
 // ─── Date helper ─────────────────────────────────────────────────────────────
 export const within = (dateStr: string, from: string, to: string): boolean => {
@@ -58,6 +58,30 @@ export interface DestructionRow {
   notes?: string;
 }
 export interface ProductionRow { id: string; name: string; date: string; outputQuantity: number; unit?: string; totalValue: number; totalCost: number; hasLoss: boolean; lossQuantity: number; lossValue: number; }
+/**
+ * Une vente ANNULÉE de la période — retour ou échange. Elle ne pèse plus dans le
+ * chiffre d'affaires ni dans les gains (sa marchandise est revenue en stock),
+ * mais elle reste visible ici : c'est le seul endroit qui explique l'écart entre
+ * ce qui a été facturé et ce qui a été gardé.
+ */
+export interface ReturnRow {
+  id: string; ref: string; date: string; client: string;
+  kind: 'Retour' | 'Échange';
+  /** Ce que la vente valait avant d'être annulée — le CA qui a disparu. */
+  total: number;
+  /** Ce que le client avait déjà payé. */
+  paid: number;
+  /** Argent rendu au client (échange : le complément négatif). */
+  refunded: number;
+  /** Argent finalement resté en caisse sur cette vente. */
+  netCash: number;
+  /** Coût de revient de la marchandise revenue en stock. */
+  restockedCost: number;
+  /** Gain que la vente aurait dégagé et qui n'existe plus. */
+  canceledGain: number;
+  reason?: string;
+  items: { name: string; qty: number; unitPrice: number; total: number }[];
+}
 
 // ─── Aggregate report ────────────────────────────────────────────────────────
 export interface PartReport {
@@ -70,6 +94,12 @@ export interface PartReport {
   // Totals
   salesTotal: number;
   salesPaid: number;
+  /** CA annulé par les retours & échanges de la période (hors `salesTotal`). */
+  returnsTotal: number;
+  /** Argent rendu aux clients sur la période. */
+  refundedTotal: number;
+  /** Coût de revient de la marchandise revenue en stock. */
+  restockedCost: number;
   purchasesTotal: number;
   purchasesPaid: number;
   cogs: number;                 // coût des marchandises vendues
@@ -101,8 +131,9 @@ export interface PartReport {
   caisse: CaisseRow[];
   destructions: DestructionRow[];
   productions: ProductionRow[];
+  returns: ReturnRow[];
 
-  counts: { products: number; clients: number; suppliers: number; sales: number; purchases: number; workers: number };
+  counts: { products: number; clients: number; suppliers: number; sales: number; purchases: number; workers: number; returns: number };
 }
 
 // ─── Module (biz) report ─────────────────────────────────────────────────────
@@ -145,6 +176,13 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
     unitCostOf(it) * (it.qty || 0);
 
   const salesInRange = st.sales.filter(s => within(s.date, from, to));
+  // Une vente retournée ou échangée N'EST PLUS une vente : les articles sont
+  // revenus en stock (ou au comptoir) et, pour un échange, c'est la vente de
+  // remplacement qui porte le panier. La compter ici la facturait une deuxième
+  // fois — le rapport annonçait un chiffre d'affaires et un gain sur de la
+  // marchandise qui n'avait jamais quitté la maison.
+  const effectiveSales = salesInRange.filter(s => !isReversedSale(s));
+  const reversedSales = salesInRange.filter(isReversedSale);
   const repsInRange = (st.reparations || []).filter(r => within(r.date, from, to));
   const purchasesInRange = st.purchases.filter(p => within(p.date, from, to));
   const expensesInRange = st.expenses.filter(e => within(e.date, from, to));
@@ -153,7 +191,7 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
 
   // ── Sales rows (invoices + finalized services) ──
   const sales: SaleRow[] = [
-    ...salesInRange.map(s => ({
+    ...effectiveSales.map(s => ({
       id: s.id, ref: s.ref, kind: 'Vente', date: s.date, client: s.clientName,
       total: s.total, paid: s.paid, rest: s.rest,
       items: s.items.map(it => ({ name: it.productName, qty: it.qty, unitPrice: it.unitPrice, total: it.total ?? it.qty * it.unitPrice })),
@@ -179,7 +217,7 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
 
   // ── Sales by product (revenue / cost / gain) ──
   const bp: Record<string, { qty: number; revenue: number; cost: number; unit?: string }> = {};
-  salesInRange.forEach(s => s.items.forEach(it => {
+  effectiveSales.forEach(s => s.items.forEach(it => {
     const k = it.productName;
     (bp[k] ||= { qty: 0, revenue: 0, cost: 0, unit: unitOf(it) });
     bp[k].qty += it.qty;
@@ -205,11 +243,11 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   // the invoiced totals (which are net of the remise).
   const discountsTotal =
     repsInRange.reduce((s, r) => s + (r.discountAmount || 0), 0)
-    + salesInRange.reduce((s, x) => s + (x.reduction || 0), 0);
+    + effectiveSales.reduce((s, x) => s + (x.reduction || 0), 0);
   if (discountsTotal > 0) {
     bp['Remises accordées'] = {
       qty: repsInRange.filter(r => (r.discountAmount || 0) > 0).length
-        + salesInRange.filter(x => (x.reduction || 0) > 0).length,
+        + effectiveSales.filter(x => (x.reduction || 0) > 0).length,
       revenue: -discountsTotal, cost: 0, unit: 'remise',
     };
   }
@@ -288,9 +326,36 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   const productions: ProductionRow[] = productionsInRange
     .map(p => ({ id: p.id, name: p.name, date: p.date, outputQuantity: p.outputQuantity, unit: p.unit, totalValue: p.totalValue, totalCost: p.totalCost, hasLoss: p.hasLoss, lossQuantity: p.lossQuantity, lossValue: p.lossValue }));
 
+  // ── Retours & échanges (ventes annulées de la période) ──
+  const returns: ReturnRow[] = reversedSales
+    .map(s => {
+      const restockedCost = s.items.reduce((a, it) => a + costOfItem(it), 0);
+      return {
+        id: s.id, ref: s.ref, date: s.refundedAt || s.date, client: s.clientName,
+        kind: (s.status === 'échangée' ? 'Échange' : 'Retour') as 'Retour' | 'Échange',
+        total: s.total, paid: s.paid,
+        refunded: s.status === 'retournée' ? (s.refundedAmount || 0) : Math.max(0, -(s.exchangeDelta || 0)),
+        netCash: netCashOfSale(s),
+        restockedCost,
+        // Le gain que cette vente aurait dégagé : il n'existe plus, la
+        // marchandise est de retour et le client a été remboursé.
+        canceledGain: s.total - restockedCost,
+        reason: s.returnReason,
+        items: s.items.map(it => ({ name: it.productName, qty: it.qty, unitPrice: it.unitPrice, total: it.total ?? it.qty * it.unitPrice })),
+      };
+    })
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
   // ── Totals ──
-  const salesTotal = salesInRange.reduce((s, x) => s + x.total, 0) + repsInRange.reduce((s, x) => s + x.total, 0);
-  const salesPaid = salesInRange.reduce((s, x) => s + x.paid, 0) + repsInRange.reduce((s, x) => s + x.paid, 0);
+  // Le CA ne retient que les ventes effectives. L'encaissement, lui, part de TOUTES
+  // les ventes de la période mais via `netCashOfSale` : une vente retournée n'y
+  // laisse que ce qui n'a pas été remboursé, une vente échangée rien du tout
+  // (c'est son remplacement qui porte l'argent).
+  const salesTotal = effectiveSales.reduce((s, x) => s + x.total, 0) + repsInRange.reduce((s, x) => s + x.total, 0);
+  const salesPaid = salesInRange.reduce((s, x) => s + netCashOfSale(x), 0) + repsInRange.reduce((s, x) => s + x.paid, 0);
+  const returnsTotal = returns.reduce((s, x) => s + x.total, 0);
+  const refundedTotal = returns.reduce((s, x) => s + x.refunded, 0);
+  const restockedCost = returns.reduce((s, x) => s + x.restockedCost, 0);
   const purchasesTotal = purchasesInRange.reduce((s, x) => s + x.total, 0);
   const purchasesPaid = purchasesInRange.reduce((s, x) => s + x.paid, 0);
   const cogs = salesByProduct.reduce((s, x) => s + x.cost, 0);
@@ -308,21 +373,24 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   const caisseBalance =
     st.caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0)
     - st.caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0)
-    + st.sales.reduce((s, x) => s + x.paid, 0)
+    // L'argent rendu au client sur un retour est bien sorti du tiroir.
+    + st.sales.reduce((s, x) => s + netCashOfSale(x), 0)
     - st.purchases.reduce((s, x) => s + x.paid, 0)
     - st.expenses.reduce((s, e) => s + e.amount, 0);
   const netGain = grossMargin - expensesTotal - salariesPaid - destroyedValue - lossValue;
 
   return {
     key, label: cfg.label, emoji: cfg.emoji, from, to,
-    salesTotal, salesPaid, purchasesTotal, purchasesPaid, cogs, grossMargin,
+    salesTotal, salesPaid, returnsTotal, refundedTotal, restockedCost,
+    purchasesTotal, purchasesPaid, cogs, grossMargin,
     expensesTotal, salariesPaid, acomptesPeriod, productionValue, productionCost, lossValue, destroyedValue,
     clientDebtTotal, supplierDebtTotal, stockValue, caisseBalance, netGain,
     sales, purchases, salesByProduct, clientDebts, supplierDebts, expenses, expensesByCategory,
-    stockAlerts, expiryAlerts, workers, caisse, destructions, productions,
+    stockAlerts, expiryAlerts, workers, caisse, destructions, productions, returns,
     counts: {
       products: st.products.length, clients: st.clients.length, suppliers: st.suppliers.length,
-      sales: salesInRange.length + repsInRange.length, purchases: purchasesInRange.length, workers: st.workers.length,
+      sales: effectiveSales.length + repsInRange.length, purchases: purchasesInRange.length,
+      workers: st.workers.length, returns: returns.length,
     },
   };
 }
@@ -410,14 +478,17 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
 
   return {
     key: 'carburant', label: 'Carburant', emoji: '⛽', from, to,
-    salesTotal, salesPaid, purchasesTotal, purchasesPaid, cogs, grossMargin,
+    // La partie Carburant n'a pas de retour de marchandise : ses ventes sont
+    // définitives (litres livrés), d'où des compteurs de retours à zéro.
+    salesTotal, salesPaid, returnsTotal: 0, refundedTotal: 0, restockedCost: 0,
+    purchasesTotal, purchasesPaid, cogs, grossMargin,
     expensesTotal, salariesPaid: 0, acomptesPeriod: 0, productionValue: 0, productionCost: 0, lossValue: 0, destroyedValue: 0,
     clientDebtTotal, supplierDebtTotal, stockValue, caisseBalance: salesPaid - purchasesPaid - expensesTotal, netGain,
     sales, purchases, salesByProduct, clientDebts, supplierDebts, expenses, expensesByCategory,
-    stockAlerts, expiryAlerts: [], workers: [], caisse: [], destructions: [], productions: [],
+    stockAlerts, expiryAlerts: [], workers: [], caisse: [], destructions: [], productions: [], returns: [],
     counts: {
       products: products.length, clients: clients.length, suppliers: suppliers.length,
-      sales: fuelSales.length + shopSales.length, purchases: purchasesInRange.length, workers: 0,
+      sales: fuelSales.length + shopSales.length, purchases: purchasesInRange.length, workers: 0, returns: 0,
     },
   };
 }
@@ -431,8 +502,10 @@ export interface GlobalReport {
   cogs: number;
   grossMargin: number; clientDebtTotal: number; supplierDebtTotal: number; stockValue: number;
   destroyedValue: number; lossValue: number; netGain: number;
+  /** Retours & échanges — CA annulé et argent rendu, toutes parties confondues. */
+  returnsTotal: number; refundedTotal: number; restockedCost: number;
   stockAlerts: number; expiryAlerts: number;
-  counts: { products: number; clients: number; suppliers: number; sales: number; purchases: number; workers: number };
+  counts: { products: number; clients: number; suppliers: number; sales: number; purchases: number; workers: number; returns: number };
 }
 
 export function consolidate(parts: PartReport[], from: string, to: string): GlobalReport {
@@ -451,11 +524,15 @@ export function consolidate(parts: PartReport[], from: string, to: string): Glob
     destroyedValue: sum(p => p.destroyedValue),
     lossValue: sum(p => p.lossValue),
     netGain: sum(p => p.netGain),
+    returnsTotal: sum(p => p.returnsTotal),
+    refundedTotal: sum(p => p.refundedTotal),
+    restockedCost: sum(p => p.restockedCost),
     stockAlerts: sum(p => p.stockAlerts.length),
     expiryAlerts: sum(p => p.expiryAlerts.length),
     counts: {
       products: sum(p => p.counts.products), clients: sum(p => p.counts.clients), suppliers: sum(p => p.counts.suppliers),
       sales: sum(p => p.counts.sales), purchases: sum(p => p.counts.purchases), workers: sum(p => p.counts.workers),
+      returns: sum(p => p.counts.returns),
     },
   };
 }

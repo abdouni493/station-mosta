@@ -3,7 +3,7 @@ import {
   FileBarChart, Globe2, Fuel, ChevronRight, Printer, Calendar, TrendingUp, ShoppingCart,
   CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
   UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
-  Droplets, Wallet, Hash, X, Trash2, Flame,
+  Droplets, Wallet, Hash, X, Trash2, Flame, Undo2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -40,7 +40,7 @@ const PART_SECTIONS: ActiveKey[] = ['carburant', 'cafeteria', 'lavage'];
 
 // ─── Card drill-downs ─────────────────────────────────────────────────────────
 /** The KPI cards that open a detail list (Achats has its own richer modal). */
-type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions' | 'clientDebt' | 'supplierDebt' | 'alerts';
+type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions' | 'clientDebt' | 'supplierDebt' | 'alerts' | 'returns';
 
 /** One line of a card's underlying list. `onDelete` is absent for derived rows. */
 interface DetailRow {
@@ -192,6 +192,24 @@ export default function GeneralReports() {
     }));
     salesRows.sort(byDateDesc);
 
+    // ── Retours & échanges — ventes ANNULÉES, déjà retirées des lignes ci-dessus ──
+    // La marchandise est revenue en stock : ces ventes ne comptent plus dans le CA
+    // ni dans les gains. On les liste à part pour que l'écart se lise noir sur blanc.
+    const returnRows: DetailRow[] = [];
+    (['cafeteria', 'lavage'] as const).forEach(k => reports[k].returns.forEach(rt => returnRows.push({
+      id: `${k}-ret-${rt.id}`, date: rt.date,
+      label: `${reports[k].emoji} ${rt.kind} · ${rt.ref}`,
+      sub: [
+        rt.client,
+        `${money(rt.refunded)} rendu(s) au client`,
+        `${money(rt.restockedCost)} de marchandise remise en stock`,
+        rt.reason,
+      ].filter(Boolean).join(' · '),
+      badge: { text: rt.kind, tone: rt.kind === 'Retour' ? 'neutral' : 'info' },
+      amount: rt.total, amountTone: 'slate',
+    })));
+    returnRows.sort(byDateDesc);
+
     // ── Dépenses + salaires — dépenses supprimables, salaires en lecture seule ──
     const expenseRows: DetailRow[] = [];
     reports.carburant.expenses.forEach(e => expenseRows.push({
@@ -300,7 +318,8 @@ export default function GeneralReports() {
     });
 
     return {
-      salesTotal:   { title: 'Ventes totales', icon: TrendingUp, subtitle: 'Détail de toutes les ventes de la période', rows: salesRows, total: global.salesTotal, totalLabel: 'Total ventes' },
+      salesTotal:   { title: 'Ventes totales', icon: TrendingUp, subtitle: 'Détail de toutes les ventes de la période', rows: salesRows, total: global.salesTotal, totalLabel: 'Total ventes', note: global.counts.returns ? `${global.counts.returns} vente(s) retournée(s) ou échangée(s) ne figurent pas ici : leur marchandise est revenue en stock. Voir la carte « Retours & échanges ».` : undefined },
+      returns:      { title: 'Retours & échanges', icon: Undo2, subtitle: 'Ventes annulées — marchandise revenue en stock', rows: returnRows, total: global.returnsTotal, totalLabel: 'CA annulé', note: `Ces ventes sont exclues du chiffre d'affaires et des gains : les articles ont été remis en stock (${money(global.restockedCost)} de coût de revient) et ${money(global.refundedTotal)} ont été rendus aux clients. Annulez un retour depuis l'écran Ventes de la partie concernée.` },
       expenses:     { title: 'Dépenses + salaires', icon: CreditCard, subtitle: 'Dépenses et salaires de la période', rows: expenseRows, total: global.expensesTotal + global.salariesPaid, totalLabel: 'Total charges', note: 'Les salaires sont calculés par la paie — supprimez-les depuis la fiche employé.' },
       netGain:      { title: 'Total des gains', icon: CircleDollarSign, subtitle: 'Décomposition par activité', rows: netRows, total: global.netGain, totalLabel: 'Gain net', note: `Ventes ${money(global.salesTotal)} − coût des marchandises vendues ${money(global.cogs)} = marge brute ${money(global.grossMargin)}, moins les dépenses, salaires, destructions et pertes. Le gain d'un produit fabriqué est son prix de vente MOINS le coût de ses ingrédients — jamais le prix de vente entier. Lignes calculées — non supprimables.` },
       stockValue:   { title: 'Valeur du stock', icon: Boxes, subtitle: "Produits en stock valorisés au prix d'achat", rows: stockRows, total: global.stockValue, totalLabel: 'Valeur totale' },
@@ -465,7 +484,7 @@ export default function GeneralReports() {
 
 // ─── Global overview ─────────────────────────────────────────────────────────
 function OverviewCard({ icon: Icon, label, value, sub, tone = 'blue', onClick, cta }: { icon: React.ElementType; label: string; value: string; sub?: string; tone?: string; onClick?: () => void; cta?: string; key?: React.Key }) {
-  const tones: Record<string, string> = { blue: 'from-[#003087] to-[#0044bb]', green: 'from-emerald-500 to-emerald-600', red: 'from-red-500 to-red-600', amber: 'from-amber-500 to-yellow-500', purple: 'from-purple-500 to-purple-600', cyan: 'from-cyan-500 to-teal-600' };
+  const tones: Record<string, string> = { blue: 'from-[#003087] to-[#0044bb]', green: 'from-emerald-500 to-emerald-600', red: 'from-red-500 to-red-600', amber: 'from-amber-500 to-yellow-500', purple: 'from-purple-500 to-purple-600', cyan: 'from-cyan-500 to-teal-600', slate: 'from-slate-500 to-slate-600' };
   const inner = (
     <>
       <div className={cn('w-9 h-9 rounded-xl bg-gradient-to-br text-white flex items-center justify-center mb-2', tones[tone])}><Icon className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} /></div>
@@ -607,6 +626,13 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
         <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} onClick={() => onOpenCard('clientDebt')} cta="Voir le détail" />
         <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} onClick={() => onOpenCard('supplierDebt')} cta="Voir le détail" />
         <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} onClick={() => onOpenCard('alerts')} cta="Voir le détail" />
+        {/* Ventes annulées : elles ne sont NI dans le CA NI dans les gains.
+            La carte n'apparaît que s'il y en a eu sur la période. */}
+        {g.counts.returns > 0 && (
+          <OverviewCard icon={Undo2} tone="slate" label="Retours & échanges" value={money(g.returnsTotal)}
+            sub={`${g.counts.returns} vente(s) annulée(s) · ${money(g.refundedTotal)} remboursé(s)`}
+            onClick={() => onOpenCard('returns')} cta="Voir le détail" />
+        )}
       </div>
 
       {/* Trésorerie — raccourci vers la section dédiée */}

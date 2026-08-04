@@ -40,6 +40,7 @@ import { newId } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizProduct, BizDiscountType,
   detailPrice, discountOf, posPinKey, isSellableProduct, roundQty, formatQty,
+  isReversedSale, netCashOfSale,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -747,12 +748,18 @@ function missingIngredients(f: BizFiche, products: BizProduct[]): string[] {
  */
 export function figuresForSession(session: BizSession | null, sales: BizSale[]) {
   if (!session) return { total: 0, cash: 0, credit: 0, count: 0 };
-  const own = sales.filter(s => s.sessionId === session.id && s.status !== 'retournée');
+  // Une vente ANNULÉE ne compte pas dans le théorique : rendue, le caissier a
+  // sorti l'argent du tiroir ; échangée, c'est la vente de remplacement (même
+  // session) qui porte le panier — les compter toutes deux doublait la recette.
+  const own = sales.filter(s => s.sessionId === session.id);
+  const effective = own.filter(s => !isReversedSale(s));
   return {
-    total: own.reduce((s, x) => s + x.total, 0),
-    cash: own.reduce((s, x) => s + x.paid, 0),      // theoretical cash in the drawer
-    credit: own.reduce((s, x) => s + x.rest, 0),    // granted as debt, not cash
-    count: own.length,
+    total: effective.reduce((s, x) => s + x.total, 0),
+    // Théorique = ce qui doit RÉELLEMENT être dans le tiroir : les
+    // remboursements en sont déjà sortis.
+    cash: own.reduce((s, x) => s + netCashOfSale(x), 0),
+    credit: effective.reduce((s, x) => s + x.rest, 0),  // granted as debt, not cash
+    count: effective.length,
   };
 }
 
@@ -775,7 +782,7 @@ function OrganizeModal({ sources, pinned, sales, onSave, onClose }: {
   // Units already sold, by product name — what "se vend le plus" actually means.
   const soldByName = useMemo(() => {
     const m: Record<string, number> = {};
-    sales.filter(s => s.status !== 'retournée').forEach(s =>
+    sales.filter(s => !isReversedSale(s)).forEach(s =>
       s.items.forEach(i => { m[i.productName] = (m[i.productName] || 0) + (i.detailQty || i.qty || 0); }));
     return m;
   }, [sales]);

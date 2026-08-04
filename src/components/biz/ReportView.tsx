@@ -12,6 +12,7 @@ import React, { useState } from 'react';
 import {
   TrendingUp, ShoppingCart, CreditCard, CircleDollarSign, Wallet, Boxes, Users, Truck,
   AlertTriangle, CalendarClock, Banknote, PackageX, Beaker, ChevronDown, ChevronRight, Layers,
+  Undo2, PackageCheck,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -294,6 +295,58 @@ function DestructionTable({ rows }: { rows: PartReport['destructions'] }) {
   );
 }
 
+/**
+ * Retours & échanges — les ventes ANNULÉES de la période.
+ *
+ * Elles ne sont plus nulle part ailleurs dans le rapport : ni dans le chiffre
+ * d'affaires, ni dans les gains, puisque la marchandise est revenue en stock.
+ * Ce tableau est donc le seul endroit qui explique pourquoi la caisse a moins
+ * encaissé que ce qui avait été facturé.
+ */
+export function ReturnTable({ rows }: { rows: PartReport['returns'] }) {
+  if (!rows.length) return <Empty text="Aucun retour ni échange sur la période ✅" />;
+  const t = rows.reduce((a, x) => ({
+    total: a.total + x.total, refunded: a.refunded + x.refunded,
+    restocked: a.restocked + x.restockedCost, gain: a.gain + x.canceledGain,
+  }), { total: 0, refunded: 0, restocked: 0, gain: 0 });
+  return (
+    <>
+      <Table head={<>
+        <th className="table-head">Réf</th><th className="table-head">Type</th><th className="table-head">Client</th>
+        <th className="table-head">Date</th><th className="table-head">Motif</th>
+        <th className="table-head text-right">CA annulé</th><th className="table-head text-right">Remboursé</th>
+        <th className="table-head text-right">Remis en stock</th><th className="table-head text-right">Gain annulé</th>
+      </>}>
+        {rows.map(r => (
+          <tr key={r.id}>
+            <td className="table-cell font-bold">{r.ref}</td>
+            <td className="table-cell"><Badge tone={r.kind === 'Retour' ? 'neutral' : 'info'}>{r.kind}</Badge></td>
+            <td className="table-cell">{r.client}</td>
+            <td className="table-cell whitespace-nowrap">{fmtDate(r.date)}</td>
+            <td className="table-cell text-slate-500 max-w-[180px]">{r.reason || '—'}</td>
+            <td className="table-cell tabular-nums text-right font-bold text-slate-500 line-through">{money(r.total)}</td>
+            <td className="table-cell tabular-nums text-right text-red-600">{money(r.refunded)}</td>
+            <td className="table-cell tabular-nums text-right text-emerald-600">{money(r.restockedCost)}</td>
+            <td className="table-cell tabular-nums text-right font-bold text-amber-700">−{money(r.canceledGain)}</td>
+          </tr>
+        ))}
+        <tr className="bg-blue-50/60">
+          <td className="table-cell font-black text-[#002d87]" colSpan={5}>TOTAL</td>
+          <td className="table-cell tabular-nums text-right font-black text-slate-500">{money(t.total)}</td>
+          <td className="table-cell tabular-nums text-right font-black text-red-600">{money(t.refunded)}</td>
+          <td className="table-cell tabular-nums text-right font-black text-emerald-600">{money(t.restocked)}</td>
+          <td className="table-cell tabular-nums text-right font-black text-amber-700">−{money(t.gain)}</td>
+        </tr>
+      </Table>
+      <div className="card-glass px-5 py-3 text-xs text-slate-400">
+        {rows.length} vente(s) annulée(s) — déjà exclues du chiffre d'affaires, des gains par produit
+        et du gain net. La marchandise ({money(t.restocked)} de coût de revient) est revenue en stock
+        ou au comptoir, et {money(t.refunded)} ont été rendus aux clients.
+      </div>
+    </>
+  );
+}
+
 function Empty({ text = 'Aucune donnée sur la période' }: { text?: string }) {
   return <div className="card-glass p-6 text-center text-slate-400 text-sm">{text}</div>;
 }
@@ -312,7 +365,7 @@ function Section({ title, icon: Icon, children, right }: { title: string; icon: 
 }
 
 // ─── Detail modal ────────────────────────────────────────────────────────────
-type DetailKey = 'sales' | 'purchases' | 'gains' | 'expenses' | 'clientDebts' | 'supplierDebts' | 'stock' | 'expiry' | 'workers' | 'destructions' | null;
+type DetailKey = 'sales' | 'purchases' | 'gains' | 'expenses' | 'clientDebts' | 'supplierDebts' | 'stock' | 'expiry' | 'workers' | 'destructions' | 'returns' | null;
 
 // ─── Main view ───────────────────────────────────────────────────────────────
 export default function ReportView({ report: r }: { report: PartReport }) {
@@ -320,6 +373,8 @@ export default function ReportView({ report: r }: { report: PartReport }) {
 
   const financial: [string, number, ('good' | 'bad' | 'neutral')?][] = [
     ["Chiffre d'affaires", r.salesTotal, 'good'], ['Ventes encaissées', r.salesPaid], ['Coût marchandises', r.cogs],
+    ['Retours & échanges', r.returnsTotal, r.returnsTotal > 0 ? 'bad' : undefined],
+    ['Remboursé aux clients', r.refundedTotal, r.refundedTotal > 0 ? 'bad' : undefined],
     ['Marge brute', r.grossMargin, r.grossMargin >= 0 ? 'good' : 'bad'], ['Total achats', r.purchasesTotal], ['Achats payés', r.purchasesPaid],
     ['Dépenses', r.expensesTotal, 'bad'], ['Salaires versés', r.salariesPaid], ['Acomptes période', r.acomptesPeriod],
     ['Valeur production', r.productionValue], ['Pertes production', r.lossValue, r.lossValue > 0 ? 'bad' : undefined], ['Destructions', r.destroyedValue, r.destroyedValue > 0 ? 'bad' : undefined],
@@ -331,13 +386,16 @@ export default function ReportView({ report: r }: { report: PartReport }) {
     sales: 'Détail des ventes', purchases: 'Détail des achats', gains: 'Gains par produit', expenses: 'Dépenses, salaires & acomptes',
     clientDebts: 'Dettes des clients', supplierDebts: 'Dettes envers les fournisseurs', stock: 'Alertes de stock',
     expiry: 'Alertes d\'expiration', workers: 'Comptes des employés', destructions: 'Produits détruits',
+    returns: 'Retours & échanges — ventes annulées',
   };
 
   return (
     <div className="space-y-8">
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <MetricCard icon={TrendingUp} tone="green" label="Ventes (CA)" value={money(r.salesTotal)} sub={`${r.counts.sales} opérations`} onClick={() => setDetail('sales')} />
+        <MetricCard icon={TrendingUp} tone="green" label="Ventes (CA)" value={money(r.salesTotal)}
+          sub={r.counts.returns ? `${r.counts.sales} opérations — ${r.counts.returns} annulée(s) exclue(s)` : `${r.counts.sales} opérations`}
+          onClick={() => setDetail('sales')} />
         <MetricCard icon={ShoppingCart} tone="purple" label="Achats" value={money(r.purchasesTotal)} sub={`${r.counts.purchases} factures`} onClick={() => setDetail('purchases')} />
         <MetricCard icon={Layers} tone="cyan" label="Marge brute" value={money(r.grossMargin)} sub={`CA − coût marchandises ${money(r.cogs)}`} onClick={() => setDetail('gains')} />
         <MetricCard icon={CircleDollarSign} tone={r.netGain >= 0 ? 'green' : 'red'} label="Total des gains" value={money(r.netGain)} sub="gain réel, coûts déduits" />
@@ -355,6 +413,18 @@ export default function ReportView({ report: r }: { report: PartReport }) {
         <MetricCard icon={CalendarClock} tone="purple" label="Expirations proches" value={String(r.expiryAlerts.length)} sub="≤ 15 jours" count={r.expiryAlerts.length} onClick={() => setDetail('expiry')} />
       </div>
 
+      {/* Retours & échanges — visibles seulement quand il y en a. */}
+      {r.returns.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <MetricCard icon={Undo2} tone="slate" label="Ventes annulées" value={money(r.returnsTotal)}
+            sub="CA retiré du rapport" count={r.counts.returns} onClick={() => setDetail('returns')} />
+          <MetricCard icon={Banknote} tone="red" label="Remboursé aux clients" value={money(r.refundedTotal)}
+            sub="argent sorti du tiroir" onClick={() => setDetail('returns')} />
+          <MetricCard icon={PackageCheck} tone="green" label="Marchandise revenue" value={money(r.restockedCost)}
+            sub="coût de revient remis en stock" onClick={() => setDetail('returns')} />
+        </div>
+      )}
+
       {/* Financial synthesis */}
       <Section title="Synthèse financière" icon={Wallet}>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -371,7 +441,19 @@ export default function ReportView({ report: r }: { report: PartReport }) {
       <Section title="Ventes par produit" icon={TrendingUp}><ProductGainTable rows={r.salesByProduct} /></Section>
 
       {/* Sales invoices */}
-      <Section title="Factures & prestations de vente" icon={CreditCard}><SalesTable rows={r.sales} /></Section>
+      <Section title="Factures & prestations de vente" icon={CreditCard}
+        right={r.returns.length > 0
+          ? <span className="text-[11px] text-slate-400 font-medium">{r.counts.returns} vente(s) annulée(s) listée(s) plus bas</span>
+          : undefined}>
+        <SalesTable rows={r.sales} />
+      </Section>
+
+      {/* Retours & échanges */}
+      {r.returns.length > 0 && (
+        <Section title="Retours & échanges — ventes annulées" icon={Undo2}>
+          <ReturnTable rows={r.returns} />
+        </Section>
+      )}
 
       {/* Purchases */}
       <Section title="Achats fournisseurs" icon={ShoppingCart}><PurchasesTable rows={r.purchases} /></Section>
@@ -443,6 +525,12 @@ export default function ReportView({ report: r }: { report: PartReport }) {
             Ventes {money(r.salesTotal)} − coût des marchandises {money(r.cogs)} = marge {money(r.grossMargin)}
             {' '}− dépenses − salaires − destructions − pertes
           </p>
+          {r.returns.length > 0 && (
+            <p className="text-xs opacity-75 mt-1">
+              {r.counts.returns} vente(s) annulée(s) ({money(r.returnsTotal)}) sont exclues de ce calcul :
+              la marchandise est revenue en stock et {money(r.refundedTotal)} ont été rendus aux clients.
+            </p>
+          )}
         </div>
         <p className="text-4xl font-black tabular-nums">{money(r.netGain)}</p>
       </motion.div>
@@ -462,6 +550,7 @@ export default function ReportView({ report: r }: { report: PartReport }) {
             {detail === 'expiry' && <ExpiryTable rows={r.expiryAlerts} />}
             {detail === 'workers' && <WorkerTable rows={r.workers} />}
             {detail === 'destructions' && <DestructionTable rows={r.destructions} />}
+            {detail === 'returns' && <ReturnTable rows={r.returns} />}
           </motion.div>
         </AnimatePresence>
       </Modal>
