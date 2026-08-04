@@ -20,6 +20,13 @@
  *    (ex: café au lait) s'affiche sur le comptoir et déduit ses ingrédients du
  *    stock à la vente, sans passer par la production.
  *  • Les productions envoyées au comptoir apparaissent directement ici.
+ *  • VENTE À DÉCOUVERT — la caisse ne refuse JAMAIS une vente pour un manque de
+ *    stock : un produit à zéro, une fiche technique dont il manque un
+ *    ingrédient, une production déjà écoulée partent quand même. La quantité
+ *    manquante descend en NÉGATIF (Gestion de stock / Comptoir) et se rattrape
+ *    au prochain achat ou à la prochaine production. Le caissier est prévenu du
+ *    découvert, il n'est jamais bloqué : c'est le client qu'on perdrait, pas la
+ *    marchandise, qui est bien sortie.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { useMemo, useState } from 'react';
@@ -31,8 +38,8 @@ import {
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
-  ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizDiscountType,
-  detailPrice, discountOf, posPinKey, isSellableProduct,
+  ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizProduct, BizDiscountType,
+  detailPrice, discountOf, posPinKey, isSellableProduct, roundQty, formatQty,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -80,6 +87,12 @@ interface Source {
   imageUrl?: string;
   /** Stable key used by the "accès rapide" pinning. */
   pinKey: string;
+  /**
+   * Fiches techniques : les ingrédients qui ne sont plus en stock. La vente
+   * reste possible (le stock passera en négatif) — c'est une information, pas
+   * un blocage.
+   */
+  missing?: string[];
 }
 
 export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
@@ -117,9 +130,13 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const source = useMemo<Source[]>(() => {
     const out: Source[] = [];
 
-    // Productions already sent to the comptoir.
+    // Productions already sent to the comptoir. A line stays on the grid while
+    // it holds something AND while it is in the red: une production vendue à
+    // découvert doit rester vendable (et visible en négatif) jusqu'à ce que la
+    // fabrication suivante la remette à flot. Seule une ligne pile à zéro s'en
+    // va — elle a été écoulée proprement.
     if (cfg.hasComptoir) {
-      comptoir.filter(c => c.qty > 0).forEach(c => {
+      comptoir.filter(c => c.qty !== 0).forEach(c => {
         const matchingProd = products.find(p => p.name === c.productName);
         const matchingFiche = fiches.find(f => f.name === c.productName);
         out.push({
@@ -162,7 +179,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       }
     });
 
-    // Quick-sale fiches (no production run needed).
+    // Quick-sale fiches (no production run needed). Une fiche reste au comptoir
+    // même quand ses ingrédients sont épuisés : elle se vend à découvert et ce
+    // sont les ingrédients qui passent en négatif dans la Gestion de stock.
     fiches.filter(f => f.directSale).forEach(f => out.push({
       id: f.id, name: f.name, price: f.unitPrice,
       avail: maxFicheServings(f, products), unit: f.sellUnit || 'unité',
@@ -171,6 +190,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       unitCost: f.costPerUnit || 0,
       imageUrl: f.imageUrl,
       pinKey: posPinKey('fiche', f.id),
+      missing: missingIngredients(f, products),
     }));
 
     return out;
@@ -213,19 +233,15 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const rest = Math.max(0, total - paid);
 
   // ── Cart ──────────────────────────────────────────────────────────────────
+  // Aucune ligne n'est plafonnée par le stock : produit du catalogue, production
+  // du comptoir ou fiche technique, tout se vend à découvert. `max` ne sert plus
+  // qu'à CHIFFRER ce découvert pour le signaler au caissier.
   const pushLine = (s: Source, qty: number) => {
-    // Stock products may be oversold (stock goes negative); comptoir productions
-    // and quick-sale fiches stay capped at what is physically available.
-    const oversell = s.kind === 'product';
     setCart(prev => {
       const found = prev.find(l => l.id === s.id);
-      if (found) {
-        const next = oversell ? found.qty + qty : Math.min(found.max, found.qty + qty);
-        if (next === found.qty) { toast.error('Stock atteint'); return prev; }
-        return prev.map(l => l.id === s.id ? { ...l, qty: next } : l);
-      }
+      if (found) return prev.map(l => l.id === s.id ? { ...l, qty: l.qty + qty } : l);
       return [...prev, {
-        id: s.id, name: s.name, unitPrice: s.price, qty: oversell ? qty : Math.min(s.avail, qty),
+        id: s.id, name: s.name, unitPrice: s.price, qty,
         max: s.avail, unit: s.unit, kind: s.kind, unitCost: s.unitCost,
         detailCapacity: s.detailCapacity, detailUnit: s.detailUnit,
       }];
@@ -234,19 +250,20 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const addToCart = (s: Source) => {
     if (!mySession) { toast.error('Ouvrez votre session de travail pour vendre'); return; }
-    // Only production items (comptoir / fiches) are blocked when out of stock;
-    // stock products can always be sold and drive the stock into the negative.
-    if (s.kind !== 'product' && s.avail <= 0) { toast.error('Stock épuisé'); return; }
     // Detail products ask for the quantity to sell, in the detail unit.
     if (s.detail) { setDetailPrompt(s); return; }
     pushLine(s, 1);
   };
 
-  const inc = (id: string) => setCart(prev => prev.map(l => l.id === id ? { ...l, qty: l.kind === 'product' ? l.qty + 1 : Math.min(l.max, l.qty + 1) } : l));
+  const inc = (id: string) => setCart(prev => prev.map(l => l.id === id ? { ...l, qty: l.qty + 1 } : l));
   const dec = (id: string) => setCart(prev => prev.flatMap(l => l.id === id ? (l.qty > 1 ? [{ ...l, qty: l.qty - 1 }] : []) : [l]));
   const setLineQty = (id: string, v: number) =>
-    setCart(prev => prev.map(l => l.id === id ? { ...l, qty: l.kind === 'product' ? Math.max(0, v) : Math.max(0, Math.min(l.max, v)) } : l));
+    setCart(prev => prev.map(l => l.id === id ? { ...l, qty: Math.max(0, v) } : l));
   const rm = (id: string) => setCart(prev => prev.filter(l => l.id !== id));
+
+  /** Ce qui sera vendu au-delà du stock sur une ligne — 0 quand tout est couvert. */
+  const shortOf = (l: CartLine) => Math.max(0, roundQty(l.qty - l.max));
+  const shortLines = cart.filter(l => shortOf(l) > 0);
 
   // ── Checkout ──────────────────────────────────────────────────────────────
   const checkout = () => {
@@ -284,35 +301,47 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     };
     biz.add('sales', sale);
 
-    // Deduct stock.
+    // Deduct stock. Rien n'est plafonné à zéro : ce qui a été vendu sans être en
+    // stock part en NÉGATIF et se rattrape au prochain achat / à la prochaine
+    // production. Une même matière première peut être consommée par plusieurs
+    // lignes du panier (deux fiches qui partagent un ingrédient) : on cumule
+    // d'abord tous les prélèvements, puis on écrit UNE fois chaque produit —
+    // sinon la deuxième écriture repartirait du stock d'avant la première.
+    const draw = new Map<string, number>();
+    const take = (productId: string, qty: number) =>
+      draw.set(productId, (draw.get(productId) || 0) + qty);
+
     cart.forEach(l => {
       if (l.kind === 'comptoir') {
         const c = comptoir.find(x => x.id === l.id);
-        if (c) biz.update('comptoir', { ...c, qty: Math.max(0, c.qty - l.qty) });
+        if (c) biz.update('comptoir', { ...c, qty: roundQty(c.qty - l.qty) });
       } else if (l.kind === 'fiche') {
         // A direct-sale fiche behaves like an instant production: its ingredients
         // leave the stock right away — and may drive it negative, settled later
-        // by a purchase.
+        // by a purchase. Il manque de la matière ? La vente passe quand même.
         const f = fiches.find(x => x.id === l.id);
         f?.ingredients.forEach(ing => {
-          const p = products.find(x => x.id === ing.productId);
-          if (p) biz.update('products', {
-            ...p,
-            currentQty: p.currentQty - ing.quantityUsed * l.qty / Math.max(1, f.outputQuantity),
-          });
+          // Un ingrédient « semi-fini » n'est pas une ligne de stock : il n'y a
+          // rien à décrémenter pour lui.
+          if (ing.sourceType === 'fiche') return;
+          take(ing.productId, ing.quantityUsed * l.qty / Math.max(1, f.outputQuantity));
         });
       } else {
-        const p = products.find(x => x.id === l.id);
-        if (!p) return;
-        const consumed = l.detailCapacity ? l.qty / l.detailCapacity : l.qty;
-        // Oversell allowed: stock may go negative and is recovered on the next purchase.
-        biz.update('products', { ...p, currentQty: p.currentQty - consumed });
+        take(l.id, l.detailCapacity ? l.qty / l.detailCapacity : l.qty);
       }
     });
 
-    toast.success(discountAmount > 0
+    draw.forEach((consumed, productId) => {
+      const p = products.find(x => x.id === productId);
+      if (p) biz.update('products', { ...p, currentQty: roundQty(p.currentQty - consumed) });
+    });
+
+    const shortNote = shortLines.length
+      ? ` — ${shortLines.length} article(s) vendu(s) à découvert, stock en négatif`
+      : '';
+    toast.success((discountAmount > 0
       ? `Vente enregistrée — remise de ${money(discountAmount)} accordée`
-      : 'Vente enregistrée');
+      : 'Vente enregistrée') + shortNote);
     setCart([]); setDiscountMode('none'); setDiscountStr(''); setPaidStr(''); setClientId(''); setPassage(true);
     setAskPrint(sale);
   };
@@ -492,7 +521,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
                       {money(s.price)}{s.detail ? <span className="text-[10px] font-bold">/{s.detailUnit}</span> : null}
                     </span>
                     <Badge tone={s.avail <= 0 ? 'danger' : s.avail <= 5 ? 'warning' : 'neutral'}>
-                      {s.avail % 1 === 0 ? s.avail : s.avail.toFixed(2)} {s.unit}
+                      {formatQty(s.avail)} {s.unit}
                     </Badge>
                   </div>
                   <div className="flex flex-wrap gap-1 mt-1.5">
@@ -500,6 +529,23 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
                     {s.kind === 'fiche' && <Badge tone="primary">Vente rapide</Badge>}
                     {s.detail && <Badge tone="info">Au détail</Badge>}
                   </div>
+                  {/* Plus rien en stock : on le dit, mais la vente reste ouverte
+                      et fera descendre les quantités en négatif. Sur une fiche,
+                      ce sont les ingrédients manquants qui font foi. */}
+                  {(s.kind === 'fiche' ? (s.missing?.length || 0) > 0 : s.avail <= 0) && (
+                    <p className="mt-1.5 text-[10px] font-bold text-amber-600 flex items-start gap-1 leading-tight">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                      <span>
+                        Vente à découvert — stock en négatif
+                        {s.missing && s.missing.length > 0 && (
+                          <span className="block font-semibold text-amber-500">
+                            Manque : {s.missing.slice(0, 3).join(', ')}
+                            {s.missing.length > 3 ? '…' : ''}
+                          </span>
+                        )}
+                      </span>
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -527,12 +573,19 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
             <div className="space-y-2 max-h-[280px] overflow-y-auto custom-scrollbar">
               {cart.length === 0 ? <p className="text-center text-slate-400 text-sm py-6">Panier vide</p> : cart.map(l => (
-                <div key={l.id} className="flex items-center gap-2 bg-slate-50 rounded-xl p-2">
+                <div key={l.id} className={`flex items-center gap-2 rounded-xl p-2 ${shortOf(l) > 0 ? 'bg-amber-50 border border-amber-200' : 'bg-slate-50'}`}>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold text-slate-700 truncate">{l.name}</p>
                     <p className="text-xs text-slate-400 tabular-nums">
-                      {money(l.unitPrice)}{l.detailUnit ? `/${l.detailUnit}` : ''} × {l.qty % 1 === 0 ? l.qty : l.qty.toFixed(2)}
+                      {money(l.unitPrice)}{l.detailUnit ? `/${l.detailUnit}` : ''} × {formatQty(l.qty)}
                     </p>
+                    {/* Découvert de la ligne — la vente reste autorisée. */}
+                    {shortOf(l) > 0 && (
+                      <p className="text-[10px] font-bold text-amber-600 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 shrink-0" />
+                        {formatQty(shortOf(l))} {l.detailUnit || l.unit || ''} au-delà du stock
+                      </p>
+                    )}
                   </div>
                   {l.detailCapacity ? (
                     <input type="number" step="0.01" min={0} value={l.qty}
@@ -591,6 +644,19 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
               <div><label className="text-[11px] font-bold uppercase text-slate-400">Payé</label><input type="number" value={paidStr} onChange={e => setPaidStr(e.target.value)} placeholder={String(total)} className="input-field mt-1" /></div>
               <div><label className="text-[11px] font-bold uppercase text-slate-400">Reste</label><div className="mt-1 h-[46px] rounded-xl bg-red-50 flex items-center px-3 font-black tabular-nums text-red-600">{money(rest)}</div></div>
             </div>
+            {/* Récapitulatif du découvert : le caissier valide en connaissance
+                de cause, il n'est jamais empêché de servir le client. */}
+            {shortLines.length > 0 && (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-[11px] text-amber-800 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  <strong>{shortLines.length} article(s) vendu(s) à découvert.</strong> La vente
+                  passe normalement : les quantités manquantes s'afficheront en négatif dans la
+                  Gestion de stock (et au Comptoir) jusqu'au prochain achat ou à la prochaine
+                  production.
+                </span>
+              </div>
+            )}
             <button className="btn-primary w-full" onClick={checkout} disabled={!perm.creer || !mySession}
               title={mySession ? (perm.creer ? undefined : "Vous n'avez pas le droit d'enregistrer une vente") : 'Ouvrez votre session de travail'}>
               <Check className="w-4 h-4" /> Valider la vente
@@ -635,18 +701,44 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-/** How many servings of a direct-sale fiche the current stock allows. */
+/**
+ * How many servings of a direct-sale fiche the current stock allows.
+ *
+ * Zéro ne veut pas dire « invendable » : c'est le seuil à partir duquel la
+ * vente se fait à découvert et pousse les ingrédients en négatif.
+ */
 function maxFicheServings(f: BizFiche, products: { id: string; currentQty: number }[]): number {
   if (!f.ingredients.length) return 0;
   const per = Math.max(1, f.outputQuantity);
   let min = Infinity;
   for (const ing of f.ingredients) {
+    // Un semi-fini (autre fiche) n'a pas de ligne de stock : il ne limite rien.
+    if (ing.sourceType === 'fiche') continue;
     const p = products.find(x => x.id === ing.productId);
     const need = ing.quantityUsed / per;
-    if (!p || need <= 0) { if (!p) return 0; continue; }
+    if (!p) return 0;
+    if (need <= 0) continue;
     min = Math.min(min, Math.floor(p.currentQty / need));
   }
   return Number.isFinite(min) ? Math.max(0, min) : 0;
+}
+
+/**
+ * Ingrédients d'une fiche dont le stock ne couvre plus une seule part — ceux
+ * qui passeront en négatif si le caissier vend quand même. Purement informatif :
+ * la fiche reste vendable.
+ */
+function missingIngredients(f: BizFiche, products: BizProduct[]): string[] {
+  const per = Math.max(1, f.outputQuantity);
+  return f.ingredients
+    .filter(ing => {
+      if (ing.sourceType === 'fiche') return false;
+      const need = ing.quantityUsed / per;
+      if (need <= 0) return false;
+      const p = products.find(x => x.id === ing.productId);
+      return !p || p.currentQty < need;
+    })
+    .map(ing => ing.productName);
 }
 
 /**
@@ -812,7 +904,9 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-[10px] uppercase font-bold text-slate-400">Disponible</p>
-            <p className="font-black text-slate-700 tabular-nums">{source.avail.toFixed(2)} {source.detailUnit}</p>
+            <p className={`font-black tabular-nums ${source.avail <= 0 ? 'text-red-600' : 'text-slate-700'}`}>
+              {formatQty(source.avail)} {source.detailUnit}
+            </p>
           </div>
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-[10px] uppercase font-bold text-slate-400">Montant</p>

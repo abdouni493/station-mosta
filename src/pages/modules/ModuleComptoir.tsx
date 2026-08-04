@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Beaker, Flame, RotateCcw, Trash2 as Trash, Search, Layers, Wallet, Boxes } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizComptoirItem, BizDestruction } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizComptoirItem, BizDestruction, formatQty } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import {
@@ -28,8 +28,11 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
   const [confirmBulk, setConfirmBulk] = useState<'recover' | 'delete' | null>(null);
 
   const cats = useMemo(() => Array.from(new Set(comptoir.map(c => c.categoryName).filter(Boolean))) as string[], [comptoir]);
+  // Une ligne pile à zéro a été écoulée proprement et disparaît. Une ligne
+  // NÉGATIVE, elle, reste affichée : le point de vente a servi plus que ce qui
+  // avait été fabriqué, et il faut voir ce qu'il reste à produire pour combler.
   const availFiltered = useMemo(() => comptoir.filter(c =>
-    c.qty > 0 && (!search || c.productName.toLowerCase().includes(search.toLowerCase())) && (cat === 'all' || c.categoryName === cat)), [comptoir, search, cat]);
+    c.qty !== 0 && (!search || c.productName.toLowerCase().includes(search.toLowerCase())) && (cat === 'all' || c.categoryName === cat)), [comptoir, search, cat]);
 
   const stockValue = comptoir.reduce((s, c) => s + c.qty * c.unitPrice, 0);
   const destroyedValue = destructions.reduce((s, d) => s + (d.recovered ? 0 : d.value), 0);
@@ -96,13 +99,19 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
                   </div>
                   <p className="text-[11px] text-slate-400 mt-2">Depuis {formatDate(c.date)}</p>
                   <div className="grid grid-cols-2 gap-2 mt-3">
-                    <div className="rounded-xl bg-emerald-50 p-2.5"><p className="text-[10px] uppercase font-bold text-slate-400">Disponible</p><p className="font-black text-emerald-600 tabular-nums">{c.qty} <span className="text-xs text-slate-400">{c.unit}</span></p></div>
+                    <div className={`rounded-xl p-2.5 ${c.qty < 0 ? 'bg-red-50' : 'bg-emerald-50'}`}><p className="text-[10px] uppercase font-bold text-slate-400">Disponible</p><p className={`font-black tabular-nums ${c.qty < 0 ? 'text-red-600' : 'text-emerald-600'}`}>{formatQty(c.qty)} <span className="text-xs text-slate-400">{c.unit}</span></p></div>
                     <div className="rounded-xl bg-slate-50 p-2.5"><p className="text-[10px] uppercase font-bold text-slate-400">Prix unit.</p><p className="font-black text-slate-700 tabular-nums">{money(c.unitPrice)}</p></div>
                   </div>
+                  {c.qty < 0 && (
+                    <p className="mt-2 text-[11px] font-semibold text-red-600 leading-tight">
+                      Vendu à découvert au point de vente — {formatQty(-c.qty)} {c.unit || ''} à
+                      produire pour revenir à zéro.
+                    </p>
+                  )}
                   <div className="flex items-center justify-between mt-3">
                     <span className="text-sm text-slate-400">Valeur stock</span><span className="font-black text-[#002d87] tabular-nums">{money(c.qty * c.unitPrice)}</span>
                   </div>
-                  {perm.supprimer && (
+                  {perm.supprimer && c.qty > 0 && (
                   <button className="w-full mt-3 !py-2 rounded-xl bg-red-50 text-red-600 font-bold text-sm flex items-center justify-center gap-1.5 hover:bg-red-100 transition-colors" onClick={() => setDestroying(c)}>
                     <Flame className="w-4 h-4" /> Destruction
                   </button>)}

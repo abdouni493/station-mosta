@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizProduct, BizDestruction } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizProduct, BizDestruction, formatQty } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
@@ -87,6 +87,9 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
       total: products.length,
       raw: products.filter(p => p.isRawMaterial).length,
       low: products.filter(p => p.currentQty <= p.minQty).length,
+      // Vendus à découvert au point de vente : la quantité est passée sous zéro
+      // et se rattrapera au prochain achat (−5 en stock + 15 reçus = 10).
+      negative: products.filter(p => p.currentQty < 0).length,
       value: products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0),
       expiring: products.filter(p => p.hasExpiration && p.expirationDate && new Date(p.expirationDate) <= soon).length,
     };
@@ -142,6 +145,13 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   };
 
   const lowBadge = (p: BizProduct) => p.currentQty <= p.minQty;
+  /**
+   * Stock à découvert : le point de vente a vendu plus que ce qui restait (un
+   * produit à zéro, une fiche technique servie sans tous ses ingrédients). La
+   * quantité s'affiche telle quelle, avec son « − » : c'est ce que la partie
+   * doit racheter pour revenir à l'équilibre.
+   */
+  const negative = (p: BizProduct) => p.currentQty < 0;
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -151,7 +161,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard icon={Boxes} label="Produits" value={stats.total} tone="blue"
           sub={stats.raw ? `dont ${stats.raw} matière(s) première(s)` : undefined} />
-        <StatCard icon={AlertTriangle} label="Stock bas" value={stats.low} tone="red" sub="≤ seuil d'alerte" />
+        <StatCard icon={AlertTriangle} label="Stock bas" value={stats.low} tone="red"
+          sub={stats.negative ? `dont ${stats.negative} en négatif` : "≤ seuil d'alerte"} />
         <StatCard icon={Wallet} label="Valeur du stock" value={money(stats.value)} tone="green" />
         <StatCard icon={CalendarClock} label="Expirent bientôt" value={stats.expiring} tone="amber" sub="≤ 7 jours" />
         <StatCard icon={Flame} label="Valeur détruite" value={money(destroyedValue)} tone="red"
@@ -202,7 +213,9 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                   <h3 className="font-black text-slate-800 truncate">{p.name}</h3>
                   <p className="text-[11px] text-slate-400 font-mono flex items-center gap-1 mt-0.5"><Barcode className="w-3 h-3" />{p.barcode || '—'}</p>
                 </div>
-                {lowBadge(p) ? <Badge tone="danger">Stock bas</Badge> : <Badge tone="success">En stock</Badge>}
+                {negative(p)
+                  ? <Badge tone="danger"><AlertTriangle className="w-3 h-3" />Stock négatif</Badge>
+                  : lowBadge(p) ? <Badge tone="danger">Stock bas</Badge> : <Badge tone="success">En stock</Badge>}
               </div>
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {p.isRawMaterial && <Badge tone="warning"><Beaker className="w-3 h-3" />Matière première</Badge>}
@@ -212,13 +225,20 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
               <div className="grid grid-cols-2 gap-2 mt-3">
                 <div className="rounded-xl bg-slate-50 p-2.5">
                   <p className="text-[10px] uppercase font-bold text-slate-400">Principal</p>
-                  <p className="font-black text-slate-700 tabular-nums">{p.principalQty} <span className="text-xs font-medium text-slate-400">{p.unit}</span></p>
+                  <p className="font-black text-slate-700 tabular-nums">{formatQty(p.principalQty)} <span className="text-xs font-medium text-slate-400">{p.unit}</span></p>
                 </div>
                 <div className={`rounded-xl p-2.5 ${lowBadge(p) ? 'bg-red-50' : 'bg-emerald-50'}`}>
                   <p className="text-[10px] uppercase font-bold text-slate-400">Reste</p>
-                  <p className={`font-black tabular-nums ${lowBadge(p) ? 'text-red-600' : 'text-emerald-600'}`}>{p.currentQty} <span className="text-xs font-medium text-slate-400">{p.unit}</span></p>
+                  <p className={`font-black tabular-nums ${lowBadge(p) ? 'text-red-600' : 'text-emerald-600'}`}>{formatQty(p.currentQty)} <span className="text-xs font-medium text-slate-400">{p.unit}</span></p>
                 </div>
               </div>
+              {negative(p) && (
+                <p className="mt-2 text-[11px] font-semibold text-red-600 flex items-start gap-1 leading-tight">
+                  <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                  Vendu à découvert au point de vente — {formatQty(-p.currentQty)} {p.unit || ''} à
+                  racheter pour revenir à zéro.
+                </p>
+              )}
               {/* Une matière première n'a pas de prix de vente : ce qui compte,
                   c'est ce qu'elle a coûté. */}
               <div className="flex items-center justify-between mt-3 text-sm">
@@ -276,14 +296,21 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
               </td>
               <td className="table-cell">{p.categoryName || '—'}</td>
               <td className="table-cell">{p.marqueName || '—'}</td>
-              <td className="table-cell tabular-nums">{p.principalQty} {p.unit}</td>
-              <td className="table-cell tabular-nums font-bold">{p.currentQty} {p.unit}</td>
+              <td className="table-cell tabular-nums">{formatQty(p.principalQty)} {p.unit}</td>
+              <td className={`table-cell tabular-nums font-bold ${negative(p) ? 'text-red-600' : ''}`}
+                title={negative(p) ? `Vendu à découvert — ${formatQty(-p.currentQty)} ${p.unit || ''} à racheter` : undefined}>
+                {formatQty(p.currentQty)} {p.unit}
+              </td>
               <td className="table-cell tabular-nums">
                 {p.isRawMaterial
                   ? <span className="text-slate-400">— <span className="text-[11px]">matière première</span></span>
                   : money(p.salePrice)}
               </td>
-              <td className="table-cell">{lowBadge(p) ? <Badge tone="danger">Bas</Badge> : <Badge tone="success">OK</Badge>}</td>
+              <td className="table-cell">
+                {negative(p)
+                  ? <Badge tone="danger">Négatif</Badge>
+                  : lowBadge(p) ? <Badge tone="danger">Bas</Badge> : <Badge tone="success">OK</Badge>}
+              </td>
               <td className="table-cell">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
@@ -372,6 +399,15 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         title={viewing?.name || ''} subtitle="Détails du produit">
         {viewing && (
           <div className="space-y-4">
+            {negative(viewing) && (
+              <div className="rounded-xl bg-red-50 border border-red-200 p-3 flex items-center gap-2 text-red-700">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span className="font-semibold text-sm">
+                  Stock négatif — {formatQty(-viewing.currentQty)} {viewing.unit || ''} vendu(s) à
+                  découvert au point de vente. Le prochain achat remettra le compte à l'équilibre.
+                </span>
+              </div>
+            )}
             {viewing.isRawMaterial && (
               <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-center gap-2 text-amber-700">
                 <Beaker className="w-4 h-4 shrink-0" />
@@ -385,8 +421,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 ['Nature', viewing.isRawMaterial ? 'Matière première' : 'Produit de vente'],
                 ['Code-barres', viewing.barcode || '—'], ['Catégorie', viewing.categoryName || '—'],
                 ['Marque', viewing.marqueName || '—'], ['Unité', viewing.unit || '—'],
-                ['Quantité principale', `${viewing.principalQty} ${viewing.unit}`], ['Reste en stock', `${viewing.currentQty} ${viewing.unit}`],
-                ['Seuil d\'alerte', `${viewing.minQty} ${viewing.unit}`], ['Prix d\'achat', money(viewing.purchasePrice)],
+                ['Quantité principale', `${formatQty(viewing.principalQty)} ${viewing.unit}`], ['Reste en stock', `${formatQty(viewing.currentQty)} ${viewing.unit}`],
+                ['Seuil d\'alerte', `${formatQty(viewing.minQty)} ${viewing.unit}`], ['Prix d\'achat', money(viewing.purchasePrice)],
                 ['Prix de vente', money(viewing.salePrice)], ['Créé le', formatDate(viewing.createdAt)],
               ].map(([k, v]) => (
                 <div key={k as string} className="rounded-xl bg-slate-50 p-3">
@@ -458,7 +494,7 @@ function DestroyStockModal({
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-[10px] uppercase font-bold text-slate-400">En stock</p>
-            <p className="font-black text-slate-700 tabular-nums">{product.currentQty} <span className="text-xs text-slate-400">{product.unit}</span></p>
+            <p className="font-black text-slate-700 tabular-nums">{formatQty(product.currentQty)} <span className="text-xs text-slate-400">{product.unit}</span></p>
           </div>
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-[10px] uppercase font-bold text-slate-400">Prix d'achat</p>
@@ -466,16 +502,16 @@ function DestroyStockModal({
           </div>
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-[10px] uppercase font-bold text-slate-400">Reste après</p>
-            <p className="font-black text-slate-700 tabular-nums">{product.currentQty - capped} <span className="text-xs text-slate-400">{product.unit}</span></p>
+            <p className="font-black text-slate-700 tabular-nums">{formatQty(product.currentQty - capped)} <span className="text-xs text-slate-400">{product.unit}</span></p>
           </div>
         </div>
 
-        <Field label={`Quantité à détruire (max ${product.currentQty} ${product.unit || ''})`} required>
+        <Field label={`Quantité à détruire (max ${formatQty(product.currentQty)} ${product.unit || ''})`} required>
           <Input type="number" min={0} step="0.01" value={qtyStr} onChange={e => setQtyStr(e.target.value)} />
         </Field>
         {tooMuch && (
           <p className="text-xs font-semibold text-amber-600">
-            Le stock ne contient que {product.currentQty} {product.unit} — seule cette quantité sera détruite.
+            Le stock ne contient que {formatQty(product.currentQty)} {product.unit} — seule cette quantité sera détruite.
           </p>
         )}
 

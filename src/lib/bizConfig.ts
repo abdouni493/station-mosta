@@ -79,6 +79,23 @@ export interface BizProduct {
 /** Un produit ne s'affiche au point de vente que s'il n'est pas une matière première. */
 export const isSellableProduct = (p: Pick<BizProduct, 'isRawMaterial'>) => !p.isRawMaterial;
 
+/**
+ * Quantité de stock ramenée au millième.
+ *
+ * Le point de vente vend À DÉCOUVERT : un produit à zéro, une fiche technique
+ * dont il manque un ingrédient, une production déjà écoulée se vendent quand
+ * même et font descendre la quantité en NÉGATIF — le manque se rattrape au
+ * prochain achat (−5 en stock + 15 reçus = 10). Sans cet arrondi, les divisions
+ * d'une fiche laisseraient des `-0.30000000000000004` dans la Gestion de stock.
+ */
+export const roundQty = (q: number): number => Math.round(q * 1000) / 1000;
+
+/** Quantité affichée — le signe « − » d'un stock à découvert est conservé. */
+export function formatQty(q: number): string {
+  const r = roundQty(q);
+  return Number.isInteger(r) ? String(r) : r.toFixed(2);
+}
+
 /** Price of one detail unit of a product sold "au détail". */
 export function detailPrice(p: Pick<BizProduct, 'salePrice' | 'detailCapacity' | 'detailSalePrice'>): number {
   if (p.detailSalePrice && p.detailSalePrice > 0) return p.detailSalePrice;
