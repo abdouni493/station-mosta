@@ -6,6 +6,10 @@
  *  • Session de travail obligatoire — rien ne peut être vendu avant qu'un employé
  *    n'ouvre sa session avec le fond de caisse qu'il a déjà en main. Ce fond
  *    n'entre JAMAIS dans le théorique ni dans le décalage.
+ *  • Chaque session appartient à UN employé : celui qui se connecte ouvre et
+ *    clôture la sienne, jamais celle d'un collègue. Deux caissiers peuvent donc
+ *    tenir une session ouverte en même temps sans se gêner (voir
+ *    `src/hooks/useBizSessions.ts`).
  *  • Filtrage par catégorie en plus de la recherche.
  *  • Accès rapide : l'utilisateur épingle les produits qui se vendent le plus et
  *    choisit leur ordre ; ils ouvrent la grille du comptoir.
@@ -22,7 +26,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ShoppingBag, Search, Plus, Minus, X, User, UserPlus, Percent, Check, Package,
   PlayCircle, StopCircle, Lock, Beaker, Layers, Wallet, AlertTriangle, Printer,
-  Star, ArrowUp, ArrowDown, ListOrdered, Zap,
+  Star, ArrowUp, ArrowDown, ListOrdered, Zap, Users,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -32,6 +36,7 @@ import {
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
+import { useBizSessions } from '@/src/hooks/useBizSessions';
 import { PageHeader, Badge, Select, Field, Input, Textarea, Modal, money, formatDate } from '@/src/components/biz/Kit';
 import { ContactModal, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
 
@@ -74,14 +79,16 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'pos');
   const { settings, currentUserName, currentModuleWorker, currentUserRole } = useAppState();
-  const { comptoir, products, clients, fiches, sessions, workers } = biz.state;
+  const { comptoir, products, clients, fiches, workers } = biz.state;
   const pinned = biz.state.posPinned || [];
 
   // Seul l'administrateur voit le théorique de la session (total vendu, espèces
   // dues, décalage) ; l'employé qui tient la caisse vend sans jamais les voir.
   const isAdmin = currentUserRole === 'admin';
 
-  const openSession = useMemo(() => sessions.find(s => s.status === 'open') || null, [sessions]);
+  // La session de l'employé CONNECTÉ — jamais celle d'un collègue. `otherOpen`
+  // sert seulement à informer (l'admin voit qui tient une caisse en ce moment).
+  const { mySession, otherOpen } = useBizSessions(moduleKey);
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
@@ -208,7 +215,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   };
 
   const addToCart = (s: Source) => {
-    if (!openSession) { toast.error('Ouvrez une session de travail pour vendre'); return; }
+    if (!mySession) { toast.error('Ouvrez votre session de travail pour vendre'); return; }
     // Only production items (comptoir / fiches) are blocked when out of stock;
     // stock products can always be sold and drive the stock into the negative.
     if (s.kind !== 'product' && s.avail <= 0) { toast.error('Stock épuisé'); return; }
@@ -225,7 +232,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   // ── Checkout ──────────────────────────────────────────────────────────────
   const checkout = () => {
-    if (!openSession) { toast.error('Ouvrez une session de travail pour vendre'); return; }
+    if (!mySession) { toast.error('Ouvrez votre session de travail pour vendre'); return; }
     if (cart.length === 0) { toast.error('Panier vide'); return; }
     if (!passage && !clientId) { toast.error('Sélectionnez un client'); return; }
     if (passage && rest > 0) { toast.error('Un client est requis pour une vente à crédit'); return; }
@@ -251,9 +258,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       total, paid, rest,
       date: new Date().toISOString(), status: rest > 0 ? 'crédit' : 'payée',
       createdBy: currentUserName || 'Admin',
-      sessionId: openSession.id,
-      workerId: openSession.workerId,
-      workerName: openSession.workerName,
+      sessionId: mySession.id,
+      workerId: mySession.workerId,
+      workerName: mySession.workerName,
     };
     biz.add('sales', sale);
 
@@ -298,7 +305,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       party: { label: 'Client', name: sale.clientName, phone: client?.phone, address: client?.address },
       info: [
         { label: 'Caissier', value: sale.workerName || '' },
-        { label: 'Session', value: openSession?.ref || '' },
+        { label: 'Session', value: mySession?.ref || '' },
       ],
       items: sale.items.map(i => ({
         name: i.productName,
@@ -316,58 +323,78 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   };
 
   // ── Session totals (for the closing screen) ───────────────────────────────
-  const sessionFigures = useMemo(() => figuresForSession(openSession, biz.state.sales), [openSession, biz.state.sales]);
+  const sessionFigures = useMemo(() => figuresForSession(mySession, biz.state.sales), [mySession, biz.state.sales]);
 
   return (
     <div className="space-y-4 animate-fade-in">
       <PageHeader icon={ShoppingBag} title="Point de vente" subtitle={`${cfg.label} — caisse & encaissement`}
-        actions={openSession ? (
+        actions={mySession ? (
           <div className="flex items-center gap-2">
             <div className="hidden sm:block text-right">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Session ouverte</p>
-              <p className="text-sm font-black text-[#002d87]">{openSession.workerName}</p>
+              <p className="text-[10px] uppercase font-bold text-slate-400">Ma session</p>
+              <p className="text-sm font-black text-[#002d87]">{mySession.workerName}</p>
             </div>
             <button className="btn-secondary" onClick={() => setShowClose(true)}>
-              <StopCircle className="w-4 h-4" /> Clôturer la session
+              <StopCircle className="w-4 h-4" /> Clôturer ma session
             </button>
           </div>
         ) : (
           <button className="btn-primary" onClick={() => setShowOpen(true)}>
-            <PlayCircle className="w-4 h-4" /> Ouvrir une session
+            <PlayCircle className="w-4 h-4" /> Ouvrir ma session
           </button>
         )} />
 
-      {/* Session gate */}
-      {!openSession && (
+      {/* Session gate — l'employé ouvre SA session ; celle d'un collègue restée
+          ouverte ne le concerne pas et ne l'empêche pas de travailler. */}
+      {!mySession && (
         <div className="card-glass p-6 flex flex-col sm:flex-row items-center gap-4 border-l-4 border-amber-400">
           <div className="w-12 h-12 rounded-2xl bg-amber-100 flex items-center justify-center shrink-0">
             <Lock className="w-6 h-6 text-amber-600" />
           </div>
           <div className="flex-1 text-center sm:text-left">
-            <h3 className="font-black text-slate-800">Aucune session de travail ouverte</h3>
+            <h3 className="font-black text-slate-800">Vous n'avez aucune session de travail ouverte</h3>
             <p className="text-sm text-slate-500">
-              L'employé doit ouvrir sa session — avec son nom et le fond de caisse qu'il a déjà en main —
-              avant de pouvoir vendre. Ce fond n'est pas compté dans le théorique de la session.
+              Ouvrez votre propre session — à votre nom, avec le fond de caisse que vous avez déjà en main —
+              avant de vendre. Ce fond n'est pas compté dans le théorique de votre session.
             </p>
           </div>
           <button className="btn-primary shrink-0" onClick={() => setShowOpen(true)}>
-            <PlayCircle className="w-4 h-4" /> Ouvrir une session
+            <PlayCircle className="w-4 h-4" /> Ouvrir ma session
           </button>
         </div>
       )}
 
-      {openSession && (
+      {mySession && (
         <div className={`card-glass p-4 grid grid-cols-2 gap-3 ${isAdmin ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
-          <div><p className="text-[10px] uppercase font-bold text-slate-400">Employé</p><p className="font-black text-slate-700 text-sm">{openSession.workerName}</p></div>
-          <div><p className="text-[10px] uppercase font-bold text-slate-400">Ouverte le</p><p className="font-black text-slate-700 text-sm">{new Date(openSession.openedAt).toLocaleString('fr-DZ')}</p></div>
-          <div><p className="text-[10px] uppercase font-bold text-slate-400">Fond de caisse</p><p className="font-black text-slate-700 text-sm tabular-nums">{money(openSession.openingCash)}</p></div>
+          <div><p className="text-[10px] uppercase font-bold text-slate-400">Employé</p><p className="font-black text-slate-700 text-sm">{mySession.workerName}</p></div>
+          <div><p className="text-[10px] uppercase font-bold text-slate-400">Ouverte le</p><p className="font-black text-slate-700 text-sm">{new Date(mySession.openedAt).toLocaleString('fr-DZ')}</p></div>
+          <div><p className="text-[10px] uppercase font-bold text-slate-400">Fond de caisse</p><p className="font-black text-slate-700 text-sm tabular-nums">{money(mySession.openingCash)}</p></div>
           {isAdmin && (
             <div><p className="text-[10px] uppercase font-bold text-slate-400">Ventes de la session</p><p className="font-black text-emerald-600 text-sm tabular-nums">{money(sessionFigures.total)}</p></div>
           )}
         </div>
       )}
 
-      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-4 ${openSession ? '' : 'opacity-50 pointer-events-none'}`}>
+      {/* Les autres caisses ouvertes — information de supervision réservée à
+          l'administrateur : un employé n'a rien à savoir de la caisse d'un autre
+          et ne peut de toute façon pas y toucher. */}
+      {isAdmin && otherOpen.length > 0 && (
+        <div className="card-glass p-3 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-black uppercase text-slate-400 flex items-center gap-1.5">
+            <Users className="w-3.5 h-3.5" /> Autres caisses ouvertes
+          </span>
+          {otherOpen.map(s => (
+            <Badge key={s.id} tone="warning">
+              {s.workerName} — {s.ref} — depuis {new Date(s.openedAt).toLocaleTimeString('fr-DZ', { hour: '2-digit', minute: '2-digit' })}
+            </Badge>
+          ))}
+          <span className="text-[11px] text-slate-400">
+            Chacune se clôture depuis le poste de son employé (ou dans Caisse → Sessions de travail).
+          </span>
+        </div>
+      )}
+
+      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-4 ${mySession ? '' : 'opacity-50 pointer-events-none'}`}>
         {/* Catalogue */}
         <div className="lg:col-span-2 space-y-4">
           <div className="card-glass p-3 flex flex-wrap items-center gap-3">
@@ -544,8 +571,8 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
               <div><label className="text-[11px] font-bold uppercase text-slate-400">Payé</label><input type="number" value={paidStr} onChange={e => setPaidStr(e.target.value)} placeholder={String(total)} className="input-field mt-1" /></div>
               <div><label className="text-[11px] font-bold uppercase text-slate-400">Reste</label><div className="mt-1 h-[46px] rounded-xl bg-red-50 flex items-center px-3 font-black tabular-nums text-red-600">{money(rest)}</div></div>
             </div>
-            <button className="btn-primary w-full" onClick={checkout} disabled={!perm.creer || !openSession}
-              title={openSession ? (perm.creer ? undefined : "Vous n'avez pas le droit d'enregistrer une vente") : 'Ouvrez une session de travail'}>
+            <button className="btn-primary w-full" onClick={checkout} disabled={!perm.creer || !mySession}
+              title={mySession ? (perm.creer ? undefined : "Vous n'avez pas le droit d'enregistrer une vente") : 'Ouvrez votre session de travail'}>
               <Check className="w-4 h-4" /> Valider la vente
             </button>
           </div>
@@ -571,8 +598,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           workers={workers}
           onClose={() => setShowOpen(false)} />
       )}
-      {showClose && openSession && (
-        <CloseSessionModal moduleKey={moduleKey} session={openSession} onClose={() => setShowClose(false)} />
+
+      {showClose && mySession && (
+        <CloseSessionModal moduleKey={moduleKey} session={mySession} onClose={() => setShowClose(false)} />
       )}
 
       <AskPrintModal open={!!askPrint}
@@ -782,58 +810,84 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
 }
 
 // ─── Open a work session ───────────────────────────────────────────────────────
+/**
+ * L'employé connecté ouvre SA session : son nom est imposé et il ne peut pas
+ * ouvrir une caisse au nom d'un collègue. Seul l'administrateur garde le choix
+ * de l'employé — c'est lui qui remet physiquement le fond de caisse au poste.
+ */
 function OpenSessionModal({ moduleKey, defaultName, workers, onClose }: {
   moduleKey: ModuleKey; defaultName: string;
   workers: { id: string; name: string }[];
   onClose: () => void;
 }) {
-  const biz = useBiz(moduleKey);
+  const { open, me, isAdmin } = useBizSessions(moduleKey);
   const [workerId, setWorkerId] = useState('');
   const [name, setName] = useState(defaultName);
   const [openingCash, setOpeningCash] = useState('');
   const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const save = () => {
-    const worker = workers.find(w => w.name === (workers.find(x => x.id === workerId)?.name || ''));
-    const workerName = (workerId ? workers.find(w => w.id === workerId)?.name : name.trim()) || name.trim();
+  const myName = me.name || defaultName;
+
+  const save = async () => {
+    const picked = workers.find(w => w.id === workerId);
+    // Employé : toujours lui-même. Admin : l'employé choisi, sinon son propre nom.
+    const workerName = (isAdmin ? (picked?.name || name) : myName).trim();
+    const ownerId = isAdmin ? picked?.id : me.id;
     if (!workerName) { toast.error("Indiquez le nom de l'employé"); return; }
-    const session: BizSession = {
-      id: newId(),
-      ref: `S-${String(biz.state.sessions.length + 1).padStart(4, '0')}`,
-      workerId: workerId || worker?.id,
+
+    setBusy(true);
+    const res = await open({
+      workerId: ownerId,
       workerName,
       openingCash: Number(openingCash) || 0,
-      openedAt: new Date().toISOString(),
-      status: 'open',
-      notes: notes.trim() || undefined,
-    };
-    biz.add('sessions', session);
+      notes,
+    });
+    setBusy(false);
+    if (!res.ok) { toast.error(res.error || "Session non ouverte"); return; }
     toast.success('Session ouverte');
     onClose();
   };
 
   return (
     <Modal open onClose={onClose} icon={PlayCircle} size="md"
-      title="Ouvrir une session de travail"
-      subtitle="Nom de l'employé et fond de caisse déjà en main"
+      title="Ouvrir ma session de travail"
+      subtitle="Votre nom et le fond de caisse que vous avez déjà en main"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={save}>Ouvrir la session</button>
+        <button className="btn-primary" onClick={save} disabled={busy}>
+          {busy ? 'Ouverture…' : 'Ouvrir la session'}
+        </button>
       </>}>
       <div className="space-y-4">
-        <Field label="Employé">
-          <Select value={workerId} onChange={e => { setWorkerId(e.target.value); const w = workers.find(x => x.id === e.target.value); if (w) setName(w.name); }}>
-            <option value="">— Saisir un nom libre —</option>
-            {workers.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-          </Select>
-        </Field>
-        {!workerId && (
-          <Field label="Nom de l'employé" required>
-            <Input value={name} onChange={e => setName(e.target.value)} placeholder="Nom d'utilisateur de l'employé" />
-          </Field>
+        {isAdmin ? (
+          <>
+            <Field label="Employé" hint="La session appartiendra à cet employé : lui seul pourra vendre dedans et la clôturer.">
+              <Select value={workerId} onChange={e => { setWorkerId(e.target.value); const w = workers.find(x => x.id === e.target.value); if (w) setName(w.name); }}>
+                <option value="">— Saisir un nom libre —</option>
+                {workers.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </Select>
+            </Field>
+            {!workerId && (
+              <Field label="Nom de l'employé" required>
+                <Input value={name} onChange={e => setName(e.target.value)} placeholder="Nom d'utilisateur de l'employé" />
+              </Field>
+            )}
+          </>
+        ) : (
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 flex items-start gap-2">
+            <User className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-[10px] uppercase font-bold text-slate-400">Session ouverte au nom de</p>
+              <p className="font-black text-[#002d87]">{myName}</p>
+              <p className="text-[11px] text-blue-800 mt-1">
+                Cette session n'appartient qu'à vous : vous êtes le seul à y vendre et le seul à la clôturer.
+              </p>
+            </div>
+          </div>
         )}
         <Field label="Fond de caisse à l'ouverture (DA)"
-          hint="Argent que l'employé a déjà en main. Il n'est jamais compté dans le théorique ni dans le décalage.">
+          hint="Argent que vous avez déjà en main. Il n'est jamais compté dans le théorique ni dans le décalage.">
           <Input type="number" value={openingCash} onChange={e => setOpeningCash(e.target.value)} placeholder="0" />
         </Field>
         <Field label="Notes"><Textarea value={notes} onChange={e => setNotes(e.target.value)} /></Field>
@@ -843,33 +897,41 @@ function OpenSessionModal({ moduleKey, defaultName, workers, onClose }: {
 }
 
 // ─── Close a work session ──────────────────────────────────────────────────────
-function CloseSessionModal({ moduleKey, session, onClose }: {
+/**
+ * Seul le propriétaire de la session la clôture. L'administrateur peut clôturer
+ * celle qu'un employé a oubliée (supervision) — c'est écrit noir sur blanc dans
+ * la fenêtre, et la base refuse tout autre cas.
+ */
+export function CloseSessionModal({ moduleKey, session, onClose }: {
   moduleKey: ModuleKey; session: BizSession; onClose: () => void;
 }) {
   const biz = useBiz(moduleKey);
   const { currentUserRole } = useAppState();
+  const { close, owns } = useBizSessions(moduleKey);
   // L'employé clôture en comptant simplement ses espèces ; le théorique et le
   // décalage restent réservés à l'administrateur.
   const isAdmin = currentUserRole === 'admin';
   const fig = figuresForSession(session, biz.state.sales);
   const [closingCash, setClosingCash] = useState('');
   const [notes, setNotes] = useState(session.notes || '');
+  const [busy, setBusy] = useState(false);
 
   const declared = Number(closingCash) || 0;
   // Théorique = encaissements en espèces de la session (le fond d'ouverture est exclu).
   const decalage = declared - fig.cash;
+  const forSomeoneElse = !owns(session);
 
-  const save = () => {
-    biz.update('sessions', {
-      ...session,
-      status: 'closed',
-      closedAt: new Date().toISOString(),
+  const save = async () => {
+    setBusy(true);
+    const res = await close(session, {
       closingCash: declared,
       theoretical: fig.cash,
       credit: fig.credit,
       decalage,
-      notes: notes.trim() || undefined,
+      notes,
     });
+    setBusy(false);
+    if (!res.ok) { toast.error(res.error || 'Session non clôturée'); return; }
     toast.success('Session clôturée');
     onClose();
   };
@@ -879,9 +941,20 @@ function CloseSessionModal({ moduleKey, session, onClose }: {
       title={`Clôturer la session ${session.ref}`} subtitle={session.workerName}
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={save}>Clôturer la session</button>
+        <button className="btn-primary" onClick={save} disabled={busy}>
+          {busy ? 'Clôture…' : 'Clôturer la session'}
+        </button>
       </>}>
       <div className="space-y-4">
+        {forSomeoneElse && (
+          <div className="rounded-xl bg-amber-50 border border-amber-100 p-3 text-xs text-amber-800 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              Cette session appartient à <strong>{session.workerName}</strong>. Vous la clôturez en tant
+              qu'administrateur : la clôture sera enregistrée à votre nom.
+            </span>
+          </div>
+        )}
         {isAdmin ? (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

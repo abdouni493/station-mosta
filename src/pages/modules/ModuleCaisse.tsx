@@ -9,6 +9,8 @@ import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
+import { useBizSessions } from '@/src/hooks/useBizSessions';
+import { CloseSessionModal } from './ModulePOS';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
   Table, Tabs, EmptyState,
@@ -241,10 +243,15 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
  * float, the theoretical takings, what was actually declared at closing and the
  * resulting décalage. The opening float is deliberately excluded from the
  * theoretical figure — the worker owes only what they cashed in during the shift.
+ *
+ * Chaque session appartient à un employé : l'employé connecté ne voit ici que
+ * les siennes, l'administrateur les voit toutes et peut clôturer celle qu'un
+ * employé aurait oubliée.
  */
 function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
-  const { sessions, sales } = biz.state;
+  const { sales } = biz.state;
+  const { visibleSessions: sessions, isAdmin, canClose } = useBizSessions(moduleKey);
 
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
@@ -252,6 +259,7 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
   const [status, setStatus] = useState<'all' | 'open' | 'closed'>('all');
   const [sessionFilter, setSessionFilter] = useState('all');
   const [viewing, setViewing] = useState<BizSession | null>(null);
+  const [closing, setClosing] = useState<BizSession | null>(null);
 
   /** Live figures — a still-open session has no frozen numbers yet. */
   const figuresOf = (s: BizSession) => {
@@ -403,10 +411,20 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
                     {f.decalage === undefined ? '—' : money(f.decalage)}
                   </td>
                   <td className="table-cell text-right">
-                    <button onClick={() => setViewing(s)} title="Détails"
-                      className="w-8 h-8 rounded-lg text-blue-600 hover:bg-blue-50 flex items-center justify-center">
-                      <Eye className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      {/* Clôture : le propriétaire de la session, ou l'admin
+                          quand l'employé est parti sans clôturer. */}
+                      {s.status === 'open' && canClose(s) && (
+                        <button onClick={() => setClosing(s)} title="Clôturer cette session"
+                          className="w-8 h-8 rounded-lg text-red-600 hover:bg-red-50 flex items-center justify-center">
+                          <StopCircle className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button onClick={() => setViewing(s)} title="Détails"
+                        className="w-8 h-8 rounded-lg text-blue-600 hover:bg-blue-50 flex items-center justify-center">
+                        <Eye className="w-4 h-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -416,6 +434,14 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
       )}
 
       {viewing && <SessionDetail session={viewing} figures={figuresOf(viewing)} onClose={() => setViewing(null)} />}
+      {closing && <CloseSessionModal moduleKey={moduleKey} session={closing} onClose={() => setClosing(null)} />}
+
+      {!isAdmin && (
+        <p className="text-[11px] text-slate-400">
+          Vous ne voyez que vos propres sessions de travail : celles de vos collègues ne vous
+          appartiennent pas et ne peuvent pas être modifiées depuis votre poste.
+        </p>
+      )}
     </div>
   );
 }
@@ -435,6 +461,20 @@ function SessionDetail({ session, figures, onClose }: {
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Fond d'ouverture</p><p className="font-bold text-slate-700 text-sm tabular-nums">{money(session.openingCash)}</p></div>
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Statut</p><p className="font-bold text-slate-700 text-sm">{session.status === 'open' ? 'Ouverte' : 'Clôturée'}</p></div>
         </div>
+
+        {/* Traçabilité : qui a ouvert la caisse, qui l'a effectivement clôturée. */}
+        {(session.openedByName || session.closedByName) && (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-[10px] uppercase font-bold text-slate-400">Ouverte par</p>
+              <p className="font-bold text-slate-700 text-sm">{session.openedByName || session.workerName}</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-[10px] uppercase font-bold text-slate-400">Clôturée par</p>
+              <p className="font-bold text-slate-700 text-sm">{session.closedByName || '—'}</p>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="rounded-xl bg-slate-50 p-3 text-center"><p className="text-[10px] uppercase font-bold text-slate-400">Chiffre d'affaires</p><p className="font-black text-slate-700 tabular-nums">{money(figures.total)}</p></div>

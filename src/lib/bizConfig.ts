@@ -370,6 +370,11 @@ export interface BizDestruction {
  * hand — it is NEVER counted in what they owe. The décalage compares the
  * theoretical takings (cash sales of the session) with the cash actually
  * declared at closing, minus the credit granted during the session.
+ *
+ * A session belongs to ONE employee: `workerId` (and `openedById` for a session
+ * an admin opened on their own machine) is what makes it "mine". Two employees
+ * can hold an open session at the same time — each one only ever sees, sells in
+ * and closes their own (see `src/lib/bizSessions.ts`).
  */
 export interface BizSession {
   id: string;
@@ -388,6 +393,14 @@ export interface BizSession {
   theoretical?: number;
   credit?: number;
   decalage?: number;
+  /** Supabase auth user that opened the row — the DB checks ownership on it. */
+  authUserId?: string;
+  /** App id (module worker id, or admin user id) of whoever opened the session. */
+  openedById?: string;
+  openedByName?: string;
+  /** Who actually clôtured it — an admin may close a forgotten session. */
+  closedById?: string;
+  closedByName?: string;
 }
 
 // ─── Encaissement requests raised by a lavage worker ───────────────────────────

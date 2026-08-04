@@ -9,10 +9,11 @@
  *   biz.state.products; biz.add('products', {...}); biz.update('sales', {...}); …
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { createContext, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
-import { BizState, ModuleKey, ModuleState, BizCollection } from '../lib/bizConfig';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
+import { BizState, ModuleKey, ModuleState, BizCollection, BizSession } from '../lib/bizConfig';
 import { buildSeed, EMPTY_MODULE } from '../lib/bizSeed';
-import { loadBizStore, saveBizStore } from '../lib/supabase';
+import { loadBizStore, saveBizStore, subscribeTable } from '../lib/supabase';
+import { loadBizSessions } from '../lib/bizSessions';
 
 const STORAGE_KEY = 'stationpro_biz_v1';
 
@@ -24,6 +25,7 @@ type Action =
   | { type: 'SET'; module: ModuleKey; coll: BizCollection; items: any[] }
   | { type: 'PATCH'; module: ModuleKey; patch: Partial<ModuleState> }
   | { type: 'HYDRATE'; state: BizState }
+  | { type: 'SET_SESSIONS'; sessions: Record<ModuleKey, BizSession[]> }
   | { type: 'RESET' };
 
 function reducer(state: BizState, action: Action): BizState {
@@ -65,6 +67,26 @@ function reducer(state: BizState, action: Action): BizState {
     }
     case 'HYDRATE':
       return action.state;
+    /**
+     * Work sessions come from their own Supabase table, never from the shared
+     * JSON blob: the server copy is the truth, and a session created locally
+     * that has not reached the table yet (offline) is kept behind it so nothing
+     * is ever lost.
+     */
+    case 'SET_SESSIONS': {
+      const next = { ...state } as BizState;
+      (['cafeteria', 'lavage'] as ModuleKey[]).forEach(key => {
+        const remote = action.sessions[key] || [];
+        const known = new Set(remote.map(s => s.id));
+        const localOnly = (state[key]?.sessions || []).filter(s => !known.has(s.id));
+        next[key] = {
+          ...state[key],
+          sessions: [...remote, ...localOnly]
+            .sort((a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime()),
+        };
+      });
+      return next;
+    }
     case 'RESET':
       return buildSeed();
     default:
@@ -198,6 +220,17 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
   // server copy before the initial fetch has had a chance to hydrate.
   const hydratedRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Last snapshot read from `biz_sessions`, re-applied after any blob hydrate so
+  // the shared JSON never resurrects a stale session of another employee.
+  const sessionsRef = useRef<Record<ModuleKey, BizSession[]> | null>(null);
+
+  /** Re-reads the sessions table (one row per session, per employee). */
+  const syncSessions = useCallback(async () => {
+    const remote = await loadBizSessions();
+    if (!remote) return;   // table absent (migration non passée) — le blob suffit
+    sessionsRef.current = remote;
+    dispatch({ type: 'SET_SESSIONS', sessions: remote });
+  }, []);
 
   // Pull the shared state once at mount so every user (admin and part
   // employees) works on the same Restaurant / Cafétéria / Lavage / Magasin data.
@@ -208,11 +241,25 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
       if (cancelled) return;
       if (remote) dispatch({ type: 'HYDRATE', state: remote });
       else saveBizStore(state);   // first run — seed the shared row
+      // The blob may carry an old copy of the sessions: the table wins.
+      if (sessionsRef.current) dispatch({ type: 'SET_SESSIONS', sessions: sessionsRef.current });
       hydratedRef.current = true;
+      syncSessions();
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Sessions de travail — chaque poste voit en direct l'ouverture / la clôture
+  // des autres employés sans jamais écraser leurs lignes.
+  useEffect(() => {
+    const unsub = subscribeTable('biz_sessions', () => { syncSessions(); });
+    // Filet quand le websocket est bloqué (réseau d'entreprise) : au retour sur
+    // l'onglet, on relit la table.
+    const onFocus = () => { syncSessions(); };
+    window.addEventListener('focus', onFocus);
+    return () => { unsub(); window.removeEventListener('focus', onFocus); };
+  }, [syncSessions]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
