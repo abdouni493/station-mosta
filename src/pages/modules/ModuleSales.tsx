@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizSale, BizLineItem, BizProduct, detailPrice } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizSale, BizLineItem, BizProduct, detailPrice, isSellableProduct } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
@@ -267,7 +267,9 @@ function ExchangeModal({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sal
     const q = query.trim().toLowerCase();
     if (!q) return [] as BizProduct[];
     return (products as BizProduct[])
-      .filter(p => p.currentQty > 0 && (p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)))
+      // Une matière première ne part jamais chez le client, même en échange.
+      .filter(p => isSellableProduct(p) && p.currentQty > 0
+        && (p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)))
       .slice(0, 8);
   }, [products, query]);
 

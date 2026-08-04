@@ -6,7 +6,7 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { useState } from 'react';
-import { Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X } from 'lucide-react';
+import { Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff } from 'lucide-react';
 import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
@@ -113,7 +113,7 @@ export function emptyProduct(): Partial<BizProduct> {
     principalQty: 0, currentQty: 0, minQty: 5, purchasePrice: 0, salePrice: 0,
     unit: 'unité', hasExpiration: false, expirationDate: '',
     sellByDetail: false, detailCapacity: 0, detailUnit: 'L', detailSalePrice: 0,
-    imageUrl: '',
+    imageUrl: '', isRawMaterial: false,
   };
 }
 
@@ -165,6 +165,10 @@ export function ProductModal({
     if (!form.name?.trim()) return;
     const marqueName = biz.state.marques.find(x => x.id === form.marqueId)?.name;
     const categoryName = biz.state.categories.find(x => x.id === form.categoryId)?.name;
+    // Une matière première ne se vend pas : la vente au détail, qui n'existe que
+    // pour le point de vente, est retirée avec elle.
+    const isRawMaterial = !!form.isRawMaterial;
+    const sellByDetail = !isRawMaterial && !!form.sellByDetail;
     const product: BizProduct = {
       id: form.id || newId(),
       name: form.name!.trim(),
@@ -180,13 +184,14 @@ export function ProductModal({
       unit: form.unit || 'unité',
       hasExpiration: !!form.hasExpiration,
       expirationDate: form.hasExpiration ? form.expirationDate : undefined,
-      sellByDetail: !!form.sellByDetail,
-      detailCapacity: form.sellByDetail ? Number(form.detailCapacity) || 0 : undefined,
-      detailUnit: form.sellByDetail ? (form.detailUnit || 'L') : undefined,
+      sellByDetail,
+      detailCapacity: sellByDetail ? Number(form.detailCapacity) || 0 : undefined,
+      detailUnit: sellByDetail ? (form.detailUnit || 'L') : undefined,
       // Left empty ⇒ the POS falls back to salePrice / detailCapacity.
-      detailSalePrice: form.sellByDetail && Number(form.detailSalePrice) > 0
+      detailSalePrice: sellByDetail && Number(form.detailSalePrice) > 0
         ? Number(form.detailSalePrice) : undefined,
       imageUrl: form.imageUrl || undefined,
+      isRawMaterial,
       createdAt: form.createdAt || new Date().toISOString(),
     };
     if (isEdit) biz.update('products', product); else biz.add('products', product);
@@ -207,6 +212,32 @@ export function ProductModal({
           <Field label="Nom du produit" required>
             <Input value={form.name || ''} onChange={e => set('name', e.target.value)} placeholder="Ex: Huile de table" />
           </Field>
+        </div>
+
+        {/* ── Matière première ──────────────────────────────────────────────
+            Un ingrédient (farine, café en grains, huile moteur…) se suit en
+            stock et s'achète, mais ne se vend jamais tel quel : il disparaît
+            alors du point de vente. */}
+        <div className={`sm:col-span-2 rounded-xl border px-4 py-3 transition-colors ${
+          form.isRawMaterial ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <Beaker className={`w-4 h-4 mt-0.5 shrink-0 ${form.isRawMaterial ? 'text-amber-600' : 'text-slate-400'}`} />
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-700">Matière première</p>
+                <p className="text-xs text-slate-400">
+                  Ingrédient de production — suivi en stock et en achats, jamais vendu tel quel
+                </p>
+              </div>
+            </div>
+            <Switch checked={!!form.isRawMaterial} onChange={v => set('isRawMaterial', v)} />
+          </div>
+          {form.isRawMaterial && (
+            <p className="mt-2.5 flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+              <EyeOff className="w-3.5 h-3.5 shrink-0" />
+              Ce produit n'apparaîtra pas au point de vente.
+            </p>
+          )}
         </div>
 
         {/* Image Upload Field */}
@@ -343,7 +374,9 @@ export function ProductModal({
 
         {/* ── Vente au détail ───────────────────────────────────────────────
             One packaged unit (a 50 L drum, a 25 kg sack…) can be sold litre by
-            litre. The POS then deducts the fraction actually sold from stock. */}
+            litre. The POS then deducts the fraction actually sold from stock.
+            Sans objet pour une matière première, qui ne se vend pas. */}
+        {!form.isRawMaterial && (
         <div className="sm:col-span-2 flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
           <div>
             <p className="text-sm font-bold text-slate-700">Vente au détail</p>
@@ -351,7 +384,8 @@ export function ProductModal({
           </div>
           <Switch checked={!!form.sellByDetail} onChange={v => set('sellByDetail', v)} />
         </div>
-        {form.sellByDetail && (
+        )}
+        {!form.isRawMaterial && form.sellByDetail && (
           <>
             <Field label="Contenance d'une unité" required hint="Ex: 50 pour un bidon de 50 litres">
               <Input type="number" value={form.detailCapacity ?? 0} onChange={e => set('detailCapacity', e.target.value)} />

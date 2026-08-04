@@ -32,7 +32,7 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizDiscountType,
-  detailPrice, discountOf, posPinKey,
+  detailPrice, discountOf, posPinKey, isSellableProduct,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -126,7 +126,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     // Stock products — including the ones sold au détail. Products are listed
     // even at 0 or negative stock: the POS may oversell them (stock goes minus)
     // and a later purchase settles the shortfall (e.g. −5 stock + 15 reçus = 10).
-    products.forEach(p => {
+    // Les matières premières, elles, ne se vendent pas : elles restent en stock
+    // et en production, mais ne descendent jamais sur le comptoir.
+    products.filter(isSellableProduct).forEach(p => {
       if (p.sellByDetail && (p.detailCapacity || 0) > 0) {
         out.push({
           id: p.id, name: p.name, price: detailPrice(p),

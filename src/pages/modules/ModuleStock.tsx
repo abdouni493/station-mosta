@@ -15,7 +15,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
-  Flame, RotateCcw, Trash, User,
+  Flame, RotateCcw, Trash, User, Beaker, ShoppingBag,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -43,6 +43,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('all');
   const [mrq, setMrq] = useState('all');
+  /** Nature du produit : tout, ce qui se vend, ou ce qui sert à fabriquer. */
+  const [nature, setNature] = useState<'all' | 'sale' | 'raw'>('all');
   const [view, setView] = useState<'grid' | 'table'>('grid');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<BizProduct | null>(null);
@@ -59,8 +61,9 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
     return products.filter(p =>
       (!q || p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)) &&
       (cat === 'all' || p.categoryId === cat) &&
-      (mrq === 'all' || p.marqueId === mrq));
-  }, [products, search, cat, mrq]);
+      (mrq === 'all' || p.marqueId === mrq) &&
+      (nature === 'all' || (nature === 'raw' ? !!p.isRawMaterial : !p.isRawMaterial)));
+  }, [products, search, cat, mrq, nature]);
 
   // ── Destructions du stock ──────────────────────────────────────────────────
   const stockDestructions = useMemo(
@@ -82,6 +85,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
     const soon = new Date(); soon.setDate(soon.getDate() + 7);
     return {
       total: products.length,
+      raw: products.filter(p => p.isRawMaterial).length,
       low: products.filter(p => p.currentQty <= p.minQty).length,
       value: products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0),
       expiring: products.filter(p => p.hasExpiration && p.expirationDate && new Date(p.expirationDate) <= soon).length,
@@ -145,7 +149,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         actions={perm.creer ? <button className="btn-primary" onClick={openNew}><Plus className="w-4 h-4" /> Nouveau produit</button> : undefined} />
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard icon={Boxes} label="Produits" value={stats.total} tone="blue" />
+        <StatCard icon={Boxes} label="Produits" value={stats.total} tone="blue"
+          sub={stats.raw ? `dont ${stats.raw} matière(s) première(s)` : undefined} />
         <StatCard icon={AlertTriangle} label="Stock bas" value={stats.low} tone="red" sub="≤ seuil d'alerte" />
         <StatCard icon={Wallet} label="Valeur du stock" value={money(stats.value)} tone="green" />
         <StatCard icon={CalendarClock} label="Expirent bientôt" value={stats.expiring} tone="amber" sub="≤ 7 jours" />
@@ -173,11 +178,20 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
           <option value="all">Toutes marques</option>
           {marques.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
         </Select>
+        <Select value={nature} onChange={e => setNature(e.target.value as 'all' | 'sale' | 'raw')} className="!w-auto min-w-[180px]">
+          <option value="all">Toute nature</option>
+          <option value="sale">Produits de vente</option>
+          <option value="raw">Matières premières</option>
+        </Select>
         <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
       {filtered.length === 0 ? (
-        <EmptyState icon={Package} title="Aucun produit" message="Ajoutez votre premier produit au catalogue."
+        <EmptyState icon={nature === 'raw' ? Beaker : Package}
+          title={nature === 'raw' ? 'Aucune matière première' : 'Aucun produit'}
+          message={nature === 'raw'
+            ? 'Activez « Matière première » sur un produit pour le réserver à la production et le retirer du point de vente.'
+            : 'Ajoutez votre premier produit au catalogue.'}
           action={perm.creer ? <button className="btn-primary" onClick={openNew}><Plus className="w-4 h-4" /> Nouveau produit</button> : undefined} />
       ) : view === 'grid' ? (
         <CardGrid>
@@ -191,6 +205,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 {lowBadge(p) ? <Badge tone="danger">Stock bas</Badge> : <Badge tone="success">En stock</Badge>}
               </div>
               <div className="flex flex-wrap gap-1.5 mt-2">
+                {p.isRawMaterial && <Badge tone="warning"><Beaker className="w-3 h-3" />Matière première</Badge>}
                 {p.categoryName && <Badge tone="primary"><Layers className="w-3 h-3" />{p.categoryName}</Badge>}
                 {p.marqueName && <Badge tone="neutral"><Tag className="w-3 h-3" />{p.marqueName}</Badge>}
               </div>
@@ -204,10 +219,19 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                   <p className={`font-black tabular-nums ${lowBadge(p) ? 'text-red-600' : 'text-emerald-600'}`}>{p.currentQty} <span className="text-xs font-medium text-slate-400">{p.unit}</span></p>
                 </div>
               </div>
+              {/* Une matière première n'a pas de prix de vente : ce qui compte,
+                  c'est ce qu'elle a coûté. */}
               <div className="flex items-center justify-between mt-3 text-sm">
-                <span className="text-slate-400">Prix vente</span>
-                <span className="font-black text-[#002d87] tabular-nums">{money(p.salePrice)}</span>
+                <span className="text-slate-400">{p.isRawMaterial ? "Prix d'achat" : 'Prix vente'}</span>
+                <span className="font-black text-[#002d87] tabular-nums">
+                  {money(p.isRawMaterial ? p.purchasePrice : p.salePrice)}
+                </span>
               </div>
+              {p.isRawMaterial && (
+                <p className="mt-1.5 text-[11px] font-semibold text-amber-600 flex items-center gap-1">
+                  <ShoppingBag className="w-3 h-3 shrink-0" /> Masquée au point de vente
+                </p>
+              )}
               {p.hasExpiration && p.expirationDate && (
                 <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-600 font-semibold">
                   <CalendarClock className="w-3.5 h-3.5" /> Expire le {formatDate(p.expirationDate)}
@@ -239,12 +263,26 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         </>}>
           {filtered.map(p => (
             <tr key={p.id}>
-              <td className="table-cell"><div className="font-bold text-slate-700">{p.name}</div><div className="text-[11px] text-slate-400 font-mono">{p.barcode || '—'}</div></td>
+              <td className="table-cell">
+                <div className="font-bold text-slate-700 flex items-center gap-1.5">
+                  {p.name}
+                  {p.isRawMaterial && (
+                    <span title="Matière première — masquée au point de vente" className="shrink-0">
+                      <Beaker className="w-3.5 h-3.5 text-amber-500" />
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-400 font-mono">{p.barcode || '—'}</div>
+              </td>
               <td className="table-cell">{p.categoryName || '—'}</td>
               <td className="table-cell">{p.marqueName || '—'}</td>
               <td className="table-cell tabular-nums">{p.principalQty} {p.unit}</td>
               <td className="table-cell tabular-nums font-bold">{p.currentQty} {p.unit}</td>
-              <td className="table-cell tabular-nums">{money(p.salePrice)}</td>
+              <td className="table-cell tabular-nums">
+                {p.isRawMaterial
+                  ? <span className="text-slate-400">— <span className="text-[11px]">matière première</span></span>
+                  : money(p.salePrice)}
+              </td>
               <td className="table-cell">{lowBadge(p) ? <Badge tone="danger">Bas</Badge> : <Badge tone="success">OK</Badge>}</td>
               <td className="table-cell">
                 <RowActions>
@@ -334,8 +372,17 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         title={viewing?.name || ''} subtitle="Détails du produit">
         {viewing && (
           <div className="space-y-4">
+            {viewing.isRawMaterial && (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-center gap-2 text-amber-700">
+                <Beaker className="w-4 h-4 shrink-0" />
+                <span className="font-semibold text-sm">
+                  Matière première — sert à la production et n'apparaît pas au point de vente.
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               {[
+                ['Nature', viewing.isRawMaterial ? 'Matière première' : 'Produit de vente'],
                 ['Code-barres', viewing.barcode || '—'], ['Catégorie', viewing.categoryName || '—'],
                 ['Marque', viewing.marqueName || '—'], ['Unité', viewing.unit || '—'],
                 ['Quantité principale', `${viewing.principalQty} ${viewing.unit}`], ['Reste en stock', `${viewing.currentQty} ${viewing.unit}`],

@@ -67,8 +67,17 @@ export interface BizProduct {
   detailSalePrice?: number;
   /** Image URL (stored in Supabase products bucket or base64 fallback). */
   imageUrl?: string;
+  /**
+   * Matière première : le produit sert à FABRIQUER (production, fiches
+   * techniques, réparations) et ne se vend jamais tel quel. Il reste dans la
+   * Gestion de stock et dans les Achats, mais n'apparaît PAS au point de vente.
+   */
+  isRawMaterial?: boolean;
   createdAt: string;
 }
+
+/** Un produit ne s'affiche au point de vente que s'il n'est pas une matière première. */
+export const isSellableProduct = (p: Pick<BizProduct, 'isRawMaterial'>) => !p.isRawMaterial;
 
 /** Price of one detail unit of a product sold "au détail". */
 export function detailPrice(p: Pick<BizProduct, 'salePrice' | 'detailCapacity' | 'detailSalePrice'>): number {
