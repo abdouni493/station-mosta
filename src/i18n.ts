@@ -86,6 +86,8 @@ const resources = {
         my_payments: "Mes Paiements",
         settings: "Paramètres",
         logout: "Déconnexion",
+        hide_sidebar: "Masquer le menu",
+        show_sidebar: "Afficher le menu",
       },
 
       routes: {
@@ -218,6 +220,8 @@ const resources = {
         my_payments: "مدفوعاتي",
         settings: "الإعدادات",
         logout: "تسجيل الخروج",
+        hide_sidebar: "إخفاء القائمة",
+        show_sidebar: "إظهار القائمة",
       },
 
       routes: {

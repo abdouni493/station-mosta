@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { Menu, Bell, Globe, ChevronRight, Fuel, X, Search } from "lucide-react";
+import { Bell, Globe, ChevronRight, Fuel, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { useAppState } from "../store/AppContext";
 import { MODULES, ModuleKey } from "../lib/bizConfig";
@@ -93,6 +93,7 @@ const routeTitles: Record<string, { title: string; subtitle: string; emoji: stri
 
 const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
   const { t, i18n } = useTranslation();
+  const isRtl = i18n.dir() === "rtl";
   const navigate = useNavigate();
   const baseRoute = routeTitles[activePath] || MODULE_ROUTE_TITLES[activePath] || { title: "altech station", subtitle: "", emoji: "⛽" };
   const keys = routeKeys[activePath];
@@ -170,12 +171,19 @@ const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
         boxShadow: "0 1px 16px rgba(0,48,135,0.07)"
       }}
     >
-      {/* Menu Toggle */}
+      {/* Sidebar toggle — hides the whole sidebar on desktop, opens/closes the
+          drawer on mobile. Same button, one click each way. */}
       <button
         onClick={onMenuToggle}
-        className="lg:hidden p-2 hover:bg-slate-100 rounded-xl text-slate-600 transition-all duration-200 hover:text-blue-700"
+        aria-expanded={sidebarOpen}
+        aria-label={sidebarOpen ? t('nav.hide_sidebar') : t('nav.show_sidebar')}
+        title={sidebarOpen ? t('nav.hide_sidebar') : t('nav.show_sidebar')}
+        className="p-2 hover:bg-slate-100 rounded-xl text-slate-600 transition-all duration-200 hover:text-blue-700 flex-shrink-0"
       >
-        {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        {sidebarOpen
+          ? <PanelLeftClose className="w-5 h-5" style={{ transform: isRtl ? "scaleX(-1)" : undefined }} />
+          : <PanelLeftOpen  className="w-5 h-5" style={{ transform: isRtl ? "scaleX(-1)" : undefined }} />
+        }
       </button>
 
       {/* Breadcrumb + Title */}

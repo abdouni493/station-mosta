@@ -4,11 +4,41 @@ import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
 import { useAppState } from "../store/AppContext";
 
+/** localStorage key holding the desktop "sidebar hidden" preference. */
+const SIDEBAR_HIDDEN_KEY = "sidebarHidden";
+
 const Layout = ({ children, onRouteChange, onLogout }: { children: React.ReactNode; onRouteChange?: (route: string) => void; onLogout?: () => void }) => {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);          // mobile drawer
   const location = useLocation();
   const navigate = useNavigate();
   const { currentUserRole, currentUserId, currentUserPermissions, currentModuleWorker } = useAppState();
+
+  // On desktop the sidebar is part of the layout, so hiding it means collapsing
+  // its column to 0 (the <aside> itself slides out). The choice is remembered
+  // across reloads — a user who works full-width expects it to stay that way.
+  const [sidebarHidden, setSidebarHidden] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_HIDDEN_KEY) === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(SIDEBAR_HIDDEN_KEY, sidebarHidden ? "1" : "0"); } catch { /* private mode */ }
+  }, [sidebarHidden]);
+
+  // Which sidebar the navbar button drives depends on the breakpoint (lg = 1024px).
+  const [isDesktop, setIsDesktop] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    setIsDesktop(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  const toggleSidebar = () => {
+    if (isDesktop) setSidebarHidden(h => !h);
+    else setSidebarOpen(o => !o);
+  };
 
   // Save the current route whenever it changes
   useEffect(() => {
@@ -29,10 +59,13 @@ const Layout = ({ children, onRouteChange, onLogout }: { children: React.ReactNo
 
   return (
     <div className="flex min-h-screen" style={{ background: "var(--color-surface)" }}>
-      {/* Sidebar — always visible on lg+ */}
-      <div className="hidden lg:block" style={{ width: "var(--sidebar-width)", flexShrink: 0 }}>
+      {/* Sidebar — visible on lg+ unless hidden from the navbar toggle */}
+      <div
+        className="hidden lg:block transition-[width] duration-300 ease-in-out"
+        style={{ width: sidebarHidden ? 0 : "var(--sidebar-width)", flexShrink: 0 }}
+      >
         <Sidebar
-          isOpen={true}
+          isOpen={!sidebarHidden}
           onClose={() => {}}
           {...sidebarProps}
         />
@@ -50,8 +83,8 @@ const Layout = ({ children, onRouteChange, onLogout }: { children: React.ReactNo
       {/* Main Content */}
       <div className="flex flex-col flex-1 min-w-0">
         <Navbar
-          onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
-          sidebarOpen={sidebarOpen}
+          onMenuToggle={toggleSidebar}
+          sidebarOpen={isDesktop ? !sidebarHidden : sidebarOpen}
           activePath={location.pathname}
         />
         <main className="flex-1 p-4 lg:p-6 overflow-auto custom-scrollbar">
