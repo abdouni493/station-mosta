@@ -213,10 +213,15 @@ export default function GeneralReports() {
     expenseRows.sort(byDateDesc);
 
     // ── Bénéfice net — décomposition par activité (lecture seule) ──
+    // Le sous-titre déroule le calcul complet : ce qui a été vendu, ce que la
+    // marchandise a coûté, puis les charges — c'est là que se lit l'écart entre
+    // le prix de vente d'un produit et le gain qu'il rapporte vraiment.
     const netRows: DetailRow[] = global.parts.map(p => ({
       id: p.key, label: `${p.emoji} ${p.label}`,
-      sub: `Marge ${money(p.grossMargin)} − charges ${money(p.expensesTotal + p.salariesPaid)}`
-        + (p.destroyedValue > 0 ? ` − destructions ${money(p.destroyedValue)}` : ''),
+      sub: `Ventes ${money(p.salesTotal)} − coût marchandises ${money(p.cogs)} = marge ${money(p.grossMargin)}`
+        + ` − charges ${money(p.expensesTotal + p.salariesPaid)}`
+        + (p.destroyedValue > 0 ? ` − destructions ${money(p.destroyedValue)}` : '')
+        + (p.lossValue > 0 ? ` − pertes ${money(p.lossValue)}` : ''),
       amount: p.netGain, amountTone: p.netGain >= 0 ? 'green' : 'red',
     }));
 
@@ -297,7 +302,7 @@ export default function GeneralReports() {
     return {
       salesTotal:   { title: 'Ventes totales', icon: TrendingUp, subtitle: 'Détail de toutes les ventes de la période', rows: salesRows, total: global.salesTotal, totalLabel: 'Total ventes' },
       expenses:     { title: 'Dépenses + salaires', icon: CreditCard, subtitle: 'Dépenses et salaires de la période', rows: expenseRows, total: global.expensesTotal + global.salariesPaid, totalLabel: 'Total charges', note: 'Les salaires sont calculés par la paie — supprimez-les depuis la fiche employé.' },
-      netGain:      { title: 'Bénéfice net global', icon: CircleDollarSign, subtitle: 'Décomposition par activité', rows: netRows, total: global.netGain, totalLabel: 'Bénéfice net', note: 'Lignes calculées — non supprimables.' },
+      netGain:      { title: 'Total des gains', icon: CircleDollarSign, subtitle: 'Décomposition par activité', rows: netRows, total: global.netGain, totalLabel: 'Gain net', note: `Ventes ${money(global.salesTotal)} − coût des marchandises vendues ${money(global.cogs)} = marge brute ${money(global.grossMargin)}, moins les dépenses, salaires, destructions et pertes. Le gain d'un produit fabriqué est son prix de vente MOINS le coût de ses ingrédients — jamais le prix de vente entier. Lignes calculées — non supprimables.` },
       stockValue:   { title: 'Valeur du stock', icon: Boxes, subtitle: "Produits en stock valorisés au prix d'achat", rows: stockRows, total: global.stockValue, totalLabel: 'Valeur totale' },
       destructions: { title: 'Destructions', icon: Flame, subtitle: 'Marchandise perdue (périmée, cassée, volée) — stock & comptoir', rows: destructionRows, total: global.destroyedValue, totalLabel: 'Coût total des pertes', note: 'Le coût des destructions est déduit du bénéfice net. Supprimer une ligne ne remet PAS la quantité en stock — utilisez « Récupérer » depuis la Gestion de stock.' },
       clientDebt:   { title: 'Dettes clients', icon: Users, subtitle: 'Encours clients (toutes dates)', rows: clientDebtRows, total: global.clientDebtTotal, totalLabel: 'Total encours' },
@@ -485,6 +490,90 @@ function OverviewCard({ icon: Icon, label, value, sub, tone = 'blue', onClick, c
   return <div className="rounded-2xl border border-slate-100 p-4 bg-white shadow-sm">{inner}</div>;
 }
 
+/**
+ * Bandeau de tête du rapport global : les trois totaux de la période — ventes,
+ * dépenses, gain — suivis du calcul qui mène de l'un à l'autre.
+ *
+ * Le gain affiché n'est JAMAIS le montant encaissé : une part vendue 30 DA dont
+ * les ingrédients ont coûté 12 DA rapporte 18 DA. Le coût des marchandises est
+ * donc montré explicitement entre les ventes et la marge.
+ */
+function ResultBand({ salesTotal, cogs, grossMargin, chargesTotal, destroyedValue, lossValue, netGain, salesCount, onOpenCard }: {
+  salesTotal: number; cogs: number; grossMargin: number; chargesTotal: number;
+  destroyedValue: number; lossValue: number; netGain: number; salesCount: number;
+  onOpenCard: (k: CardKey) => void;
+}) {
+  const positive = netGain >= 0;
+  const steps: { label: string; value: number; sign: '' | '−' | '='; tone: string }[] = [
+    { label: 'Ventes encaissées', value: salesTotal, sign: '', tone: 'text-emerald-700' },
+    { label: 'Coût des marchandises vendues', value: cogs, sign: '−', tone: 'text-amber-700' },
+    { label: 'Marge brute', value: grossMargin, sign: '=', tone: 'text-blue-700' },
+    { label: 'Dépenses + salaires', value: chargesTotal, sign: '−', tone: 'text-red-600' },
+    ...(destroyedValue > 0 ? [{ label: 'Destructions', value: destroyedValue, sign: '−' as const, tone: 'text-red-600' }] : []),
+    ...(lossValue > 0 ? [{ label: 'Pertes de production', value: lossValue, sign: '−' as const, tone: 'text-red-600' }] : []),
+    { label: 'Gain net', value: netGain, sign: '=', tone: positive ? 'text-emerald-600' : 'text-red-600' },
+  ];
+
+  return (
+    <div className="space-y-3">
+      {/* Les trois totaux */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <button onClick={() => onOpenCard('salesTotal')}
+          className="rounded-2xl p-5 text-white text-left transition-transform hover:-translate-y-0.5"
+          style={{ background: 'linear-gradient(135deg,#065f46,#047857)' }}>
+          <div className="flex items-center gap-2 text-emerald-100">
+            <TrendingUp className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Total des ventes</span>
+          </div>
+          <p className="text-3xl font-black tabular-nums mt-1.5">{money(salesTotal)}</p>
+          <p className="text-[11px] text-emerald-100 mt-0.5">{salesCount} opération(s) — voir le détail →</p>
+        </button>
+
+        <button onClick={() => onOpenCard('expenses')}
+          className="rounded-2xl p-5 text-white text-left transition-transform hover:-translate-y-0.5"
+          style={{ background: 'linear-gradient(135deg,#991b1b,#dc2626)' }}>
+          <div className="flex items-center gap-2 text-red-100">
+            <CreditCard className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Total des dépenses</span>
+          </div>
+          <p className="text-3xl font-black tabular-nums mt-1.5">{money(chargesTotal)}</p>
+          <p className="text-[11px] text-red-100 mt-0.5">Dépenses + salaires — voir le détail →</p>
+        </button>
+
+        <button onClick={() => onOpenCard('netGain')}
+          className="rounded-2xl p-5 text-white text-left transition-transform hover:-translate-y-0.5"
+          style={{ background: positive ? 'linear-gradient(135deg,#001f5c,#003087)' : 'linear-gradient(135deg,#7f1d1d,#b91c1c)' }}>
+          <div className="flex items-center gap-2" style={{ color: positive ? 'rgba(255,184,0,0.85)' : '#fecaca' }}>
+            <CircleDollarSign className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Total des gains</span>
+          </div>
+          <p className="text-3xl font-black tabular-nums mt-1.5" style={{ color: positive ? '#FFB800' : '#fff' }}>{money(netGain)}</p>
+          <p className="text-[11px] mt-0.5" style={{ color: positive ? 'rgba(255,255,255,0.7)' : '#fecaca' }}>
+            Bénéfice réel, coût des produits déduit →
+          </p>
+        </button>
+      </div>
+
+      {/* Le calcul, étape par étape */}
+      <div className="card-glass p-4">
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Comment le gain est calculé</p>
+        <div className="flex flex-wrap items-stretch gap-2">
+          {steps.map((s, i) => (
+            <React.Fragment key={s.label}>
+              {i > 0 && <span className="self-center text-slate-300 font-black text-lg px-0.5">{s.sign}</span>}
+              <div className={cn('rounded-xl px-3 py-2 flex-1 min-w-[130px]', s.sign === '=' ? 'bg-slate-100' : 'bg-slate-50')}>
+                <p className="text-[10px] uppercase font-bold text-slate-400 leading-tight">{s.label}</p>
+                <p className={cn('font-black tabular-nums text-sm mt-0.5', s.tone)}>{money(s.value)}</p>
+              </div>
+            </React.Fragment>
+          ))}
+        </div>
+        <p className="text-[11px] text-slate-400 italic mt-3">
+          Un produit vendu {money(30)} qui a coûté {money(12)} à fabriquer ou à acheter rapporte {money(18)} :
+          c'est ce montant-là qui alimente « Total des gains », jamais le prix de vente entier.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOpenPurchases, onOpenCard }: {
   global: GlobalReport;
   workforce: ReturnType<typeof computeWorkforce>;
@@ -493,14 +582,26 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
   onOpenPurchases: () => void;
   onOpenCard: (k: CardKey) => void;
 }) {
+  const chargesTotal = g.expensesTotal + g.salariesPaid;
   return (
     <div className="space-y-8">
+      {/* Les trois chiffres que le gérant vient chercher : ce qui est entré, ce
+          qui est sorti, et ce qui reste réellement dans la poche. */}
+      <ResultBand
+        salesTotal={g.salesTotal} cogs={g.cogs} grossMargin={g.grossMargin}
+        chargesTotal={chargesTotal} destroyedValue={g.destroyedValue} lossValue={g.lossValue}
+        netGain={g.netGain} salesCount={g.counts.sales}
+        onOpenCard={onOpenCard}
+      />
+
       {/* KPI cards — chaque carte est cliquable et ouvre le détail de son calcul */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <OverviewCard icon={TrendingUp} tone="green" label="Ventes totales" value={money(g.salesTotal)} sub={`${g.counts.sales} opérations`} onClick={() => onOpenCard('salesTotal')} cta="Voir le détail" />
         <OverviewCard icon={ShoppingCart} tone="purple" label="Achats totaux" value={money(g.purchasesTotal)} sub={`${g.counts.purchases} factures`} onClick={onOpenPurchases} cta="Détail par carburant" />
-        <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(g.expensesTotal + g.salariesPaid)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
-        <OverviewCard icon={CircleDollarSign} tone={g.netGain >= 0 ? 'green' : 'red'} label="Bénéfice net global" value={money(g.netGain)} onClick={() => onOpenCard('netGain')} cta="Décomposition" />
+        <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(chargesTotal)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
+        {/* Le coût des marchandises vendues : la part du prix de vente qui n'est
+            pas un gain (les ingrédients, le prix d'achat). */}
+        <OverviewCard icon={Layers} tone="amber" label="Coût marchandises" value={money(g.cogs)} sub={`Marge brute ${money(g.grossMargin)}`} onClick={() => onOpenCard('netGain')} cta="Décomposition du gain" />
         <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
         <OverviewCard icon={Flame} tone="red" label="Destructions" value={money(g.destroyedValue)} sub="marchandise perdue" onClick={() => onOpenCard('destructions')} cta="Voir le détail" />
         <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} onClick={() => onOpenCard('clientDebt')} cta="Voir le détail" />
@@ -571,17 +672,8 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
         </div>
       </div>
 
-      {/* Net gain hero */}
-      <div className="rounded-2xl p-6 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-        style={{ background: g.netGain >= 0 ? 'linear-gradient(135deg,#065f46,#047857)' : 'linear-gradient(135deg,#991b1b,#dc2626)' }}>
-        <div>
-          <p className="text-sm font-bold uppercase tracking-wide opacity-90">Gain net total — toutes activités</p>
-          <p className="text-xs opacity-75 mt-1">Somme des bénéfices nets de chaque activité sur la période</p>
-        </div>
-        <p className="text-5xl font-black tabular-nums">{money(g.netGain)}</p>
-      </div>
-
-      {/* Comparatif par activité */}
+      {/* Comparatif par activité — le coût des marchandises est affiché à côté des
+          ventes pour que le gain de chaque activité se lise de bout en bout. */}
       <div className="space-y-3">
         <h3 className="font-black text-[#002d87] flex items-center gap-2"><FileBarChart className="w-5 h-5 text-[#FFB800]" /> Comparatif par activité</h3>
         <div className="card-glass overflow-hidden">
@@ -589,8 +681,9 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
             <table className="w-full border-collapse">
               <thead><tr>
                 <th className="table-head">Activité</th><th className="table-head text-right">Ventes</th><th className="table-head text-right">Achats</th>
+                <th className="table-head text-right">Coût marchand.</th>
                 <th className="table-head text-right">Dépenses</th><th className="table-head text-right">Marge brute</th>
-                <th className="table-head text-right">Dettes clients</th><th className="table-head text-right">Bénéfice net</th><th className="table-head" />
+                <th className="table-head text-right">Dettes clients</th><th className="table-head text-right">Gain net</th><th className="table-head" />
               </tr></thead>
               <tbody>
                 {g.parts.map(p => (
@@ -598,6 +691,7 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
                     <td className="table-cell font-bold whitespace-nowrap">{p.emoji} {p.label}</td>
                     <td className="table-cell tabular-nums text-right text-emerald-600">{money(p.salesTotal)}</td>
                     <td className="table-cell tabular-nums text-right">{money(p.purchasesTotal)}</td>
+                    <td className="table-cell tabular-nums text-right text-amber-700">{money(p.cogs)}</td>
                     <td className="table-cell tabular-nums text-right text-red-600">{money(p.expensesTotal + p.salariesPaid)}</td>
                     <td className="table-cell tabular-nums text-right text-blue-700">{money(p.grossMargin)}</td>
                     <td className="table-cell tabular-nums text-right text-amber-600">{money(p.clientDebtTotal)}</td>
@@ -609,7 +703,8 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
                   <td className="table-cell font-black text-[#002d87]">TOTAL</td>
                   <td className="table-cell tabular-nums text-right font-black text-emerald-600">{money(g.salesTotal)}</td>
                   <td className="table-cell tabular-nums text-right font-black">{money(g.purchasesTotal)}</td>
-                  <td className="table-cell tabular-nums text-right font-black text-red-600">{money(g.expensesTotal + g.salariesPaid)}</td>
+                  <td className="table-cell tabular-nums text-right font-black text-amber-700">{money(g.cogs)}</td>
+                  <td className="table-cell tabular-nums text-right font-black text-red-600">{money(chargesTotal)}</td>
                   <td className="table-cell tabular-nums text-right font-black text-blue-700">{money(g.grossMargin)}</td>
                   <td className="table-cell tabular-nums text-right font-black text-amber-600">{money(g.clientDebtTotal)}</td>
                   <td className={cn('table-cell tabular-nums text-right font-black', g.netGain >= 0 ? 'text-emerald-600' : 'text-red-600')}>{money(g.netGain)}</td>

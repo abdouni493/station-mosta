@@ -93,6 +93,15 @@ export interface BizLineItem {
   qty: number;
   /** Unit price of the line: purchase price on an achat, sale price on a vente. */
   unitPrice: number;
+  /**
+   * Coût de revient d'UNE unité de `qty`, figé au moment de la vente — c'est lui
+   * qui donne le vrai gain d'une ligne (vendue 30 DA, coûtée 12 DA → gain 18 DA).
+   * Selon la provenance : prix d'achat du produit, coût unitaire d'une production
+   * mise au comptoir, ou coût de revient d'une fiche technique vendue en direct.
+   * Absent sur les anciennes ventes : le rapport le retrouve alors dans le stock,
+   * le comptoir ou la fiche (voir `bizReporting.computeModuleReport`).
+   */
+  unitCost?: number;
   minQty?: number;
   hasExpiration?: boolean;
   expirationDate?: string;
@@ -362,6 +371,13 @@ export interface BizDestruction {
   unit?: string;
   /** Coût unitaire retenu pour valoriser la perte. */
   unitPrice: number;
+  /**
+   * Coût de revient réel d'une unité (prix d'achat / coût de production). Côté
+   * comptoir, `unitPrice` est le prix de VENTE : sans ce champ, un produit
+   * récupéré revenait au comptoir avec un coût égal à son prix de vente et son
+   * gain tombait à zéro dans les rapports.
+   */
+  unitCost?: number;
   value: number;
   reason?: string;
   date: string;

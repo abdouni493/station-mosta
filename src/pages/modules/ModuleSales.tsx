@@ -279,10 +279,10 @@ function ExchangeModal({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sal
       const unitPrice = detailPrice(p);
       setLines(prev => [...prev, {
         productId: p.id, productName: p.name, detailQty: 1, detailUnit: p.detailUnit || 'L',
-        qty: 1 / (p.detailCapacity || 1), unitPrice, total: unitPrice,
+        qty: 1 / (p.detailCapacity || 1), unitPrice, unitCost: p.purchasePrice || 0, total: unitPrice,
       }]);
     } else {
-      setLines(prev => [...prev, { productId: p.id, productName: p.name, qty: 1, unitPrice: p.salePrice, total: p.salePrice }]);
+      setLines(prev => [...prev, { productId: p.id, productName: p.name, qty: 1, unitPrice: p.salePrice, unitCost: p.purchasePrice || 0, total: p.salePrice }]);
     }
     setQuery('');
   };

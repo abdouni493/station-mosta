@@ -42,6 +42,9 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
       id: newId(), source: 'comptoir', productName: destroying.productName,
       categoryName: destroying.categoryName, qty: amount, unit: destroying.unit,
       unitPrice: destroying.unitPrice,
+      // Coût de production conservé à part : c'est lui qui repartira au comptoir
+      // si le produit est récupéré, jamais le prix de vente.
+      unitCost: destroying.purchasePrice || 0,
       value: amount * destroying.unitPrice, reason, date: new Date().toISOString(), createdBy: 'Admin', recovered: false,
     } as BizDestruction);
     toast.success('Destruction enregistrée');
@@ -53,7 +56,9 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
     // Return qty to comptoir (find matching item or create)
     const existing = comptoir.find(c => c.productName === d.productName);
     if (existing) biz.update('comptoir', { ...existing, qty: existing.qty + d.qty });
-    else biz.add('comptoir', { id: newId(), productName: d.productName, qty: d.qty, unitPrice: d.unitPrice, purchasePrice: d.unitPrice, date: new Date().toISOString() });
+    // Le produit revient avec son coût de revient — le prix de vente n'est un
+    // coût pour personne, et le retenir mettrait son gain à zéro.
+    else biz.add('comptoir', { id: newId(), productName: d.productName, categoryName: d.categoryName, qty: d.qty, unit: d.unit, unitPrice: d.unitPrice, purchasePrice: d.unitCost ?? 0, date: new Date().toISOString() });
     toast.success('Produit récupéré au comptoir');
   };
 

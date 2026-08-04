@@ -51,6 +51,12 @@ interface CartLine {
   max: number;
   unit?: string;
   kind: LineKind;
+  /**
+   * Coût de revient d'UNE unité conditionnée (prix d'achat du produit, coût
+   * unitaire d'une production au comptoir, coût de revient d'une fiche). Figé
+   * sur la vente pour que le rapport calcule le vrai gain de la ligne.
+   */
+  unitCost: number;
   /** Set for products sold au détail: how much of one unit a detail unit is. */
   detailCapacity?: number;
   detailUnit?: string;
@@ -64,6 +70,8 @@ interface Source {
   avail: number;
   unit?: string;
   kind: LineKind;
+  /** Coût de revient d'une unité conditionnée — reporté tel quel sur la vente. */
+  unitCost: number;
   categoryName?: string;
   detail?: boolean;
   detailCapacity?: number;
@@ -117,6 +125,8 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
         out.push({
           id: c.id, name: c.productName, price: c.unitPrice, avail: c.qty,
           unit: c.unit, kind: 'comptoir', categoryName: c.categoryName,
+          // Coût de revient sorti de la production qui a alimenté le comptoir.
+          unitCost: c.purchasePrice || matchingFiche?.costPerUnit || 0,
           imageUrl: matchingProd?.imageUrl || matchingFiche?.imageUrl,
           pinKey: posPinKey('comptoir', c.productName),
         });
@@ -134,6 +144,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           id: p.id, name: p.name, price: detailPrice(p),
           avail: p.currentQty * (p.detailCapacity || 0),
           unit: p.detailUnit, kind: 'product', categoryName: p.categoryName,
+          // Toujours le coût d'UNE unité conditionnée : la ligne de vente
+          // convertit la quantité au détail en unités conditionnées.
+          unitCost: p.purchasePrice || 0,
           detail: true, detailCapacity: p.detailCapacity, detailUnit: p.detailUnit,
           imageUrl: p.imageUrl,
           pinKey: posPinKey('product', p.id),
@@ -142,6 +155,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
         out.push({
           id: p.id, name: p.name, price: p.salePrice, avail: p.currentQty,
           unit: p.unit, kind: 'product', categoryName: p.categoryName,
+          unitCost: p.purchasePrice || 0,
           imageUrl: p.imageUrl,
           pinKey: posPinKey('product', p.id),
         });
@@ -153,6 +167,8 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       id: f.id, name: f.name, price: f.unitPrice,
       avail: maxFicheServings(f, products), unit: f.sellUnit || 'unité',
       kind: 'fiche', categoryName: f.categoryName, fiche: f,
+      // Coût des ingrédients d'UNE part, déduits du stock à la vente.
+      unitCost: f.costPerUnit || 0,
       imageUrl: f.imageUrl,
       pinKey: posPinKey('fiche', f.id),
     }));
@@ -210,7 +226,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       }
       return [...prev, {
         id: s.id, name: s.name, unitPrice: s.price, qty: oversell ? qty : Math.min(s.avail, qty),
-        max: s.avail, unit: s.unit, kind: s.kind,
+        max: s.avail, unit: s.unit, kind: s.kind, unitCost: s.unitCost,
         detailCapacity: s.detailCapacity, detailUnit: s.detailUnit,
       }];
     });
@@ -240,14 +256,16 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     if (passage && rest > 0) { toast.error('Un client est requis pour une vente à crédit'); return; }
 
     const client = clients.find(c => c.id === clientId);
+    // `unitCost` accompagne chaque ligne : il est toujours exprimé pour UNE unité
+    // de `qty`, donc pour une unité conditionnée sur une vente au détail.
     const items: BizLineItem[] = cart.map(l => l.detailCapacity
       ? {
         productId: l.id, productName: l.name,
-        qty: l.qty / l.detailCapacity, unitPrice: l.unitPrice,
+        qty: l.qty / l.detailCapacity, unitPrice: l.unitPrice, unitCost: l.unitCost,
         detailQty: l.qty, detailUnit: l.detailUnit,
         total: l.qty * l.unitPrice,
       }
-      : { productId: l.id, productName: l.name, qty: l.qty, unitPrice: l.unitPrice, total: l.qty * l.unitPrice });
+      : { productId: l.id, productName: l.name, qty: l.qty, unitPrice: l.unitPrice, unitCost: l.unitCost, total: l.qty * l.unitPrice });
 
     const sale: BizSale = {
       id: newId(), ref: `V-${String(biz.state.sales.length + 1).padStart(4, '0')}`,

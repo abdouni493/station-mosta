@@ -110,10 +110,39 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   const cfg = MODULES[key];
   const prodById = new Map(st.products.map(p => [p.id, p]));
   const prodByName = new Map(st.products.map(p => [p.name, p]));
-  const costOfItem = (it: { productId?: string; productName: string; qty: number }): number => {
-    const p = (it.productId && prodById.get(it.productId)) || prodByName.get(it.productName);
-    return (p?.purchasePrice || 0) * (it.qty || 0);
+  // Un produit vendu ne vient pas forcément du catalogue : une production mise au
+  // comptoir et une fiche technique vendue en direct portent leur PROPRE coût de
+  // revient (`purchasePrice` / `costPerUnit`). Sans ces deux tables, la vente
+  // d'une production comptait pour 0 DA de coût et son « gain » valait le prix de
+  // vente entier (30 DA affichés au lieu des 18 DA réellement gagnés).
+  const comptoirById = new Map((st.comptoir || []).map(c => [c.id, c]));
+  const comptoirByName = new Map((st.comptoir || []).map(c => [c.productName, c]));
+  const ficheById = new Map((st.fiches || []).map(f => [f.id, f]));
+  const ficheByName = new Map((st.fiches || []).map(f => [f.name, f]));
+
+  /** Coût de revient d'UNE unité vendue, quelle que soit sa provenance. */
+  const unitCostOf = (it: { productId?: string; productName: string; unitCost?: number }): number => {
+    // Coût figé au moment de la vente : c'est la source de vérité quand il existe
+    // (le prix d'achat du produit a pu changer depuis).
+    if (typeof it.unitCost === 'number' && it.unitCost > 0) return it.unitCost;
+    const id = it.productId || '';
+    const p = prodById.get(id) || prodByName.get(it.productName);
+    if (p) return p.purchasePrice || 0;
+    const c = comptoirById.get(id) || comptoirByName.get(it.productName);
+    if (c) return c.purchasePrice || 0;
+    const f = ficheById.get(id) || ficheByName.get(it.productName);
+    if (f) return f.costPerUnit || 0;
+    return 0;
   };
+  /** Unité d'affichage d'une ligne, prise là où le produit existe vraiment. */
+  const unitOf = (it: { productId?: string; productName: string }): string | undefined => {
+    const id = it.productId || '';
+    return (prodById.get(id) || prodByName.get(it.productName))?.unit
+      || (comptoirById.get(id) || comptoirByName.get(it.productName))?.unit
+      || (ficheById.get(id) || ficheByName.get(it.productName))?.sellUnit;
+  };
+  const costOfItem = (it: { productId?: string; productName: string; qty: number; unitCost?: number }): number =>
+    unitCostOf(it) * (it.qty || 0);
 
   const salesInRange = st.sales.filter(s => within(s.date, from, to));
   const repsInRange = (st.reparations || []).filter(r => within(r.date, from, to));
@@ -152,14 +181,14 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   const bp: Record<string, { qty: number; revenue: number; cost: number; unit?: string }> = {};
   salesInRange.forEach(s => s.items.forEach(it => {
     const k = it.productName;
-    (bp[k] ||= { qty: 0, revenue: 0, cost: 0, unit: (prodById.get(it.productId || '') || prodByName.get(it.productName))?.unit });
+    (bp[k] ||= { qty: 0, revenue: 0, cost: 0, unit: unitOf(it) });
     bp[k].qty += it.qty;
     bp[k].revenue += it.total ?? it.qty * it.unitPrice;
     bp[k].cost += costOfItem(it);
   }));
   repsInRange.forEach(r => (r.usedProducts || []).forEach(it => {
     const k = it.productName;
-    (bp[k] ||= { qty: 0, revenue: 0, cost: 0 });
+    (bp[k] ||= { qty: 0, revenue: 0, cost: 0, unit: unitOf(it) });
     bp[k].qty += it.qty;
     bp[k].revenue += it.total ?? it.qty * it.unitPrice;
     bp[k].cost += costOfItem(it);
@@ -398,6 +427,8 @@ export interface GlobalReport {
   from: string; to: string;
   parts: PartReport[];
   salesTotal: number; purchasesTotal: number; expensesTotal: number; salariesPaid: number;
+  /** Coût des marchandises vendues — ce que les ventes ont réellement coûté. */
+  cogs: number;
   grossMargin: number; clientDebtTotal: number; supplierDebtTotal: number; stockValue: number;
   destroyedValue: number; lossValue: number; netGain: number;
   stockAlerts: number; expiryAlerts: number;
@@ -412,6 +443,7 @@ export function consolidate(parts: PartReport[], from: string, to: string): Glob
     purchasesTotal: sum(p => p.purchasesTotal),
     expensesTotal: sum(p => p.expensesTotal),
     salariesPaid: sum(p => p.salariesPaid),
+    cogs: sum(p => p.cogs),
     grossMargin: sum(p => p.grossMargin),
     clientDebtTotal: sum(p => p.clientDebtTotal),
     supplierDebtTotal: sum(p => p.supplierDebtTotal),

@@ -339,8 +339,8 @@ export default function ReportView({ report: r }: { report: PartReport }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <MetricCard icon={TrendingUp} tone="green" label="Ventes (CA)" value={money(r.salesTotal)} sub={`${r.counts.sales} opérations`} onClick={() => setDetail('sales')} />
         <MetricCard icon={ShoppingCart} tone="purple" label="Achats" value={money(r.purchasesTotal)} sub={`${r.counts.purchases} factures`} onClick={() => setDetail('purchases')} />
-        <MetricCard icon={Layers} tone="cyan" label="Marge brute" value={money(r.grossMargin)} sub="CA − coût marchandises" onClick={() => setDetail('gains')} />
-        <MetricCard icon={CircleDollarSign} tone={r.netGain >= 0 ? 'green' : 'red'} label="Bénéfice net" value={money(r.netGain)} sub="résultat période" />
+        <MetricCard icon={Layers} tone="cyan" label="Marge brute" value={money(r.grossMargin)} sub={`CA − coût marchandises ${money(r.cogs)}`} onClick={() => setDetail('gains')} />
+        <MetricCard icon={CircleDollarSign} tone={r.netGain >= 0 ? 'green' : 'red'} label="Total des gains" value={money(r.netGain)} sub="gain réel, coûts déduits" />
         <MetricCard icon={CreditCard} tone="red" label="Dépenses" value={money(r.expensesTotal)} sub={`${r.expenses.length} lignes`} onClick={() => setDetail('expenses')} />
         <MetricCard icon={Wallet} tone="blue" label="Solde caisse" value={money(r.caisseBalance)} />
         <MetricCard icon={Boxes} tone="amber" label="Valeur stock" value={money(r.stockValue)} sub={`${r.counts.products} produits`} />
@@ -438,8 +438,11 @@ export default function ReportView({ report: r }: { report: PartReport }) {
         className="rounded-2xl p-6 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
         style={{ background: r.netGain >= 0 ? 'linear-gradient(135deg,#065f46,#047857)' : 'linear-gradient(135deg,#991b1b,#dc2626)' }}>
         <div>
-          <p className="text-sm font-bold uppercase tracking-wide opacity-90">Bénéfice net de la période</p>
-          <p className="text-xs opacity-75 mt-1">Marge brute − Dépenses − Salaires − Destructions − Pertes</p>
+          <p className="text-sm font-bold uppercase tracking-wide opacity-90">Total des gains de la période</p>
+          <p className="text-xs opacity-75 mt-1">
+            Ventes {money(r.salesTotal)} − coût des marchandises {money(r.cogs)} = marge {money(r.grossMargin)}
+            {' '}− dépenses − salaires − destructions − pertes
+          </p>
         </div>
         <p className="text-4xl font-black tabular-nums">{money(r.netGain)}</p>
       </motion.div>

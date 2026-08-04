@@ -550,10 +550,10 @@ function ReparationForm({
         productId: p.id, productName: p.name,
         detailQty: 1, detailUnit: p.detailUnit || 'L',
         qty: 1 / (p.detailCapacity || 1),
-        unitPrice, total: unitPrice,
+        unitPrice, unitCost: p.purchasePrice || 0, total: unitPrice,
       }]);
     } else {
-      setUsed(prev => [...prev, { productId: p.id, productName: p.name, qty: 1, unitPrice: p.salePrice, total: p.salePrice }]);
+      setUsed(prev => [...prev, { productId: p.id, productName: p.name, qty: 1, unitPrice: p.salePrice, unitCost: p.purchasePrice || 0, total: p.salePrice }]);
     }
     setPQuery('');
   };

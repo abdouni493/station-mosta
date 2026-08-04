@@ -377,10 +377,10 @@ export const GlobalFiche = React.forwardRef<HTMLDivElement, { global: GlobalRepo
       <div ref={ref} className="not-italic" style={sheetStyle}>
         <Banner settings={settings} badge="Rapport Général" period={period} />
         <KpiStrip kpis={[
-          { label: 'Ventes totales', value: `${da(g.salesTotal)} DA`, col: '#047857' },
-          { label: 'Achats totaux', value: `${da(g.purchasesTotal)} DA`, col: '#c2410c' },
-          { label: 'Dépenses', value: `${da(g.expensesTotal + g.salariesPaid)} DA`, col: '#dc2626' },
-          { label: 'Bénéfice net global', value: `${da(g.netGain)} DA`, col: g.netGain >= 0 ? '#15803d' : '#dc2626' },
+          { label: 'Total des ventes', value: `${da(g.salesTotal)} DA`, col: '#047857' },
+          { label: 'Coût marchandises', value: `${da(g.cogs)} DA`, col: '#c2410c' },
+          { label: 'Total des dépenses', value: `${da(g.expensesTotal + g.salariesPaid)} DA`, col: '#dc2626' },
+          { label: 'Total des gains', value: `${da(g.netGain)} DA`, col: g.netGain >= 0 ? '#15803d' : '#dc2626' },
         ]} />
 
         {/* PART 1 — Synthèse par activité */}
@@ -474,8 +474,9 @@ export const GlobalFiche = React.forwardRef<HTMLDivElement, { global: GlobalRepo
 
         {/* PART 4 — Bilan */}
         <Part num="4" label="Bilan global" accent="#047857">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 10 }}>
             {[
+              { label: 'Coût marchandises', value: g.cogs, bg: '#fff7ed', col: '#c2410c' },
               { label: 'Marge brute', value: g.grossMargin, bg: '#ecfdf5', col: '#047857' },
               { label: 'Valeur du stock', value: g.stockValue, bg: '#eff6ff', col: '#1d4ed8' },
               { label: 'Dépenses + salaires', value: g.expensesTotal + g.salariesPaid, bg: '#fef2f2', col: '#dc2626' },
@@ -488,8 +489,8 @@ export const GlobalFiche = React.forwardRef<HTMLDivElement, { global: GlobalRepo
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 16px', borderRadius: 8, color: '#fff', background: g.netGain >= 0 ? 'linear-gradient(135deg,#065f46,#047857)' : 'linear-gradient(135deg,#991b1b,#dc2626)' }}>
             <div>
-              <p style={{ margin: 0, fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 1 }}>Bénéfice net global (toutes activités)</p>
-              <p style={{ margin: '2px 0 0 0', fontSize: 9, opacity: 0.85 }}>Somme des bénéfices nets de chaque activité</p>
+              <p style={{ margin: 0, fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 1 }}>Total des gains (toutes activités)</p>
+              <p style={{ margin: '2px 0 0 0', fontSize: 9, opacity: 0.85 }}>Ventes − coût des marchandises vendues − dépenses − salaires − destructions − pertes</p>
             </div>
             <p style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>{da(g.netGain)} DA</p>
           </div>
