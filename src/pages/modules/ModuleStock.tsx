@@ -12,16 +12,21 @@
  *    Rapports (bénéfice net = marge − dépenses − salaires − destructions).
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
-  Flame, RotateCcw, Trash, User, Beaker, ShoppingBag,
+  Flame, RotateCcw, Trash, User, Beaker, ShoppingBag, FileWarning, Upload, CloudOff, Loader2,
+  RefreshCw, CheckCircle2,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizProduct, BizDestruction, formatQty } from '@/src/lib/bizConfig';
-import { useBiz } from '@/src/store/BizContext';
+import { useBiz, useBizSync } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
+import {
+  ProductDraft, DRAFT_STATUS_META, subscribeDrafts, getDraftsSnapshot,
+  discardDraft, retryDraft, resolveDraft, failDraft, reconcileDrafts,
+} from '@/src/lib/productDrafts';
 import {
   PageHeader, StatCard, Badge, SearchInput, Select, ViewToggle, CardGrid, GlassCard,
   Table, Tabs, EmptyState, RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal,
@@ -36,10 +41,11 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'stock');
+  const sync = useBizSync();
   const { currentUserName, currentModuleWorker } = useAppState();
   const { products, categories, marques, destructions } = biz.state;
 
-  const [tab, setTab] = useState<'catalogue' | 'destructions'>('catalogue');
+  const [tab, setTab] = useState<'catalogue' | 'destructions' | 'drafts'>('catalogue');
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('all');
   const [mrq, setMrq] = useState('all');
@@ -94,6 +100,63 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
       expiring: products.filter(p => p.hasExpiration && p.expirationDate && new Date(p.expirationDate) <= soon).length,
     };
   }, [products]);
+
+  // ── Brouillons : les créations que le serveur n'a pas confirmées ───────────
+  /**
+   * Les brouillons vivent hors de React (dans `localStorage`), justement parce
+   * que c'est le store qui peut échouer : on s'y abonne au lieu de les lire.
+   */
+  const allDrafts = useSyncExternalStore(subscribeDrafts, getDraftsSnapshot, getDraftsSnapshot);
+  const drafts = useMemo(
+    () => allDrafts
+      .filter(d => d.moduleKey === moduleKey && d.status !== 'synced')
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
+    [allDrafts, moduleKey]);
+  const [sendingDraft, setSendingDraft] = useState<string | null>(null);
+  const [viewingDraft, setViewingDraft] = useState<ProductDraft | null>(null);
+  const [draftToDiscard, setDraftToDiscard] = useState<ProductDraft | null>(null);
+
+  const productIds = useMemo(() => new Set(products.map(p => p.id)), [products]);
+  const storeSynced = !sync.pending && !sync.saving && !sync.error;
+
+  // Confronte les brouillons au catalogue à chaque fois que l'un des deux bouge :
+  // ce qui est bien arrivé disparaît, ce qui manque est signalé.
+  useEffect(() => {
+    reconcileDrafts(moduleKey, productIds, storeSynced);
+  }, [moduleKey, productIds, storeSynced]);
+
+  /**
+   * « Envoyer au stock » — remet le produit du brouillon dans le catalogue (s'il
+   * n'y est plus) et n'efface le brouillon QUE si le serveur confirme.
+   */
+  const pushDraft = async (d: ProductDraft): Promise<boolean> => {
+    setSendingDraft(d.id);
+    retryDraft(d.id);
+    try {
+      const alreadyInCatalogue = products.some(p => p.id === d.product.id);
+      const res = alreadyInCatalogue
+        ? await biz.flush()
+        : await biz.addAndConfirm('products', d.product);
+      if (res.ok) { resolveDraft(d.id); return true; }
+      failDraft(d.id, res.error);
+      return false;
+    } finally {
+      setSendingDraft(null);
+    }
+  };
+
+  const sendDraft = async (d: ProductDraft) => {
+    const ok = await pushDraft(d);
+    if (ok) toast.success(`« ${d.product.name} » est dans le catalogue`);
+    else toast.error(`Toujours impossible d'enregistrer « ${d.product.name} »`, { duration: 7000 });
+  };
+
+  const sendAllDrafts = async () => {
+    let sent = 0;
+    for (const d of drafts) if (await pushDraft(d)) sent++;
+    if (sent) toast.success(`${sent} produit(s) renvoyé(s) au catalogue`);
+    if (sent < drafts.length) toast.error(`${drafts.length - sent} brouillon(s) toujours en échec`, { duration: 7000 });
+  };
 
   const openNew = () => { setEditing(null); setShowForm(true); };
   const openEdit = (p: BizProduct) => { setEditing(p); setShowForm(true); };
@@ -169,13 +232,34 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
           sub={`${stockDestructions.filter(d => !d.recovered).length} destruction(s)`} />
       </div>
 
+      {/* Une création qui n'est pas arrivée jusqu'au serveur se voit ici, tout
+          de suite — plus jamais un « Produit créé » qui ne l'était pas. */}
+      {(drafts.length > 0 || sync.error) && tab !== 'drafts' && (
+        <button onClick={() => setTab('drafts')}
+          className="w-full text-left rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-center gap-3 hover:bg-amber-100 transition-colors">
+          <CloudOff className="w-5 h-5 text-amber-600 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-black text-amber-800">
+              {drafts.length > 0
+                ? `${drafts.length} produit(s) non enregistré(s) sur le serveur`
+                : 'Enregistrement en échec'}
+            </span>
+            <span className="block text-xs text-amber-700">
+              {sync.error || 'Ouvrez les brouillons pour les renvoyer au catalogue.'}
+            </span>
+          </span>
+          <span className="btn-secondary !py-2 !px-3 text-xs shrink-0">Voir les brouillons</span>
+        </button>
+      )}
+
       <Tabs
         tabs={[
           { id: 'catalogue', label: 'Catalogue', icon: Package },
           { id: 'destructions', label: `Historique destructions${stockDestructions.length ? ` (${stockDestructions.length})` : ''}`, icon: Flame },
+          { id: 'drafts', label: `Brouillons${drafts.length ? ` (${drafts.length})` : ''}`, icon: FileWarning },
         ]}
         active={tab}
-        onChange={id => setTab(id as 'catalogue' | 'destructions')}
+        onChange={id => setTab(id as 'catalogue' | 'destructions' | 'drafts')}
       />
 
       {tab === 'catalogue' && <>
@@ -392,8 +476,132 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         </div>
       )}
 
-      <ProductModal biz={biz} open={showForm} onClose={() => setShowForm(false)} initial={editing}
-        onSaved={() => toast.success(editing ? 'Produit modifié' : 'Produit créé')} />
+      {/* ── Brouillons : les créations que le serveur n'a pas confirmées ────── */}
+      {tab === 'drafts' && (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 flex flex-wrap items-start gap-3">
+            <FileWarning className="w-5 h-5 text-[#003087] shrink-0 mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-black text-slate-700">À quoi sert cet onglet</p>
+              <p className="text-xs text-slate-500 leading-relaxed mt-0.5">
+                Chaque produit créé est d'abord écrit dans ce poste, puis envoyé au serveur.
+                Tant que le serveur n'a pas confirmé, la saisie reste ici — réseau coupé,
+                serveur injoignable, session expirée. Rien n'est perdu :
+                « Envoyer au stock » la remet dans le catalogue et la renvoie.
+              </p>
+            </div>
+            {drafts.length > 0 && perm.creer && (
+              <button className="btn-primary !py-2 !px-4 text-xs shrink-0"
+                onClick={sendAllDrafts} disabled={!!sendingDraft}>
+                <Upload className="w-4 h-4" /> Tout envoyer au stock
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard icon={FileWarning} label="Brouillons" value={drafts.length} tone="amber"
+              sub="créations non confirmées" />
+            <StatCard icon={CloudOff} label="En échec" value={drafts.filter(d => d.status === 'failed').length} tone="red" />
+            <StatCard icon={AlertTriangle} label="Perdus" value={drafts.filter(d => d.status === 'lost').length} tone="red"
+              sub="absents du catalogue" />
+            <StatCard icon={sync.error ? CloudOff : CheckCircle2}
+              label="Serveur" value={sync.saving ? 'Envoi…' : sync.error ? 'Hors service' : sync.pending ? 'En attente' : 'À jour'}
+              tone={sync.error ? 'red' : sync.pending || sync.saving ? 'amber' : 'green'}
+              sub={sync.lastSavedAt ? `Dernier envoi ${formatDate(sync.lastSavedAt)}` : undefined} />
+          </div>
+
+          {sync.error && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 flex items-start gap-3">
+              <CloudOff className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-black text-red-700">Le serveur refuse les enregistrements</p>
+                <p className="text-xs text-red-600 mt-0.5 break-words">{sync.error}</p>
+              </div>
+              <button className="btn-secondary !py-2 !px-3 text-xs shrink-0" onClick={() => sync.flush()}>
+                <RefreshCw className="w-4 h-4" /> Réessayer
+              </button>
+            </div>
+          )}
+
+          {drafts.length === 0 ? (
+            <EmptyState icon={CheckCircle2} title="Aucun brouillon en attente"
+              message="Tous les produits créés depuis ce poste ont été confirmés par le serveur." />
+          ) : (
+            <CardGrid>
+              {drafts.map(d => {
+                const meta = DRAFT_STATUS_META[d.status as keyof typeof DRAFT_STATUS_META];
+                const inCatalogue = productIds.has(d.product.id);
+                const busy = sendingDraft === d.id;
+                return (
+                  <GlassCard key={d.id}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="font-black text-slate-800 truncate">{d.product.name}</h3>
+                        <p className="text-[11px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
+                          <Barcode className="w-3 h-3" />{d.product.barcode || '—'}
+                        </p>
+                      </div>
+                      <Badge tone={d.status === 'pending' ? 'warning' : 'danger'}>{meta?.label || d.status}</Badge>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {d.product.isRawMaterial && <Badge tone="warning"><Beaker className="w-3 h-3" />Matière première</Badge>}
+                      {d.product.categoryName && <Badge tone="primary"><Layers className="w-3 h-3" />{d.product.categoryName}</Badge>}
+                      <Badge tone={inCatalogue ? 'info' : 'danger'}>
+                        {inCatalogue ? 'Dans le catalogue' : 'Absent du catalogue'}
+                      </Badge>
+                      {d.origin === 'purchase' && <Badge tone="neutral">Saisi depuis un achat</Badge>}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <div className="rounded-xl bg-slate-50 p-2.5">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Quantité</p>
+                        <p className="font-black text-slate-700 tabular-nums">
+                          {formatQty(d.product.principalQty)} <span className="text-xs font-medium text-slate-400">{d.product.unit}</span>
+                        </p>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 p-2.5">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">
+                          {d.product.isRawMaterial ? "Prix d'achat" : 'Prix vente'}
+                        </p>
+                        <p className="font-black text-[#002d87] tabular-nums">
+                          {money(d.product.isRawMaterial ? d.product.purchasePrice : d.product.salePrice)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <p className="mt-3 text-[11px] text-slate-500 leading-snug">{meta?.hint}</p>
+                    {d.error && (
+                      <p className="mt-1.5 text-[11px] font-semibold text-red-600 break-words leading-snug">{d.error}</p>
+                    )}
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      Saisi le {formatDate(d.createdAt)}{d.createdBy ? ` par ${d.createdBy}` : ''} • {d.attempts} tentative(s)
+                    </p>
+
+                    {perm.creer && (
+                      <button onClick={() => sendDraft(d)} disabled={busy || !!sendingDraft}
+                        title="Remettre ce produit dans le catalogue et l'enregistrer sur le serveur"
+                        className="w-full mt-3 py-2 rounded-xl bg-[#003087] text-white font-bold text-sm flex items-center justify-center gap-1.5 hover:bg-[#002d87] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        {busy
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</>
+                          : <><Upload className="w-4 h-4" /> Envoyer au stock</>}
+                      </button>
+                    )}
+                    <div className="flex items-center justify-end mt-2">
+                      <RowActions>
+                        <ActionBtn icon={Eye} tone="blue" title="Détails de la saisie" onClick={() => setViewingDraft(d)} />
+                        <ActionBtn icon={Trash} tone="red" title="Abandonner ce brouillon" onClick={() => setDraftToDiscard(d)} />
+                      </RowActions>
+                    </div>
+                  </GlassCard>
+                );
+              })}
+            </CardGrid>
+          )}
+        </div>
+      )}
+
+      <ProductModal biz={biz} open={showForm} onClose={() => setShowForm(false)} initial={editing} />
 
       <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Package} size="lg"
         title={viewing?.name || ''} subtitle="Détails du produit">
@@ -446,6 +654,69 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
       </Modal>
 
       <Confirm open={!!toDelete} title="Supprimer le produit" message={`Voulez-vous supprimer « ${toDelete?.name} » ?`} onConfirm={del} onCancel={() => setToDelete(null)} />
+
+      {/* Détail complet d'un brouillon — la saisie telle qu'elle a été faite. */}
+      <Modal open={!!viewingDraft} onClose={() => setViewingDraft(null)} icon={FileWarning} size="lg"
+        title={viewingDraft?.product.name || ''} subtitle="Brouillon — saisie non confirmée par le serveur">
+        {viewingDraft && (
+          <div className="space-y-4">
+            <div className={`rounded-xl border p-3 flex items-start gap-2 ${
+              viewingDraft.status === 'pending' ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+              <CloudOff className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="font-semibold text-sm">
+                {DRAFT_STATUS_META[viewingDraft.status as keyof typeof DRAFT_STATUS_META]?.hint}
+                {viewingDraft.error ? ` — ${viewingDraft.error}` : ''}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                ['Nature', viewingDraft.product.isRawMaterial ? 'Matière première' : 'Produit de vente'],
+                ['Code-barres', viewingDraft.product.barcode || '—'],
+                ['Catégorie', viewingDraft.product.categoryName || '—'],
+                ['Marque', viewingDraft.product.marqueName || '—'],
+                ['Unité', viewingDraft.product.unit || '—'],
+                ['Quantité principale', `${formatQty(viewingDraft.product.principalQty)} ${viewingDraft.product.unit || ''}`],
+                ['Seuil d\'alerte', `${formatQty(viewingDraft.product.minQty)} ${viewingDraft.product.unit || ''}`],
+                ['Prix d\'achat', money(viewingDraft.product.purchasePrice)],
+                ['Prix de vente', money(viewingDraft.product.salePrice)],
+                ['Vente au détail', viewingDraft.product.sellByDetail
+                  ? `${formatQty(viewingDraft.product.detailCapacity || 0)} ${viewingDraft.product.detailUnit || ''}` : 'Non'],
+                ['Saisi le', formatDate(viewingDraft.createdAt)],
+                ['Saisi par', viewingDraft.createdBy || '—'],
+                ['Provenance', viewingDraft.origin === 'purchase' ? 'Formulaire d\'achat' : 'Gestion de stock'],
+                ['Tentatives', String(viewingDraft.attempts)],
+              ].map(([k, v]) => (
+                <div key={k as string} className="rounded-xl bg-slate-50 p-3">
+                  <p className="text-[10px] uppercase font-bold text-slate-400">{k}</p>
+                  <p className="font-bold text-slate-700 text-sm break-words">{v}</p>
+                </div>
+              ))}
+            </div>
+            {viewingDraft.product.description && (
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-[10px] uppercase font-bold text-slate-400">Description</p>
+                <p className="text-sm text-slate-600">{viewingDraft.product.description}</p>
+              </div>
+            )}
+            {perm.creer && (
+              <div className="flex justify-end">
+                <button className="btn-primary" disabled={!!sendingDraft}
+                  onClick={() => { const d = viewingDraft; setViewingDraft(null); sendDraft(d); }}>
+                  <Upload className="w-4 h-4" /> Envoyer au stock
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <Confirm open={!!draftToDiscard} title="Abandonner ce brouillon"
+        message={`Le produit « ${draftToDiscard?.product.name} » ne sera plus proposé au renvoi. ${
+          draftToDiscard && productIds.has(draftToDiscard.product.id)
+            ? 'Il reste dans le catalogue de ce poste.'
+            : 'Sa saisie sera définitivement perdue.'}`}
+        onConfirm={() => { if (draftToDiscard) discardDraft(draftToDiscard.id); setDraftToDiscard(null); toast.success('Brouillon abandonné'); }}
+        onCancel={() => setDraftToDiscard(null)} />
 
       {destroying && <DestroyStockModal product={destroying} onClose={() => setDestroying(null)} onConfirm={doDestroy} />}
       {viewingDestruction && <DestructionDetail destruction={viewingDestruction} onClose={() => setViewingDestruction(null)} />}

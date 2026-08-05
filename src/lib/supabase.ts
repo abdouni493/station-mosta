@@ -560,22 +560,97 @@ export async function getMyModuleWorker(): Promise<ModuleWorkerRow | null> {
 // and for every part-employee who logs in, instead of being browser-local only.
 const BIZ_STORE_ID = 'biz-v1';
 
-export async function loadBizStore(): Promise<any | null> {
+/**
+ * Lecture de l'état partagé, avec sa RÉVISION.
+ *
+ * La révision est le numéro de version de la ligne : elle est renvoyée à
+ * l'écriture pour que le serveur refuse d'écraser un état plus récent que celui
+ * qu'on croit connaître (voir `saveBizStore`). Elle vaut `null` tant que la
+ * migration `2026-08-06_biz_store_revision_merge.sql` n'a pas été passée — tout
+ * continue alors de fonctionner, simplement sans ce garde-fou serveur.
+ */
+export interface BizStoreSnapshot {
+  state: any | null;
+  rev: number | null;
+}
+
+export async function loadBizStoreSnapshot(): Promise<BizStoreSnapshot | null> {
   try {
     const { data, error } = await supabase
+      .from('biz_store').select('state, rev').eq('id', BIZ_STORE_ID).maybeSingle();
+    if (!error && data) {
+      return { state: (data as any).state ?? null, rev: (data as any).rev ?? null };
+    }
+    // Colonne `rev` absente (migration non passée) → relecture sans elle.
+    const fallback = await supabase
       .from('biz_store').select('state').eq('id', BIZ_STORE_ID).maybeSingle();
-    if (error || !data) return null;
-    return (data as any).state ?? null;
+    if (fallback.error || !fallback.data) return null;
+    return { state: (fallback.data as any).state ?? null, rev: null };
   } catch {
     return null;
   }
 }
 
-export async function saveBizStore(state: unknown): Promise<void> {
+export async function loadBizStore(): Promise<any | null> {
+  return (await loadBizStoreSnapshot())?.state ?? null;
+}
+
+/** Résultat d'une écriture de l'état partagé. */
+export interface BizStoreSaveResult {
+  ok: boolean;
+  /** Nouvelle révision de la ligne, quand l'écriture est passée. */
+  rev?: number | null;
+  /** Quelqu'un a écrit entre-temps : `remote` porte la version à fusionner. */
+  conflict?: boolean;
+  remote?: BizStoreSnapshot;
+  error?: string;
+}
+
+/**
+ * Écrit l'état partagé — SANS jamais écraser en aveugle.
+ *
+ * `baseRev` est la révision sur laquelle le travail a été construit. Le serveur
+ * n'accepte l'écriture que si la ligne est toujours à cette révision ; sinon il
+ * renvoie l'état courant et l'appelant fusionne avant de réessayer. C'est ce qui
+ * empêche un poste d'effacer le produit qu'un autre poste vient de créer.
+ *
+ * Deux replis, pour qu'aucune installation ne se retrouve bloquée :
+ *   • la fonction serveur n'existe pas (migration non passée) → écriture directe ;
+ *   • la colonne `rev` n'existe pas → écriture directe elle aussi.
+ * Dans les deux cas l'erreur éventuelle est REMONTÉE : une sauvegarde qui échoue
+ * ne doit plus jamais passer inaperçue.
+ */
+export async function saveBizStore(
+  state: unknown,
+  baseRev?: number | null,
+): Promise<BizStoreSaveResult> {
   try {
-    await supabase.from('biz_store')
+    const { data, error } = await supabase.rpc('biz_store_save', {
+      p_id: BIZ_STORE_ID,
+      p_state: state,
+      p_base_rev: baseRev ?? null,
+    });
+
+    if (!error && data) {
+      const res = data as any;
+      if (res.ok) return { ok: true, rev: res.rev ?? null };
+      if (res.conflict) {
+        return { ok: false, conflict: true, remote: { state: res.state ?? null, rev: res.rev ?? null } };
+      }
+      return { ok: false, error: res.error || 'Enregistrement refusé par le serveur' };
+    }
+
+    // La fonction n'est pas déployée : on retombe sur l'écriture directe.
+    const missingRpc = !!error && /does not exist|schema cache|not find the function/i.test(error.message);
+    if (error && !missingRpc) return { ok: false, error: error.message };
+
+    const { error: upsertError } = await supabase.from('biz_store')
       .upsert({ id: BIZ_STORE_ID, state, updated_at: new Date().toISOString() });
-  } catch { /* offline / table missing — localStorage keeps the data */ }
+    if (upsertError) return { ok: false, error: upsertError.message };
+    return { ok: true, rev: null };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'Réseau indisponible' };
+  }
 }
 
 // ─── Generic DB helpers (real Supabase queries) ─────────────────────────────────

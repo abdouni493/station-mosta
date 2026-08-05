@@ -7,10 +7,13 @@
  */
 import React, { useState } from 'react';
 import { Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff } from 'lucide-react';
+import { toast } from 'react-hot-toast';
 import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
+import { useAppState } from '@/src/store/AppContext';
 import { BizProduct, BizContact } from '@/src/lib/bizConfig';
+import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import { uploadFile } from '@/src/lib/supabase';
 
@@ -120,18 +123,85 @@ export function emptyProduct(): Partial<BizProduct> {
 /** Units a packaged product can be split into when sold au détail. */
 export const DETAIL_UNITS = ['L', 'ml', 'kg', 'g', 'm', 'cm', 'unité'];
 
+/**
+ * Construit la fiche produit définitive à partir du formulaire — la même règle
+ * s'applique à une création, à une modification et au renvoi d'un brouillon.
+ */
+export function buildProduct(
+  form: Partial<BizProduct>,
+  lookup: { marques: { id: string; name: string }[]; categories: { id: string; name: string }[] },
+): BizProduct {
+  const marqueName = lookup.marques.find(x => x.id === form.marqueId)?.name;
+  const categoryName = lookup.categories.find(x => x.id === form.categoryId)?.name;
+  // Une matière première ne se vend pas : la vente au détail, qui n'existe que
+  // pour le point de vente, est retirée avec elle.
+  const isRawMaterial = !!form.isRawMaterial;
+  const sellByDetail = !isRawMaterial && !!form.sellByDetail;
+  return {
+    id: form.id || newId(),
+    name: (form.name || '').trim(),
+    description: form.description || '',
+    barcode: form.barcode || '',
+    marqueId: form.marqueId, marqueName,
+    categoryId: form.categoryId, categoryName,
+    principalQty: Number(form.principalQty) || 0,
+    currentQty: form.id ? Number(form.currentQty) || 0 : Number(form.principalQty) || 0,
+    minQty: Number(form.minQty) || 0,
+    purchasePrice: Number(form.purchasePrice) || 0,
+    salePrice: Number(form.salePrice) || 0,
+    unit: form.unit || 'unité',
+    hasExpiration: !!form.hasExpiration,
+    expirationDate: form.hasExpiration ? form.expirationDate : undefined,
+    sellByDetail,
+    detailCapacity: sellByDetail ? Number(form.detailCapacity) || 0 : undefined,
+    detailUnit: sellByDetail ? (form.detailUnit || 'L') : undefined,
+    // Left empty ⇒ the POS falls back to salePrice / detailCapacity.
+    detailSalePrice: sellByDetail && Number(form.detailSalePrice) > 0
+      ? Number(form.detailSalePrice) : undefined,
+    imageUrl: form.imageUrl || undefined,
+    isRawMaterial,
+    createdAt: form.createdAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Enregistre un produit et NE REND LA MAIN QU'UNE FOIS LE SERVEUR D'ACCORD.
+ *
+ * Le brouillon est écrit AVANT la première tentative : à partir de cet instant,
+ * même un rafraîchissement immédiat, une coupure réseau ou un refus du serveur
+ * ne peuvent plus faire disparaître la saisie — elle attendra dans l'onglet
+ * « Brouillons » de la Gestion de stock, avec son bouton de renvoi.
+ */
+export async function persistNewProduct(
+  biz: BizApi,
+  product: BizProduct,
+  opts: { createdBy?: string; origin?: ProductDraft['origin'] } = {},
+): Promise<{ ok: boolean; error?: string }> {
+  const draft = saveDraft({
+    moduleKey: biz.module, product, createdBy: opts.createdBy, origin: opts.origin,
+  });
+  const result = await biz.addAndConfirm('products', product);
+  if (result.ok) resolveDraft(draft.id);
+  else failDraft(draft.id, result.error);
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
+}
+
 // ─── ProductModal ───────────────────────────────────────────────────────────────
 export function ProductModal({
-  biz, open, onClose, initial, onSaved,
+  biz, open, onClose, initial, onSaved, origin = 'stock',
 }: {
   biz: BizApi; open: boolean; onClose: () => void; initial?: Partial<BizProduct> | null;
   onSaved?: (p: BizProduct) => void;
+  /** D'où vient la saisie — noté sur le brouillon en cas d'échec. */
+  origin?: ProductDraft['origin'];
 }) {
   const isEdit = !!initial?.id;
+  const { currentUserName, currentModuleWorker } = useAppState();
   const [form, setForm] = useState<Partial<BizProduct>>(initial || emptyProduct());
   const [showMarque, setShowMarque] = useState(false);
   const [showCat, setShowCat] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   React.useEffect(() => { setForm(initial || emptyProduct()); }, [initial, open]);
 
@@ -161,42 +231,45 @@ export function ProductModal({
     }
   };
 
-  const save = () => {
-    if (!form.name?.trim()) return;
-    const marqueName = biz.state.marques.find(x => x.id === form.marqueId)?.name;
-    const categoryName = biz.state.categories.find(x => x.id === form.categoryId)?.name;
-    // Une matière première ne se vend pas : la vente au détail, qui n'existe que
-    // pour le point de vente, est retirée avec elle.
-    const isRawMaterial = !!form.isRawMaterial;
-    const sellByDetail = !isRawMaterial && !!form.sellByDetail;
-    const product: BizProduct = {
-      id: form.id || newId(),
-      name: form.name!.trim(),
-      description: form.description || '',
-      barcode: form.barcode || '',
-      marqueId: form.marqueId, marqueName,
-      categoryId: form.categoryId, categoryName,
-      principalQty: Number(form.principalQty) || 0,
-      currentQty: form.id ? Number(form.currentQty) || 0 : Number(form.principalQty) || 0,
-      minQty: Number(form.minQty) || 0,
-      purchasePrice: Number(form.purchasePrice) || 0,
-      salePrice: Number(form.salePrice) || 0,
-      unit: form.unit || 'unité',
-      hasExpiration: !!form.hasExpiration,
-      expirationDate: form.hasExpiration ? form.expirationDate : undefined,
-      sellByDetail,
-      detailCapacity: sellByDetail ? Number(form.detailCapacity) || 0 : undefined,
-      detailUnit: sellByDetail ? (form.detailUnit || 'L') : undefined,
-      // Left empty ⇒ the POS falls back to salePrice / detailCapacity.
-      detailSalePrice: sellByDetail && Number(form.detailSalePrice) > 0
-        ? Number(form.detailSalePrice) : undefined,
-      imageUrl: form.imageUrl || undefined,
-      isRawMaterial,
-      createdAt: form.createdAt || new Date().toISOString(),
-    };
-    if (isEdit) biz.update('products', product); else biz.add('products', product);
-    onSaved?.(product);
-    onClose();
+  /**
+   * Enregistre — et VÉRIFIE. L'écran ne dit « Produit créé » que lorsque le
+   * serveur l'a confirmé ; sinon il le dit franchement et renvoie l'utilisateur
+   * vers le brouillon conservé dans la Gestion de stock.
+   */
+  const save = async () => {
+    if (!form.name?.trim() || saving) return;
+    const product = buildProduct(form, { marques: biz.state.marques, categories: biz.state.categories });
+    setSaving(true);
+    try {
+      if (isEdit) {
+        biz.update('products', product);
+        onSaved?.(product);
+        onClose();
+        const res = await biz.flush();
+        if (res.ok) toast.success('Produit modifié');
+        else toast.error(`Modification non enregistrée sur le serveur — ${res.error}`, { duration: 7000 });
+        return;
+      }
+
+      // Création : le brouillon est posé d'abord, la fenêtre se ferme tout de
+      // suite (l'utilisateur enchaîne), la confirmation arrive derrière.
+      onSaved?.(product);
+      onClose();
+      const res = await persistNewProduct(biz, product, {
+        createdBy: currentModuleWorker?.name || currentUserName || undefined,
+        origin,
+      });
+      if (res.ok) {
+        toast.success('Produit créé et enregistré');
+      } else {
+        toast.error(
+          `« ${product.name} » n'a pas pu être enregistré — ${res.error}. Il est gardé dans les brouillons de la Gestion de stock.`,
+          { duration: 9000 },
+        );
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -205,7 +278,9 @@ export function ProductModal({
       subtitle="Informations du produit"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={save} disabled={!form.name?.trim() || uploadingImage}>{isEdit ? 'Enregistrer' : 'Créer'}</button>
+        <button className="btn-primary" onClick={save} disabled={!form.name?.trim() || uploadingImage || saving}>
+          {saving ? 'Enregistrement…' : isEdit ? 'Enregistrer' : 'Créer'}
+        </button>
       </>}>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="sm:col-span-2">

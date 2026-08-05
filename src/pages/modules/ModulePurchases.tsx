@@ -532,7 +532,10 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
         </div>
       </Modal>
 
-      <ProductModal biz={biz} open={showProductModal} onClose={() => setShowProductModal(false)} onSaved={(p) => addProduct(p)} />
+      {/* Un produit créé depuis l'achat suit exactement le même chemin sûr que
+          depuis la Gestion de stock : brouillon d'abord, confirmation ensuite. */}
+      <ProductModal biz={biz} origin="purchase" open={showProductModal}
+        onClose={() => setShowProductModal(false)} onSaved={(p) => addProduct(p)} />
       <ContactModal biz={biz} coll="suppliers" open={showSupplierModal} onClose={() => setShowSupplierModal(false)} onSaved={(s) => setSupplierId(s.id)} />
     </>
   );
