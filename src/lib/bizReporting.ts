@@ -136,23 +136,35 @@ export interface PartReport {
   counts: { products: number; clients: number; suppliers: number; sales: number; purchases: number; workers: number; returns: number };
 }
 
-// ─── Module (biz) report ─────────────────────────────────────────────────────
-export function computeModuleReport(st: ModuleState, key: ModuleKey, from: string, to: string): PartReport {
-  const cfg = MODULES[key];
+// ─── Coût de revient d'une ligne vendue ──────────────────────────────────────
+/** Ce qu'une ligne vendue peut être : d'où vient réellement la marchandise. */
+export type SoldItemKind = 'catalogue' | 'production' | 'fiche' | 'autre';
+
+/** Une ligne de vente, telle qu'elle est lue par les résolveurs ci-dessous. */
+export interface SoldItemRef { productId?: string; productName: string; qty?: number; unitCost?: number }
+
+/**
+ * Résolveurs partagés d'une partie : coût de revient, unité et nature d'une
+ * ligne vendue. Le rapport (`computeModuleReport`) et les analyses
+ * (`bizAnalytics`) s'en servent tous les deux — sans quoi les deux écrans
+ * pourraient annoncer deux gains différents pour le même produit.
+ *
+ * Un produit vendu ne vient pas forcément du catalogue : une production mise au
+ * comptoir et une fiche technique vendue en direct portent leur PROPRE coût de
+ * revient (`purchasePrice` / `costPerUnit`). Sans ces tables, la vente d'une
+ * production compterait pour 0 DA de coût et son « gain » vaudrait le prix de
+ * vente entier (30 DA affichés au lieu des 18 DA réellement gagnés).
+ */
+export function makeCostResolver(st: ModuleState) {
   const prodById = new Map(st.products.map(p => [p.id, p]));
   const prodByName = new Map(st.products.map(p => [p.name, p]));
-  // Un produit vendu ne vient pas forcément du catalogue : une production mise au
-  // comptoir et une fiche technique vendue en direct portent leur PROPRE coût de
-  // revient (`purchasePrice` / `costPerUnit`). Sans ces deux tables, la vente
-  // d'une production comptait pour 0 DA de coût et son « gain » valait le prix de
-  // vente entier (30 DA affichés au lieu des 18 DA réellement gagnés).
   const comptoirById = new Map((st.comptoir || []).map(c => [c.id, c]));
   const comptoirByName = new Map((st.comptoir || []).map(c => [c.productName, c]));
   const ficheById = new Map((st.fiches || []).map(f => [f.id, f]));
   const ficheByName = new Map((st.fiches || []).map(f => [f.name, f]));
 
   /** Coût de revient d'UNE unité vendue, quelle que soit sa provenance. */
-  const unitCostOf = (it: { productId?: string; productName: string; unitCost?: number }): number => {
+  const unitCostOf = (it: SoldItemRef): number => {
     // Coût figé au moment de la vente : c'est la source de vérité quand il existe
     // (le prix d'achat du produit a pu changer depuis).
     if (typeof it.unitCost === 'number' && it.unitCost > 0) return it.unitCost;
@@ -166,14 +178,39 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
     return 0;
   };
   /** Unité d'affichage d'une ligne, prise là où le produit existe vraiment. */
-  const unitOf = (it: { productId?: string; productName: string }): string | undefined => {
+  const unitOf = (it: SoldItemRef): string | undefined => {
     const id = it.productId || '';
     return (prodById.get(id) || prodByName.get(it.productName))?.unit
       || (comptoirById.get(id) || comptoirByName.get(it.productName))?.unit
       || (ficheById.get(id) || ficheByName.get(it.productName))?.sellUnit;
   };
-  const costOfItem = (it: { productId?: string; productName: string; qty: number; unitCost?: number }): number =>
-    unitCostOf(it) * (it.qty || 0);
+  const costOfItem = (it: SoldItemRef): number => unitCostOf(it) * (it.qty || 0);
+  /** Catégorie affichée d'une ligne vendue. */
+  const categoryOf = (it: SoldItemRef): string | undefined => {
+    const id = it.productId || '';
+    return (prodById.get(id) || prodByName.get(it.productName))?.categoryName
+      || (comptoirById.get(id) || comptoirByName.get(it.productName))?.categoryName
+      || (ficheById.get(id) || ficheByName.get(it.productName))?.categoryName;
+  };
+  /** Code-barres, quand la ligne pointe un produit du catalogue. */
+  const barcodeOf = (it: SoldItemRef): string | undefined =>
+    (prodById.get(it.productId || '') || prodByName.get(it.productName))?.barcode;
+  /** D'où vient la marchandise — sert à séparer produits et productions. */
+  const kindOf = (it: SoldItemRef): SoldItemKind => {
+    const id = it.productId || '';
+    if (prodById.get(id) || prodByName.get(it.productName)) return 'catalogue';
+    if (comptoirById.get(id) || comptoirByName.get(it.productName)) return 'production';
+    if (ficheById.get(id) || ficheByName.get(it.productName)) return 'fiche';
+    return 'autre';
+  };
+
+  return { unitCostOf, unitOf, costOfItem, categoryOf, barcodeOf, kindOf };
+}
+
+// ─── Module (biz) report ─────────────────────────────────────────────────────
+export function computeModuleReport(st: ModuleState, key: ModuleKey, from: string, to: string): PartReport {
+  const cfg = MODULES[key];
+  const { unitOf, costOfItem } = makeCostResolver(st);
 
   const salesInRange = st.sales.filter(s => within(s.date, from, to));
   // Une vente retournée ou échangée N'EST PLUS une vente : les articles sont

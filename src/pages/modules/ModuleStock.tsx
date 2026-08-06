@@ -16,7 +16,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
   Flame, RotateCcw, Trash, User, Beaker, ShoppingBag, FileWarning, Upload, CloudOff, Loader2,
-  RefreshCw, CheckCircle2,
+  RefreshCw, CheckCircle2, History,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -33,6 +33,7 @@ import {
   Field, Input, Textarea, money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 import { ProductModal, printBarcode } from './_shared';
+import ProductHistoryModal from '@/src/components/biz/ProductHistoryModal';
 
 /** Destructions belonging to the stock screen (legacy rows are comptoir ones). */
 const isStockDestruction = (d: BizDestruction) => d.source === 'stock';
@@ -42,7 +43,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'stock');
   const sync = useBizSync();
-  const { currentUserName, currentModuleWorker } = useAppState();
+  const { currentUserName, currentModuleWorker, settings } = useAppState();
   const { products, categories, marques, destructions } = biz.state;
 
   const [tab, setTab] = useState<'catalogue' | 'destructions' | 'drafts'>('catalogue');
@@ -55,6 +56,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<BizProduct | null>(null);
   const [viewing, setViewing] = useState<BizProduct | null>(null);
+  /** Produit dont on consulte l'historique complet (achats, ventes, gains). */
+  const [historyOf, setHistoryOf] = useState<BizProduct | null>(null);
   const [toDelete, setToDelete] = useState<BizProduct | null>(null);
   const [destroying, setDestroying] = useState<BizProduct | null>(null);
   const [viewingDestruction, setViewingDestruction] = useState<BizDestruction | null>(null);
@@ -345,6 +348,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 <span className="text-[11px] text-slate-400">Créé le {formatDate(p.createdAt)}</span>
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
+                  <ActionBtn icon={History} tone="slate" title="Historique — achats, ventes & gains" onClick={() => setHistoryOf(p)} />
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
@@ -398,6 +402,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
               <td className="table-cell">
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
+                  <ActionBtn icon={History} tone="slate" title="Historique — achats, ventes & gains" onClick={() => setHistoryOf(p)} />
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
                   {perm.modifier && p.currentQty > 0 && <ActionBtn icon={Flame} tone="red" title="Destruction" onClick={() => setDestroying(p)} />}
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
@@ -645,8 +650,11 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 <CalendarClock className="w-4 h-4" /> <span className="font-semibold text-sm">Expire le {formatDate(viewing.expirationDate)}</span>
               </div>
             )}
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <button className="btn-outline" onClick={() => printBarcode(viewing)} disabled={!viewing.barcode}><Printer className="w-4 h-4" /> Imprimer code-barres</button>
+              <button className="btn-outline" onClick={() => { const p = viewing; setViewing(null); setHistoryOf(p); }}>
+                <History className="w-4 h-4" /> Historique
+              </button>
               {perm.modifier && <button className="btn-secondary" onClick={() => { setViewing(null); openEdit(viewing); }}><Edit2 className="w-4 h-4" /> Modifier</button>}
             </div>
           </div>
@@ -717,6 +725,13 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
             : 'Sa saisie sera définitivement perdue.'}`}
         onConfirm={() => { if (draftToDiscard) discardDraft(draftToDiscard.id); setDraftToDiscard(null); toast.success('Brouillon abandonné'); }}
         onCancel={() => setDraftToDiscard(null)} />
+
+      {/* Tout ce qui est arrivé à un produit : chaque achat, chaque vente, chaque
+          perte — avec le bon d'origine consultable ligne par ligne. */}
+      {historyOf && (
+        <ProductHistoryModal product={historyOf} state={biz.state} settings={settings}
+          onClose={() => setHistoryOf(null)} />
+      )}
 
       {destroying && <DestroyStockModal product={destroying} onClose={() => setDestroying(null)} onConfirm={doDestroy} />}
       {viewingDestruction && <DestructionDetail destruction={viewingDestruction} onClose={() => setViewingDestruction(null)} />}
