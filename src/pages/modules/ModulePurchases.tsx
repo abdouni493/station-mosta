@@ -5,7 +5,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty } from '@/src/lib/bizConfig';
+import { deleteBizPurchase, describePurchaseRollback, purchaseStockDeltas, totalRolledBack } from '@/src/lib/bizPurchase';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
@@ -45,7 +46,26 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
     rest: purchases.reduce((s, p) => s + p.rest, 0),
   }), [purchases]);
 
-  const del = () => { if (toDelete) { biz.remove('purchases', toDelete.id); toast.success('Achat supprimé'); setToDelete(null); } };
+  /**
+   * Supprimer une facture d'achat ANNULE la réception : les quantités reçues
+   * quittent le stock des produits concernés, puis la facture disparaît des
+   * rapports, de la dette fournisseur et de la caisse de la partie. Retirer la
+   * seule ligne laissait le stock gonflé de marchandise jamais reçue.
+   */
+  const del = () => {
+    if (!toDelete) return;
+    const deltas = deleteBizPurchase(toDelete, products, biz);
+    const qty = totalRolledBack(deltas);
+    toast.success(qty > 0
+      ? `Achat supprimé — ${formatQty(qty)} unité(s) retirée(s) du stock`
+      : 'Achat supprimé');
+    setToDelete(null);
+  };
+
+  /** Ce que la suppression retirera du stock, montré dans la confirmation. */
+  const deleteImpact = useMemo(
+    () => (toDelete ? describePurchaseRollback(purchaseStockDeltas(toDelete, products)) : ''),
+    [toDelete, products]);
 
   const onPay = (amount: number) => {
     if (!paying) return;
@@ -187,7 +207,12 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
       </Modal>
 
       <PayDebtModal open={!!paying} onClose={() => setPaying(null)} total={paying?.total || 0} alreadyPaid={paying?.paid || 0} onPay={onPay} />
-      <Confirm open={!!toDelete} title="Supprimer l'achat" message={`Supprimer la facture ${toDelete?.ref} ?`} onConfirm={del} onCancel={() => setToDelete(null)} />
+      <Confirm open={!!toDelete} title="Supprimer l'achat"
+        message={`Facture ${toDelete?.ref || ''} — ${money(toDelete?.total || 0)}.\n\n`
+          + `Les quantités reçues seront RETIRÉES du stock et l'achat ne comptera plus dans les rapports, la dette fournisseur ni la caisse.\n\n`
+          + (deleteImpact || 'Aucune quantité à reprendre sur cette facture.')
+          + '\n\nCette action est définitive.'}
+        onConfirm={del} onCancel={() => setToDelete(null)} />
     </div>
   );
 }
