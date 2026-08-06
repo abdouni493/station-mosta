@@ -3,7 +3,7 @@ import {
   FileBarChart, Globe2, Fuel, ChevronRight, Printer, Calendar, TrendingUp, ShoppingCart,
   CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
   UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
-  Droplets, Wallet, Hash, X, Trash2, Flame, Undo2,
+  Droplets, Wallet, Hash, X, Trash2, Flame, Undo2, Scale, Moon, LineChart,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -14,9 +14,20 @@ import { money, formatDate, Modal, Badge, Confirm, Table } from '@/src/component
 import { computeModuleReport, computeCarburantReport, consolidate, within, PartReport, GlobalReport } from '@/src/lib/bizReporting';
 import { computeWorkforce } from '@/src/lib/workforceReporting';
 import { computeTreasuryReport } from '@/src/lib/treasuryReporting';
+import { computeStockValuation } from '@/src/lib/stockValuation';
+import { computeWorkingCapital } from '@/src/lib/workingCapital';
+import {
+  computeCarburantAnalytics, computeModuleAnalytics, consolidateAnalytics,
+  pickGranularity, Granularity,
+} from '@/src/lib/bizAnalytics';
+import { ZakatConfig, ZakatInputs, loadZakatConfig } from '@/src/lib/zakat';
 import ReportView from '@/src/components/biz/ReportView';
 import WorkforceView from '@/src/components/biz/WorkforceView';
 import TreasuryView from '@/src/components/biz/TreasuryView';
+import WorkingCapitalView from '@/src/components/biz/WorkingCapitalView';
+import StockValueView from '@/src/components/biz/StockValueView';
+import ZakatView from '@/src/components/biz/ZakatView';
+import GlobalAnalyticsView from '@/src/components/biz/GlobalAnalyticsView';
 import {
   ModuleFiche, GlobalFiche, PurchasesFiche, PAY_MODE_LABEL, printFiche,
   FuelPurchaseDetail, FuelTypeGroup, payInfoOf, groupPurchasesByFuelType,
@@ -24,10 +35,16 @@ import {
 import { deleteFuelPurchase, tankDeltasOf, describeTankDeltas, litersOf } from '@/src/lib/fuelPurchase';
 import { toast } from 'react-hot-toast';
 
-type ActiveKey = 'global' | 'carburant' | 'employes' | 'tresorerie' | ModuleKey;
+type ActiveKey =
+  | 'global' | 'analyses' | 'carburant' | 'employes' | 'tresorerie'
+  | 'fonds' | 'stock' | 'zakat' | ModuleKey;
 
 const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType; hint: string }[] = [
   { id: 'global', label: 'Vue globale', icon: Globe2, hint: 'Rapport consolidé' },
+  { id: 'analyses', label: 'Analyses', icon: LineChart, hint: 'Graphiques, tendances & classements' },
+  { id: 'fonds', label: 'Fonds de roulement', icon: Scale, hint: 'Caisses, banques, créances − dettes' },
+  { id: 'stock', label: 'Valeur du stock', icon: Boxes, hint: "Au prix d'achat et au prix de vente" },
+  { id: 'zakat', label: 'Zakât', icon: Moon, hint: 'Calcul paramétrable de la zakât' },
   { id: 'employes', label: 'Employés & Personnel', icon: UsersRound, hint: 'Tous les employés, en détail' },
   { id: 'tresorerie', label: 'Caisse & Banques', icon: PiggyBank, hint: 'Trésorerie et journal complet' },
   { id: 'carburant', label: 'Carburant', icon: Fuel, hint: 'Rapport détaillé' },
@@ -83,6 +100,10 @@ export default function GeneralReports() {
   const [showPurchases, setShowPurchases] = useState(false);
   // Which KPI card's drill-down is open (every card is clickable → its detail list).
   const [activeCard, setActiveCard] = useState<CardKey | null>(null);
+  /** Découpage du temps des analyses — automatique tant qu'on n'y touche pas. */
+  const [grain, setGrain] = useState<Granularity | undefined>(undefined);
+  /** Réglages de zakât — conservés sur ce poste d'une session à l'autre. */
+  const [zakatConfig, setZakatConfig] = useState<ZakatConfig>(() => loadZakatConfig());
 
   const reports = useMemo(() => ({
     carburant: computeCarburantReport(app, range.from, range.to),
@@ -97,6 +118,38 @@ export default function GeneralReports() {
 
   const workforce = useMemo(() => computeWorkforce(app, biz, range.from, range.to), [app, biz, range]);
   const treasury = useMemo(() => computeTreasuryReport(app, biz, range.from, range.to), [app, biz, range]);
+
+  // ── Valeur du stock — les deux valorisations, activité par activité ──
+  const stockValuation = useMemo(() => computeStockValuation(app, biz), [app, biz]);
+
+  // ── Fonds de roulement — bâti SUR la trésorerie et les rapports déjà calculés,
+  //    pour qu'il ne puisse jamais annoncer un autre chiffre qu'eux. ──
+  const workingCapital = useMemo(
+    () => computeWorkingCapital(treasury, global.parts, stockValuation),
+    [treasury, global.parts, stockValuation]);
+
+  // ── Analyses — une par activité, plus leur consolidation ──
+  const analytics = useMemo(() => {
+    const g = grain || pickGranularity(range.from, range.to);
+    const parts = [
+      computeCarburantAnalytics(app, range.from, range.to, g),
+      computeModuleAnalytics(biz.cafeteria, 'cafeteria', range.from, range.to, g),
+      computeModuleAnalytics(biz.lavage, 'lavage', range.from, range.to, g),
+    ];
+    return { parts, global: consolidateAnalytics(parts, range.from, range.to, g) };
+  }, [app, biz, range, grain]);
+
+  // ── Zakât — l'assiette est prise dans l'application, jamais ressaisie ──
+  const zakatInputs = useMemo<ZakatInputs>(() => ({
+    caisse: workingCapital.cashTotal,
+    banques: workingCapital.bankTotal,
+    stock: stockValuation.parts.map(p => ({
+      key: p.key as 'carburant' | 'cafeteria' | 'lavage',
+      label: p.label, emoji: p.emoji, buyValue: p.buyValue, sellValue: p.sellValue,
+    })),
+    creances: workingCapital.receivablesTotal,
+    dettesFournisseurs: workingCapital.payablesTotal,
+  }), [workingCapital, stockValuation]);
 
   // Detailed fuel purchases of the period — the "Achats carburant" drill-down and
   // its printable fiche. Unlike the aggregate report, each achat keeps its full
@@ -405,7 +458,13 @@ export default function GeneralReports() {
                     ? { text: `${workforce.totals.workers}`, cls: 'text-blue-200' }
                     : s.id === 'tresorerie'
                       ? { text: money(treasury.grandTotal).replace(' DA', ''), cls: treasury.grandTotal >= 0 ? 'text-emerald-300' : 'text-red-300' }
-                      : null;
+                      : s.id === 'fonds'
+                        ? { text: money(workingCapital.workingCapital).replace(' DA', ''), cls: workingCapital.workingCapital >= 0 ? 'text-emerald-300' : 'text-red-300' }
+                        : s.id === 'stock'
+                          ? { text: money(stockValuation.buyValue).replace(' DA', ''), cls: 'text-amber-300' }
+                          : s.id === 'analyses'
+                            ? { text: `${analytics.global.trendPct >= 0 ? '+' : ''}${analytics.global.trendPct.toFixed(0)}%`, cls: analytics.global.trendPct >= 0 ? 'text-emerald-300' : 'text-red-300' }
+                            : null;
                 return (
                   <button key={s.id} onClick={() => setActive(s.id)} className={cn('sidebar-link w-full', isActive ? 'sidebar-link-active' : 'sidebar-link-inactive')}>
                     <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center shrink-0', isActive ? 'bg-[#001f5c]/20' : 'bg-white/6')}><Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[#001f5c]' : 'text-blue-200')} /></div>
@@ -446,7 +505,11 @@ export default function GeneralReports() {
             <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar">
               <AnimatePresence mode="wait">
                 <motion.div key={active} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} />}
+                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} workingCapital={workingCapital} stock={stockValuation} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} />}
+                  {active === 'analyses' && <GlobalAnalyticsView parts={analytics.parts} global={analytics.global} onGranularity={setGrain} />}
+                  {active === 'fonds' && <WorkingCapitalView report={workingCapital} />}
+                  {active === 'stock' && <StockValueView valuation={stockValuation} />}
+                  {active === 'zakat' && <ZakatView inputs={zakatInputs} config={zakatConfig} onConfig={setZakatConfig} />}
                   {active === 'employes' && <WorkforceView report={workforce} />}
                   {active === 'tresorerie' && <TreasuryView report={treasury} />}
                   {activeReport && <ReportView report={activeReport} />}
@@ -593,10 +656,12 @@ function ResultBand({ salesTotal, cogs, grossMargin, chargesTotal, destroyedValu
   );
 }
 
-function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOpenPurchases, onOpenCard }: {
+function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital: wc, stock: sv, onSelect, onOpenPurchases, onOpenCard }: {
   global: GlobalReport;
   workforce: ReturnType<typeof computeWorkforce>;
   treasury: ReturnType<typeof computeTreasuryReport>;
+  workingCapital: ReturnType<typeof computeWorkingCapital>;
+  stock: ReturnType<typeof computeStockValuation>;
   onSelect: (k: ActiveKey) => void;
   onOpenPurchases: () => void;
   onOpenCard: (k: CardKey) => void;
@@ -633,6 +698,27 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, onSelect, onOp
             sub={`${g.counts.returns} vente(s) annulée(s) · ${money(g.refundedTotal)} remboursé(s)`}
             onClick={() => onOpenCard('returns')} cta="Voir le détail" />
         )}
+      </div>
+
+      {/* Ce que la station possède vraiment : le fonds de roulement, la valeur du
+          stock aux deux prix, et l'accès direct au calcul de la zakât. */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-black text-[#002d87] flex items-center gap-2"><Scale className="w-5 h-5 text-[#FFB800]" /> Situation financière</h3>
+          <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => onSelect('fonds')}>Fonds de roulement →</button>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <OverviewCard icon={Scale} tone={wc.workingCapital >= 0 ? 'green' : 'red'} label="Fonds de roulement"
+            value={money(wc.workingCapital)}
+            sub={`Trésorerie ${money(wc.treasuryTotal)} + créances − dettes`}
+            onClick={() => onSelect('fonds')} cta="Détail par compte" />
+          <OverviewCard icon={Boxes} tone="amber" label="Stock au prix d'achat" value={money(sv.buyValue)}
+            sub={`${sv.count} référence(s)`} onClick={() => onSelect('stock')} cta="Valeur du stock" />
+          <OverviewCard icon={TrendingUp} tone="blue" label="Stock au prix de vente" value={money(sv.sellValue)}
+            sub={`Marge latente ${money(sv.margin)}`} onClick={() => onSelect('stock')} cta="Voir le détail" />
+          <OverviewCard icon={Moon} tone="purple" label="Zakât" value="Calculer"
+            sub="Assiette, nisâb et taux paramétrables" onClick={() => onSelect('zakat')} cta="Ouvrir le calcul" />
+        </div>
       </div>
 
       {/* Trésorerie — raccourci vers la section dédiée */}
