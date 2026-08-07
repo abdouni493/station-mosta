@@ -24,8 +24,9 @@ import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizReparation, BizRepKind, BizPrestation, BizDiscountType,
-  BizCar, BizLineItem, BizProduct, BizWorker, detailPrice, discountOf, prestationsOf,
+  BizCar, BizLineItem, BizProduct, BizWorker, detailPrice, discountOf, prestationsOf, formatQty,
 } from '@/src/lib/bizConfig';
+import { applyRestock, describeRestock, restockPlan, totalRestocked } from '@/src/lib/bizRestock';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
@@ -98,7 +99,29 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
     rest: reparations.reduce((s, r) => s + r.rest, 0),
   }), [reparations]);
 
-  const del = () => { if (toDelete) { biz.remove('reparations', toDelete.id); toast.success('Supprimé'); setToDelete(null); } };
+  /**
+   * Supprimer une intervention ANNULE la sortie des pièces et consommables
+   * qu'elle avait utilisés : l'huile, les filtres et le shampoing reviennent en
+   * Gestion de stock avant que la ligne ne disparaisse. Sans cela, la
+   * marchandise restait comptée comme sortie d'un travail qui n'existe plus.
+   */
+  const del = () => {
+    if (!toDelete) return;
+    const plan = restockPlan(biz.state, toDelete.usedProducts || []);
+    applyRestock(biz, plan);
+    const qty = totalRestocked(plan);
+    biz.remove('reparations', toDelete.id);
+    toast.success(qty > 0
+      ? `Intervention supprimée — ${formatQty(qty)} unité(s) remise(s) en stock`
+      : 'Intervention supprimée');
+    setToDelete(null);
+  };
+
+  /** Ce que la suppression va remettre en stock, montré dans la confirmation. */
+  const deleteImpact = useMemo(
+    () => (toDelete ? describeRestock(biz.state, toDelete.usedProducts || []) : ''),
+    [toDelete, biz.state]);
+
   const onPay = (amount: number) => {
     if (!paying) return;
     const paid = Math.min(paying.total, paying.paid + amount);
@@ -300,7 +323,13 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
         onSkip={() => setAskPrint(null)} />
 
       <PayDebtModal open={!!paying} onClose={() => setPaying(null)} total={paying?.total || 0} alreadyPaid={paying?.paid || 0} onPay={onPay} />
-      <Confirm open={!!toDelete} title="Supprimer" message={`Supprimer ${toDelete?.ref} ?`} onConfirm={del} onCancel={() => setToDelete(null)} />
+      <Confirm open={!!toDelete} title="Supprimer l'intervention"
+        message={`${toDelete?.ref || ''} — ${money(toDelete?.total || 0)}.\n\n`
+          + 'Les produits utilisés seront REMIS en stock et l\'intervention ne comptera plus dans les rapports, '
+          + 'la dette client ni la paie des employés.\n\n'
+          + (deleteImpact || 'Aucun produit à remettre en stock sur cette intervention.')
+          + '\n\nCette action est définitive.'}
+        onConfirm={del} onCancel={() => setToDelete(null)} />
     </div>
   );
 }

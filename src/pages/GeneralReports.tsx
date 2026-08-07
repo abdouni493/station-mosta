@@ -4,10 +4,12 @@ import {
   CreditCard, CircleDollarSign, Boxes, Users, Truck, AlertTriangle, CalendarClock, Store, Coffee,
   UtensilsCrossed, Wrench, UsersRound, PiggyBank, Landmark, Target, Clock, Car, Banknote, Layers,
   Droplets, Wallet, Hash, X, Trash2, Flame, Undo2, Scale, Moon, LineChart,
+  ClipboardList, PackageX,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
-import { ModuleKey } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizLineItem, isReversedSale, formatQty } from '@/src/lib/bizConfig';
+import { applyRestock, describeRestock, restockPlan } from '@/src/lib/bizRestock';
 import { useBizAll, useBiz } from '@/src/store/BizContext';
 import { useAppState, useAppDispatch, CAISSE_ID } from '@/src/store/AppContext';
 import { money, formatDate, Modal, Badge, Confirm, Table } from '@/src/components/biz/Kit';
@@ -16,6 +18,7 @@ import { computeWorkforce } from '@/src/lib/workforceReporting';
 import { computeTreasuryReport } from '@/src/lib/treasuryReporting';
 import { computeStockValuation } from '@/src/lib/stockValuation';
 import { computeWorkingCapital } from '@/src/lib/workingCapital';
+import { summarizeInventaires } from '@/src/lib/inventaire';
 import {
   computeCarburantAnalytics, computeModuleAnalytics, consolidateAnalytics,
   pickGranularity, Granularity,
@@ -27,6 +30,7 @@ import TreasuryView from '@/src/components/biz/TreasuryView';
 import WorkingCapitalView from '@/src/components/biz/WorkingCapitalView';
 import StockValueView from '@/src/components/biz/StockValueView';
 import ZakatView from '@/src/components/biz/ZakatView';
+import InventaireReportView, { collectLosses } from '@/src/components/biz/InventaireReportView';
 import GlobalAnalyticsView from '@/src/components/biz/GlobalAnalyticsView';
 import {
   ModuleFiche, GlobalFiche, PurchasesFiche, PAY_MODE_LABEL, printFiche,
@@ -37,13 +41,14 @@ import { toast } from 'react-hot-toast';
 
 type ActiveKey =
   | 'global' | 'analyses' | 'carburant' | 'employes' | 'tresorerie'
-  | 'fonds' | 'stock' | 'zakat' | ModuleKey;
+  | 'fonds' | 'stock' | 'zakat' | 'inventaires' | ModuleKey;
 
 const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType; hint: string }[] = [
   { id: 'global', label: 'Vue globale', icon: Globe2, hint: 'Rapport consolidé' },
   { id: 'analyses', label: 'Analyses', icon: LineChart, hint: 'Graphiques, tendances & classements' },
-  { id: 'fonds', label: 'Fonds de roulement', icon: Scale, hint: 'Caisses, banques, créances − dettes' },
+  { id: 'fonds', label: 'Fonds de roulement', icon: Scale, hint: 'Caisses, banques, créances, stock − dettes' },
   { id: 'stock', label: 'Valeur du stock', icon: Boxes, hint: "Au prix d'achat et au prix de vente" },
+  { id: 'inventaires', label: 'Inventaires', icon: ClipboardList, hint: 'Comptages, décalages et pertes' },
   { id: 'zakat', label: 'Zakât', icon: Moon, hint: 'Calcul paramétrable de la zakât' },
   { id: 'employes', label: 'Employés & Personnel', icon: UsersRound, hint: 'Tous les employés, en détail' },
   { id: 'tresorerie', label: 'Caisse & Banques', icon: PiggyBank, hint: 'Trésorerie et journal complet' },
@@ -57,7 +62,7 @@ const PART_SECTIONS: ActiveKey[] = ['carburant', 'cafeteria', 'lavage'];
 
 // ─── Card drill-downs ─────────────────────────────────────────────────────────
 /** The KPI cards that open a detail list (Achats has its own richer modal). */
-type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions' | 'clientDebt' | 'supplierDebt' | 'alerts' | 'returns';
+type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions' | 'clientDebt' | 'supplierDebt' | 'alerts' | 'returns' | 'pertes';
 
 /** One line of a card's underlying list. `onDelete` is absent for derived rows. */
 interface DetailRow {
@@ -121,6 +126,17 @@ export default function GeneralReports() {
 
   // ── Valeur du stock — les deux valorisations, activité par activité ──
   const stockValuation = useMemo(() => computeStockValuation(app, biz), [app, biz]);
+
+  // ── Inventaires — les comptages de chaque partie et leurs décalages ──
+  // Chaque inventaire porte déjà son rapport d'écarts figé : on ne fait que les
+  // rassembler, pour que cet écran ne puisse pas contredire celui de la partie.
+  const inventaireParts = useMemo(() => [
+    summarizeInventaires(biz.cafeteria, 'cafeteria', MODULES.cafeteria.label, MODULES.cafeteria.emoji),
+    summarizeInventaires(biz.lavage, 'lavage', MODULES.lavage.label, MODULES.lavage.emoji),
+  ], [biz]);
+  const inventaireLosses = useMemo(() => collectLosses(inventaireParts), [inventaireParts]);
+  const inventaireLossTotal = useMemo(
+    () => inventaireParts.reduce((s, p) => s + p.lossValue, 0), [inventaireParts]);
 
   // ── Fonds de roulement — bâti SUR la trésorerie et les rapports déjà calculés,
   //    pour qu'il ne puisse jamais annoncer un autre chiffre qu'eux. ──
@@ -233,14 +249,30 @@ export default function GeneralReports() {
       onDelete: () => dispatch({ type: 'DELETE_SHOP_SALE', payload: s.id }),
       confirmMessage: `Supprimer cette vente magasin de ${money(s.total || 0)} ?`,
     }));
+    // Supprimer une vente ou une intervention depuis ce rapport fait le MÊME
+    // retour de marchandise que l'écran d'origine : les articles vendus et les
+    // pièces posées reviennent en stock avant que la ligne ne disparaisse.
     (['cafeteria', 'lavage'] as const).forEach(k => reports[k].sales.forEach(s => {
       const isRep = s.kind !== 'Vente';
+      const api = bizOf(k);
+      const st = stateOf(k);
+      const lines: BizLineItem[] = isRep
+        ? (st.reparations.find(r => r.id === s.id)?.usedProducts || [])
+        : (st.sales.find(x => x.id === s.id)?.items || []);
+      const reversed = !isRep && !!st.sales.find(x => x.id === s.id && isReversedSale(x));
+      const impact = reversed ? '' : describeRestock(st, lines);
       salesRows.push({
         id: `${k}-${s.id}`, date: s.date,
         label: `${reports[k].emoji} ${s.kind}${s.ref ? ' · ' + s.ref : ''}`,
         sub: s.client || 'Comptoir', amount: s.total, amountTone: 'green',
-        onDelete: () => bizOf(k).remove(isRep ? 'reparations' : 'sales', s.id),
-        confirmMessage: `Supprimer « ${s.ref || s.kind} » (${money(s.total)}) ?`,
+        onDelete: () => {
+          if (!reversed) applyRestock(api, restockPlan(st, lines));
+          api.remove(isRep ? 'reparations' : 'sales', s.id);
+        },
+        confirmMessage: `Supprimer « ${s.ref || s.kind} » (${money(s.total)}) ?\n\n`
+          + (reversed
+            ? 'Cette vente a déjà été retournée ou échangée : sa marchandise est revenue en stock.'
+            : 'Les quantités seront REMISES en stock.\n\n' + (impact || 'Aucune quantité à remettre en stock.')),
       });
     }));
     salesRows.sort(byDateDesc);
@@ -370,7 +402,25 @@ export default function GeneralReports() {
       }));
     });
 
+    // ── Pertes d'inventaire — la marchandise qui manquait au comptage ──
+    // Une perte n'est PAS une destruction : personne ne l'a déclarée cassée ou
+    // périmée, elle a simplement disparu entre deux comptages. C'est cette somme
+    // qui peut être imputée aux employés depuis leur écran de paie.
+    const perteRows: DetailRow[] = inventaireLosses.map(l => ({
+      id: l.id, date: l.inventaire.date,
+      label: `${l.emoji} ${l.productName}`,
+      sub: [
+        `Inventaire ${l.inventaire.ref}`,
+        `compté ${formatQty(l.countedQty)} ${l.unit || ''} contre ${formatQty(l.systemQty)} annoncé(s)`.trim(),
+        `manque ${formatQty(Math.abs(l.ecart))} ${l.unit || ''} × ${money(l.purchasePrice)}`.trim(),
+        l.inventaire.chargeWorkers === false ? 'non imputé aux employés' : undefined,
+      ].filter(Boolean).join(' · '),
+      badge: { text: l.partLabel, tone: 'danger' },
+      amount: l.value, amountTone: 'red',
+    }));
+
     return {
+      pertes:       { title: 'Pertes d\'inventaire', icon: PackageX, subtitle: 'Marchandise manquante constatée au comptage', rows: perteRows, total: inventaireLossTotal, totalLabel: 'Total des pertes', note: 'Le manquant est valorisé au prix d\'achat du produit. Ces lignes sont calculées par les inventaires — pour les corriger, reprenez le comptage depuis l\'écran Inventaire de la partie concernée. Les inventaires dont l\'imputation est activée apparaissent dans la paie des employés concernés.' },
       salesTotal:   { title: 'Ventes totales', icon: TrendingUp, subtitle: 'Détail de toutes les ventes de la période', rows: salesRows, total: global.salesTotal, totalLabel: 'Total ventes', note: global.counts.returns ? `${global.counts.returns} vente(s) retournée(s) ou échangée(s) ne figurent pas ici : leur marchandise est revenue en stock. Voir la carte « Retours & échanges ».` : undefined },
       returns:      { title: 'Retours & échanges', icon: Undo2, subtitle: 'Ventes annulées — marchandise revenue en stock', rows: returnRows, total: global.returnsTotal, totalLabel: 'CA annulé', note: `Ces ventes sont exclues du chiffre d'affaires et des gains : les articles ont été remis en stock (${money(global.restockedCost)} de coût de revient) et ${money(global.refundedTotal)} ont été rendus aux clients. Annulez un retour depuis l'écran Ventes de la partie concernée.` },
       expenses:     { title: 'Dépenses + salaires', icon: CreditCard, subtitle: 'Dépenses et salaires de la période', rows: expenseRows, total: global.expensesTotal + global.salariesPaid, totalLabel: 'Total charges', note: 'Les salaires sont calculés par la paie — supprimez-les depuis la fiche employé.' },
@@ -381,7 +431,7 @@ export default function GeneralReports() {
       supplierDebt: { title: 'Dettes fournisseurs', icon: Truck, subtitle: 'Encours fournisseurs (toutes dates)', rows: supplierDebtRows, total: global.supplierDebtTotal, totalLabel: 'Total encours' },
       alerts:       { title: 'Alertes', icon: AlertTriangle, subtitle: 'Stock bas et péremptions', rows: alertRows, total: alertRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Valeur concernée', note: 'Alertes calculées — non supprimables.' },
     };
-  }, [global, reports, app, biz, range, dispatch, cafeteriaBiz, lavageBiz]);
+  }, [global, reports, app, biz, range, dispatch, cafeteriaBiz, lavageBiz, inventaireLosses, inventaireLossTotal]);
 
   const activeReport: PartReport | null = PART_SECTIONS.includes(active)
     ? reports[active as 'carburant' | ModuleKey]
@@ -462,6 +512,8 @@ export default function GeneralReports() {
                         ? { text: money(workingCapital.workingCapital).replace(' DA', ''), cls: workingCapital.workingCapital >= 0 ? 'text-emerald-300' : 'text-red-300' }
                         : s.id === 'stock'
                           ? { text: money(stockValuation.buyValue).replace(' DA', ''), cls: 'text-amber-300' }
+                          : s.id === 'inventaires'
+                            ? { text: money(inventaireLossTotal).replace(' DA', ''), cls: inventaireLossTotal > 0 ? 'text-red-300' : 'text-emerald-300' }
                           : s.id === 'analyses'
                             ? { text: `${analytics.global.trendPct >= 0 ? '+' : ''}${analytics.global.trendPct.toFixed(0)}%`, cls: analytics.global.trendPct >= 0 ? 'text-emerald-300' : 'text-red-300' }
                             : null;
@@ -505,10 +557,11 @@ export default function GeneralReports() {
             <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar">
               <AnimatePresence mode="wait">
                 <motion.div key={active} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} workingCapital={workingCapital} stock={stockValuation} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} />}
+                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} workingCapital={workingCapital} stock={stockValuation} inventaires={inventaireParts} inventaireLossTotal={inventaireLossTotal} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} />}
                   {active === 'analyses' && <GlobalAnalyticsView parts={analytics.parts} global={analytics.global} onGranularity={setGrain} />}
                   {active === 'fonds' && <WorkingCapitalView report={workingCapital} />}
                   {active === 'stock' && <StockValueView valuation={stockValuation} />}
+                  {active === 'inventaires' && <InventaireReportView parts={inventaireParts} />}
                   {active === 'zakat' && <ZakatView inputs={zakatInputs} config={zakatConfig} onConfig={setZakatConfig} />}
                   {active === 'employes' && <WorkforceView report={workforce} />}
                   {active === 'tresorerie' && <TreasuryView report={treasury} />}
@@ -656,12 +709,14 @@ function ResultBand({ salesTotal, cogs, grossMargin, chargesTotal, destroyedValu
   );
 }
 
-function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital: wc, stock: sv, onSelect, onOpenPurchases, onOpenCard }: {
+function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital: wc, stock: sv, inventaires: invs, inventaireLossTotal, onSelect, onOpenPurchases, onOpenCard }: {
   global: GlobalReport;
   workforce: ReturnType<typeof computeWorkforce>;
   treasury: ReturnType<typeof computeTreasuryReport>;
   workingCapital: ReturnType<typeof computeWorkingCapital>;
   stock: ReturnType<typeof computeStockValuation>;
+  inventaires: ReturnType<typeof summarizeInventaires>[];
+  inventaireLossTotal: number;
   onSelect: (k: ActiveKey) => void;
   onOpenPurchases: () => void;
   onOpenCard: (k: CardKey) => void;
@@ -688,6 +743,12 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
         <OverviewCard icon={Layers} tone="amber" label="Coût marchandises" value={money(g.cogs)} sub={`Marge brute ${money(g.grossMargin)}`} onClick={() => onOpenCard('netGain')} cta="Décomposition du gain" />
         <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
         <OverviewCard icon={Flame} tone="red" label="Destructions" value={money(g.destroyedValue)} sub="marchandise perdue" onClick={() => onOpenCard('destructions')} cta="Voir le détail" />
+        {/* Pertes d'inventaire : la marchandise qui manquait au comptage, que
+            personne n'a déclarée cassée ou périmée. C'est elle qui peut être
+            retenue sur la paie des employés concernés. */}
+        <OverviewCard icon={PackageX} tone="red" label="Pertes d'inventaire" value={money(inventaireLossTotal)}
+          sub={`${invs.reduce((s, p) => s + p.inventaires.filter(i => !!i.comparison).length, 0)} inventaire(s) comparé(s)`}
+          onClick={() => onOpenCard('pertes')} cta="Voir le détail" />
         <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} onClick={() => onOpenCard('clientDebt')} cta="Voir le détail" />
         <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} onClick={() => onOpenCard('supplierDebt')} cta="Voir le détail" />
         <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} onClick={() => onOpenCard('alerts')} cta="Voir le détail" />
@@ -710,7 +771,7 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <OverviewCard icon={Scale} tone={wc.workingCapital >= 0 ? 'green' : 'red'} label="Fonds de roulement"
             value={money(wc.workingCapital)}
-            sub={`Trésorerie ${money(wc.treasuryTotal)} + créances − dettes`}
+            sub={`Trésorerie ${money(wc.treasuryTotal)} + créances + stock ${money(wc.stockValue)} − dettes`}
             onClick={() => onSelect('fonds')} cta="Détail par compte" />
           <OverviewCard icon={Boxes} tone="amber" label="Stock au prix d'achat" value={money(sv.buyValue)}
             sub={`${sv.count} référence(s)`} onClick={() => onSelect('stock')} cta="Valeur du stock" />

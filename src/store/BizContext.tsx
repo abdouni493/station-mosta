@@ -169,6 +169,7 @@ const MERGED_COLLECTIONS: BizCollection[] = [
   'categories', 'marques', 'roles', 'products', 'purchases', 'sales',
   'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reparations',
   'productions', 'fiches', 'comptoir', 'destructions', 'sessions', 'payRequests',
+  'inventaires',
 ];
 
 /**

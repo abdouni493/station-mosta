@@ -35,6 +35,13 @@ export interface Tank {
   degrees: number;
   alertThreshold: number;
   notes?: string;
+  /**
+   * Cuve épinglée par l'utilisateur : elle remonte en TÊTE de l'écran Cuves et
+   * de la liste du tableau de bord. Sur une station qui compte dix cuves, les
+   * deux ou trois qui tournent vraiment doivent être sous les yeux sans faire
+   * défiler — c'est tout ce que ce drapeau sert.
+   */
+  isFavorite?: boolean;
 }
 
 export interface Pump {
@@ -1503,7 +1510,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 // ─── Supabase row → AppContext model mappers ──────────────────────────────────
 
 function mapTank(r: any): Tank {
-  return { id: r.id, name: r.name, type: r.type, capacity: +r.capacity, current: +r.current, degrees: +r.degrees, alertThreshold: +r.alert_threshold, notes: r.notes };
+  return { id: r.id, name: r.name, type: r.type, capacity: +r.capacity, current: +r.current, degrees: +r.degrees, alertThreshold: +r.alert_threshold, notes: r.notes, isFavorite: !!r.is_favorite };
 }
 function mapPump(r: any): Pump {
   return { id: r.id, number: r.number, name: r.name, tankId: r.tank_id, trackId: r.track_id, type: r.type, lastIndex: +r.last_index, status: r.status, currentBrigadeStartIndex: r.current_brigade_start_index ? +r.current_brigade_start_index : undefined, createdAt: r.created_at ?? undefined };
@@ -1852,10 +1859,10 @@ async function cleanBrigadeDependencies(brigadeId: string): Promise<void> {
 async function syncToSupabase(action: AppAction): Promise<void> {
   switch (action.type) {
       case 'ADD_TANK':
-        await db.addTank({ id: action.payload.id, name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes });
+        await db.addTank({ id: action.payload.id, name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes, is_favorite: !!action.payload.isFavorite });
         break;
       case 'UPDATE_TANK':
-        await db.updateTank(action.payload.id, { name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes });
+        await db.updateTank(action.payload.id, { name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes, is_favorite: !!action.payload.isFavorite });
         break;
       case 'ADJUST_TANK_LEVELS':
         // Atomic server-side delta (SET current = current + delta) so concurrent
@@ -3465,10 +3472,10 @@ export function useSupabaseDispatch() {
       switch (action.type) {
         // ── Tanks ──────────────────────────────────────────────────────────
         case 'ADD_TANK':
-          await db.addTank({ id: action.payload.id, name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes });
+          await db.addTank({ id: action.payload.id, name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes, is_favorite: !!action.payload.isFavorite });
           break;
         case 'UPDATE_TANK':
-          await db.updateTank(action.payload.id, { name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes });
+          await db.updateTank(action.payload.id, { name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes, is_favorite: !!action.payload.isFavorite });
           break;
         case 'DELETE_TANK':
           await db.deleteTank(action.payload);

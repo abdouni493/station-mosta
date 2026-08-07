@@ -40,6 +40,7 @@ import BankAccounts from "./pages/BankAccounts";
 import { BizProvider } from "./store/BizContext";
 import { MODULES, ModuleKey } from "./lib/bizConfig";
 import ModuleStock from "./pages/modules/ModuleStock";
+import ModuleInventaire from "./pages/modules/ModuleInventaire";
 import ModulePurchases from "./pages/modules/ModulePurchases";
 import ModuleProduction from "./pages/modules/ModuleProduction";
 import ModuleComptoir from "./pages/modules/ModuleComptoir";
@@ -74,6 +75,7 @@ function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
     add('pos', <ModulePOS moduleKey={key} />);
     add('sales', <ModuleSales moduleKey={key} />);
     add('stock', <ModuleStock moduleKey={key} />);
+    add('inventaire', <ModuleInventaire moduleKey={key} />);
     add('purchases', <ModulePurchases moduleKey={key} />);
     add('clients', <ModuleClients moduleKey={key} />);
     add('suppliers', <ModuleSuppliers moduleKey={key} />);
@@ -83,6 +85,7 @@ function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
     add('reports', <ModuleReports moduleKey={key} />);
   } else {
     add('stock', <ModuleStock moduleKey={key} />);
+    add('inventaire', <ModuleInventaire moduleKey={key} />);
     add('purchases', <ModulePurchases moduleKey={key} />);
     if (cfg.hasProduction) {
       add('production', <ModuleProduction moduleKey={key} />);

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   UsersRound, Plus, Eye, Edit2, Trash2, Shield, Wallet, CalendarMinus, CalendarPlus,
   Briefcase, Check, X, Banknote, MoreVertical, Lock, Zap, Loader, MapIcon, Printer,
+  ClipboardList,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'react-hot-toast';
@@ -10,13 +11,14 @@ import {
   ModuleKey, MODULES, BizWorker, BizWorkerPayment, BizReparation, BizWorkerKind,
   WORKER_KIND_META, INTERFACE_ACTIONS, interfacesForModule, workerShareOf, prestationsOf,
 } from '@/src/lib/bizConfig';
+import { chargeableInventairesFor } from '@/src/lib/inventaire';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import { provisionModuleWorkerAccount, saveModuleWorkerPermissions } from '@/src/lib/supabase';
 import { printInvoice, stationFromSettings } from './_shared';
 import WorkerPaymentModal, { WorkerPaymentResult } from '@/src/components/WorkerPaymentModal';
 import WorkerDetailsModal from '@/src/components/WorkerDetailsModal';
-import { WEEKDAYS, DEFAULT_WORK_DAYS, PayWork } from '@/src/lib/workerPay';
+import { WEEKDAYS, DEFAULT_WORK_DAYS, PayWork, PayInventaire } from '@/src/lib/workerPay';
 import {
   PageHeader, StatCard, SearchInput, EmptyState,
   Confirm, Modal, Field, Input, Select, Switch, InlineCreate, money, formatDate,
@@ -29,7 +31,7 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'workers');
-  const { workers } = biz.state;
+  const { workers, inventaires } = biz.state;
   const [search, setSearch] = useState('');
   const [kindFilter, setKindFilter] = useState<'all' | BizWorkerKind>('all');
   const [form, setForm] = useState<BizWorker | null | 'new'>(null);
@@ -115,6 +117,17 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
             const unpaidAcomptes = (w.acomptes || []).filter(a => !a.paid).reduce((s, a) => s + a.amount, 0);
             const isMonthPaid = (w.payments || []).some(p => (p.date || '').startsWith(currentMonth));
             const isActive = w.hasAccount ? !!w.authUserId : true;
+            // Manquants d'inventaire constatés sur ses paiements mais jamais
+            // retenus sur son salaire : ce qu'il doit encore à la partie.
+            const inventaireDebt = (w.payments || []).reduce(
+              (s, p) => s + Math.max(0, (p.inventaireTotal || 0) - (p.inventaireDeduction || 0)), 0);
+            const pendingInventaires = w.inventoryLiable
+              ? chargeableInventairesFor(inventaires, {
+                settledIds: (w.payments || []).flatMap(p => p.inventaireIds || []),
+                dismissedIds: w.dismissedInventaireIds,
+              })
+              : [];
+            const pendingInventaireLoss = pendingInventaires.reduce((s, i) => s + (i.comparison?.lossValue || 0), 0);
 
             return (
               <motion.div
@@ -220,6 +233,23 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
                   {!w.hasAccount && (
                     <span className="text-[9px] font-bold px-2.5 py-1 bg-slate-100 text-slate-500 rounded-full flex items-center gap-1 italic">
                       <Lock className="w-3 h-3" /> Aucun compte
+                    </span>
+                  )}
+                  {w.inventoryLiable && (
+                    <span className="text-[9px] font-bold px-2.5 py-1 bg-amber-100 text-amber-700 rounded-full flex items-center gap-1 italic">
+                      <ClipboardList className="w-3 h-3" /> Inventaire
+                    </span>
+                  )}
+                  {inventaireDebt > 0 && (
+                    <span className="text-[9px] font-bold px-2.5 py-1 bg-red-100 text-red-700 rounded-full flex items-center gap-1 italic"
+                      title="Manquants d'inventaire constatés et non encore retenus sur son salaire">
+                      Dette inventaire {money(inventaireDebt)}
+                    </span>
+                  )}
+                  {pendingInventaireLoss > 0 && (
+                    <span className="text-[9px] font-bold px-2.5 py-1 bg-orange-100 text-orange-700 rounded-full flex items-center gap-1 italic"
+                      title="Inventaires non encore réglés dans sa paie">
+                      {pendingInventaires.length} inventaire(s) · {money(pendingInventaireLoss)}
                     </span>
                   )}
                 </div>
@@ -353,6 +383,9 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
       hasAccount, email: f.email, username: username || undefined, password: f.password,
       startDate: f.startDate || new Date().toISOString().split('T')[0],
       permissions: initial?.permissions || {}, acomptes: initial?.acomptes || [], absences: initial?.absences || [], payments: initial?.payments || [],
+      inventoryLiable: !!f.inventoryLiable,
+      dismissedInventaireIds: initial?.dismissedInventaireIds,
+      savedInventaireIds: initial?.savedInventaireIds,
       createdAt: initial?.createdAt || new Date().toISOString(),
     };
     if (isEdit) biz.update('workers', worker); else biz.add('workers', worker);
@@ -460,6 +493,32 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
           )}
         </div>
 
+        {/* ── Inventaires ──────────────────────────────────────────────────
+            Tous les employés ne répondent pas du stock : un caissier, oui ; un
+            laveur de voitures, non. Ce réglage décide seul si les manquants
+            constatés au comptage lui sont opposés dans son écran de paie. */}
+        <div className={cn('sm:col-span-2 rounded-xl border px-4 py-3 transition-colors',
+          f.inventoryLiable ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200')}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <ClipboardList className={cn('w-4 h-4 mt-0.5 shrink-0', f.inventoryLiable ? 'text-amber-600' : 'text-slate-400')} />
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-700">Concerné par les inventaires</p>
+                <p className="text-xs text-slate-400">
+                  L'employé répond des manquants constatés aux comptages de {MODULES[moduleKey].label}
+                </p>
+              </div>
+            </div>
+            <Switch checked={!!f.inventoryLiable} onChange={v => set('inventoryLiable', v)} />
+          </div>
+          {f.inventoryLiable && (
+            <p className="mt-2.5 text-xs font-semibold text-amber-700">
+              Son écran de paie listera les inventaires non réglés : vous choisirez ceux qui le concernent et
+              combien lui retenir dessus — un pourcentage des manquants ou une somme fixe.
+            </p>
+          )}
+        </div>
+
         <div className="sm:col-span-2"><Field label="Date de déclaration CNAS" hint="Déclaration à la sécurité sociale (optionnel)."><Input type="date" value={f.cnasDate || ''} onChange={e => set('cnasDate', e.target.value)} /></Field></div>
 
         <div className="sm:col-span-2 rounded-xl border border-slate-200 p-4"
@@ -546,6 +605,65 @@ function ViewWorker({ moduleKey, workerId, onClose }: { moduleKey: ModuleKey; wo
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'workers');
   const worker = biz.state.workers.find(w => w.id === workerId);
+  const inventaires = biz.state.inventaires;
+
+  /**
+   * Dossier inventaire de l'employé : ce qui lui a été opposé, ce qui lui a été
+   * retenu, et ce qui l'attend encore. Un décalage « constaté » figure sur un
+   * paiement sans avoir été déduit — c'est ce qui fait sa dette.
+   */
+  const inventory = useMemo(() => {
+    if (!worker?.inventoryLiable) return undefined;
+    const byInventaire = new Map<string, { payment: BizWorkerPayment; share: number; deducted: number }>();
+    worker.payments.forEach(p => {
+      const ids = p.inventaireIds || [];
+      if (!ids.length) return;
+      // La retenue d'un paiement porte sur l'ensemble des inventaires qu'il
+      // règle : elle est répartie au prorata de ce que chacun pesait.
+      const total = p.inventaireTotal || 0;
+      ids.forEach(id => {
+        const inv = inventaires.find(x => x.id === id);
+        const loss = inv?.comparison?.lossValue || 0;
+        const share = total > 0 ? ((p.inventaireDeduction || 0) * loss) / total : 0;
+        byInventaire.set(id, { payment: p, share: loss, deducted: share });
+      });
+    });
+
+    const pending = chargeableInventairesFor(inventaires, {
+      settledIds: [...byInventaire.keys()],
+      dismissedIds: worker.dismissedInventaireIds,
+    });
+
+    const rows = [
+      ...[...byInventaire.entries()].map(([id, v]) => {
+        const inv = inventaires.find(x => x.id === id);
+        return {
+          id,
+          ref: inv?.ref || id.slice(0, 8),
+          date: inv?.date || v.payment.date,
+          loss: v.share,
+          deducted: v.deducted,
+          settledOn: v.payment.date,
+          status: (v.deducted > 0 ? 'retenu' : 'constate') as 'retenu' | 'constate',
+        };
+      }),
+      ...pending.map(inv => ({
+        id: inv.id, ref: inv.ref, date: inv.date,
+        loss: inv.comparison?.lossValue || 0, deducted: 0,
+        settledOn: undefined, status: 'en attente' as const,
+      })),
+    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return {
+      liable: true,
+      debt: worker.payments.reduce((s, p) => s + Math.max(0, (p.inventaireTotal || 0) - (p.inventaireDeduction || 0)), 0),
+      deducted: worker.payments.reduce((s, p) => s + (p.inventaireDeduction || 0), 0),
+      pendingCount: pending.length,
+      pendingLoss: pending.reduce((s, i) => s + (i.comparison?.lossValue || 0), 0),
+      rows,
+    };
+  }, [worker, inventaires]);
+
   if (!worker) return null;
 
   const salaryLabel = !worker.paid ? '—'
@@ -565,6 +683,11 @@ function ViewWorker({ moduleKey, workerId, onClose }: { moduleKey: ModuleKey; wo
     { label: 'Identifiant', value: worker.username || '—' },
     { label: 'Compte', value: worker.hasAccount ? (worker.authUserId ? 'Actif' : 'À activer') : 'Aucun' },
     { label: 'Email', value: worker.email || '—' },
+    { label: 'Inventaires', value: worker.inventoryLiable ? 'Concerné — répond des manquants' : 'Non concerné' },
+    ...(inventory ? [
+      { label: 'Dette d\'inventaire', value: inventory.debt > 0 ? money(inventory.debt) : '—' },
+      { label: 'Retenu sur salaires', value: inventory.deducted > 0 ? money(inventory.deducted) : '—' },
+    ] : []),
   ];
 
   return (
@@ -573,7 +696,30 @@ function ViewWorker({ moduleKey, workerId, onClose }: { moduleKey: ModuleKey; wo
       name={worker.name} role={worker.roleName} subtitle={MODULES[moduleKey].label}
       statusLabel={worker.paid ? 'Salarié' : 'Non salarié'} statusTone={worker.paid ? 'green' : 'slate'}
       info={info}
-      payments={worker.payments.map(p => ({ id: p.id, date: p.date, amount: p.amount, title: p.period, subtitle: p.mode, notes: p.description }))}
+      inventory={inventory}
+      payments={worker.payments.map(p => ({
+        id: p.id, date: p.date, amount: p.amount, title: p.period, subtitle: p.mode, notes: p.description,
+        // La décomposition explique le net : sans elle, un salaire amputé d'une
+        // retenue d'inventaire ressemblait à une erreur de saisie.
+        breakdown: [
+          ...(p.primeAmount ? [{ label: 'Prime', value: `+${money(p.primeAmount)}`, tone: 'green' as const }] : []),
+          ...(p.worksTotal ? [{ label: `Travaux (${p.percentage || 0}%)`, value: money(p.worksTotal) }] : []),
+          ...(p.inventaireTotal
+            ? [{ label: `Décalage inventaire (${(p.inventaireIds || []).length})`, value: money(p.inventaireTotal), tone: 'slate' as const }]
+            : []),
+          ...(p.inventaireDeduction
+            ? [{
+              label: p.inventaireDeductionType === 'percent'
+                ? `Retenue inventaire (${p.inventaireDeductionValue || 0}%)`
+                : 'Retenue inventaire',
+              value: `−${money(p.inventaireDeduction)}`, tone: 'red' as const,
+            }]
+            : []),
+          ...(p.inventaireTotal && !p.inventaireDeduction
+            ? [{ label: 'Retenue appliquée', value: 'aucune — décalage constaté', tone: 'slate' as const }]
+            : []),
+        ],
+      }))}
       acomptes={worker.acomptes.map(a => ({ id: a.id, date: a.date, amount: a.amount, description: a.description, paid: a.paid }))}
       absences={worker.absences.map(a => ({ id: a.id, date: a.date, cost: a.cost, description: a.description, paid: a.paid }))}
       canEdit={perm.modifier} canDelete={perm.supprimer}
@@ -760,10 +906,50 @@ function allWorksFor(worker: BizWorker, reparations: BizReparation[]) {
 
 function PaymentModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; worker: BizWorker; onClose: () => void }) {
   const biz = useBiz(moduleKey);
-  const { reparations } = biz.state;
+  const { reparations, inventaires } = biz.state;
   const isPercent = worker.salaryType === 'pourcentage';
   const rate = worker.percentage || 0;
   const [showWorks, setShowWorks] = useState(false);
+
+  // ── Inventaires opposables à cet employé ────────────────────────────────
+  // Uniquement s'il est « concerné par les inventaires ». Un inventaire quitte
+  // la liste pour trois raisons : son imputation a été désactivée, il a déjà été
+  // constaté sur un paiement, ou il a été écarté à la main pour cet employé.
+  const settledInventaireIds = useMemo(
+    () => worker.payments.flatMap(p => p.inventaireIds || []), [worker.payments]);
+  const payableInventaires = useMemo(
+    () => (worker.inventoryLiable
+      ? chargeableInventairesFor(inventaires, {
+        settledIds: settledInventaireIds,
+        dismissedIds: worker.dismissedInventaireIds,
+      })
+      : []),
+    [worker.inventoryLiable, inventaires, settledInventaireIds, worker.dismissedInventaireIds]);
+  const payInventaires: PayInventaire[] = useMemo(() => payableInventaires.map(inv => ({
+    id: inv.id,
+    label: inv.ref,
+    sublabel: `${inv.comparison!.productsWithEcart} décalage(s) sur ${inv.comparison!.productsCounted} produit(s)`,
+    date: inv.date.split('T')[0],
+    lossValue: inv.comparison!.lossValue,
+    productCount: inv.comparison!.lines.filter(l => l.kind === 'perte').length,
+  })), [payableInventaires]);
+  /** Manquants déjà constatés sur ses paiements passés mais jamais retenus. */
+  const inventaireDebt = useMemo(
+    () => worker.payments.reduce((s, p) => s + Math.max(0, (p.inventaireTotal || 0) - (p.inventaireDeduction || 0)), 0),
+    [worker.payments]);
+
+  const dismissInventaire = (id: string) => {
+    biz.update('workers', {
+      ...worker,
+      dismissedInventaireIds: [...new Set([...(worker.dismissedInventaireIds || []), id])],
+    });
+    toast.success('Inventaire écarté — il ne sera plus proposé pour cet employé');
+  };
+
+  const saveInventaireSelection = (ids: string[]) => {
+    biz.update('workers', { ...worker, savedInventaireIds: ids });
+    toast.success(`Sélection enregistrée — ${ids.length} inventaire(s)`);
+  };
 
   // Percentage-paid: the unpaid interventions, normalised for the shared modal.
   const pendingWorks = useMemo(
@@ -792,6 +978,15 @@ function PaymentModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; wo
   const onConfirm = (res: WorkerPaymentResult) => {
     const payment: BizWorkerPayment = {
       id: newId(), period, amount: res.net, date: res.date, description: res.notes, mode: res.mode,
+      // Les inventaires retenus sont CONSTATÉS sur ce paiement, qu'une retenue
+      // ait été appliquée ou non : c'est ce qui les fait disparaître de la liste
+      // et ce qui alimente la dette d'inventaire visible sur sa fiche.
+      inventaireIds: res.selectedInventaireIds.length ? res.selectedInventaireIds : undefined,
+      inventaireTotal: res.inventaireTotal || undefined,
+      inventaireDeduction: res.inventaireDeduction || undefined,
+      inventaireDeductionActive: res.inventaireDeductionActive || undefined,
+      inventaireDeductionType: res.inventaireDeductionActive ? res.inventaireDeductionType : undefined,
+      inventaireDeductionValue: res.inventaireDeductionActive ? res.inventaireDeductionValue : undefined,
       workIds: isPercent ? res.selectedWorkIds : undefined,
       worksTotal: isPercent ? res.worksTotal : undefined,
       percentage: isPercent ? rate : undefined,
@@ -830,6 +1025,11 @@ function PaymentModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; wo
         acomptes={worker.acomptes.filter(a => !a.paid)}
         absences={worker.absences.filter(a => !a.paid)}
         works={works}
+        inventaires={payInventaires}
+        savedInventaireIds={worker.savedInventaireIds}
+        onDismissInventaire={dismissInventaire}
+        onSaveInventaireSelection={saveInventaireSelection}
+        inventaireDebt={inventaireDebt}
         paidDays={paidDays}
         paidMonths={paidMonths}
         history={worker.payments.slice(0, 4).map(p => ({ label: p.period, date: p.date, amount: p.amount }))}

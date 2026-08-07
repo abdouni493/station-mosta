@@ -25,6 +25,21 @@ export interface PayDecalage { id: string; date: string; amount: number; type: '
 /** One unpaid intervention of a percentage-paid worker. */
 export interface PayWork { id: string; label: string; sublabel?: string; date: string; base: number; share: number }
 
+/**
+ * Un inventaire dont les MANQUANTS peuvent être mis à la charge d'un employé
+ * « concerné par les inventaires ». `lossValue` est le coût des produits qui
+ * manquaient au comptage, valorisé au prix d'achat.
+ */
+export interface PayInventaire {
+  id: string;
+  label: string;
+  sublabel?: string;
+  date: string;
+  lossValue: number;
+  /** Nombre de produits en décalage négatif — affiché à titre indicatif. */
+  productCount: number;
+}
+
 /** Weekdays, indexed like `Date.getDay()` (0 = Sunday … 6 = Saturday). */
 export const WEEKDAYS: { idx: number; label: string; short: string }[] = [
   { idx: 6, label: 'Samedi', short: 'Sam' },
@@ -146,9 +161,17 @@ export interface NetInput {
   decalageBonus: number;
   decalageRetenue: number;
   prime: number;
+  /**
+   * Retenue au titre des inventaires — la part des manquants effectivement mise
+   * à la charge de l'employé. Elle vaut 0 tant que la retenue n'est pas activée,
+   * même quand des inventaires sont sélectionnés : sélectionner sert à CONSTATER
+   * le décalage, activer la retenue est une décision séparée.
+   */
+  inventaire?: number;
 }
 
-/** base − acomptes − absences + bonus − retenue + prime, floored at 0. */
+/** base − acomptes − absences + bonus − retenue + prime − inventaire, floored at 0. */
 export function computeNet(i: NetInput): number {
-  return Math.max(0, i.base - i.acomptes - i.absences + i.decalageBonus - i.decalageRetenue + i.prime);
+  return Math.max(0,
+    i.base - i.acomptes - i.absences + i.decalageBonus - i.decalageRetenue + i.prime - (i.inventaire || 0));
 }

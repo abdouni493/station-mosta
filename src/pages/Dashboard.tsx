@@ -3,7 +3,7 @@ import {
   TrendingUp, Fuel, ShoppingCart, DollarSign, Activity, AlertTriangle,
   Clock, Package, Droplets, ArrowUpRight, ArrowDownRight,
   Zap, Users, Calendar, Target, ChevronDown, CheckCircle2,
-  SlidersHorizontal, Save, X, ToggleLeft, ToggleRight
+  SlidersHorizontal, Save, X, ToggleLeft, ToggleRight, Star, Gauge, ChevronRight
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
@@ -119,6 +119,106 @@ const KpiCard = ({ label, value, suffix, icon: Icon, color, trend, trendPos, del
   </motion.div>
 );
 
+/* ─── Alertes des cuves ─── */
+/**
+ * Bandeau d'alerte des cuves, en TÊTE du tableau de bord.
+ *
+ * Les niveaux détaillés viennent juste après, mais une cuve qui descend sous son
+ * seuil doit se voir avant tout le reste : c'est la seule chose du tableau de
+ * bord qui, ignorée, arrête la station. Deux degrés d'urgence :
+ *   • CRITIQUE — le niveau est passé sous le seuil d'alerte de la cuve ;
+ *   • BAS      — il approche (moins d'une fois et demie le seuil).
+ *
+ * Les cuves épinglées en favori remontent en tête à urgence égale, et chaque
+ * ligne mène directement à l'écran Cuves.
+ */
+const TankAlertsPanel = ({ tanks, onOpen, delay = 0.08 }: {
+  tanks: any[]; onOpen: () => void; delay?: number;
+}) => {
+  const rows = useMemo(() => (tanks || [])
+    .map(t => {
+      const capacity = Number(t.capacity) || 0;
+      const current = Number(t.current) || 0;
+      const threshold = Number(t.alertThreshold) || 0;
+      const critical = threshold > 0 && current < threshold;
+      const low = !critical && threshold > 0 && current < threshold * 1.5;
+      return {
+        tank: t, capacity, current, threshold, critical, low,
+        pct: capacity > 0 ? Math.min(100, (current / capacity) * 100) : 0,
+        missing: Math.max(0, threshold - current),
+      };
+    })
+    .filter(r => r.critical || r.low)
+    // Critique d'abord, puis les favoris, puis le niveau le plus bas.
+    .sort((a, b) =>
+      Number(b.critical) - Number(a.critical)
+      || Number(!!b.tank.isFavorite) - Number(!!a.tank.isFavorite)
+      || a.pct - b.pct),
+    [tanks]);
+
+  if (rows.length === 0) return null;
+  const criticals = rows.filter(r => r.critical).length;
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay }}
+      className={cn("rounded-2xl border p-4 sm:p-5 space-y-3",
+        criticals > 0 ? "border-red-200 bg-red-50/60" : "border-amber-200 bg-amber-50/60")}>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+          criticals > 0 ? "bg-red-100" : "bg-amber-100")}>
+          <Gauge className={cn("w-5 h-5", criticals > 0 ? "text-red-600" : "text-amber-600")} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className={cn("text-sm font-black uppercase tracking-wider",
+            criticals > 0 ? "text-red-700" : "text-amber-700")}>
+            Alertes des cuves
+          </h3>
+          <p className={cn("text-[11px]", criticals > 0 ? "text-red-600" : "text-amber-700")}>
+            {criticals > 0
+              ? `${criticals} cuve(s) sous le seuil d'alerte — réapprovisionnement requis`
+              : `${rows.length} cuve(s) approchent leur seuil — prévoyez une livraison`}
+          </p>
+        </div>
+        <button onClick={onOpen}
+          className="btn-secondary !py-2 !px-4 text-[11px] shrink-0 flex items-center gap-1.5">
+          Gérer les cuves <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+        {rows.map(r => (
+          <button key={r.tank.id} onClick={onOpen}
+            className={cn("rounded-xl border bg-white px-3.5 py-3 text-left transition-all hover:shadow-md",
+              r.critical ? "border-red-200" : "border-amber-200")}>
+            <div className="flex items-center gap-2">
+              {r.tank.isFavorite && <Star className="w-3.5 h-3.5 text-amber-500 fill-current shrink-0" />}
+              <span className="font-black text-slate-800 text-sm truncate min-w-0 flex-1">{r.tank.name}</span>
+              <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black uppercase shrink-0",
+                r.critical ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700")}>
+                {r.critical ? "Critique" : "Bas"}
+              </span>
+            </div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">{r.tank.type}</p>
+            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden mt-2">
+              <div className="h-full rounded-full"
+                style={{ width: `${r.pct}%`, background: r.critical ? "#ef4444" : "#f59e0b" }} />
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1.5 tabular-nums">
+              <b className="text-slate-700">{r.current.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} L</b>
+              {" "}restants sur {r.capacity.toLocaleString("fr-FR")} L · seuil {r.threshold.toLocaleString("fr-FR")} L
+            </p>
+            {r.critical && r.missing > 0 && (
+              <p className="text-[11px] font-bold text-red-600 mt-0.5 tabular-nums">
+                {r.missing.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} L manquants pour repasser au-dessus du seuil
+              </p>
+            )}
+          </button>
+        ))}
+      </div>
+    </motion.div>
+  );
+};
+
 /* ─── Cuve level cards (one card per cuve, with its alert state) ─── */
 /**
  * Live niveau of every cuve, as cards. A cuve below its `alertThreshold` turns
@@ -129,6 +229,10 @@ const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number 
   if (!tanks || tanks.length === 0) return null;
 
   const alerts = tanks.filter(t => (t.current || 0) < (t.alertThreshold || 0));
+  const favorites = tanks.filter(t => !!t.isFavorite).length;
+  // Les cuves épinglées passent devant : ce sont celles que le gérant regarde
+  // en premier, elles ne doivent pas se perdre au milieu des autres.
+  const ordered = tanks.slice().sort((a, b) => Number(!!b.isFavorite) - Number(!!a.isFavorite));
 
   return (
     <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay }} className="space-y-3">
@@ -141,7 +245,10 @@ const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number 
             <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>
               Niveaux des Cuves
             </h3>
-            <p className="text-[10px] text-slate-400">{tanks.length} cuve(s) • mise à jour en direct</p>
+            <p className="text-[10px] text-slate-400">
+              {tanks.length} cuve(s) • mise à jour en direct
+              {favorites > 0 ? ` • ${favorites} en favori affichée(s) en premier` : ""}
+            </p>
           </div>
         </div>
         {alerts.length > 0 && (
@@ -153,7 +260,7 @@ const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number 
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {tanks.map((t, i) => {
+        {ordered.map((t, i) => {
           const capacity = Number(t.capacity) || 0;
           const current = Number(t.current) || 0;
           const threshold = Number(t.alertThreshold) || 0;
@@ -170,13 +277,18 @@ const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number 
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: delay + i * 0.04 }}
               className="card-glass relative overflow-hidden p-5"
-              style={critical ? { boxShadow: "0 0 0 2px rgba(239,68,68,0.25)" } : undefined}
+              style={critical
+                ? { boxShadow: "0 0 0 2px rgba(239,68,68,0.25)" }
+                : t.isFavorite ? { boxShadow: "0 0 0 2px rgba(255,184,0,0.35)" } : undefined}
             >
               <div className="h-1 absolute top-0 left-0 right-0" style={{ background: color }} />
 
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <h4 className="font-black text-slate-800 truncate">{t.name}</h4>
+                  <h4 className="font-black text-slate-800 truncate flex items-center gap-1.5">
+                    {t.isFavorite && <Star className="w-3.5 h-3.5 text-amber-500 fill-current shrink-0" />}
+                    <span className="truncate">{t.name}</span>
+                  </h4>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{t.type}</p>
                 </div>
                 <span className="px-2 py-1 rounded-full text-[9px] font-black uppercase whitespace-nowrap"
@@ -493,6 +605,9 @@ const Dashboard = () => {
 
       {/* Rappel des rendez-vous de paiement fournisseur (achats carburant) */}
       <PaymentAppointmentsBanner purchases={purchases} suppliers={suppliers} />
+
+      {/* Cuves sous seuil — l'alerte passe avant le détail des niveaux */}
+      <TankAlertsPanel tanks={tanks} onOpen={() => navigate('/tanks')} delay={0.08} />
 
       {/* Niveaux des cuves — cartes avec alertes */}
       <TankLevelCards tanks={tanks} delay={0.12} />

@@ -5,8 +5,11 @@
  * everywhere the prompt requires it.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useState } from 'react';
-import { Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import {
+  Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff,
+  AlertTriangle, Search, Pencil,
+} from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
@@ -186,6 +189,65 @@ export async function persistNewProduct(
   return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
+// ─── Recherche de doublons à la saisie du nom ─────────────────────────────────
+/**
+ * Normalise un nom pour la comparaison : minuscules, accents retirés, espaces
+ * et ponctuation réduits. « Café au Lait » et « cafe-au-lait » se rapprochent
+ * ainsi l'un de l'autre, ce qui est justement le but.
+ */
+export function normalizeName(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Produits du catalogue dont le nom ressemble à ce qui est en train d'être
+ * tapé — c'est ce qui évite de créer une deuxième fiche « Eau minérale » alors
+ * qu'elle existe déjà avec son stock et son historique.
+ *
+ * Les correspondances sont classées : d'abord le nom IDENTIQUE, puis ce qui
+ * commence par la saisie, puis ce qui la contient. `excludeId` retire le produit
+ * en cours de modification, qui n'est évidemment pas son propre doublon.
+ */
+export function findSimilarProducts(
+  products: BizProduct[], name: string, excludeId?: string, limit = 6,
+): BizProduct[] {
+  const q = normalizeName(name);
+  if (q.length < 2) return [];
+  const scored: { p: BizProduct; score: number }[] = [];
+  for (const p of products) {
+    if (excludeId && p.id === excludeId) continue;
+    const n = normalizeName(p.name);
+    if (!n) continue;
+    const score = n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : q.includes(n) ? 3 : -1;
+    if (score < 0) continue;
+    scored.push({ p, score });
+  }
+  return scored
+    .sort((a, b) => (a.score - b.score) || a.p.name.localeCompare(b.p.name))
+    .slice(0, limit)
+    .map(x => x.p);
+}
+
+/** « 12 kg » — quantité restante d'un produit, avec son unité. */
+function formatQtyLabel(p: BizProduct): string {
+  const q = Number(p.currentQty) || 0;
+  const rounded = Number.isInteger(q) ? String(q) : q.toFixed(2);
+  return `${rounded} ${p.unit || ''}`.trim();
+}
+
+/** Un produit porte-t-il EXACTEMENT ce nom ? (comparaison normalisée) */
+export function findExactProduct(
+  products: BizProduct[], name: string, excludeId?: string,
+): BizProduct | undefined {
+  const q = normalizeName(name);
+  if (!q) return undefined;
+  return products.find(p => p.id !== excludeId && normalizeName(p.name) === q);
+}
+
 // ─── ProductModal ───────────────────────────────────────────────────────────────
 export function ProductModal({
   biz, open, onClose, initial, onSaved, origin = 'stock',
@@ -195,15 +257,41 @@ export function ProductModal({
   /** D'où vient la saisie — noté sur le brouillon en cas d'échec. */
   origin?: ProductDraft['origin'];
 }) {
-  const isEdit = !!initial?.id;
   const { currentUserName, currentModuleWorker } = useAppState();
   const [form, setForm] = useState<Partial<BizProduct>>(initial || emptyProduct());
+  // La fiche ouverte peut BASCULER en modification : quand la saisie révèle un
+  // produit déjà au catalogue et que l'utilisateur choisit de le reprendre, le
+  // formulaire porte alors son `id` et doit l'enregistrer comme une mise à jour.
+  const isEdit = !!form.id;
   const [showMarque, setShowMarque] = useState(false);
   const [showCat, setShowCat] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** Liste des produits ressemblants, masquée dès que l'utilisateur l'écarte. */
+  const [hideSuggestions, setHideSuggestions] = useState(false);
 
-  React.useEffect(() => { setForm(initial || emptyProduct()); }, [initial, open]);
+  React.useEffect(() => { setForm(initial || emptyProduct()); setHideSuggestions(false); }, [initial, open]);
+
+  // ── Produits déjà au catalogue qui portent (à peu près) le même nom ──────
+  const similar = useMemo(
+    () => findSimilarProducts(biz.state.products, form.name || '', form.id),
+    [biz.state.products, form.name, form.id]);
+  const duplicate = useMemo(
+    () => findExactProduct(biz.state.products, form.name || '', form.id),
+    [biz.state.products, form.name, form.id]);
+  const showSimilar = !hideSuggestions && similar.length > 0;
+
+  /**
+   * « Reprendre ce produit » : la fiche existante est chargée dans le
+   * formulaire, qui passe en MODIFICATION. C'est ce qu'il faut faire neuf fois
+   * sur dix — on voulait réapprovisionner ou corriger un produit, pas en créer
+   * un second qui coupe l'historique en deux.
+   */
+  const adoptExisting = (p: BizProduct) => {
+    setForm({ ...p });
+    setHideSuggestions(true);
+    toast('Fiche existante chargée — vous la modifiez au lieu d\'en créer une seconde', { icon: '✏️' });
+  };
 
   const set = (k: keyof BizProduct, v: any) => setForm(f => ({ ...f, [k]: v }));
 
@@ -283,10 +371,79 @@ export function ProductModal({
         </button>
       </>}>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* ── Nom + produits déjà existants ────────────────────────────────
+            Dès les premières lettres, le catalogue est interrogé et les fiches
+            qui portent (à peu près) ce nom s'affichent avec leur stock et leurs
+            prix. Sans cela, un « Eau minérale » finissait par exister en trois
+            exemplaires, chacun avec un bout de l'historique et du stock. */}
         <div className="sm:col-span-2">
-          <Field label="Nom du produit" required>
-            <Input value={form.name || ''} onChange={e => set('name', e.target.value)} placeholder="Ex: Huile de table" />
+          <Field label="Nom du produit" required
+            hint="Tapez les premières lettres : les produits déjà au catalogue qui portent ce nom s'affichent en dessous.">
+            <Input value={form.name || ''}
+              onChange={e => { set('name', e.target.value); setHideSuggestions(false); }}
+              placeholder="Ex: Huile de table" autoComplete="off" />
           </Field>
+
+          {duplicate && (
+            <div className="mt-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 flex flex-wrap items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="text-xs font-bold text-amber-800 min-w-0 flex-1">
+                « {duplicate.name} » existe déjà au catalogue — stock {formatQtyLabel(duplicate)}
+                {' '}· achat {fc(duplicate.purchasePrice)}
+              </span>
+              {!isEdit && (
+                <button type="button" className="btn-secondary !py-1.5 !px-3 text-[11px] shrink-0"
+                  onClick={() => adoptExisting(duplicate)}>
+                  <Pencil className="w-3.5 h-3.5" /> Modifier cette fiche
+                </button>
+              )}
+            </div>
+          )}
+
+          {showSimilar && (
+            <div className="mt-2 rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+              <div className="flex items-center gap-2 px-3.5 py-2 bg-slate-50 border-b border-slate-200">
+                <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <p className="text-[11px] font-black uppercase tracking-wide text-slate-500 min-w-0 flex-1">
+                  {similar.length} produit(s) déjà au catalogue avec ce nom
+                </p>
+                <button type="button" onClick={() => setHideSuggestions(true)}
+                  className="text-[11px] font-bold text-slate-400 hover:text-slate-600 shrink-0">Masquer</button>
+              </div>
+              <div className="max-h-52 overflow-y-auto custom-scrollbar divide-y divide-slate-100">
+                {similar.map(p => (
+                  <div key={p.id} className="px-3.5 py-2.5 flex flex-wrap items-center gap-2 hover:bg-slate-50">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-slate-700 truncate">{p.name}</p>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        {p.categoryName || 'Sans catégorie'}
+                        {p.barcode ? ` · ${p.barcode}` : ''}
+                        {p.isRawMaterial ? ' · matière première' : ''}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-[11px] font-black text-slate-600 tabular-nums">
+                        Stock {formatQtyLabel(p)}
+                      </p>
+                      <p className="text-[11px] text-slate-400 tabular-nums">
+                        Achat {fc(p.purchasePrice)} · Vente {fc(p.salePrice)}
+                      </p>
+                    </div>
+                    {!isEdit && (
+                      <button type="button" className="btn-outline !py-1.5 !px-3 text-[11px] shrink-0"
+                        onClick={() => adoptExisting(p)}>
+                        Reprendre
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="px-3.5 py-2 text-[11px] text-slate-400 border-t border-slate-100">
+                « Reprendre » charge la fiche existante ici : vous la modifiez au lieu d'en créer une seconde,
+                et son stock comme son historique restent d'un seul tenant.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* ── Matière première ──────────────────────────────────────────────

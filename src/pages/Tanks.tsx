@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import {
   Plus, Edit2, Trash2, History, Calculator, AlertCircle,
-  X, ChevronDown, Droplets, Database, Settings2, ArrowRight, Percent
+  X, ChevronDown, Droplets, Database, Settings2, ArrowRight, Percent, Star
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, litersFromDegrees, degreesFromLiters, newId } from "@/src/lib/utils";
@@ -21,7 +21,7 @@ const fuelColors: Record<string, { bg: string; text: string; bar: string }> = {
 };
 
 // ── TankCard ─────────────────────────────────────────────────────────────────
-const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, onGplCalc, canEdit = true, canDelete = true }: any) => {
+const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, onGplCalc, onToggleFavorite, canEdit = true, canDelete = true }: any) => {
   // `current` is the authoritative level: every writer (modal save, calcul GPL,
   // livraisons RPC, clôture brigade, inventaire, saisie manuelle) persists it,
   // whereas `degrees` can lag (manual level outside the curve, inventaire).
@@ -37,20 +37,36 @@ const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, on
 
   return (
     <motion.div layout initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-      className="card-glass flex flex-col relative overflow-hidden hover-lift">
+      className={cn("card-glass flex flex-col relative overflow-hidden hover-lift",
+        tank.isFavorite && "ring-2 ring-amber-300")}>
       {/* Top accent bar */}
-      <div className="h-1 rounded-t-2xl" style={{ background: isAlert ? "#ef4444" : colors.bar }} />
+      <div className="h-1 rounded-t-2xl" style={{ background: isAlert ? "#ef4444" : tank.isFavorite ? "#FFB800" : colors.bar }} />
 
       <div className="p-5 flex flex-col flex-1 gap-4">
         <div className="flex items-start justify-between">
           <div>
-            <span className={cn("badge text-[9px] mb-2", colors.bg, colors.text)}>
-              {tank.type}
-            </span>
+            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+              <span className={cn("badge text-[9px]", colors.bg, colors.text)}>
+                {tank.type}
+              </span>
+              {tank.isFavorite && (
+                <span className="badge text-[9px] bg-amber-50 text-amber-700 flex items-center gap-1">
+                  <Star className="w-2.5 h-2.5 fill-current" /> Favori
+                </span>
+              )}
+            </div>
             <h3 className="text-base font-black text-primary">{tank.name}</h3>
             <p className="text-xs text-slate-400 mt-0.5">Cap: {tank.capacity.toLocaleString()} L</p>
           </div>
           <div className="flex gap-1">
+            {/* Épingler la cuve : elle passe en tête de cet écran et du tableau
+                de bord, sans rien changer à son contenu ni à ses alertes. */}
+            <button onClick={onToggleFavorite}
+              className={cn("p-1.5 rounded-lg transition-colors",
+                tank.isFavorite ? "text-amber-500 hover:bg-amber-50" : "text-slate-300 hover:bg-amber-50 hover:text-amber-500")}
+              title={tank.isFavorite ? "Retirer des favoris" : "Mettre en favori (affichée en premier)"}>
+              <Star className={cn("w-4 h-4", tank.isFavorite && "fill-current")} />
+            </button>
             {tank.type === 'GPL' && (
               <button onClick={onGplCalc} className="p-1.5 hover:bg-orange-50 rounded-lg text-orange-500 transition-colors" title="Calcul GPL (%)">
                 <Percent className="w-4 h-4" />
@@ -548,9 +564,35 @@ const Tanks = () => {
   const [historyTank, setHistoryTank] = useState<Tank | null>(null);
   const [gplCalcTank, setGplCalcTank] = useState<Tank | null>(null);
   const [filterType, setFilterType] = useState<string>("all");
+  /** N'afficher que les cuves épinglées. */
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
 
-  const filtered = tanks.filter(t => filterType === "all" || t.type === filterType);
+  /**
+   * Les cuves FAVORITES passent devant, toujours. Sur une station qui en compte
+   * dix, celles que le gérant surveille vraiment doivent être les premières —
+   * derrière elles, l'ordre habituel est conservé.
+   */
+  const filtered = useMemo(() => tanks
+    .filter(t => (filterType === "all" || t.type === filterType) && (!onlyFavorites || !!t.isFavorite))
+    .slice()
+    .sort((a, b) => Number(!!b.isFavorite) - Number(!!a.isFavorite)),
+    [tanks, filterType, onlyFavorites]);
+
   const criticalCount = tanks.filter(t => t.current < t.alertThreshold).length;
+  const favoriteCount = tanks.filter(t => !!t.isFavorite).length;
+
+  const toggleFavorite = (tank: Tank) => {
+    dispatch({ type: "UPDATE_TANK", payload: { ...tank, isFavorite: !tank.isFavorite } });
+    dispatch({
+      type: "ADD_TOAST",
+      payload: {
+        type: "success",
+        message: tank.isFavorite
+          ? `${tank.name} retirée des favoris`
+          : `${tank.name} épinglée — elle s'affiche en premier`,
+      },
+    });
+  };
 
   const handleSave = (form: any) => {
     // ── Validation ──────────────────────────────────────────────────────────
@@ -586,6 +628,11 @@ const Tanks = () => {
           <h1 className="page-title">Gestion des Cuves</h1>
           <div className="flex items-center gap-3 mt-1.5">
             <span className="text-xs text-slate-500">{tanks.length} cuves</span>
+            {favoriteCount > 0 && (
+              <span className="badge bg-amber-50 text-amber-700 flex items-center gap-1">
+                <Star className="w-3 h-3 fill-current" /> {favoriteCount} favori{favoriteCount > 1 ? "s" : ""}
+              </span>
+            )}
             {criticalCount > 0 && (
               <span className="badge badge-danger">{criticalCount} critique{criticalCount > 1 ? "s" : ""}</span>
             )}
@@ -602,7 +649,7 @@ const Tanks = () => {
         )}
       </div>
 
-      {/* Type filter chips — "Tous" resets to show all */}
+      {/* Type filter chips — "Tous" resets to show all, "Favoris" ne garde que les cuves épinglées */}
       <div className="flex gap-2 flex-wrap">
         {["all", ...FUEL_TYPES].map(type => (
           <button key={type} onClick={() => setFilterType(type)}
@@ -613,6 +660,14 @@ const Tanks = () => {
             {type === "all" ? "Tous" : type}
           </button>
         ))}
+        <button onClick={() => setOnlyFavorites(v => !v)} disabled={favoriteCount === 0}
+          className={cn("px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed",
+            onlyFavorites
+              ? "bg-amber-500 text-white border-amber-500"
+              : "bg-white text-slate-600 border-slate-200 hover:border-amber-400")}>
+          <Star className={cn("w-3.5 h-3.5", onlyFavorites && "fill-current")} />
+          Favoris{favoriteCount > 0 ? ` (${favoriteCount})` : ""}
+        </button>
       </div>
 
       {/* Tank grid */}
@@ -636,6 +691,7 @@ const Tanks = () => {
               onHistory={() => setHistoryTank(tank)}
               onConverter={() => setConverterTank(tank)}
               onGplCalc={() => setGplCalcTank(tank)}
+              onToggleFavorite={() => toggleFavorite(tank)}
             />
           ))}
         </div>

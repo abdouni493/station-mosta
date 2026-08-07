@@ -17,14 +17,15 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Banknote, X, CalendarDays, CalendarRange, Briefcase, Wallet, UserX, Scale,
-  Gift, Check, Eye, CreditCard, ListChecks,
+  Gift, Check, Eye, CreditCard, ListChecks, ClipboardList, Save, Trash2,
 } from 'lucide-react';
 import { cn, formatCurrency } from '@/src/lib/utils';
 import {
-  SalaryType, PrimeType, PayAcompte, PayAbsence, PayDecalage, PayWork,
+  SalaryType, PrimeType, PayAcompte, PayAbsence, PayDecalage, PayWork, PayInventaire,
   computeUnpaidWorkingDays, computeUnpaidMonths, computeNet, primeAmount,
   dayLabel, monthLabel, isoDay,
 } from '@/src/lib/workerPay';
+import { inventoryDeduction } from '@/src/lib/inventaire';
 
 const money = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 
@@ -42,9 +43,18 @@ export interface WorkerPaymentResult {
   selectedDecalageIds: string[];
   selectedWorkIds: string[];
   worksTotal: number;
+  /** Inventaires retenus : leurs manquants sont constatés sur ce paiement. */
+  selectedInventaireIds: string[];
+  /** Somme des manquants des inventaires retenus. */
+  inventaireTotal: number;
+  /** Retenue réellement appliquée au titre des inventaires (0 si désactivée). */
+  inventaireDeduction: number;
+  inventaireDeductionActive: boolean;
+  inventaireDeductionType: PrimeType;
+  inventaireDeductionValue: number;
   breakdown: {
     base: number; acomptes: number; absences: number;
-    decalageBonus: number; decalageRetenue: number; prime: number;
+    decalageBonus: number; decalageRetenue: number; prime: number; inventaire: number;
   };
 }
 
@@ -67,6 +77,19 @@ export interface WorkerPaymentModalProps {
   decalages?: PayDecalage[];
   /** Percentage-paid: the unpaid interventions. */
   works?: PayWork[];
+  /**
+   * Inventaires non réglés dont les manquants concernent cet employé. Ne sont
+   * passés que pour un employé marqué « concerné par les inventaires ».
+   */
+  inventaires?: PayInventaire[];
+  /** Sélection d'inventaires enregistrée précédemment pour cet employé. */
+  savedInventaireIds?: string[];
+  /** Retire définitivement un inventaire de l'écran de paie de cet employé. */
+  onDismissInventaire?: (id: string) => void;
+  /** Enregistre la sélection d'inventaires sans passer par un paiement. */
+  onSaveInventaireSelection?: (ids: string[]) => void;
+  /** Dette d'inventaire déjà constatée sur les paiements précédents. */
+  inventaireDebt?: number;
   /** Days / months already settled by earlier payments — excluded from the list. */
   paidDays?: string[];
   paidMonths?: string[];
@@ -124,6 +147,19 @@ export default function WorkerPaymentModal(props: WorkerPaymentModalProps) {
   const [primeType, setPrimeType] = useState<PrimeType>('percent');
   const [primeValue, setPrimeValue] = useState(0);
 
+  // ── Inventaires ───────────────────────────────────────────────────────────
+  // Sélectionner un inventaire CONSTATE son manquant sur ce paiement ; activer
+  // la retenue est une décision séparée, et le pourcentage (ou le montant fixe)
+  // décide de la part réellement retenue au salarié.
+  const inventaires = props.inventaires || [];
+  const [selInventaires, setSelInventaires] = useState<Set<string>>(() => {
+    const saved = props.savedInventaireIds?.filter(id => inventaires.some(i => i.id === id));
+    return new Set(saved && saved.length ? saved : inventaires.map(i => i.id));
+  });
+  const [invDeductOn, setInvDeductOn] = useState(false);
+  const [invDeductType, setInvDeductType] = useState<PrimeType>('percent');
+  const [invDeductValue, setInvDeductValue] = useState(0);
+
   const [date, setDate] = useState(isoDay(new Date()));
   const [mode, setMode] = useState(modes[0]);
   const [chequeNumber, setChequeNumber] = useState('');
@@ -145,7 +181,12 @@ export default function WorkerPaymentModal(props: WorkerPaymentModalProps) {
   const decRetenue = decalages.filter(d => d.type === 'RETENUE' && selDecalages.has(d.id)).reduce((s, d) => s + d.amount, 0);
   const prime = primeOn ? primeAmount(base, primeType, primeValue) : 0;
 
-  const computed = computeNet({ base, acomptes: acomptesDue, absences: absencesDue, decalageBonus: decBonus, decalageRetenue: decRetenue, prime });
+  const inventaireTotal = inventaires
+    .filter(i => selInventaires.has(i.id))
+    .reduce((s, i) => s + i.lossValue, 0);
+  const invDeduction = inventoryDeduction(inventaireTotal, invDeductOn, invDeductType, invDeductValue);
+
+  const computed = computeNet({ base, acomptes: acomptesDue, absences: absencesDue, decalageBonus: decBonus, decalageRetenue: decRetenue, prime, inventaire: invDeduction });
   const worksTotal = works.filter(w => selWorks.has(w.id)).reduce((s, w) => s + w.base, 0);
 
   React.useEffect(() => { if (!netTouched) setNet(computed); }, [computed, netTouched]);
@@ -163,7 +204,13 @@ export default function WorkerPaymentModal(props: WorkerPaymentModalProps) {
       selectedDecalageIds: [...selDecalages],
       selectedWorkIds: [...selWorks],
       worksTotal,
-      breakdown: { base, acomptes: acomptesDue, absences: absencesDue, decalageBonus: decBonus, decalageRetenue: decRetenue, prime },
+      selectedInventaireIds: [...selInventaires],
+      inventaireTotal,
+      inventaireDeduction: invDeduction,
+      inventaireDeductionActive: invDeductOn,
+      inventaireDeductionType: invDeductType,
+      inventaireDeductionValue: Number(invDeductValue) || 0,
+      breakdown: { base, acomptes: acomptesDue, absences: absencesDue, decalageBonus: decBonus, decalageRetenue: decRetenue, prime, inventaire: invDeduction },
     });
   };
 
@@ -305,6 +352,125 @@ export default function WorkerPaymentModal(props: WorkerPaymentModalProps) {
               </Section>
             )}
 
+            {/* ── Inventaires ────────────────────────────────────────────────
+                Un employé « concerné par les inventaires » répond des manquants
+                constatés au comptage. Deux décisions distinctes se prennent ici :
+                  1. QUELS inventaires on lui oppose (cocher / écarter) ;
+                  2. COMBIEN on lui retient là-dessus — rien du tout, un
+                     pourcentage des manquants, ou une somme fixe.
+                Sans la seconde, le décalage est simplement constaté et gardé
+                dans son dossier, sans toucher à son salaire. */}
+            {inventaires.length > 0 && (
+              <Section icon={ClipboardList} title="Décalages d'inventaire" tone="amber"
+                hint="Manquants constatés au comptage, valorisés au prix d'achat. Décochez ce qui ne le concerne pas ; « Écarter » le retire définitivement de son écran de paie."
+                action={
+                  <div className="flex items-center gap-2">
+                    <SelectAll all={selectAllState(selInventaires.size, inventaires.length)}
+                      onToggle={() => setSelInventaires(s => s.size === inventaires.length ? new Set() : new Set(inventaires.map(i => i.id)))} />
+                    {props.onSaveInventaireSelection && (
+                      <button onClick={() => props.onSaveInventaireSelection!([...selInventaires])}
+                        className="text-[11px] font-black uppercase tracking-wide text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-xl flex items-center gap-1.5">
+                        <Save className="w-3.5 h-3.5" /> Enregistrer la sélection
+                      </button>
+                    )}
+                  </div>
+                }>
+                <div className="space-y-2">
+                  <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar pr-1">
+                    {inventaires.map(inv => {
+                      const checked = selInventaires.has(inv.id);
+                      return (
+                        <div key={inv.id}
+                          className={cn('w-full flex items-center gap-3 rounded-xl border p-2.5 transition-colors',
+                            checked ? 'bg-amber-50/60 border-amber-200' : 'bg-white border-slate-200')}>
+                          <button onClick={() => setSelInventaires(s => setToggle(s, inv.id))}
+                            className="flex items-center gap-3 min-w-0 flex-1 text-left">
+                            <Box checked={checked} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block font-bold text-slate-700 text-sm truncate">{inv.label}</span>
+                              <span className="block text-[11px] text-slate-400 truncate">
+                                {dayLabel(inv.date)}
+                                {inv.sublabel ? ` · ${inv.sublabel}` : ''}
+                                {` · ${inv.productCount} produit(s) manquant(s)`}
+                              </span>
+                            </span>
+                            <span className="font-black tabular-nums text-sm text-amber-700 shrink-0">
+                              {money(inv.lossValue)}
+                            </span>
+                          </button>
+                          {props.onDismissInventaire && (
+                            <button onClick={() => {
+                              setSelInventaires(s => { const n = new Set(s); n.delete(inv.id); return n; });
+                              props.onDismissInventaire!(inv.id);
+                            }}
+                              title="Écarter cet inventaire — il ne réapparaîtra plus pour cet employé"
+                              className="w-8 h-8 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 flex items-center justify-center shrink-0">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-black uppercase tracking-wide text-amber-700">
+                      Total des manquants retenus ({selInventaires.size} inventaire(s))
+                    </span>
+                    <span className="font-black tabular-nums text-amber-800">{money(inventaireTotal)}</span>
+                  </div>
+
+                  {/* Combien on lui retient réellement */}
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-700">Retenir sur le salaire</p>
+                        <p className="text-[11px] text-slate-400">
+                          Désactivé, le décalage est constaté dans son dossier mais rien n'est déduit de sa paie.
+                        </p>
+                      </div>
+                      <SwitchMini checked={invDeductOn} onChange={setInvDeductOn} />
+                    </div>
+                    {invDeductOn && (
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="flex rounded-xl overflow-hidden border border-slate-200">
+                          {(['percent', 'amount'] as PrimeType[]).map(t => (
+                            <button key={t} onClick={() => setInvDeductType(t)}
+                              className={cn('px-4 py-2.5 text-xs font-black uppercase tracking-wide transition-colors',
+                                invDeductType === t ? 'bg-[#003087] text-white' : 'bg-white text-slate-500 hover:bg-slate-50')}>
+                              {t === 'percent' ? '% des manquants' : 'Montant fixe'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex-1 min-w-[140px]">
+                          <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">
+                            {invDeductType === 'percent' ? 'Pourcentage (%)' : 'Montant (DA)'}
+                          </label>
+                          <input type="number" className="input-field font-black" value={invDeductValue}
+                            onChange={e => setInvDeductValue(Number(e.target.value))} />
+                        </div>
+                        <div className="px-4 py-2.5 rounded-xl bg-red-50 border border-red-200 text-red-700 font-black tabular-nums">
+                          −{money(invDeduction)}
+                        </div>
+                      </div>
+                    )}
+                    {invDeductOn && invDeduction < inventaireTotal && (
+                      <p className="text-[11px] text-slate-500">
+                        Reste à sa charge sans être retenu cette fois : {money(inventaireTotal - invDeduction)}.
+                      </p>
+                    )}
+                  </div>
+
+                  {(props.inventaireDebt || 0) > 0 && (
+                    <p className="text-[11px] text-slate-500">
+                      Dette d'inventaire déjà constatée sur ses paiements précédents :{' '}
+                      <b className="text-red-600">{money(props.inventaireDebt || 0)}</b>.
+                    </p>
+                  )}
+                </div>
+              </Section>
+            )}
+
             {/* Prime */}
             <Section icon={Gift} title="Prime" tone="green"
               hint="Ajoute un bonus au net à payer."
@@ -344,6 +510,13 @@ export default function WorkerPaymentModal(props: WorkerPaymentModalProps) {
                 {decBonus > 0 && <Line label="+ Primes décalage" value={`+${money(decBonus)}`} tone="green" />}
                 {decRetenue > 0 && <Line label="− Retenues décalage" value={`−${money(decRetenue)}`} tone="red" />}
                 {prime > 0 && <Line label="+ Prime" value={`+${money(prime)}`} tone="green" />}
+                {invDeduction > 0 && (
+                  <Line label={`− Décalage inventaire (${invDeductType === 'percent' ? `${invDeductValue}% de ${money(inventaireTotal)}` : 'montant fixe'})`}
+                    value={`−${money(invDeduction)}`} tone="red" />
+                )}
+                {inventaireTotal > 0 && invDeduction === 0 && (
+                  <Line label={`Décalage inventaire constaté (non retenu)`} value={money(inventaireTotal)} tone="orange" />
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">

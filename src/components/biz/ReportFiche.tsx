@@ -13,7 +13,7 @@ import React from 'react';
 import { printDocumentMode } from '@/src/lib/pdf';
 import { PartReport, GlobalReport } from '@/src/lib/bizReporting';
 
-const C = { blue900: '#001233', blue800: '#001f5c', blue700: '#002d87', blue600: '#003087', gold: '#FFB800' };
+export const C = { blue900: '#001233', blue800: '#001f5c', blue700: '#002d87', blue600: '#003087', gold: '#FFB800' };
 
 export const da = (n: number) => (n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 export const lit = (n: number) => (n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
@@ -75,17 +75,17 @@ export function printFiche(el: HTMLElement | null) {
 }
 
 // ─── Shared primitives ───────────────────────────────────────────────────────
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse' };
-const theadRow: React.CSSProperties = { background: C.blue800 };
-const totalRow: React.CSSProperties = { background: '#eff6ff' };
+export const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse' };
+export const theadRow: React.CSSProperties = { background: C.blue800 };
+export const totalRow: React.CSSProperties = { background: '#eff6ff' };
 
-function TH({ children, align }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
+export function TH({ children, align }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center' }) {
   return <th style={{ padding: '6px 9px', textAlign: align || 'left', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.4, color: '#fff', whiteSpace: 'nowrap' }}>{children}</th>;
 }
-function TD({ children, align, bold, color }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center'; bold?: boolean; color?: string }) {
+export function TD({ children, align, bold, color }: { children?: React.ReactNode; align?: 'left' | 'right' | 'center'; bold?: boolean; color?: string }) {
   return <td style={{ padding: '5px 9px', textAlign: align || 'left', fontSize: 10.5, fontWeight: bold ? 900 : 600, color: color || '#1e293b', borderBottom: '1px solid #eef2f7' }}>{children}</td>;
 }
-function Part({ num, label, accent, children }: { num: string; label: string; accent: string; children: React.ReactNode; key?: React.Key }) {
+export function Part({ num, label, accent, children }: { num: string; label: string; accent: string; children: React.ReactNode; key?: React.Key }) {
   return (
     <section style={{ borderTop: `2px solid ${accent}`, margin: '0 14px 14px 14px', breakInside: 'avoid' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', background: '#fff', borderBottom: '1px solid #e2e8f0' }}>
@@ -96,12 +96,12 @@ function Part({ num, label, accent, children }: { num: string; label: string; ac
     </section>
   );
 }
-function EmptyLine({ text = 'Aucune donnée sur la période' }: { text?: string }) {
+export function EmptyLine({ text = 'Aucune donnée sur la période' }: { text?: string }) {
   return <p style={{ margin: '2px 0 6px 0', fontSize: 10.5, color: '#94a3b8', fontStyle: 'italic' }}>{text}</p>;
 }
 
 // ─── Banner + KPI strip + footer (shared shell) ──────────────────────────────
-function Banner({ settings, badge, period }: { settings: any; badge: string; period: string }) {
+export function Banner({ settings, badge, period }: { settings: any; badge: string; period: string }) {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', background: `linear-gradient(135deg, ${C.blue900} 0%, ${C.blue800} 55%, ${C.blue600} 100%)` }}>
@@ -131,7 +131,7 @@ function Banner({ settings, badge, period }: { settings: any; badge: string; per
   );
 }
 
-function KpiStrip({ kpis }: { kpis: { label: string; value: string; col: string }[] }) {
+export function KpiStrip({ kpis }: { kpis: { label: string; value: string; col: string }[] }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: `repeat(${kpis.length}, 1fr)`, gap: 10, margin: '0 14px 16px 14px' }}>
       {kpis.map(k => (
@@ -144,7 +144,7 @@ function KpiStrip({ kpis }: { kpis: { label: string; value: string; col: string 
   );
 }
 
-function Footer({ settings, title }: { settings: any; title: string }) {
+export function Footer({ settings, title }: { settings: any; title: string }) {
   return (
     <div style={{ margin: '4px 14px 0 14px', paddingTop: 10, borderTop: '1px solid #e2e8f0' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#94a3b8', marginBottom: 22 }}>
@@ -159,8 +159,8 @@ function Footer({ settings, title }: { settings: any; title: string }) {
   );
 }
 
-const sheetStyle: React.CSSProperties = { width: 794, background: '#fff', padding: '0 0 8px 0', fontFamily: 'Arial, sans-serif', color: '#1e293b' };
-const hiddenWrap: React.CSSProperties = { position: 'fixed', left: -10000, top: 0, width: 794, pointerEvents: 'none', zIndex: -1 };
+export const sheetStyle: React.CSSProperties = { width: 794, background: '#fff', padding: '0 0 8px 0', fontFamily: 'Arial, sans-serif', color: '#1e293b' };
+export const hiddenWrap: React.CSSProperties = { position: 'fixed', left: -10000, top: 0, width: 794, pointerEvents: 'none', zIndex: -1 };
 
 // ─── Module fiche (one part, fully detailed) ─────────────────────────────────
 export const ModuleFiche = React.forwardRef<HTMLDivElement, { report: PartReport; settings: any }>(({ report: r, settings }, ref) => {

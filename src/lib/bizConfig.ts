@@ -34,6 +34,7 @@ export type BizCollection =
   | 'reparations'
   | 'sessions'
   | 'payRequests'
+  | 'inventaires'
   | 'roles';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -252,6 +253,16 @@ export interface BizWorkerPayment {
   primeType?: 'percent' | 'amount';
   primeValue?: number;
   primeAmount?: number;
+  // ── Décalages d'inventaire ────────────────────────────────────────────────
+  /** Inventaires dont les manquants ont été constatés sur ce paiement. */
+  inventaireIds?: string[];
+  /** Somme des manquants de ces inventaires, au prix d'achat. */
+  inventaireTotal?: number;
+  /** Retenue réellement appliquée au salaire (0 = simplement constaté). */
+  inventaireDeduction?: number;
+  inventaireDeductionActive?: boolean;
+  inventaireDeductionType?: 'percent' | 'amount';
+  inventaireDeductionValue?: number;
 }
 
 /**
@@ -300,6 +311,18 @@ export interface BizWorker {
   acomptes: BizAcompte[];
   absences: BizAbsence[];
   payments: BizWorkerPayment[];
+  // ── Inventaires ───────────────────────────────────────────────────────────
+  /**
+   * L'employé répond des manquants constatés aux inventaires de sa partie.
+   * Activé, son écran de paie liste les inventaires non réglés et permet d'en
+   * retenir tout ou partie sur son salaire. Désactivé (le défaut), l'inventaire
+   * ne le concerne pas du tout.
+   */
+  inventoryLiable?: boolean;
+  /** Inventaires écartés à la main : ils ne lui sont plus proposés en paie. */
+  dismissedInventaireIds?: string[];
+  /** Dernière sélection d'inventaires enregistrée pour cet employé. */
+  savedInventaireIds?: string[];
   createdAt: string;
 }
 
@@ -598,6 +621,142 @@ export function workerShareOf(r: BizReparation, workerId: string, rate: number):
   return (lines.reduce((s, p) => s + (Number(p.amount) || 0), 0) * rate) / 100;
 }
 
+// ─── Inventaire physique d'une partie ──────────────────────────────────────────
+/**
+ * Un inventaire, c'est la station qui va COMPTER ce qu'elle a réellement en
+ * rayon, puis confronter ce comptage à ce que l'application annonce.
+ *
+ * Le cycle complet tient en quatre états :
+ *   • `draft`     — le comptage est commencé et peut être repris plus tard ;
+ *   • `completed` — le comptage est terminé et figé ;
+ *   • `compared`  — la confrontation au stock de l'application a été faite et a
+ *                   produit ses écarts (le « décalage » de chaque produit) ;
+ *   • `corrected` — le stock de l'application a été aligné sur le comptage, une
+ *                   sauvegarde des quantités d'avant ayant été prise.
+ *
+ * On ne repart JAMAIS en arrière tout seul : la correction n'écrase le stock
+ * qu'après confirmation explicite, et la sauvegarde permet de revenir en arrière
+ * si le comptage s'avérait faux.
+ */
+export type BizInventaireStatus = 'draft' | 'completed' | 'compared' | 'corrected';
+
+export type BizBadgeTone = 'neutral' | 'info' | 'warning' | 'success' | 'danger' | 'primary';
+
+export const INVENTAIRE_STATUS_META: Record<BizInventaireStatus, { label: string; hint: string; tone: BizBadgeTone }> = {
+  draft: { label: 'Brouillon', hint: 'Comptage en cours — reprenez-le quand vous voulez', tone: 'warning' },
+  completed: { label: 'Terminé', hint: 'Comptage figé — lancez la comparaison', tone: 'info' },
+  compared: { label: 'Comparé', hint: 'Écarts calculés — le stock n\'est pas encore corrigé', tone: 'primary' },
+  corrected: { label: 'Stock corrigé', hint: 'Le stock de l\'application a été aligné sur le comptage', tone: 'success' },
+};
+
+/** Une ligne comptée : un produit et la quantité trouvée en rayon. */
+export interface BizInventaireLine {
+  productId: string;
+  productName: string;
+  barcode?: string;
+  categoryId?: string;
+  categoryName?: string;
+  unit?: string;
+  /** Quantité comptée, exprimée en unités principales (celles du stock). */
+  countedQty: number;
+  /** Produit vendu au détail : quantité comptée dans son unité de détail. */
+  detailQty?: number;
+  detailUnit?: string;
+  detailCapacity?: number;
+  sellByDetail?: boolean;
+  /** Prix d'achat FIGÉ au moment du comptage — c'est lui qui valorise l'écart. */
+  purchasePrice: number;
+  salePrice: number;
+  /** Stock annoncé par l'application quand la ligne a été saisie (indicatif). */
+  systemQtyAtEntry?: number;
+}
+
+/** L'écart d'un produit entre ce qui a été compté et ce que l'application dit. */
+export interface BizInventaireEcart {
+  productId: string;
+  productName: string;
+  categoryName?: string;
+  unit?: string;
+  /** Quantité comptée en rayon. */
+  countedQty: number;
+  /** Quantité annoncée par l'application au moment de la comparaison. */
+  systemQty: number;
+  /** compté − application : négatif = marchandise manquante (perte). */
+  ecart: number;
+  purchasePrice: number;
+  /** ecart × prix d'achat — négatif pour une perte, positif pour un surplus. */
+  value: number;
+  kind: 'perte' | 'gain' | 'exact';
+}
+
+/** Le rapport de comparaison d'un inventaire — figé au moment où il est lancé. */
+export interface BizInventaireComparison {
+  at: string;
+  by?: string;
+  lines: BizInventaireEcart[];
+  /** Quantité totale manquante et ce qu'elle a coûté (valeurs POSITIVES). */
+  lossQty: number;
+  lossValue: number;
+  /** Quantité et valeur trouvées en plus. */
+  gainQty: number;
+  gainValue: number;
+  /** gainValue − lossValue : l'impact net de l'inventaire sur le patrimoine. */
+  netValue: number;
+  productsCounted: number;
+  productsWithEcart: number;
+}
+
+/** Quantités d'un produit AVANT la correction — de quoi revenir en arrière. */
+export interface BizInventaireBackupLine {
+  productId: string;
+  productName: string;
+  currentQty: number;
+  principalQty: number;
+}
+
+export interface BizInventaire {
+  id: string;
+  /** Nom généré à partir de la date : `invnt-01-01-2026`. */
+  ref: string;
+  /** Date de l'inventaire (jour du comptage), choisie par l'utilisateur. */
+  date: string;
+  status: BizInventaireStatus;
+  lines: BizInventaireLine[];
+  notes?: string;
+  createdAt: string;
+  createdBy?: string;
+  /** Comptage figé (passage de `draft` à `completed`). */
+  completedAt?: string;
+  /** Rapport d'écarts — présent dès que la comparaison a été lancée. */
+  comparison?: BizInventaireComparison;
+  /** Correction du stock appliquée à partir des écarts. */
+  correctedAt?: string;
+  correctedBy?: string;
+  /** Sauvegarde des quantités d'avant la correction. */
+  backup?: { at: string; lines: BizInventaireBackupLine[] };
+  /**
+   * Imputer les pertes de cet inventaire aux employés de la partie.
+   * `false` ⇒ l'inventaire n'apparaît plus dans l'écran de paie : c'est le
+   * bouton « ne pas faire porter ce décalage aux employés ».
+   */
+  chargeWorkers?: boolean;
+}
+
+/** Nom d'un inventaire, dérivé de sa date : `invnt-01-01-2026`. */
+export function inventaireRefFor(date: string): string {
+  const d = new Date(date);
+  const safe = Number.isNaN(d.getTime()) ? new Date() : d;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `invnt-${p(safe.getDate())}-${p(safe.getMonth() + 1)}-${safe.getFullYear()}`;
+}
+
+/** Un inventaire compte-t-il dans les pertes ? (comparé ET imputable) */
+export const inventaireCountsForWorkers = (inv: BizInventaire): boolean =>
+  !!inv.comparison && inv.chargeWorkers !== false;
+
+/** Coût des manquants d'un inventaire — 0 tant qu'il n'a pas été comparé. */
+export const inventaireLossValue = (inv: BizInventaire): number => inv.comparison?.lossValue || 0;
+
 export interface ModuleState {
   categories: BizNamed[];
   marques: BizNamed[];
@@ -617,6 +776,8 @@ export interface ModuleState {
   reparations: BizReparation[];
   sessions: BizSession[];
   payRequests: BizPayRequest[];
+  /** Inventaires physiques de la partie — comptage, écarts et correction. */
+  inventaires: BizInventaire[];
   /**
    * Order of the "accès rapide" tiles of the point de vente: the products that
    * sell the most, pinned by the user so they open the grid. Each entry is a
@@ -679,6 +840,7 @@ export const MODULES: Record<ModuleKey, ModuleConfig> = {
 // Interfaces list shown in the worker "permissions" editor.
 export const MODULE_INTERFACES: { id: string; label: string }[] = [
   { id: 'stock', label: 'Gestion de stock' },
+  { id: 'inventaire', label: 'Inventaire' },
   { id: 'purchases', label: 'Achats' },
   { id: 'production', label: 'Production' },
   { id: 'comptoir', label: 'Comptoir' },
@@ -710,11 +872,11 @@ export function interfacesForModule(key: ModuleKey): { id: string; label: string
   const cfg = MODULES[key];
   const ids = cfg.isService
     ? [
-        'reparations', 'encaissements', 'pos', 'sales', 'stock', 'purchases',
+        'reparations', 'encaissements', 'pos', 'sales', 'stock', 'inventaire', 'purchases',
         'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports',
       ]
     : [
-        'stock', 'purchases',
+        'stock', 'inventaire', 'purchases',
         ...(cfg.hasProduction ? ['production', 'comptoir'] : []),
         'pos', 'sales', 'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports',
       ];

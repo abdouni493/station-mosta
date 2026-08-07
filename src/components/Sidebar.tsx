@@ -72,6 +72,7 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
     items.push({ label: "Point de vente",       icon: ShoppingBag, path: `${b}/pos` });
     items.push({ label: "Ventes",               icon: Receipt,     path: `${b}/sales` });
     items.push({ label: "Gestion de stock",     icon: Package,     path: `${b}/stock` });
+    items.push({ label: "Inventaire",           icon: ClipboardList, path: `${b}/inventaire` });
     items.push({ label: "Achats",               icon: ShoppingCart,path: `${b}/purchases` });
     items.push({ label: "Clients",              icon: Users,       path: `${b}/clients` });
     items.push({ label: "Fournisseurs",         icon: Truck,       path: `${b}/suppliers` });
@@ -81,6 +82,7 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
     items.push({ label: "Rapports",             icon: BarChart2,   path: `${b}/reports` });
   } else {
     items.push({ label: "Gestion de stock",     icon: Package,     path: `${b}/stock` });
+    items.push({ label: "Inventaire",           icon: ClipboardList, path: `${b}/inventaire` });
     items.push({ label: "Achats",               icon: ShoppingCart,path: `${b}/purchases` });
     if (cfg.hasProduction) {
       items.push({ label: "Production",         icon: FlaskConical,path: `${b}/production` });

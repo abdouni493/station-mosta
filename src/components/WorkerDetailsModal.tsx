@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Eye, X, User, CreditCard, Wallet, UserX, Edit2, Trash2, Check, Save, Banknote,
+  ClipboardList,
 } from 'lucide-react';
 import { cn, formatCurrency } from '@/src/lib/utils';
 
@@ -25,7 +26,44 @@ const fmtDate = (iso?: string) => {
 export interface DetailInfoItem { label: string; value: React.ReactNode }
 export interface DetailAcompte { id: string; date: string; amount: number; description?: string; paid?: boolean }
 export interface DetailAbsence { id: string; date: string; cost: number; description?: string; paid?: boolean }
-export interface DetailPayment { id: string; date: string; amount: number; title: string; subtitle?: string; notes?: string }
+export interface DetailPayment {
+  id: string; date: string; amount: number; title: string; subtitle?: string; notes?: string;
+  /**
+   * Decomposition du paiement, affichee sous la ligne : c'est la que se lisent
+   * les retenues qui expliquent l'ecart entre le salaire de base et le net,
+   * dont le decalage d'inventaire.
+   */
+  breakdown?: { label: string; value: string; tone?: 'red' | 'green' | 'slate' }[];
+}
+
+/** Une ligne du dossier inventaire d'un employe qui en repond. */
+export interface DetailInventaireRow {
+  id: string;
+  /** Nom de l'inventaire (invnt-01-01-2026). */
+  ref: string;
+  date: string;
+  /** Manquants constates, au prix d'achat. */
+  loss: number;
+  /** Part reellement retenue sur son salaire. */
+  deducted: number;
+  /** Date du paiement qui a constate ce decalage. */
+  settledOn?: string;
+  status: 'en attente' | 'constate' | 'retenu';
+}
+
+/** Dossier inventaire complet - absent pour un employe non concerne. */
+export interface DetailInventory {
+  /** L'employe est-il concerne par les inventaires ? */
+  liable: boolean;
+  /** Manquants constates sur ses paiements mais jamais retenus : sa dette. */
+  debt: number;
+  /** Total deja retenu sur ses salaires au titre des inventaires. */
+  deducted: number;
+  /** Inventaires non encore regles dans sa paie. */
+  pendingCount: number;
+  pendingLoss: number;
+  rows: DetailInventaireRow[];
+}
 
 export interface WorkerDetailsModalProps {
   open: boolean;
@@ -47,13 +85,15 @@ export interface WorkerDetailsModalProps {
   onDeleteAbsence?: (id: string) => void;
   onSavePayment?: (p: { id: string; date: string; amount: number; notes?: string }) => void;
   onDeletePayment?: (id: string) => void;
+  /** Dossier inventaire - passe uniquement quand l'employe en repond. */
+  inventory?: DetailInventory;
 }
 
-type Tab = 'payments' | 'acomptes' | 'absences';
+type Tab = 'payments' | 'acomptes' | 'absences' | 'inventaire';
 
 export default function WorkerDetailsModal(props: WorkerDetailsModalProps) {
   const { open, onClose, name, role, subtitle, statusLabel, statusTone = 'green', info,
-    payments, acomptes, absences, canEdit, canDelete } = props;
+    payments, acomptes, absences, canEdit, canDelete, inventory } = props;
 
   const [tab, setTab] = useState<Tab>('payments');
   // Inline edit / delete-confirm state — one row at a time.
@@ -82,12 +122,19 @@ export default function WorkerDetailsModal(props: WorkerDetailsModalProps) {
     { id: 'payments', label: 'Paiements', icon: CreditCard, count: payments.length },
     { id: 'acomptes', label: 'Acomptes', icon: Wallet, count: acomptes.length },
     { id: 'absences', label: 'Absences', icon: UserX, count: absences.length },
+    // L'onglet n'existe que pour un employe qui repond des inventaires : le
+    // montrer aux autres n'apprendrait rien et ferait douter de leur situation.
+    ...(inventory?.liable
+      ? [{ id: 'inventaire' as Tab, label: 'Inventaire', icon: ClipboardList, count: inventory.rows.length }]
+      : []),
   ];
 
   // ── One editable / deletable row ──────────────────────────────────────────────
-  const Row = ({ id, title, sub, amount, amountTone, onEdit, onDelete }: {
+  const Row = ({ id, title, sub, amount, amountTone, breakdown, onEdit, onDelete }: {
     id: string; title: string; sub?: string; amount: string;
-    amountTone: string; onEdit?: () => void; onDelete?: () => void; key?: React.Key;
+    amountTone: string;
+    breakdown?: { label: string; value: string; tone?: 'red' | 'green' | 'slate' }[];
+    onEdit?: () => void; onDelete?: () => void; key?: React.Key;
   }) => {
     if (editId === id) {
       return (
@@ -105,7 +152,8 @@ export default function WorkerDetailsModal(props: WorkerDetailsModalProps) {
       );
     }
     return (
-      <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <p className="font-bold text-slate-700 text-sm truncate">{title}</p>
           {sub && <p className="text-[11px] text-slate-400 truncate">{sub}</p>}
@@ -127,6 +175,20 @@ export default function WorkerDetailsModal(props: WorkerDetailsModalProps) {
             )}
           </div>
         )}
+      </div>
+      {breakdown && breakdown.length > 0 && (
+        <div className="mt-2.5 pt-2.5 border-t border-slate-100 flex flex-wrap gap-x-4 gap-y-1">
+          {breakdown.map((b, i) => (
+            <span key={i} className="text-[11px]">
+              <span className="text-slate-400">{b.label} </span>
+              <b className={cn('tabular-nums',
+                b.tone === 'red' ? 'text-red-600' : b.tone === 'green' ? 'text-emerald-600' : 'text-slate-600')}>
+                {b.value}
+              </b>
+            </span>
+          ))}
+        </div>
+      )}
       </div>
     );
   };
@@ -195,7 +257,7 @@ export default function WorkerDetailsModal(props: WorkerDetailsModalProps) {
                   ? <Empty icon={Banknote} label="Aucun paiement enregistré." />
                   : payments.map(p => (
                     <Row key={p.id} id={p.id} title={p.title} sub={`${fmtDate(p.date)}${p.subtitle ? ` · ${p.subtitle}` : ''}${p.notes ? ` · ${p.notes}` : ''}`}
-                      amount={money(p.amount)} amountTone="text-emerald-600"
+                      amount={money(p.amount)} amountTone="text-emerald-600" breakdown={p.breakdown}
                       onEdit={props.onSavePayment ? () => (editId === p.id ? savePayment(p) : startEdit(p.id, p.date, p.amount, p.notes || '')) : undefined}
                       onDelete={props.onDeletePayment ? () => props.onDeletePayment!(p.id) : undefined} />
                   )))}
@@ -208,6 +270,58 @@ export default function WorkerDetailsModal(props: WorkerDetailsModalProps) {
                       onEdit={props.onSaveAcompte ? () => (editId === a.id ? saveAcompte(a) : startEdit(a.id, a.date, a.amount, a.description || '')) : undefined}
                       onDelete={props.onDeleteAcompte ? () => props.onDeleteAcompte!(a.id) : undefined} />
                   )))}
+
+                {tab === 'inventaire' && inventory && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                      <div className="rounded-xl bg-red-50 border border-red-100 p-3">
+                        <p className="text-[9px] uppercase font-black text-slate-400 tracking-widest">Dette d'inventaire</p>
+                        <p className="font-black text-red-600 tabular-nums text-sm">{money(inventory.debt)}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">constatee, non retenue</p>
+                      </div>
+                      <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3">
+                        <p className="text-[9px] uppercase font-black text-slate-400 tracking-widest">Deja retenu</p>
+                        <p className="font-black text-emerald-600 tabular-nums text-sm">{money(inventory.deducted)}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">sur ses salaires</p>
+                      </div>
+                      <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
+                        <p className="text-[9px] uppercase font-black text-slate-400 tracking-widest">En attente</p>
+                        <p className="font-black text-amber-700 tabular-nums text-sm">{money(inventory.pendingLoss)}</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">{inventory.pendingCount} inventaire(s)</p>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+                        <p className="text-[9px] uppercase font-black text-slate-400 tracking-widest">Inventaires suivis</p>
+                        <p className="font-black text-slate-700 tabular-nums text-sm">{inventory.rows.length}</p>
+                      </div>
+                    </div>
+
+                    {inventory.rows.length === 0
+                      ? <Empty icon={ClipboardList} label="Aucun decalage d'inventaire pour cet employe." />
+                      : inventory.rows.map(r => (
+                        <div key={r.id} className="rounded-xl border border-slate-200 bg-white p-3 flex flex-wrap items-center gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-slate-700 text-sm truncate">{r.ref}</p>
+                            <p className="text-[11px] text-slate-400 truncate">
+                              {fmtDate(r.date)}
+                              {r.settledOn ? ` - constate au paiement du ${fmtDate(r.settledOn)}` : ' - pas encore porte sur un paiement'}
+                            </p>
+                          </div>
+                          <span className={cn('text-[9px] font-black uppercase px-2 py-1 rounded-full shrink-0',
+                            r.status === 'retenu' ? 'bg-emerald-100 text-emerald-700'
+                              : r.status === 'constate' ? 'bg-amber-100 text-amber-700'
+                                : 'bg-slate-100 text-slate-500')}>
+                            {r.status}
+                          </span>
+                          <div className="text-right shrink-0">
+                            <p className="font-black tabular-nums text-sm text-red-600">{money(r.loss)}</p>
+                            <p className="text-[10px] text-slate-400 tabular-nums">
+                              {r.deducted > 0 ? `${money(r.deducted)} retenu(s)` : 'rien retenu'}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
 
                 {tab === 'absences' && (absences.length === 0
                   ? <Empty icon={UserX} label="Aucune absence enregistrée." />
