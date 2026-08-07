@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  TrendingUp, Fuel, ShoppingCart, DollarSign, Activity, AlertTriangle,
+  TrendingUp, Fuel, ShoppingCart, DollarSign, Activity,
   Clock, Package, Droplets, ArrowUpRight, ArrowDownRight,
-  Zap, Users, Calendar, Target, ChevronDown, CheckCircle2,
-  SlidersHorizontal, Save, X, ToggleLeft, ToggleRight, Star, Gauge, ChevronRight
+  Zap, Users, Calendar, Bell,
+  SlidersHorizontal, Save, X, ToggleLeft, ToggleRight, Star
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
@@ -12,9 +12,9 @@ import {
 } from "recharts";
 import ChartBox from "../components/ChartBox";
 import { useAppState, useAppDispatch } from "../store/AppContext";
+import { MODULES } from "../lib/bizConfig";
 import { useNavigate } from "react-router-dom";
-import AlertsWidget, { useDismissedAlerts, useDashboardAlerts } from "../components/AlertsWidget";
-import PaymentAppointmentsBanner from "../components/PaymentAppointmentsBanner";
+import AlertsWidget, { AlertItem, useDismissedAlerts, useCurrentUserAlerts } from "../components/AlertsWidget";
 
 /* ─── Animated counter ─── */
 const AnimatedCounter = ({ value, suffix = "" }: { value: number; suffix?: string }) => {
@@ -35,10 +35,12 @@ const AnimatedCounter = ({ value, suffix = "" }: { value: number; suffix?: strin
 };
 
 /* ─── Tank progress bar ─── */
+/** Le niveau seul : les alertes de cuve vivent dans la cloche de la barre de
+ *  navigation, cette barre ne fait que colorer ce qui est bas. */
 const TankBar = ({ tank }: any) => {
   const pct = Math.min(100, (tank.current / tank.capacity) * 100);
-  const isAlert = tank.current < tank.alertThreshold;
-  const color = isAlert ? "#ef4444" : pct < 50 ? "#FFB800" : "#22c55e";
+  const isLow = tank.current < tank.alertThreshold;
+  const color = isLow ? "#ef4444" : pct < 50 ? "#FFB800" : "#22c55e";
   const typeColors: Record<string, string> = {
     ESSENCE: "#3b82f6", GASOIL: "#22c55e", GPL: "#f97316", DIESEL: "#22c55e", SUPER: "#8b5cf6"
   };
@@ -69,7 +71,6 @@ const TankBar = ({ tank }: any) => {
           <span className="text-[10px] text-slate-400">{tank.capacity.toLocaleString("fr-DZ")} L</span>
         </div>
       </div>
-      {isAlert && <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 animate-pulse" />}
     </div>
   );
 };
@@ -119,116 +120,16 @@ const KpiCard = ({ label, value, suffix, icon: Icon, color, trend, trendPos, del
   </motion.div>
 );
 
-/* ─── Alertes des cuves ─── */
-/**
- * Bandeau d'alerte des cuves, en TÊTE du tableau de bord.
- *
- * Les niveaux détaillés viennent juste après, mais une cuve qui descend sous son
- * seuil doit se voir avant tout le reste : c'est la seule chose du tableau de
- * bord qui, ignorée, arrête la station. Deux degrés d'urgence :
- *   • CRITIQUE — le niveau est passé sous le seuil d'alerte de la cuve ;
- *   • BAS      — il approche (moins d'une fois et demie le seuil).
- *
- * Les cuves épinglées en favori remontent en tête à urgence égale, et chaque
- * ligne mène directement à l'écran Cuves.
- */
-const TankAlertsPanel = ({ tanks, onOpen, delay = 0.08 }: {
-  tanks: any[]; onOpen: () => void; delay?: number;
-}) => {
-  const rows = useMemo(() => (tanks || [])
-    .map(t => {
-      const capacity = Number(t.capacity) || 0;
-      const current = Number(t.current) || 0;
-      const threshold = Number(t.alertThreshold) || 0;
-      const critical = threshold > 0 && current < threshold;
-      const low = !critical && threshold > 0 && current < threshold * 1.5;
-      return {
-        tank: t, capacity, current, threshold, critical, low,
-        pct: capacity > 0 ? Math.min(100, (current / capacity) * 100) : 0,
-        missing: Math.max(0, threshold - current),
-      };
-    })
-    .filter(r => r.critical || r.low)
-    // Critique d'abord, puis les favoris, puis le niveau le plus bas.
-    .sort((a, b) =>
-      Number(b.critical) - Number(a.critical)
-      || Number(!!b.tank.isFavorite) - Number(!!a.tank.isFavorite)
-      || a.pct - b.pct),
-    [tanks]);
-
-  if (rows.length === 0) return null;
-  const criticals = rows.filter(r => r.critical).length;
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay }}
-      className={cn("rounded-2xl border p-4 sm:p-5 space-y-3",
-        criticals > 0 ? "border-red-200 bg-red-50/60" : "border-amber-200 bg-amber-50/60")}>
-      <div className="flex flex-wrap items-center gap-3">
-        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
-          criticals > 0 ? "bg-red-100" : "bg-amber-100")}>
-          <Gauge className={cn("w-5 h-5", criticals > 0 ? "text-red-600" : "text-amber-600")} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className={cn("text-sm font-black uppercase tracking-wider",
-            criticals > 0 ? "text-red-700" : "text-amber-700")}>
-            Alertes des cuves
-          </h3>
-          <p className={cn("text-[11px]", criticals > 0 ? "text-red-600" : "text-amber-700")}>
-            {criticals > 0
-              ? `${criticals} cuve(s) sous le seuil d'alerte — réapprovisionnement requis`
-              : `${rows.length} cuve(s) approchent leur seuil — prévoyez une livraison`}
-          </p>
-        </div>
-        <button onClick={onOpen}
-          className="btn-secondary !py-2 !px-4 text-[11px] shrink-0 flex items-center gap-1.5">
-          Gérer les cuves <ChevronRight className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
-        {rows.map(r => (
-          <button key={r.tank.id} onClick={onOpen}
-            className={cn("rounded-xl border bg-white px-3.5 py-3 text-left transition-all hover:shadow-md",
-              r.critical ? "border-red-200" : "border-amber-200")}>
-            <div className="flex items-center gap-2">
-              {r.tank.isFavorite && <Star className="w-3.5 h-3.5 text-amber-500 fill-current shrink-0" />}
-              <span className="font-black text-slate-800 text-sm truncate min-w-0 flex-1">{r.tank.name}</span>
-              <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black uppercase shrink-0",
-                r.critical ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700")}>
-                {r.critical ? "Critique" : "Bas"}
-              </span>
-            </div>
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">{r.tank.type}</p>
-            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden mt-2">
-              <div className="h-full rounded-full"
-                style={{ width: `${r.pct}%`, background: r.critical ? "#ef4444" : "#f59e0b" }} />
-            </div>
-            <p className="text-[11px] text-slate-500 mt-1.5 tabular-nums">
-              <b className="text-slate-700">{r.current.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} L</b>
-              {" "}restants sur {r.capacity.toLocaleString("fr-FR")} L · seuil {r.threshold.toLocaleString("fr-FR")} L
-            </p>
-            {r.critical && r.missing > 0 && (
-              <p className="text-[11px] font-bold text-red-600 mt-0.5 tabular-nums">
-                {r.missing.toLocaleString("fr-FR", { maximumFractionDigits: 0 })} L manquants pour repasser au-dessus du seuil
-              </p>
-            )}
-          </button>
-        ))}
-      </div>
-    </motion.div>
-  );
-};
-
-/* ─── Cuve level cards (one card per cuve, with its alert state) ─── */
+/* ─── Cuve level cards (one card per cuve) ─── */
 /**
  * Live niveau of every cuve, as cards. A cuve below its `alertThreshold` turns
- * red ("Niveau critique"); one below 1.5× the threshold turns amber ("Niveau
- * bas"). GPL cuves show a percentage, the others their degrees.
+ * red, one below 1.5× the threshold turns amber — c'est un ÉTAT, pas une
+ * alerte : les alertes de cuve ne s'affichent plus que dans la cloche de la
+ * barre de navigation. GPL cuves show a percentage, the others their degrees.
  */
 const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number }) => {
   if (!tanks || tanks.length === 0) return null;
 
-  const alerts = tanks.filter(t => (t.current || 0) < (t.alertThreshold || 0));
   const favorites = tanks.filter(t => !!t.isFavorite).length;
   // Les cuves épinglées passent devant : ce sont celles que le gérant regarde
   // en premier, elles ne doivent pas se perdre au milieu des autres.
@@ -251,12 +152,6 @@ const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number 
             </p>
           </div>
         </div>
-        {alerts.length > 0 && (
-          <span className="px-3 py-1.5 rounded-full text-[10px] font-black uppercase bg-red-100 text-red-700 flex items-center gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            {alerts.length} cuve(s) en alerte
-          </span>
-        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -327,19 +222,6 @@ const TankLevelCards = ({ tanks, delay = 0.15 }: { tanks: any[]; delay?: number 
                   </p>
                 </div>
               </div>
-
-              {critical && (
-                <div className="mt-3 flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-bold text-red-700">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                  Niveau sous le seuil d'alerte — réapprovisionnement requis
-                </div>
-              )}
-              {low && (
-                <div className="mt-3 flex items-center gap-1.5 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-700">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                  Niveau bas — prévoir une livraison
-                </div>
-              )}
             </motion.div>
           );
         })}
@@ -368,6 +250,64 @@ const TanksPanel = ({ tanks, delay = 0.2 }: { tanks: any[]; delay?: number }) =>
     </div>
   </motion.div>
 );
+
+/* ─── Tableau de bord d'un employé — ses alertes, et rien d'autre ─── */
+/**
+ * Un employé n'a pas à voir l'argent de la station sur son écran d'accueil : ni
+ * les ventes du jour, ni ce qu'il a encaissé, ni la valeur d'un stock. Son
+ * tableau de bord ne montre donc QUE les alertes de sa partie — cuves et pompes
+ * pour la piste, stock pour le magasin, la Cafétéria ou le Lavage pour leurs
+ * employés — c'est-à-dire exactement ce qu'il a à traiter.
+ *
+ * La liste est la même que celle de la cloche de la barre de navigation
+ * (`useCurrentUserAlerts`) : les deux ne peuvent pas se contredire.
+ */
+const WorkerAlertsBoard = ({ alerts, onDismiss, partLabel }: {
+  alerts: AlertItem[]; onDismiss: (id: string) => void; partLabel: string;
+}) => {
+  const counts = useMemo(() => ({
+    critical: alerts.filter(a => a.type === 'critical').length,
+    warning: alerts.filter(a => a.type === 'warning').length,
+    info: alerts.filter(a => a.type === 'info').length,
+  }), [alerts]);
+
+  const tiles = [
+    { label: "Critiques", value: counts.critical, color: "#ef4444" },
+    { label: "Avertissements", value: counts.warning, color: "#f59e0b" },
+    { label: "Informations", value: counts.info, color: "#3b82f6" },
+  ];
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
+      className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+          style={{ background: "rgba(0,48,135,0.08)" }}>
+          <Bell className="w-5 h-5" style={{ color: "var(--naftal-blue-600)" }} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>
+            Mes alertes
+          </h3>
+          <p className="text-[11px] text-slate-400">{partLabel}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {tiles.map(t => (
+          <div key={t.label} className="p-4 rounded-2xl border bg-white shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{t.label}</p>
+            <p className="text-2xl font-black leading-none mt-1 tabular-nums" style={{ color: t.value > 0 ? t.color : "#cbd5e1" }}>
+              {t.value}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <AlertsWidget alerts={alerts} onDismiss={onDismiss} groupByPart title="À traiter" />
+    </motion.div>
+  );
+};
 
 /* ─── Dashboard header (outside Dashboard so React.memo prevents remount every tick) ─── */
 interface DashboardHeaderProps {
@@ -456,12 +396,10 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const {
     tanks, products, brigades, clients, fuelSales, shopSales,
-    pompistes, pumps, expenses, brigadeChefs, suppliers, purchases,
-    gerants, magasinWorkers, currentUserRole, currentUserId, settings, fuelInvoices,
-    brigadeDecalageAlerts = []
+    pompistes, pumps, expenses, brigadeChefs, suppliers,
+    currentUserRole, currentModuleWorker, settings,
   } = useAppState();
   const dispatch = useAppDispatch();
-  const [decAlertsOpen, setDecAlertsOpen] = useState(true);
 
   // ── Décalage acceptance settings (per case) ───────────────────────────────
   const [showDecalageSettings, setShowDecalageSettings] = useState(false);
@@ -494,19 +432,30 @@ const Dashboard = () => {
     dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: 'Paramètres de décalage enregistrés' } });
     setShowDecalageSettings(false);
   };
-  const activeDecalageAlerts = useMemo(
-    () => brigadeDecalageAlerts.filter(a => !a.isDismissed && a.alertType !== 'CORRECT').slice(0, 20),
-    [brigadeDecalageAlerts]
-  );
-
   const isAdmin   = currentUserRole === 'admin';
   const isGerant  = currentUserRole === 'gerant';
-  const isChef    = currentUserRole === 'chef_brigade';
-  const isPompiste = currentUserRole === 'pompiste';
-  const isMagasin = currentUserRole === 'magasin';
+  // Administrateur et gérant voient la station entière (chiffres compris) ;
+  // tout le reste est un employé et n'a droit qu'aux alertes de sa partie.
   const showFull  = isAdmin || isGerant;
 
   const { dismissedIds, dismiss } = useDismissedAlerts();
+  // Exactement la liste de la cloche de la barre de navigation — calculée
+  // uniquement pour un employé, l'écran de l'administrateur n'en affiche pas.
+  const myAlerts = useCurrentUserAlerts(dismissedIds, !showFull);
+
+  // La partie dont l'employé répond — c'est le sous-titre de ses alertes.
+  const myPartLabel = useMemo(() => {
+    switch (currentUserRole) {
+      case 'module_worker':
+        return currentModuleWorker
+          ? `Partie ${MODULES[currentModuleWorker.moduleKey]?.label ?? ''}`.trim()
+          : 'Ma partie';
+      case 'chef_brigade': return 'Ma brigade — cuves, pompes et décalages';
+      case 'pompiste':     return 'Piste — cuves et pompes';
+      case 'magasin':      return 'Magasin — stock des produits';
+      default:             return 'Ma partie';
+    }
+  }, [currentUserRole, currentModuleWorker]);
   const [now, setNow] = useState(new Date());
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
 
@@ -521,40 +470,8 @@ const Dashboard = () => {
   const totalExpense = useMemo(() => todayExpenses.reduce((s, x)  => s + x.amount, 0), [todayExpenses]);
   const netRevenue   = fuelRevenue + shopRevenue - totalExpense;
 
-  const dashboardAlerts = useDashboardAlerts(
-    suppliers, products, tanks,
-    pompistes, brigadeChefs, gerants, magasinWorkers,
-    dismissedIds, fuelInvoices, purchases
-  );
-
   /* global active brigade (admin/gerant header badge) */
   const activeBrigade = useMemo(() => brigades.find(b => b.status === "Ouverte"), [brigades]);
-
-  /* chef: their own active brigade */
-  const myBrigadeAsChef = useMemo(() => {
-    if (!isChef || !currentUserId) return null;
-    return brigades.find(b => b.chefId === currentUserId && b.status === 'Ouverte') ?? null;
-  }, [brigades, isChef, currentUserId]);
-
-  const chefSales     = useMemo(() => myBrigadeAsChef ? fuelSales.filter(s => s.brigadeId === myBrigadeAsChef.id) : [], [fuelSales, myBrigadeAsChef]);
-  const chefLiters    = useMemo(() => chefSales.reduce((s, x) => s + x.liters, 0), [chefSales]);
-  const chefCollected = useMemo(() => chefSales.reduce((s, x) => s + x.total,  0), [chefSales]);
-
-  /* pompiste: brigade they're assigned to */
-  const myBrigadeAsPompiste = useMemo(() => {
-    if (!isPompiste || !currentUserId) return null;
-    return brigades.find(b =>
-      b.status === 'Ouverte' &&
-      (b.pompisteIds?.includes(currentUserId) ||
-       b.pompisteAssignments?.some(a => a.pompisteId === currentUserId))
-    ) ?? null;
-  }, [brigades, isPompiste, currentUserId]);
-
-  const mySales     = useMemo(() => (!myBrigadeAsPompiste || !currentUserId) ? [] :
-    fuelSales.filter(s => s.brigadeId === myBrigadeAsPompiste.id && s.pompisteId === currentUserId),
-  [fuelSales, myBrigadeAsPompiste, currentUserId]);
-  const myLiters    = useMemo(() => mySales.reduce((s, x) => s + x.liters, 0), [mySales]);
-  const myCollected = useMemo(() => mySales.reduce((s, x) => s + x.total,  0), [mySales]);
 
   /* upcoming payments (admin/gerant only) */
   const upcomingPayments = useMemo(() => {
@@ -575,9 +492,6 @@ const Dashboard = () => {
       Magasin:   shopSales.filter(s => s.date.startsWith(ds)).reduce((a, s) => a + s.total, 0),
     };
   }), [fuelSales, shopSales, now]);
-
-  /* low stock (magasin) */
-  const lowStock = useMemo(() => products.filter(p => p.stock <= p.minStock).slice(0, 6), [products]);
 
   /* elapsed timer */
   const elapsed = (ts?: string) => {
@@ -600,16 +514,11 @@ const Dashboard = () => {
         stationName={settings?.name || "Station Naftal"}
         activeBrigade={activeBrigade}
         brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
+        showBrigadeBadge
       />
 
-      {/* Rappel des rendez-vous de paiement fournisseur (achats carburant) */}
-      <PaymentAppointmentsBanner purchases={purchases} suppliers={suppliers} />
-
-      {/* Cuves sous seuil — l'alerte passe avant le détail des niveaux */}
-      <TankAlertsPanel tanks={tanks} onOpen={() => navigate('/tanks')} delay={0.08} />
-
-      {/* Niveaux des cuves — cartes avec alertes */}
+      {/* Niveaux des cuves — les alertes, elles, sont dans la cloche de la
+          barre de navigation : le tableau de bord n'en affiche plus aucune. */}
       <TankLevelCards tanks={tanks} delay={0.12} />
 
       {/* Toolbar — décalage acceptance settings */}
@@ -730,70 +639,6 @@ const Dashboard = () => {
         </div>
       </motion.div>
 
-      <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
-
-      {/* Alertes Décalage Brigades (admin) */}
-      {isAdmin && (
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border bg-white shadow-sm overflow-hidden">
-          <button onClick={() => setDecAlertsOpen(o => !o)} className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-50 transition-colors">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className={cn("w-5 h-5", activeDecalageAlerts.length > 0 ? "text-orange-500" : "text-green-500")} />
-              <h3 className="text-sm font-black uppercase tracking-wider text-blue-900">Alertes Décalage Brigades</h3>
-              {activeDecalageAlerts.length > 0 && (
-                <span className="px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-700 text-[10px] font-black">{activeDecalageAlerts.length}</span>
-              )}
-            </div>
-            <ChevronDown className={cn("w-5 h-5 text-slate-400 transition-transform", decAlertsOpen ? "rotate-180" : "")} />
-          </button>
-
-          {decAlertsOpen && (
-            <div className="px-5 pb-5 space-y-3">
-              {activeDecalageAlerts.length === 0 ? (
-                <div className="flex items-center gap-2 p-4 rounded-xl bg-green-50 border border-green-200">
-                  <CheckCircle2 className="w-5 h-5 text-green-600" />
-                  <p className="text-sm font-black text-green-700">✓ Aucune alerte de décalage</p>
-                </div>
-              ) : (
-                activeDecalageAlerts.map(a => {
-                  const isRetour = a.alertType === 'RETOUR_CUVE';
-                  const fmt = (iso?: string) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleString('fr-DZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); };
-                  return (
-                    <div key={a.id} className={cn("p-4 rounded-xl border-2", isRetour ? "border-orange-200 bg-orange-50" : "border-red-200 bg-red-50")}>
-                      <div className="flex items-start justify-between gap-3 mb-2">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className={cn("text-[9px] font-black px-2 py-1 rounded-full uppercase", isRetour ? "bg-orange-200 text-orange-800" : "bg-red-200 text-red-800")}>{a.alertType}</span>
-                          <span className="text-[10px] font-bold text-slate-500">{fmt(a.startDatetime)} → {fmt(a.endDatetime)}</span>
-                        </div>
-                        <button onClick={() => dispatch({ type: 'DISMISS_BRIGADE_DECALAGE_ALERT', payload: a.id })} className="text-[10px] font-black uppercase px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 whitespace-nowrap">
-                          Marquer comme traité
-                        </button>
-                      </div>
-                      <p className={cn("text-[11px] font-bold mb-2", isRetour ? "text-orange-700" : "text-red-700")}>
-                        {isRetour
-                          ? "Des pistolets ont débité plus que la cuve — possible retour non enregistré"
-                          : "La cuve a diminué plus que les pistolets — possible vente directe"}
-                      </p>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] font-bold text-slate-600">
-                        {a.chefName && <p>👨‍💼 Chef: <span className="text-slate-800">{a.chefName}</span></p>}
-                        {a.tankName && <p>🛢 Cuve: <span className="text-slate-800">{a.tankName}</span></p>}
-                        {a.pompisteName && <p>⛽ Pompiste: <span className="text-slate-800">{a.pompisteName}</span></p>}
-                        <p>📉 Décalage: <span className="text-slate-800">{a.decalageLiters.toLocaleString('fr-DZ', { maximumFractionDigits: 1 })} L / {a.decalageAmount.toLocaleString('fr-DZ', { maximumFractionDigits: 0 })} DZD</span></p>
-                      </div>
-                      {a.workersInfo && a.workersInfo.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {a.workersInfo.map((w, i) => (
-                            <span key={i} className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[9px] font-bold text-slate-600">{w.name}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-        </motion.div>
-      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
@@ -964,209 +809,12 @@ const Dashboard = () => {
   );
 
   /* ════════════════════════════════════════════════════════════ */
-  /* CHEF DE BRIGADE                                             */
-  /* ════════════════════════════════════════════════════════════ */
-  if (isChef) return (
-    <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
-      <DashboardHeader
-        stationName={settings?.name || "Station Naftal"}
-        activeBrigade={activeBrigade}
-        brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
-      />
-      <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
-
-      <div className="grid lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-5">
-          {/* Ma Brigade */}
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="card-naftal p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <Target className="w-4 h-4" style={{ color: "var(--naftal-blue-600)" }} />
-              <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>Ma Brigade</h3>
-              {myBrigadeAsChef && (
-                <div className="ml-auto flex items-center gap-1.5">
-                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                  <span className="text-[10px] font-bold text-green-600">En service</span>
-                </div>
-              )}
-            </div>
-            {myBrigadeAsChef ? (
-              <>
-                <div className="flex items-center gap-2 rounded-xl p-3 mb-5"
-                  style={{ background: "rgba(0,48,135,0.06)", border: "1px solid rgba(0,48,135,0.08)" }}>
-                  <Clock className="w-4 h-4" style={{ color: "var(--naftal-blue-600)" }} />
-                  <span className="font-black text-xl tracking-tighter font-mono" style={{ color: "var(--naftal-blue-700)" }}>
-                    {elapsed(myBrigadeAsChef.startTimestamp)}
-                  </span>
-                  <span className="text-xs text-slate-400 ml-2">{myBrigadeAsChef.shift} · {myBrigadeAsChef.date}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-4 mb-5">
-                  <div className="p-4 rounded-xl border bg-white/60">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Litres Vendus</p>
-                    <p className="text-xl font-black text-blue-700">{chefLiters.toLocaleString('fr-DZ')} <span className="text-sm">L</span></p>
-                  </div>
-                  <div className="p-4 rounded-xl border bg-white/60">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Montant Collecté</p>
-                    <p className="text-xl font-black text-green-700">{chefCollected.toLocaleString('fr-DZ')} <span className="text-sm">DA</span></p>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Mon Équipe</p>
-                  <div className="flex flex-wrap gap-2">
-                    {(myBrigadeAsChef.pompisteIds || []).map(pid => {
-                      const p = pompistes.find(x => x.id === pid);
-                      return p ? (
-                        <span key={pid} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 rounded-xl text-xs font-bold text-slate-700">
-                          <span className="w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center text-[9px] font-black">
-                            {p.name[0].toUpperCase()}
-                          </span>
-                          {p.name}
-                        </span>
-                      ) : null;
-                    })}
-                    {(!myBrigadeAsChef.pompisteIds || myBrigadeAsChef.pompisteIds.length === 0) && (
-                      <p className="text-xs text-slate-400">Aucun pompiste assigné</p>
-                    )}
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="text-center py-10">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(0,48,135,0.06)" }}>
-                  <Activity className="w-6 h-6 text-slate-300" />
-                </div>
-                <p className="text-sm text-slate-400 mb-4">Aucune brigade en cours</p>
-                <button onClick={() => navigate("/chef-brigade")} className="btn-primary text-xs px-4 py-2">Voir mes Brigades</button>
-              </div>
-            )}
-          </motion.div>
-
-          <TanksPanel tanks={tanks} delay={0.2} />
-        </div>
-
-        {/* Right */}
-        <div>
-          <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.25 }} className="card-glass p-5">
-            <h3 className="text-xs font-black uppercase tracking-wider mb-4" style={{ color: "var(--naftal-blue-600)" }}>Mes Stats du Jour</h3>
-            <div className="space-y-3">
-              {[
-                { label: "Pompistes dans ma brigade", value: (myBrigadeAsChef?.pompisteIds || []).length,      icon: Users,         color: "#003087" },
-                { label: "Ventes de la brigade",      value: chefSales.length,                                 icon: Fuel,          color: "#FFB800" },
-                { label: "Cuves en alerte",           value: tanks.filter(t => t.current < t.alertThreshold).length, icon: AlertTriangle, color: "#ef4444" },
-              ].map((s, i) => (
-                <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 cursor-default">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: s.color + "18" }}>
-                    <s.icon className="w-4 h-4" style={{ color: s.color }} />
-                  </div>
-                  <span className="text-sm text-slate-600 flex-1">{s.label}</span>
-                  <span className="text-sm font-black" style={{ color: "var(--naftal-blue-700)" }}>{s.value}</span>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        </div>
-      </div>
-    </div>
-  );
-
-  /* ════════════════════════════════════════════════════════════ */
-  /* POMPISTE                                                    */
-  /* ════════════════════════════════════════════════════════════ */
-  if (isPompiste) return (
-    <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
-      <DashboardHeader
-        stationName={settings?.name || "Station Naftal"}
-        activeBrigade={activeBrigade}
-        brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
-      />
-      <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
-
-      <div className="grid lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-5">
-          {/* Ma Brigade */}
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="card-naftal p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <Activity className="w-4 h-4" style={{ color: "var(--naftal-blue-600)" }} />
-              <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>Ma Brigade</h3>
-              {myBrigadeAsPompiste && (
-                <div className="ml-auto flex items-center gap-1.5">
-                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                  <span className="text-[10px] font-bold text-green-600">En service</span>
-                </div>
-              )}
-            </div>
-            {myBrigadeAsPompiste ? (
-              <>
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-xl font-black text-white flex-shrink-0"
-                    style={{ background: "linear-gradient(135deg,#003087,#0044bb)" }}>
-                    {(brigadeChefs.find(c => c.id === myBrigadeAsPompiste.chefId)?.name || "C")[0].toUpperCase()}
-                  </div>
-                  <div>
-                    <p className="font-black text-sm" style={{ color: "var(--naftal-blue-700)" }}>
-                      Chef : {brigadeChefs.find(c => c.id === myBrigadeAsPompiste.chefId)?.name || "—"}
-                    </p>
-                    <p className="text-xs text-slate-400">{myBrigadeAsPompiste.shift} · {myBrigadeAsPompiste.date}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 rounded-xl p-3 mb-5"
-                  style={{ background: "rgba(0,48,135,0.06)", border: "1px solid rgba(0,48,135,0.08)" }}>
-                  <Clock className="w-4 h-4" style={{ color: "var(--naftal-blue-600)" }} />
-                  <span className="font-black text-xl tracking-tighter font-mono" style={{ color: "var(--naftal-blue-700)" }}>
-                    {elapsed(myBrigadeAsPompiste.startTimestamp)}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 rounded-xl border bg-white/60">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Mes Litres</p>
-                    <p className="text-xl font-black text-blue-700">{myLiters.toLocaleString('fr-DZ')} <span className="text-sm">L</span></p>
-                  </div>
-                  <div className="p-4 rounded-xl border bg-white/60">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Montant Collecté</p>
-                    <p className="text-xl font-black text-green-700">{myCollected.toLocaleString('fr-DZ')} <span className="text-sm">DA</span></p>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="text-center py-10">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(0,48,135,0.06)" }}>
-                  <Activity className="w-6 h-6 text-slate-300" />
-                </div>
-                <p className="text-sm text-slate-400">Aucune brigade en cours</p>
-              </div>
-            )}
-          </motion.div>
-
-          <TanksPanel tanks={tanks} delay={0.2} />
-        </div>
-
-        {/* Right */}
-        <div>
-          <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.25 }} className="card-glass p-5">
-            <h3 className="text-xs font-black uppercase tracking-wider mb-4" style={{ color: "var(--naftal-blue-600)" }}>Ma Journée</h3>
-            <div className="space-y-3">
-              {[
-                { label: "Ventes effectuées", value: mySales.length,                                          icon: Fuel,          color: "#003087" },
-                { label: "Cuves en alerte",   value: tanks.filter(t => t.current < t.alertThreshold).length,  icon: AlertTriangle, color: "#ef4444" },
-              ].map((s, i) => (
-                <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 cursor-default">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: s.color + "18" }}>
-                    <s.icon className="w-4 h-4" style={{ color: s.color }} />
-                  </div>
-                  <span className="text-sm text-slate-600 flex-1">{s.label}</span>
-                  <span className="text-sm font-black" style={{ color: "var(--naftal-blue-700)" }}>{s.value}</span>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        </div>
-      </div>
-    </div>
-  );
-
-  /* ════════════════════════════════════════════════════════════ */
-  /* MAGASIN                                                     */
+  /* EMPLOYÉS — chef de brigade, pompiste, magasin, employé d'une */
+  /* partie (Cafétéria / Lavage) : UNIQUEMENT leurs alertes.      */
+  /*                                                              */
+  /* Plus aucun chiffre d'argent ici : ni ventes du jour, ni       */
+  /* montant collecté, ni valeur de stock. L'employé voit ce qu'il */
+  /* a à traiter dans sa partie, et rien d'autre.                  */
   /* ════════════════════════════════════════════════════════════ */
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-10">
@@ -1174,86 +822,9 @@ const Dashboard = () => {
         stationName={settings?.name || "Station Naftal"}
         activeBrigade={activeBrigade}
         brigadeChefs={brigadeChefs}
-        showBrigadeBadge={showFull || isChef}
+        showBrigadeBadge={false}
       />
-      <AlertsWidget alerts={dashboardAlerts} onDismiss={dismiss} />
-
-      <div className="grid lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-5">
-          {/* Résumé Magasin */}
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-            <h3 className="text-sm font-black uppercase tracking-wider mb-3 text-slate-700">Résumé du Jour — Magasin</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-5 rounded-2xl border bg-white shadow-sm flex flex-col justify-center relative overflow-hidden">
-                <div className="absolute -right-6 -bottom-6 opacity-[0.03] text-purple-600"><ShoppingCart className="w-32 h-32" /></div>
-                <p className="text-xs font-bold text-slate-500 uppercase mb-1 tracking-wider">Ventes Magasin</p>
-                <p className="text-2xl font-black text-purple-700 relative z-10">{shopRevenue.toLocaleString('fr-DZ')} <span className="text-sm">DA</span></p>
-                <p className="text-[10px] text-slate-400 mt-1">{todayShopSales.length} vente(s) aujourd'hui</p>
-              </div>
-              <div className="p-5 rounded-2xl border bg-white shadow-sm flex flex-col justify-center relative overflow-hidden">
-                <div className="absolute -right-6 -bottom-6 opacity-[0.03] text-orange-600"><Package className="w-32 h-32" /></div>
-                <p className="text-xs font-bold text-slate-500 uppercase mb-1 tracking-wider">Stock Faible</p>
-                <p className="text-2xl font-black text-orange-700 relative z-10">{lowStock.length}</p>
-                <p className="text-[10px] text-slate-400 mt-1">produit(s) sous seuil</p>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* Low stock products */}
-          {lowStock.length > 0 && (
-            <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="card-glass p-6">
-              <div className="flex items-center gap-2.5 mb-4">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "rgba(239,68,68,0.12)" }}>
-                  <AlertTriangle className="w-4 h-4 text-red-500" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider" style={{ color: "var(--naftal-blue-600)" }}>Produits Stock Faible</h3>
-                  <p className="text-[10px] text-slate-400">Nécessitent un réapprovisionnement</p>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {lowStock.map(p => (
-                  <div key={p.id} className="flex items-center gap-3 p-3 rounded-xl border border-red-100 bg-red-50/50">
-                    <div className="w-8 h-8 rounded-xl flex items-center justify-center bg-red-100 flex-shrink-0">
-                      <Package className="w-4 h-4 text-red-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold text-slate-700 truncate">{p.name}</p>
-                      <p className="text-[10px] text-slate-500">{p.category}</p>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <p className="text-sm font-black text-red-600">{p.stock} {p.unit}</p>
-                      <p className="text-[10px] text-slate-400">min: {p.minStock}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </div>
-
-        {/* Right */}
-        <div>
-          <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.25 }} className="card-glass p-5">
-            <h3 className="text-xs font-black uppercase tracking-wider mb-4" style={{ color: "var(--naftal-blue-600)" }}>Statistiques Magasin</h3>
-            <div className="space-y-3">
-              {[
-                { label: "Ventes aujourd'hui",    value: todayShopSales.length, icon: ShoppingCart,  color: "#8b5cf6" },
-                { label: "Total produits",         value: products.length,       icon: Package,       color: "#003087" },
-                { label: "Produits stock faible",  value: lowStock.length,       icon: AlertTriangle, color: "#ef4444" },
-              ].map((s, i) => (
-                <div key={i} className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 cursor-default">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: s.color + "18" }}>
-                    <s.icon className="w-4 h-4" style={{ color: s.color }} />
-                  </div>
-                  <span className="text-sm text-slate-600 flex-1">{s.label}</span>
-                  <span className="text-sm font-black" style={{ color: "var(--naftal-blue-700)" }}>{s.value}</span>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        </div>
-      </div>
+      <WorkerAlertsBoard alerts={myAlerts} onDismiss={dismiss} partLabel={myPartLabel} />
     </div>
   );
 };

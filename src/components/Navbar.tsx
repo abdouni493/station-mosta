@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { Bell, Globe, ChevronRight, Fuel, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { cn } from "@/src/lib/utils";
-import { useAppState } from "../store/AppContext";
+import { useAppState, useAppDispatch } from "../store/AppContext";
 import { MODULES, ModuleKey } from "../lib/bizConfig";
 
 // ─── Titles for the new business-module routes ────────────────────────────────
@@ -26,8 +26,7 @@ const MODULE_ROUTE_TITLES: Record<string, { title: string; subtitle: string; emo
   return map;
 })();
 import {
-  AlertItem,
-  useDashboardAlerts,
+  useCurrentUserAlerts,
   useDismissedAlerts,
   NavbarAlertsDropdown,
 } from "./AlertsWidget";
@@ -106,10 +105,10 @@ const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
   const alertsRef = useRef<HTMLDivElement>(null);
 
   const {
-    tanks, products, suppliers,
     pompistes, brigadeChefs, gerants, magasinWorkers,
-    currentUserId, currentUserRole, currentUserAvatarUrl, currentUserName,
+    currentUserId, currentUserAvatarUrl, currentUserName,
   } = useAppState();
+  const dispatch = useAppDispatch();
 
   // Resolve display name + initials for the connected user.
   // Prefer currentUserName (loaded from admin_profiles); fall back to worker tables.
@@ -134,12 +133,21 @@ const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
 
   const { dismissedIds, dismiss } = useDismissedAlerts();
 
-  // Generate all alerts for the navbar
-  const allAlerts = useDashboardAlerts(
-    suppliers, products, tanks,
-    pompistes, brigadeChefs, gerants, magasinWorkers,
-    dismissedIds
-  );
+  // La cloche est le SEUL endroit où les alertes s'affichent pour tout le monde
+  // (le tableau de bord d'un employé en remontre les siennes, rien de plus).
+  // Chaque rôle n'y voit que sa partie — voir `useCurrentUserAlerts`.
+  const allAlerts = useCurrentUserAlerts(dismissedIds);
+
+  // Un décalage de brigade n'est pas « ignoré » dans ce navigateur : il est
+  // MARQUÉ COMME TRAITÉ dans la base, pour tout le monde. C'est l'action que
+  // portait le panneau « Alertes Décalage Brigades » du tableau de bord.
+  const handleDismiss = (id: string) => {
+    if (id.startsWith('decalage-')) {
+      dispatch({ type: 'DISMISS_BRIGADE_DECALAGE_ALERT', payload: id.slice('decalage-'.length) });
+      return;
+    }
+    dismiss(id);
+  };
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -238,7 +246,7 @@ const Navbar = ({ onMenuToggle, sidebarOpen, activePath }: NavbarProps) => {
             alerts={allAlerts}
             isOpen={alertsOpen}
             onClose={() => setAlertsOpen(false)}
-            onDismiss={dismiss}
+            onDismiss={handleDismiss}
             onNavigate={(link) => navigate(link)}
           />
         </div>
