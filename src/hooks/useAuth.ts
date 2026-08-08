@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase, signOut, readPersistedSession } from '../lib/supabase';
 
 // Minimal local auth types (previously from @supabase/supabase-js).
-// The demo backend is fully offline, so only the fields the app reads are kept.
+// Only the fields the app actually reads off a session are kept.
 export interface User { id: string; email?: string; user_metadata?: Record<string, any> }
 export interface Session { access_token: string; refresh_token?: string; user: User }
 

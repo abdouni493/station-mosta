@@ -1017,10 +1017,21 @@ export interface AppState {
 // ─── Empty initial state (data comes from Supabase) ───────────────────────────
 export const DEFAULT_PRODUCT_UNITS = ['Pièce', 'Litre', 'Kg', 'Carton', 'Pack', 'Bidon'];
 
+/**
+ * Paramètres avant que la base ait répondu.
+ *
+ * Aucun PRIX n'y figure : ils valaient autrefois 14,80 / 12,50 DA, et une station
+ * dont la ligne `station_settings` ne portait pas encore ses tarifs voyait donc
+ * ses ventes valorisées à des prix qui n'étaient pas les siens. Un zéro est faux
+ * de façon visible ; un prix inventé, lui, se glisse dans les totaux sans que
+ * personne le remarque. Les listes de catégories et d'unités restent, elles :
+ * ce ne sont pas des données de la station mais les choix proposés dans les
+ * formulaires tant que la station n'a pas défini les siens.
+ */
 const emptySettings: StationSettings = {
-  name: 'Station Naftal',
-  fuelPrices:    { SUPER: 14.80, DIESEL: 12.50, ESSENCE: 14.80, GASOIL: 12.50, GPL: 8.50 },
-  fuelBuyPrices: { SUPER: 0,     DIESEL: 0,     ESSENCE: 0,     GASOIL: 0,     GPL: 0     },
+  name: '',
+  fuelPrices:    { SUPER: 0, DIESEL: 0, ESSENCE: 0, GASOIL: 0, GPL: 0 },
+  fuelBuyPrices: { SUPER: 0, DIESEL: 0, ESSENCE: 0, GASOIL: 0, GPL: 0 },
   conversionTables: {},
   productCategories: ['Lubrifiants', 'Accessoires', 'Lavage', 'Magasin'],
   expenseCategories: ['Salaires', 'Entretien', 'Électricité', 'Eau', 'Loyer', 'Impôts', 'Divers'],

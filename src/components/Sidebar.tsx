@@ -59,7 +59,7 @@ const roleBadge: Record<string, { label: string; bg: string; text: string }> = {
 // The sidebar is organised by "part" (activity): a reorganised Carburant part
 // (the original fuel-station app), then four new commerce/production parts
 // (Restaurant, Cafétéria, Lavage & Réparation, Magasin) whose pages live on the
-// self-contained BizContext store with constant demo data.
+// BizContext store — itself fed by the `biz_store` row in Supabase.
 
 // Builds a nav group for one business module from its capabilities (config).
 function buildModuleNavGroup(key: ModuleKey): NavGroup {

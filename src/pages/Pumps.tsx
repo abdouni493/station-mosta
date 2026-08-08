@@ -108,12 +108,9 @@ const Pumps = () => {
 
   const handleDelete = () => {
     if (showDeleteConfirm) {
-      // Check if pump is in active brigade (simplified mock check)
-      if (showDeleteConfirm === "P1") { // Mock check
-          toast.error("Impossible de supprimer: cette pompe est liée à une brigade active");
-          setShowDeleteConfirm(null);
-          return;
-      }
+      // Une suppression refusée l'est par la base (contraintes de clé étrangère),
+      // jamais par un identifiant écrit en dur : le garde-fou qui vivait ici
+      // bloquait la pompe dont l'id valait littéralement « P1 ».
       dispatch({ type: 'DELETE_PUMP', payload: showDeleteConfirm });
       toast.success("Pompe supprimée ✓");
       setShowDeleteConfirm(null);
