@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Receipt, Wallet, TrendingUp, CircleDollarSign, User, ShoppingBag,
-  Undo2, Repeat, Search, X, Printer, ArrowRightLeft,
+  Undo2, Repeat, Search, X, Printer, ArrowRightLeft, Clock,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -17,7 +17,8 @@ import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
-  RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Select, Textarea, money, formatDate,
+  RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Select, Textarea, money,
+  formatDate, formatDateTime, formatTime,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 import { PayDebtModal, printInvoice, stationFromSettings } from './_shared';
@@ -134,7 +135,13 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
                 <div className="min-w-0"><h3 className="font-black text-slate-800">{s.ref}</h3><p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><User className="w-3 h-3" />{s.clientName}</p></div>
                 <StatusBadge sale={s} />
               </div>
-              <p className="text-[11px] text-slate-400 mt-1">{formatDate(s.date)} • {s.items.length} article(s)</p>
+              <p className="text-[11px] text-slate-400 mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                <span>{formatDate(s.date)}</span>
+                <span className="inline-flex items-center gap-1 font-bold text-slate-500 tabular-nums">
+                  <Clock className="w-3 h-3" />{formatTime(s.date)}
+                </span>
+                <span>• {s.items.length} article(s)</span>
+              </p>
               <div className="grid grid-cols-3 gap-2 mt-3">
                 <div className="rounded-xl bg-slate-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(s.total)}</p></div>
                 <div className="rounded-xl bg-emerald-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(s.paid)}</p></div>
@@ -155,13 +162,20 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
         </CardGrid>
       ) : (
         <Table head={<>
-          <th className="table-head">Réf</th><th className="table-head">Client</th><th className="table-head">Date</th>
+          <th className="table-head">Réf</th><th className="table-head">Client</th>
+          <th className="table-head">Date</th><th className="table-head">Heure</th>
           <th className="table-head">Total</th><th className="table-head">Payé</th><th className="table-head">Reste</th>
           <th className="table-head">État</th><th className="table-head text-right">Actions</th>
         </>}>
           {filtered.map(s => (
             <tr key={s.id}>
-              <td className="table-cell font-bold">{s.ref}</td><td className="table-cell">{s.clientName}</td><td className="table-cell">{formatDate(s.date)}</td>
+              <td className="table-cell font-bold">{s.ref}</td><td className="table-cell">{s.clientName}</td>
+              <td className="table-cell whitespace-nowrap">{formatDate(s.date)}</td>
+              <td className="table-cell whitespace-nowrap">
+                <span className="inline-flex items-center gap-1 font-bold text-slate-600 tabular-nums">
+                  <Clock className="w-3 h-3 text-slate-400" />{formatTime(s.date)}
+                </span>
+              </td>
               <td className="table-cell tabular-nums">{money(s.total)}</td><td className="table-cell tabular-nums text-emerald-600">{money(s.paid)}</td>
               <td className="table-cell tabular-nums text-red-600">{money(s.rest)}</td>
               <td className="table-cell">{s.rest > 0 ? <Badge tone="danger">Crédit</Badge> : <Badge tone="success">Payée</Badge>}</td>
@@ -182,13 +196,24 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
       <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="lg" title={`Vente ${viewing?.ref || ''}`} subtitle={viewing?.clientName}>
         {viewing && (
           <div className="space-y-4">
+            {/* Quand la vente a été faite — l'heure autant que le jour. */}
+            <div className="rounded-xl bg-slate-50 p-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1.5 font-bold text-slate-700">
+                <Clock className="w-3.5 h-3.5 text-slate-400" />{formatDateTime(viewing.date)}
+              </span>
+              {viewing.workerName && (
+                <span className="inline-flex items-center gap-1.5">
+                  <User className="w-3.5 h-3.5 text-slate-400" />{viewing.workerName}
+                </span>
+              )}
+            </div>
             {/* Vente annulée : elle ne compte plus nulle part, on le dit ici. */}
             {isReversedSale(viewing) && (
               <div className="rounded-xl bg-slate-100 border border-slate-200 p-3 text-xs text-slate-600 flex items-start gap-2">
                 <Undo2 className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
                   <strong>Vente {viewing.status}</strong>
-                  {viewing.refundedAt ? ` le ${formatDate(viewing.refundedAt)}` : ''}
+                  {viewing.refundedAt ? ` le ${formatDateTime(viewing.refundedAt)}` : ''}
                   {viewing.status === 'retournée' ? ` — ${money(viewing.refundedAmount || 0)} rendu(s) au client` : ''}
                   {viewing.returnReason ? ` (${viewing.returnReason})` : ''}.
                   {' '}La marchandise est revenue en stock : cette facture est exclue du chiffre

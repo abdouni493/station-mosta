@@ -10,7 +10,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Search, LayoutGrid, List, Inbox, Eye, Edit2, Trash2, Plus } from 'lucide-react';
-import { cn, formatCurrency, formatDate } from '@/src/lib/utils';
+import { cn, formatCurrency, formatDate, formatDateTime, formatTime } from '@/src/lib/utils';
 
 /**
  * Renders a dialog straight into <body>.
@@ -27,7 +27,7 @@ export function ModalPortal({ children }: { children: React.ReactNode }) {
   return createPortal(children, document.body);
 }
 
-export { formatCurrency, formatDate };
+export { formatCurrency, formatDate, formatDateTime, formatTime };
 export const money = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 
 // ─── PageHeader ──────────────────────────────────────────────────────────────

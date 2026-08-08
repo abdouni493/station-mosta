@@ -150,6 +150,38 @@ export function formatDate(date: Date | string): string {
 }
 
 /**
+ * Heure d'une date, en 24 h — exemple: "14:32".
+ *
+ * Le jour seul ne suffit pas à reconnaître un ticket : une caisse en sort des
+ * dizaines dans la même journée et seule l'heure les distingue (et dit dans
+ * quelle session de travail la vente est tombée).
+ *
+ * @returns Chaîne vide si la date est invalide, pour ne jamais afficher
+ *          "Invalid Date" à côté d'un montant.
+ */
+export function formatTime(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('fr-DZ', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/**
+ * Formate une date avec son heure
+ * @param date Date à formater
+ * @returns Chaîne formatée exemple: "19 mai 2026 à 14:32"
+ */
+export function formatDateTime(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  if (isNaN(d.getTime())) return '';
+  const time = formatTime(d);
+  return time ? `${formatDate(d)} à ${time}` : formatDate(d);
+}
+
+/**
  * Export en Excel en utilisant les données du tableau
  * @param data Tableau de données
  * @param columns Colonnes à exporter
