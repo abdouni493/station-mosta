@@ -27,6 +27,12 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn, litersFromDegrees } from "@/src/lib/utils";
 import { uploadFile, BUCKETS, db, supabase } from "../lib/supabase";
 import { useAppState, useAppDispatch, TpeTransaction } from "../store/AppContext";
+import { useBizSync } from "../store/BizContext";
+import {
+  createFullBackup, bundleToJson, bundleToSql, restoreBundle, downloadText,
+  backupFilename, isBackupBundle, isLegacyBundle, legacyRowCount,
+  type BackupBundle, type BackupTableReport, type RestoreReport,
+} from "../lib/backup";
 import { useAuth } from "../hooks/useAuth";
 import { useNavigate } from "react-router-dom";
 
@@ -37,6 +43,8 @@ const Settings = () => {
   const state = useAppState();
   const navigate = useNavigate();
   const { userId } = useAuth();
+  // Sert à vider la file d'attente Cafétéria / Lavage AVANT de sauvegarder.
+  const bizSync = useBizSync();
 
   const [activeSection, setActiveSection] = useState("station");
 
@@ -80,6 +88,15 @@ const Settings = () => {
   // Logo file state for deferred bucket upload
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState("");
+
+  // ── Sauvegarde / restauration ───────────────────────────────────────────────
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupStep, setBackupStep] = useState<{ label: string; done: number; total: number } | null>(null);
+  const [backupReport, setBackupReport] = useState<BackupTableReport[] | null>(null);
+  const [restoreReport, setRestoreReport] = useState<RestoreReport[] | null>(null);
+  const [backupHistory, setBackupHistory] = useState<{ id: number; date: string; name: string; rows?: number; tables?: number }[]>(
+    () => { try { return JSON.parse(localStorage.getItem("backup_history") || "[]"); } catch { return []; } },
+  );
 
   // ── Gauge section state ────────────────────────────────────────────────────
   // Controlled inputs for the "add point" row
@@ -230,37 +247,138 @@ const Settings = () => {
     dispatch({ type: "ADD_TOAST", payload: { type: "success", message: "Paramètres enregistrés ✓" } });
   };
 
-  const createBackup = () => {
-    const dataStr = JSON.stringify(state, null, 2);
-    const dataUri = "data:application/json;charset=utf-8," + encodeURIComponent(dataStr);
-    const exportFileDefaultName = `stationpro_backup_${new Date().toISOString()}.json`;
-    const linkElement = document.createElement("a");
-    linkElement.setAttribute("href", dataUri);
-    linkElement.setAttribute("download", exportFileDefaultName);
-    linkElement.click();
-    const history = JSON.parse(localStorage.getItem("backup_history") || "[]");
-    const newBackup = { id: Date.now(), date: new Date().toISOString(), name: exportFileDefaultName };
-    localStorage.setItem("backup_history", JSON.stringify([newBackup, ...history].slice(0, 3)));
-    dispatch({ type: "ADD_TOAST", payload: { type: "success", message: "Sauvegarde créée !" } });
+  // ── Sauvegarde & restauration ───────────────────────────────────────────────
+  /**
+   * La sauvegarde lit la BASE, pas l'écran : c'est la seule façon d'emporter les
+   * parties Cafétéria / Lavage (elles vivent dans `biz_store`, hors de cet état)
+   * et l'historique complet des ventes (l'état n'en garde que 500 lignes).
+   */
+  const runBackup = async (formats: ('json' | 'sql')[]) => {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setRestoreReport(null);
+    setBackupStep({ label: "Préparation…", done: 0, total: 1 });
+    try {
+      // Ce qui n'est pas encore parti d'ici ne serait pas dans la sauvegarde :
+      // on pousse d'abord les modifications locales des parties commerciales.
+      const flushed = await bizSync.flush();
+      if (!flushed.ok) {
+        const goOn = window.confirm(
+          `Des modifications Cafétéria / Lavage n'ont pas pu être envoyées au serveur :\n\n${flushed.error}\n\n` +
+          `La sauvegarde ne les contiendra donc pas. Continuer quand même ?`,
+        );
+        if (!goOn) { setBackupBusy(false); setBackupStep(null); return; }
+      }
+
+      const bundle = await createFullBackup({
+        stationName: settings?.name,
+        onProgress: (label, done, total) => setBackupStep({ label, done, total }),
+      });
+
+      if (formats.includes('json')) {
+        downloadText(backupFilename('json', settings?.name), bundleToJson(bundle), 'application/json');
+      }
+      if (formats.includes('sql')) {
+        downloadText(backupFilename('sql', settings?.name), bundleToSql(bundle), 'application/sql');
+      }
+
+      setBackupReport(bundle.report);
+      const entry = {
+        id: Date.now(), date: bundle.createdAt,
+        name: backupFilename(formats.includes('json') ? 'json' : 'sql', settings?.name),
+        rows: bundle.totals.rows, tables: bundle.totals.tables,
+      };
+      const history = [entry, ...backupHistory].slice(0, 10);
+      setBackupHistory(history);
+      try { localStorage.setItem("backup_history", JSON.stringify(history)); } catch { /* quota */ }
+
+      const failed = bundle.report.filter(r => r.error);
+      dispatch({
+        type: "ADD_TOAST",
+        payload: failed.length
+          ? { type: "error", message: `Sauvegarde partielle : ${bundle.totals.rows} lignes, ${failed.length} table(s) en échec.` }
+          : { type: "success", message: `Sauvegarde complète : ${bundle.totals.rows} lignes sur ${bundle.totals.tables} tables.` },
+      });
+    } catch (e: any) {
+      dispatch({ type: "ADD_TOAST", payload: { type: "error", message: `Sauvegarde impossible : ${e?.message || e}` } });
+    } finally {
+      setBackupBusy(false);
+      setBackupStep(null);
+    }
   };
 
+  /**
+   * Restauration ADDITIVE : chaque ligne du fichier est réécrite, et tout ce qui
+   * existe aujourd'hui sans être dans le fichier RESTE EN PLACE. Aucune donnée
+   * n'est supprimée ici — seule une suppression explicite dans un écran, avec sa
+   * confirmation, retire quelque chose de la base.
+   */
   const restoreBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const content = JSON.parse(event.target?.result as string);
-          if (window.confirm("Sauvegarde trouvée - Appliquer cette restauration ? Toutes les données actuelles seront remplacées.")) {
-            dispatch({ type: "RESTORE_STATE", payload: content });
-            dispatch({ type: "ADD_TOAST", payload: { type: "success", message: "Restauration réussie !" } });
-          }
-        } catch {
-          dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Fichier de sauvegarde invalide." } });
+    e.target.value = "";                       // re-choisir le même fichier reste possible
+    if (!file || backupBusy) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      let raw: any;
+      try {
+        raw = JSON.parse(event.target?.result as string);
+      } catch {
+        dispatch({ type: "ADD_TOAST", payload: { type: "error", message: "Fichier illisible : ce n'est pas un JSON valide." } });
+        return;
+      }
+
+      if (!isBackupBundle(raw)) {
+        // Les anciens exports étaient une photo de l'écran, en noms JavaScript
+        // (`buyPrice`…) et sans les parties commerciales. Les rejouer tels quels
+        // écrirait des colonnes qui n'existent pas : on refuse, en le disant.
+        const n = isLegacyBundle(raw) ? legacyRowCount(raw) : 0;
+        window.alert(
+          "Ce fichier vient de l'ANCIENNE sauvegarde (format « photo de l'écran »).\n\n" +
+          `Il ne contient ni la Cafétéria ni le Lavage, et ses colonnes ne correspondent pas à celles de la base${n ? ` (${n} lignes reconnues)` : ""}.\n\n` +
+          "Il n'est donc pas restaurable sans risque d'abîmer les données actuelles.\n" +
+          "Refaites une sauvegarde avec le nouveau bouton : elle, sera restaurable.",
+        );
+        return;
+      }
+
+      const bundle = raw as BackupBundle;
+      const when = new Date(bundle.createdAt).toLocaleString('fr-FR');
+      const ok = window.confirm(
+        `Restaurer la sauvegarde du ${when} ?\n\n` +
+        `• ${bundle.totals.rows} lignes sur ${bundle.totals.tables} tables seront réécrites.\n` +
+        `• RIEN NE SERA SUPPRIMÉ : les données créées depuis cette sauvegarde restent en place.\n` +
+        `• Une ligne présente dans les deux reprend la valeur du fichier.\n\n` +
+        `Continuer ?`,
+      );
+      if (!ok) return;
+
+      setBackupBusy(true);
+      setBackupReport(null);
+      setBackupStep({ label: "Préparation…", done: 0, total: 1 });
+      try {
+        const outcome = await restoreBundle(bundle, (label, done, total) => setBackupStep({ label, done, total }));
+        setRestoreReport(outcome.report.filter(r => r.written || r.error));
+        const failed = outcome.report.filter(r => r.error);
+        dispatch({
+          type: "ADD_TOAST",
+          payload: failed.length
+            ? { type: "error", message: `Restauration partielle : ${outcome.totalWritten} lignes écrites, ${failed.length} table(s) en échec.` }
+            : { type: "success", message: `Restauration terminée : ${outcome.totalWritten} lignes écrites.` },
+        });
+        // Les deux magasins doivent repartir de la base : un rechargement est
+        // la façon la plus sûre de les remettre d'aplomb tous les deux.
+        if (window.confirm("Restauration terminée. Recharger l'application pour afficher les données restaurées ?")) {
+          window.location.reload();
         }
-      };
-      reader.readAsText(file);
-    }
+      } catch (err: any) {
+        dispatch({ type: "ADD_TOAST", payload: { type: "error", message: `Restauration impossible : ${err?.message || err}` } });
+      } finally {
+        setBackupBusy(false);
+        setBackupStep(null);
+      }
+    };
+    reader.readAsText(file);
   };
 
   const handleResetData = () => {
@@ -1100,34 +1218,149 @@ const Settings = () => {
                           <div>
                             <h4 className="text-xl font-black text-white uppercase tracking-widest italic leading-none">Archives & Backup</h4>
                             <p className="text-[10px] mt-1 font-bold italic tracking-widest" style={{ color: "rgba(255,184,0,0.5)" }}>
-                              Dernière synchronisation : Aujourd'hui à 04:00 AM
+                              {backupHistory[0]
+                                ? `Dernière sauvegarde : ${new Date(backupHistory[0].date).toLocaleString('fr-FR')}${backupHistory[0].rows ? ` — ${backupHistory[0].rows} lignes` : ''}`
+                                : "Aucune sauvegarde effectuée depuis ce poste"}
                             </p>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.6)]" />
-                          <span className="text-[10px] font-black uppercase text-green-400 tracking-widest">Système Protégé</span>
+                          <div className={cn("w-3 h-3 rounded-full", backupHistory[0] ? "bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.6)]" : "bg-orange-400")} />
+                          <span className={cn("text-[10px] font-black uppercase tracking-widest", backupHistory[0] ? "text-green-400" : "text-orange-300")}>
+                            {backupHistory[0] ? "Système protégé" : "Jamais sauvegardé"}
+                          </span>
                         </div>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative z-10">
+
+                      {/* Ce que la sauvegarde emporte — annoncé, pour qu'on n'ait plus à le supposer */}
+                      <div className="relative z-10 rounded-xl p-4 text-[10px] leading-relaxed font-bold tracking-wide"
+                        style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.75)" }}>
+                        <span className="text-yellow-400 uppercase tracking-widest">Contenu :</span>{" "}
+                        station-service (cuves, pompes, brigades, ventes, achats, bons, factures, trésorerie, personnel, clients, fournisseurs)
+                        {" + "}Cafétéria &amp; Lavage (produits, ventes, achats, employés, inventaires, caisse).
+                        <span className="block mt-2 text-yellow-400/80">
+                          Lu directement dans la base, sans limite de lignes — l'historique entier, pas seulement les 500 dernières ventes.
+                        </span>
+                        <span className="block mt-1 text-white/40">
+                          Hors sauvegarde : les comptes de connexion et mots de passe (gérés par Supabase), ainsi que les images
+                          (elles restent dans le stockage ; le fichier en garde les liens).
+                        </span>
+                      </div>
+
+                      {/* Progression */}
+                      {backupStep && (
+                        <div className="relative z-10">
+                          <div className="flex justify-between text-[10px] font-black uppercase tracking-widest text-white/70 mb-2">
+                            <span>{backupStep.label}</span>
+                            <span>{backupStep.done}/{backupStep.total}</span>
+                          </div>
+                          <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
+                            <div className="h-full rounded-full transition-all duration-300"
+                              style={{ width: `${Math.round((backupStep.done / Math.max(1, backupStep.total)) * 100)}%`, background: "linear-gradient(90deg,#FFB800,#ffd166)" }} />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 relative z-10">
                         <button
-                          onClick={createBackup}
-                          className="h-14 flex items-center justify-center gap-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] text-white italic transition-all hover:scale-[1.02]"
+                          onClick={() => runBackup(['json'])}
+                          disabled={backupBusy}
+                          className="h-14 flex items-center justify-center gap-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] text-white italic transition-all hover:scale-[1.02] disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
                           style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
                         >
                           <Download className="w-5 h-5 opacity-60" />
                           Exporter .JSON
                         </button>
-                        <label
-                          className="h-14 flex items-center justify-center gap-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] text-blue-900 italic cursor-pointer transition-all hover:scale-[1.02] shadow-lg"
+                        <button
+                          onClick={() => runBackup(['sql'])}
+                          disabled={backupBusy}
+                          className="h-14 flex items-center justify-center gap-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] text-white italic transition-all hover:scale-[1.02] disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                          style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}
+                        >
+                          <TableIcon className="w-5 h-5 opacity-60" />
+                          Exporter .SQL
+                        </button>
+                        <button
+                          onClick={() => runBackup(['json', 'sql'])}
+                          disabled={backupBusy}
+                          className="h-14 flex items-center justify-center gap-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] text-blue-900 italic transition-all hover:scale-[1.02] shadow-lg disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
                           style={{ background: "linear-gradient(135deg, #FFB800, #e6a000)", boxShadow: "0 4px 20px rgba(255,184,0,0.4)" }}
                         >
+                          <HardDrive className="w-5 h-5 opacity-60" />
+                          Les deux
+                        </button>
+                      </div>
+
+                      <div className="relative z-10">
+                        <label
+                          className={cn(
+                            "h-14 flex items-center justify-center gap-3 rounded-xl font-black text-[11px] uppercase tracking-[0.2em] text-white italic transition-all",
+                            backupBusy ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:scale-[1.01]",
+                          )}
+                          style={{ background: "rgba(255,255,255,0.06)", border: "1px dashed rgba(255,255,255,0.25)" }}
+                        >
                           <RefreshCcw className="w-5 h-5 opacity-60" />
-                          Restaurer (.JSON)
-                          <input type="file" className="hidden" accept=".json" onChange={restoreBackup} />
+                          Restaurer une sauvegarde (.JSON)
+                          <input type="file" className="hidden" accept=".json" disabled={backupBusy} onChange={restoreBackup} />
                         </label>
+                        <p className="text-[10px] mt-2 font-bold tracking-wide text-center" style={{ color: "rgba(255,255,255,0.45)" }}>
+                          La restauration <span className="text-green-400">n'efface jamais rien</span> : elle réécrit les lignes du fichier
+                          et laisse en place tout ce qui a été créé depuis.
+                        </p>
                       </div>
                     </div>
+
+                    {/* Détail de la dernière opération */}
+                    {(backupReport || restoreReport) && (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="h-4 w-1 bg-gradient-to-b from-blue-900 to-yellow-400 rounded-full" />
+                          <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest">
+                            {backupReport ? "Contenu de la sauvegarde" : "Résultat de la restauration"}
+                          </h4>
+                        </div>
+                        <div className="max-h-72 overflow-y-auto rounded-2xl border border-slate-200 divide-y divide-slate-100">
+                          {(backupReport ?? []).map(r => (
+                            <div key={r.table} className="flex items-center justify-between px-4 py-2 text-[11px]">
+                              <span className={cn("font-bold", r.error ? "text-red-600" : r.missing ? "text-slate-400" : "text-slate-700")}>
+                                {r.label}
+                              </span>
+                              <span className={cn("font-black tabular-nums", r.error ? "text-red-600" : r.missing ? "text-slate-300" : r.rows ? "text-blue-900" : "text-slate-400")}>
+                                {r.error ? "échec" : r.missing ? "absente" : `${r.rows}`}
+                              </span>
+                            </div>
+                          ))}
+                          {(restoreReport ?? []).map(r => (
+                            <div key={r.table} className="flex items-center justify-between px-4 py-2 text-[11px]">
+                              <span className={cn("font-bold", r.error ? "text-red-600" : "text-slate-700")}>{r.label}</span>
+                              <span className={cn("font-black tabular-nums", r.error ? "text-red-600" : "text-green-600")}>
+                                {r.error ? r.error.slice(0, 40) : r.skipped ? "ignorée" : `${r.written} écrites`}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Historique des sauvegardes de ce poste */}
+                    {backupHistory.length > 0 && (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="h-4 w-1 bg-gradient-to-b from-slate-400 to-slate-200 rounded-full" />
+                          <h4 className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Sauvegardes récentes (ce poste)</h4>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 divide-y divide-slate-100">
+                          {backupHistory.slice(0, 5).map(h => (
+                            <div key={h.id} className="flex items-center justify-between px-4 py-2.5 text-[11px]">
+                              <span className="font-bold text-slate-600 truncate mr-4">{h.name}</span>
+                              <span className="font-black text-slate-400 tabular-nums whitespace-nowrap">
+                                {new Date(h.date).toLocaleString('fr-FR')}{h.rows != null ? ` · ${h.rows} lignes` : ''}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Danger zone */}
                     <div className="space-y-4">
