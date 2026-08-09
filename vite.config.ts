@@ -15,5 +15,23 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      // Découpe les bibliothèques en chunks séparés : le navigateur les met en
+      // cache indépendamment du code de l'application, donc une mise à jour de
+      // l'app ne refait plus télécharger ~4 Mo — seulement le chunk applicatif.
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-react':    ['react', 'react-dom', 'react-router-dom'],
+            'vendor-supabase': ['@supabase/supabase-js'],
+            'vendor-charts':   ['recharts'],
+            'vendor-motion':   ['motion'],
+            'vendor-i18n':     ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
+            'vendor-icons':    ['lucide-react'],
+          },
+        },
+      },
+      chunkSizeWarningLimit: 1500,
+    },
   };
 });

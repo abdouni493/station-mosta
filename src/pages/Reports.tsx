@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useModulePermission } from "../store/AppContext";
 import { exportElementToPdf } from "../lib/pdf";
-import * as XLSX from "xlsx";
+// xlsx pèse ~400 Ko : chargé à la demande au clic « Excel », pas au démarrage.
 
 /* ── Colour palette ── */
 const C = {
@@ -300,7 +300,8 @@ const Reports = () => {
     if (!ok) alert("Échec de la génération du PDF. Réessayez ou utilisez Imprimer → Enregistrer en PDF.");
   };
 
-  const generateExcel = () => {
+  const generateExcel = async () => {
+    const XLSX = await import("xlsx");
     let data: any[] = [];
     if (activeCategory === "Opérations" || activeCategory === "Carburant") {
       data = fSales.map(s => ({

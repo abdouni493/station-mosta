@@ -13,8 +13,8 @@
  * full-page A4 fiches print correctly instead of being hidden by the global
  * thermal-receipt print stylesheet (see index.css @media print).
  * ========================================================================== */
-import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
+// jspdf + html2canvas pèsent ~350 Ko : chargés à la demande au premier export
+// PDF, pas au démarrage de l'application.
 
 /* ---------- oklch → rgb conversion ---------------------------------------- */
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
@@ -141,6 +141,10 @@ export async function exportElementToPdf(
   element.style.maxHeight = "none";
 
   try {
+    const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+      import("html2canvas"),
+      import("jspdf"),
+    ]);
     const canvas = await html2canvas(element, {
       scale: opts.scale ?? 2,
       backgroundColor: "#ffffff",

@@ -13,7 +13,7 @@ import ChartBox from "../components/ChartBox";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useModulePermission } from "../store/AppContext";
-import * as XLSX from "xlsx";
+// xlsx pèse ~400 Ko : chargé à la demande au clic « Exporter », pas au démarrage.
 
 /* ── Colour palette matching the Sidebar ── */
 const C = {
@@ -222,7 +222,8 @@ const Statistics = () => {
   const netProfit = totalRevenue - totalExpenses - totalFuelPurchases;
 
   /* ── Export ── */
-  const exportXLS = () => {
+  const exportXLS = async () => {
+    const XLSX = await import("xlsx");
     const data = pumpPerf.map(p => ({ Pompe: p.name, Litres: p.liters, Recette: p.revenue }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
