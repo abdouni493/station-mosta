@@ -20,8 +20,17 @@ export interface AuthState {
   isAuthenticated: boolean;
 }
 
-/** getSession() renews the token first, so it needs room on a slow link. */
-const SESSION_FETCH_TIMEOUT_MS = 12_000;
+/**
+ * getSession() renews the token first, so it needs room on a slow link.
+ *
+ * Ces budgets ont été RACCOURCIS : à 12 s + 10 s, une station sur un lien lent
+ * restait 25 s sur le splash. Personne n'attend 25 s — l'utilisateur recharge au
+ * bout de dix secondes, ce qui REMET LES DEUX COMPTEURS À ZÉRO, et l'application
+ * paraît bloquée pour toujours alors qu'elle n'a jamais eu le droit de finir.
+ * Le total tient maintenant sous quinze secondes, et l'écran de chargement dit
+ * ce qu'il attend au lieu de tourner en silence.
+ */
+const SESSION_FETCH_TIMEOUT_MS = 8_000;
 /**
  * A role lookup that never answers must not hold the whole app on the splash
  * screen. `fetchRole` walks up to six sequential PostgREST calls, and each one
@@ -30,9 +39,12 @@ const SESSION_FETCH_TIMEOUT_MS = 12_000;
  * with the least-privileged role, and let the lookup upgrade the role when it
  * finally lands.
  */
-const ROLE_LOOKUP_TIMEOUT_MS = 10_000;
+const ROLE_LOOKUP_TIMEOUT_MS = 6_000;
 /** Last-resort backstop, sitting behind both bounded steps above. */
 const SAFETY_TIMEOUT_MS = SESSION_FETCH_TIMEOUT_MS + ROLE_LOOKUP_TIMEOUT_MS + 3_000;
+
+/** Ce que l'application attend — affiché sur l'écran de chargement. */
+export type AuthPhase = 'session' | 'role' | null;
 
 /** Rejects with `<label> timeout` if `promise` has not settled within `ms`. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -68,6 +80,9 @@ export function useAuth() {
     isAuthenticated: false,
   });
 
+  /** Étape en cours, pour que le splash puisse dire ce qu'il attend. */
+  const [phase, setPhase] = useState<AuthPhase>('session');
+
   // Prevent state updates after the component unmounts
   const mountedRef = useRef(true);
   const profileFetchRef = useRef<Promise<void> | null>(null);
@@ -84,6 +99,7 @@ export function useAuth() {
 
   // Override auth state (called from Login page after manual login flow)
   const setManualAuth = (role: UserRole, userId?: string) => {
+    setPhase(null);
     setAuth(prev => ({
       ...prev,
       userRole:        role,
@@ -91,6 +107,23 @@ export function useAuth() {
       isAuthenticated: true,
       isLoading:       false,
     }));
+  };
+
+  /**
+   * Sortie de secours de l'écran de chargement, déclenchée par l'utilisateur.
+   *
+   * Aucun scénario ne doit enfermer quelqu'un devant un rouet : si la recherche
+   * du rôle traîne, on entre avec le rôle le MOINS privilégié — jamais « admin »,
+   * la vérification continue en arrière-plan et corrigera le rôle en arrivant.
+   * Sans session connue, on va à l'écran de connexion.
+   */
+  const releaseNow = () => {
+    setPhase(null);
+    setAuth(prev => (prev.isLoading ? {
+      ...prev,
+      userRole: prev.isAuthenticated && !roleResolved.current ? 'pompiste' : prev.userRole,
+      isLoading: false,
+    } : prev));
   };
 
   const logout = async () => {
@@ -210,13 +243,14 @@ export function useAuth() {
    */
   const resolveRole = (uid: string) => {
     const lookup = fetchRole(uid);
+    if (mountedRef.current) setPhase('role');
 
     lookup.then(role => {
       roleResolved.current = true;
-      if (mountedRef.current) setAuth(prev => ({ ...prev, userRole: role, isLoading: false }));
+      if (mountedRef.current) { setPhase(null); setAuth(prev => ({ ...prev, userRole: role, isLoading: false })); }
     }).catch(() => {
       roleResolved.current = true;
-      if (mountedRef.current) setAuth(prev => ({ ...prev, isLoading: false }));
+      if (mountedRef.current) { setPhase(null); setAuth(prev => ({ ...prev, isLoading: false })); }
     });
 
     profileFetchRef.current = withTimeout(lookup, ROLE_LOOKUP_TIMEOUT_MS, 'role lookup')
@@ -225,6 +259,7 @@ export function useAuth() {
         if (roleResolved.current) return; // the lookup answered in time
         console.warn('[useAuth]', err.message, '— releasing the UI with least privilege');
         if (mountedRef.current) {
+          setPhase(null);
           setAuth(prev => (prev.isLoading ? { ...prev, userRole: 'pompiste', isLoading: false } : prev));
         }
       });
@@ -288,6 +323,7 @@ export function useAuth() {
           resolveRole(session.user.id);
         } else {
           // No session — go to login immediately
+          setPhase(null);
           setAuth({
             session:         null,
             user:            null,
@@ -300,6 +336,7 @@ export function useAuth() {
       } catch (err) {
         console.error('[useAuth] Unexpected auth error:', err);
         if (mountedRef.current) {
+          setPhase(null);
           setAuth(prev => ({ ...prev, isLoading: false }));
         }
       }
@@ -321,6 +358,7 @@ export function useAuth() {
     safetyTimeout = setTimeout(() => {
       if (!mountedRef.current || !authRef.current.isLoading) return;
       console.warn('[useAuth] Safety timeout — forcing loading state clear');
+      setPhase(null);
       setAuth(prev => (prev.isLoading ? {
         ...prev,
         userRole:  prev.isAuthenticated && !roleResolved.current ? 'pompiste' : prev.userRole,
@@ -384,6 +422,7 @@ export function useAuth() {
           resolveRole(session.user.id);
         } else if (event === 'SIGNED_OUT') {
           if (mountedRef.current) {
+            setPhase(null);
             setAuth({
               session:         null,
               user:            null,
@@ -409,5 +448,5 @@ export function useAuth() {
     };
   }, []);
 
-  return { ...auth, setManualAuth, logout };
+  return { ...auth, phase, setManualAuth, logout, releaseNow };
 }

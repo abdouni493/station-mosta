@@ -3,13 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import Layout from "./components/Layout";
 import { AppProvider, useAppState, useAppDispatch, UserPermissions } from "./store/AppContext";
 import { ToastContainer } from "./components/Toast";
-import { useAuth } from "./hooks/useAuth";
+import { useAuth, type AuthPhase } from "./hooks/useAuth";
 import { db, supabase, BUCKETS, getPublicUrl, getMyModuleWorker } from "./lib/supabase";
 import { installAutoTranslate, sweep } from "./lib/autoTranslate";
 import Login from "./pages/Login";
@@ -233,19 +233,59 @@ function ModuleRouteGuard({
 }
 
 // ─── Loading screen ───────────────────────────────────────────────────────────
-const AppLoader = () => (
-  <div className="flex items-center justify-center min-h-screen"
-    style={{ background: "linear-gradient(135deg, #001233 0%, #003087 100%)" }}>
-    <div className="flex flex-col items-center gap-5">
-      <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
-        style={{ background: "linear-gradient(135deg, #FFB800, #e6a000)", boxShadow: "0 8px 24px rgba(255,184,0,0.4)" }}>
-        <span className="text-2xl">⛽</span>
+/**
+ * Écran de chargement — il ne tourne plus jamais en silence.
+ *
+ * Un rouet muet est indiscernable d'une application morte : au bout de quelques
+ * secondes l'utilisateur recharge, ce qui REMET À ZÉRO les délais de `useAuth` et
+ * l'empêche justement d'aboutir. D'où ces trois choses : dire ce qu'on attend,
+ * signaler que le lien est lent, et offrir une porte de sortie manuelle plutôt
+ * que de laisser le rechargement être la seule action possible.
+ */
+const AppLoader = ({ phase, onSkip }: { phase?: AuthPhase; onSkip?: () => void }) => {
+  const [waited, setWaited] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setWaited(w => w + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const step =
+    phase === 'session' ? "Vérification de la session…" :
+    phase === 'role'    ? "Vérification des autorisations…" :
+    "Chargement de altech station...";
+
+  return (
+    <div className="flex items-center justify-center min-h-screen px-6"
+      style={{ background: "linear-gradient(135deg, #001233 0%, #003087 100%)" }}>
+      <div className="flex flex-col items-center gap-5 text-center">
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
+          style={{ background: "linear-gradient(135deg, #FFB800, #e6a000)", boxShadow: "0 8px 24px rgba(255,184,0,0.4)" }}>
+          <span className="text-2xl">⛽</span>
+        </div>
+        <div className="w-10 h-10 border-4 border-white/20 border-t-[#FFB800] rounded-full animate-spin" />
+        <p className="text-white/60 font-semibold text-sm">{step}</p>
+
+        {waited >= 4 && (
+          <p className="text-white/40 text-xs max-w-xs leading-relaxed">
+            La connexion au serveur est lente ({waited}s). L'application entrera toute seule —
+            <span className="text-yellow-400/70"> inutile de recharger</span>, un rechargement
+            fait repartir l'attente de zéro.
+          </p>
+        )}
+
+        {waited >= 6 && onSkip && (
+          <button
+            onClick={onSkip}
+            className="mt-1 px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-[0.2em] text-blue-900 transition-all hover:scale-[1.03]"
+            style={{ background: "linear-gradient(135deg, #FFB800, #e6a000)", boxShadow: "0 4px 20px rgba(255,184,0,0.35)" }}
+          >
+            Entrer maintenant
+          </button>
+        )}
       </div>
-      <div className="w-10 h-10 border-4 border-white/20 border-t-[#FFB800] rounded-full animate-spin" />
-      <p className="text-white/60 font-semibold text-sm">Chargement de altech station...</p>
     </div>
-  </div>
-);
+  );
+};
 
 // ─── DB loading overlay (shown while Supabase hydrates) ──────────────────────
 const DbLoader = () => (
@@ -273,7 +313,7 @@ export default function App() {
   useEffect(() => { if (i18n.language === 'ar') sweep(); });
 
   // While checking session
-  if (auth.isLoading) return <AppLoader />;
+  if (auth.isLoading) return <AppLoader phase={auth.phase} onSkip={auth.releaseNow} />;
 
   // The `key` ties the store's lifetime to the signed-in user. Both branches
   // below render an <AppProvider> at the same position, so without it React
