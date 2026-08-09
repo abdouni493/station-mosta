@@ -149,9 +149,15 @@ async function fetchWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // Per-attempt timeout — a request that never settles must not wedge the app.
+    // The abort carries a NAMED reason: without it the console fills with
+    // "AbortError: signal is aborted without reason", which reads like a bug in
+    // the app when it is simply the request budget doing its job.
     const controller = new AbortController();
-    const onCallerAbort = () => controller.abort();
-    const timer = setTimeout(() => controller.abort(), budget);
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    const timer = setTimeout(
+      () => controller.abort(new DOMException(`Le serveur n'a pas répondu en ${Math.round(budget / 1000)} s`, 'TimeoutError')),
+      budget,
+    );
     callerSignal?.addEventListener('abort', onCallerAbort);
 
     try {
@@ -228,7 +234,7 @@ export type BackendStatus = 'ok' | 'database' | 'offline';
 /** `fetch` NU : ni reprise ni file d'attente — un diagnostic doit être rapide. */
 async function rawFetch(url: string, ms: number, headers?: Record<string, string>): Promise<Response | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
+  const timer = setTimeout(() => controller.abort(new DOMException(`Diagnostic sans réponse en ${ms} ms`, 'TimeoutError')), ms);
   try {
     return await fetch(url, { signal: controller.signal, headers });
   } catch {
@@ -416,13 +422,20 @@ export async function uploadBase64(
 const DEMO_EMAIL = 'admin@stationpro.dz';
 const DEMO_PASSWORD = 'stationpro';
 
+/**
+ * Rôle du compte qui vient de se connecter. La page de connexion REFUSE l'accès
+ * quand il vaut null : un échec passager du réseau juste après un mot de passe
+ * accepté ne doit donc pas se déguiser en « aucun rôle » — d'où le second essai.
+ */
 async function resolveRole(): Promise<string | null> {
-  try {
-    const { data } = await supabase.rpc('get_my_role');
-    return (data as string | null) ?? null;
-  } catch {
-    return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data, error } = await supabase.rpc('get_my_role');
+      if (!error) return (data as string | null) ?? null;
+    } catch { /* réseau — retenté ci-dessous */ }
+    if (attempt === 0) await sleep(600);
   }
+  return null;
 }
 
 /** Why a sign-in failed — the login page shows a different message per reason. */
@@ -668,6 +681,24 @@ export async function loadBizStoreSnapshot(): Promise<BizStoreSnapshot | null> {
 
 export async function loadBizStore(): Promise<any | null> {
   return (await loadBizStoreSnapshot())?.state ?? null;
+}
+
+/**
+ * Révision SEULE de la ligne partagée — quelques octets là où le blob complet
+ * en pèse des centaines de milliers. C'est le test « y a-t-il du nouveau ? »
+ * du retour sur l'onglet : tant que la révision du serveur est celle qu'on
+ * connaît, le blob n'est pas retéléchargé. `null` quand la colonne n'existe pas
+ * encore (migration non passée) — l'appelant fait alors une lecture complète.
+ */
+export async function peekBizStoreRev(): Promise<number | null> {
+  try {
+    const { data, error } = await supabase
+      .from('biz_store').select('rev').eq('id', BIZ_STORE_ID).maybeSingle();
+    if (error || !data) return null;
+    return (data as any).rev ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Résultat d'une écriture de l'état partagé. */

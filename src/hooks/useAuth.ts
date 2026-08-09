@@ -46,6 +46,45 @@ const SAFETY_TIMEOUT_MS = SESSION_FETCH_TIMEOUT_MS + ROLE_LOOKUP_TIMEOUT_MS + 3_
 /** Ce que l'application attend — affiché sur l'écran de chargement. */
 export type AuthPhase = 'session' | 'role' | null;
 
+// ─── Cache du rôle résolu ───────────────────────────────────────────────────────
+/**
+ * Le rôle est mémorisé PAR UTILISATEUR après chaque résolution réussie. Au
+ * démarrage suivant, l'application s'ouvre immédiatement avec ce rôle — zéro
+ * requête sur le chemin critique — pendant que la vérification serveur tourne
+ * en arrière-plan et corrige le rôle si besoin.
+ *
+ * C'est ce qui a manqué pendant l'incident du 2026-08-10 : la base saturée ne
+ * répondait pas, la recherche du rôle expirait, et des utilisateurs pourtant
+ * déjà connus de ce poste étaient rétrogradés « pompiste » à chaque
+ * rechargement. Le cache n'est qu'un confort d'affichage : les données restent
+ * protégées par RLS côté serveur quel que soit le rôle affiché.
+ */
+const ROLE_CACHE_KEY = 'stationpro.role';
+
+const VALID_ROLES: UserRole[] = ['admin', 'pompiste', 'chef_brigade', 'gerant', 'magasin', 'module_worker'];
+
+function readCachedRole(uid: string): UserRole | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(ROLE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.uid !== uid) return null;
+    return VALID_ROLES.includes(parsed?.role) ? (parsed.role as UserRole) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedRole(uid: string, role: UserRole) {
+  try {
+    globalThis.localStorage?.setItem(ROLE_CACHE_KEY, JSON.stringify({ uid, role, at: new Date().toISOString() }));
+  } catch { /* stockage plein ou indisponible — le cache est un confort */ }
+}
+
+function clearCachedRole() {
+  try { globalThis.localStorage?.removeItem(ROLE_CACHE_KEY); } catch { /* idem */ }
+}
+
 /** Rejects with `<label> timeout` if `promise` has not settled within `ms`. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -100,6 +139,8 @@ export function useAuth() {
   // Override auth state (called from Login page after manual login flow)
   const setManualAuth = (role: UserRole, userId?: string) => {
     setPhase(null);
+    roleResolved.current = true;
+    if (userId) writeCachedRole(userId, role);
     setAuth(prev => ({
       ...prev,
       userRole:        role,
@@ -128,6 +169,7 @@ export function useAuth() {
 
   const logout = async () => {
     await signOut();
+    clearCachedRole();
     localStorage.removeItem('supabase.auth.token');
     setAuth({
       session:         null,
@@ -247,6 +289,7 @@ export function useAuth() {
 
     lookup.then(role => {
       roleResolved.current = true;
+      writeCachedRole(uid, role);
       if (mountedRef.current) { setPhase(null); setAuth(prev => ({ ...prev, userRole: role, isLoading: false })); }
     }).catch(() => {
       roleResolved.current = true;
@@ -309,15 +352,21 @@ export function useAuth() {
         // Step 2: If we have a session, immediately show authenticated state
         // and fetch profile in background
         if (session?.user) {
-          // Keep isLoading true until role resolves — prevents admin sidebar flash for workers
+          // Rôle déjà connu de ce poste : l'application s'ouvre TOUT DE SUITE
+          // avec lui — aucune requête sur le chemin critique. La vérification
+          // en arrière-plan (resolveRole) corrigera le rôle s'il a changé.
+          // Sans cache (premier passage), le chargeur reste affiché jusqu'à la
+          // réponse — jamais de barre latérale admin montrée à un employé.
+          const cached = readCachedRole(session.user.id);
           setAuth({
             session,
             user:            session.user,
-            userRole:        'admin',
+            userRole:        cached ?? 'admin',
             userId:          session.user.id,
-            isLoading:       true,
+            isLoading:       !cached,
             isAuthenticated: true,
           });
+          if (cached) setPhase(null);
 
           // Step 3: Fetch role in background, then release loader
           resolveRole(session.user.id);
@@ -409,15 +458,18 @@ export function useAuth() {
             return;
           }
 
-          // Keep isLoading true until role resolves
+          // Rôle en cache (utilisateur déjà vu sur ce poste) : ouverture
+          // immédiate ; sinon le chargeur reste jusqu'à la réponse du serveur.
+          const cached = readCachedRole(session.user.id);
           setAuth({
             session,
             user:            session.user,
-            userRole:        'admin',
+            userRole:        cached ?? 'admin',
             userId:          session.user.id,
-            isLoading:       true,
+            isLoading:       !cached,
             isAuthenticated: true,
           });
+          if (cached) setPhase(null);
 
           resolveRole(session.user.id);
         } else if (event === 'SIGNED_OUT') {

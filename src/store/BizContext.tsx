@@ -33,15 +33,25 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { BizState, ModuleKey, ModuleState, BizCollection, BizSession } from '../lib/bizConfig';
 import { emptyBizState, EMPTY_MODULE } from '../lib/bizSeed';
-import { loadBizStoreSnapshot, saveBizStore, subscribeTable } from '../lib/supabase';
+import { loadBizStoreSnapshot, peekBizStoreRev, saveBizStore, subscribeTable, BizStoreSnapshot } from '../lib/supabase';
 import { loadBizSessions } from '../lib/bizSessions';
 import { mergeBizState, stampItem, nowIso, SyncModuleState } from '../lib/bizSync';
 import { purgeSeedRows, relinkOrphanRefs } from '../lib/bizSeedPurge';
 
 const STORAGE_KEY = 'stationpro_biz_v1';
 
-/** Délai avant l'envoi d'une modification (regroupe les rafales de saisie). */
-const SAVE_DEBOUNCE_MS = 600;
+/**
+ * Délai avant l'envoi d'une modification (regroupe les rafales de saisie).
+ *
+ * Porté de 600 ms à 2,5 s : chaque envoi écrit le blob COMPLET (~560 Ko), donc
+ * une vente encaissée toutes les quelques secondes déclenchait autant d'envois
+ * intégraux — c'est une des causes de la saturation de la base du 2026-08-10.
+ * Rien n'est risqué par l'attente : la copie locale est écrite de façon
+ * synchrone dans le navigateur à chaque modification, les flux critiques
+ * appellent `flush()` explicitement, et la fermeture de la page envoie ce qui
+ * reste (visibilitychange / pagehide).
+ */
+const SAVE_DEBOUNCE_MS = 2_500;
 /** Nombre de refusions autorisées quand le serveur signale un conflit. */
 const MAX_CONFLICT_RETRIES = 4;
 
@@ -339,20 +349,31 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
   // the shared JSON never resurrects a stale session of another employee.
   const sessionsRef = useRef<Record<ModuleKey, BizSession[]> | null>(null);
 
-  // ── Enregistrement : LIRE → FUSIONNER → ÉCRIRE ────────────────────────────
+  // ── Enregistrement : FUSIONNER (si besoin) → ÉCRIRE ───────────────────────
   /**
    * Envoie l'état au serveur sans jamais écraser le travail de quelqu'un
-   * d'autre : on relit d'abord la ligne partagée, on la fusionne avec l'état
-   * local, puis on écrit le résultat en indiquant la révision de départ. Si un
-   * autre poste a écrit entre-temps, le serveur refuse, rend sa version, et le
-   * tour recommence sur la version fusionnée.
+   * d'autre. Le garde-fou est la RÉVISION : le serveur refuse toute écriture
+   * bâtie sur une version périmée et REND alors sa version, qu'on fusionne
+   * avant de rejouer.
+   *
+   * L'ancienne version relisait le blob COMPLET avant chaque envoi « pour
+   * fusionner d'abord » — c'était redondant avec ce contrôle serveur, et c'est
+   * ce qui a doublé la charge pendant l'incident du 2026-08-10 (~560 Ko lus
+   * puis ~560 Ko écrits à chaque enregistrement, toutes les quelques secondes
+   * en pleine activité du point de vente). Tant que la révision locale est
+   * connue, on écrit DIRECTEMENT ; la lecture préalable ne subsiste que pour
+   * le tout premier envoi et pour les bases sans la colonne `rev`.
    */
   const pushNow = useCallback(async (): Promise<SaveOutcome> => {
-    for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
-      const snapshot = await loadBizStoreSnapshot();
-      const remote = snapshot?.state ? migrate(snapshot.state) : null;
+    // Version du serveur à fusionner avant d'écrire — connue sans lecture
+    // supplémentaire quand elle vient d'un refus de révision.
+    let remoteSnapshot: BizStoreSnapshot | null =
+      revRef.current === null ? await loadBizStoreSnapshot() : null;
 
-      // Entre cette lecture et le dispatch : aucun `await`, donc aucune
+    for (let attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
+      const remote = remoteSnapshot?.state ? migrate(remoteSnapshot.state) : null;
+
+      // Entre cette fusion et le dispatch : aucun `await`, donc aucune
       // écriture de l'utilisateur ne peut se glisser et être perdue.
       const candidate = remote ? mergeBizState(stateRef.current, remote) : stateRef.current;
       if (candidate !== stateRef.current) {
@@ -360,7 +381,7 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'REPLACE', state: candidate });
       }
 
-      const result = await saveBizStore(candidate, snapshot?.rev ?? revRef.current);
+      const result = await saveBizStore(candidate, remoteSnapshot?.rev ?? revRef.current);
 
       if (result.ok) {
         revRef.current = result.rev ?? null;
@@ -368,7 +389,9 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
         return { ok: true };
       }
       if (result.conflict) {
-        // Quelqu'un a écrit pendant notre envoi : on refusionne et on rejoue.
+        // Quelqu'un a écrit pendant notre envoi : sa version est DANS la
+        // réponse du serveur — on la fusionne et on rejoue, sans relire.
+        remoteSnapshot = result.remote ?? null;
         revRef.current = result.remote?.rev ?? null;
         continue;
       }
@@ -450,8 +473,15 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
    * l'inverse. Quand rien n'attendait d'être envoyé, le résultat est déjà ce que
    * le serveur contient : on l'enregistre comme tel pour ne pas déclencher un
    * ré-envoi en boucle à chaque notification temps réel.
+   *
+   * `announcedRev` est la révision annoncée par la notification (ligne
+   * `biz_store_meta`). Quand c'est celle qu'on connaît déjà — typiquement
+   * l'écho de NOTRE propre enregistrement — il n'y a rien à télécharger :
+   * c'est ce test qui évite de faire redescendre le blob complet vers chaque
+   * poste après chaque écriture.
    */
-  const pull = useCallback(async () => {
+  const pull = useCallback(async (announcedRev?: number) => {
+    if (typeof announcedRev === 'number' && announcedRev === revRef.current) return;
     const snapshot = await loadBizStoreSnapshot();
     if (!snapshot) return;
     const remote = snapshot.state ? migrate(snapshot.state) : null;
@@ -480,6 +510,16 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
         const merged = mergeBizState(stateRef.current, remote);
         stateRef.current = merged;
         dispatch({ type: 'REPLACE', state: merged });
+        // La copie locale n'apportait RIEN que le serveur n'ait déjà : l'état
+        // est propre, et le flush() de démarrage ci-dessous ne renverra pas le
+        // blob complet pour rien. Chaque ouverture de l'application coûtait
+        // cette écriture intégrale (~560 Ko) même sans aucun travail hors
+        // ligne à rattraper. La comparaison est textuelle : au moindre doute
+        // (ordre différent, clé en plus) elle échoue et l'envoi a lieu —
+        // c'est-à-dire l'ancien comportement, jamais moins sûr.
+        try {
+          if (JSON.stringify(merged) === JSON.stringify(remote)) lastSavedRef.current = merged;
+        } catch { /* état non sérialisable : on renvoie, comme avant */ }
       }
       // The blob may carry an old copy of the sessions: the table wins.
       if (sessionsRef.current) dispatch({ type: 'SET_SESSIONS', sessions: sessionsRef.current });
@@ -506,11 +546,30 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
   // État partagé — un produit créé sur un autre poste apparaît ici sans
   // rechargement, et le retour sur l'onglet sert de filet quand le temps réel
   // est bloqué par le réseau.
+  //
+  // La notification vient de `biz_store_meta` (id + rev, quelques octets) : le
+  // blob lui-même n'est plus publié en temps réel. L'abonnement historique à
+  // `biz_store` est conservé pour les bases où la migration
+  // 2026-08-10_fast_role_lookup_and_light_biz_sync.sql n'est pas encore
+  // passée — il ne reçoit simplement plus rien ensuite. Dans les deux cas la
+  // révision annoncée filtre les échos de nos propres enregistrements.
   useEffect(() => {
-    const unsub = subscribeTable('biz_store', () => { if (hydratedRef.current) pull(); });
-    const onFocus = () => { if (hydratedRef.current) pull(); };
+    const onChange = (payload: { new: unknown }) => {
+      if (!hydratedRef.current) return;
+      const rev = (payload.new as { rev?: unknown } | null)?.rev;
+      pull(typeof rev === 'number' ? rev : undefined);
+    };
+    const unsubMeta = subscribeTable('biz_store_meta', onChange);
+    const unsubLegacy = subscribeTable('biz_store', onChange);
+    // Retour sur l'onglet : un coup d'œil à la révision seule suffit à savoir
+    // s'il faut retélécharger — le filet reste, mais il est devenu léger.
+    const onFocus = async () => {
+      if (!hydratedRef.current) return;
+      const rev = await peekBizStoreRev();
+      pull(rev ?? undefined);
+    };
     window.addEventListener('focus', onFocus);
-    return () => { unsub(); window.removeEventListener('focus', onFocus); };
+    return () => { unsubMeta(); unsubLegacy(); window.removeEventListener('focus', onFocus); };
   }, [pull]);
 
   // Fermeture / rafraîchissement de la page : dernière chance d'envoyer. Même si
