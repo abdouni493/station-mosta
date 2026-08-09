@@ -17,6 +17,7 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { BizProduct, BizPurchase, formatQty, roundQty } from './bizConfig';
+import { effectiveAvgCost, lineSnapshot, reverseAverageCost, usesAverageCost } from './bizAverageCost';
 
 /** Ce qu'une ligne d'achat va rendre au stock quand la facture est annulée. */
 export interface PurchaseStockDelta {
@@ -109,16 +110,46 @@ export function deleteBizPurchase(
   const byId = new Map(products.map(p => [p.id, p]));
   const byName = new Map(products.map(p => [p.name, p]));
 
+  // Une facture enregistrée au coût moyen doit AUSSI défaire son effet sur le
+  // CUMP : retirer la marchandise en laissant le coût moyen qu'elle avait fait
+  // bouger laisserait le stock valorisé à un prix que la partie n'a jamais payé.
+  const avgByProduct = new Map<string, ReturnType<typeof lineSnapshot>>();
+  if (usesAverageCost(purchase)) {
+    for (const it of purchase.items || []) {
+      const snap = lineSnapshot(it);
+      if (!snap) continue;
+      const prod = byId.get(it.productId) || byName.get(it.productName);
+      const key = prod?.id || it.productId || it.productName;
+      // Une même facture ne peut pas porter deux lignes du même produit
+      // (le formulaire l'interdit) : la première photo trouvée fait foi.
+      if (!avgByProduct.has(key)) avgByProduct.set(key, snap);
+    }
+  }
+
   for (const d of deltas) {
     if (d.missing) continue;
     const prod = byId.get(d.productId) || byName.get(d.productName);
     if (!prod) continue;
+
+    const snap = avgByProduct.get(prod.id) || avgByProduct.get(d.productName);
+    const reversed = snap
+      ? reverseAverageCost(prod.currentQty, effectiveAvgCost(prod), snap)
+      : null;
+
     api.update('products', {
       ...prod,
       // `principalQty` est le cumul de ce qui a été REÇU : il ne peut pas
       // descendre sous zéro, contrairement au reste en stock.
       principalQty: roundQty(Math.max(0, prod.principalQty - d.qty)),
       currentQty: roundQty(prod.currentQty - d.qty),
+      ...(reversed
+        ? {
+          averageCost: reversed.avgCost,
+          // Le coût de revient du produit suit le coût moyen repris : c'est lui
+          // qui valorise le stock et qui donne la marge au point de vente.
+          purchasePrice: reversed.avgCost,
+        }
+        : {}),
     });
   }
   api.remove('purchases', purchase.id);

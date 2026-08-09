@@ -54,6 +54,20 @@ export interface BizProduct {
   currentQty: number;     // reste en stock
   minQty: number;         // seuil d'alerte
   purchasePrice: number;
+  /**
+   * Coût moyen pondéré du stock (CUMP), tenu à jour par les achats enregistrés
+   * avec l'option « coût moyen » (voir `src/lib/bizAverageCost.ts`).
+   *
+   * Absent tant qu'aucun achat au coût moyen n'a touché le produit : tout le
+   * catalogue existant vaut alors `purchasePrice`, comme avant.
+   */
+  averageCost?: number;
+  /**
+   * Dernier prix payé au fournisseur — conservé À PART du coût moyen, parce que
+   * ce ne sont pas la même information : on peut acheter à 130 DA un stock qui
+   * revient en moyenne à 110 DA.
+   */
+  lastPurchasePrice?: number;
   salePrice: number;
   unit?: string;
   hasExpiration?: boolean;
@@ -138,6 +152,19 @@ export interface BizLineItem {
   detailCapacity?: number;
   /** New sale price of ONE detail unit (only when `sellByDetail`). */
   detailSalePrice?: number;
+  // ── Coût moyen pondéré — photo du calcul, figée à la validation ────────────
+  // Ces quatre champs ne sont écrits que par un achat enregistré avec l'option
+  // « coût moyen ». Ils rendent la facture lisible pour toujours : rouvrir un
+  // vieux bon montre les chiffres du JOUR de la réception, jamais un recalcul
+  // avec le coût moyen d'aujourd'hui. Absents ⇒ ligne d'avant l'option.
+  /** Stock du produit juste avant cette réception. */
+  prevStockQty?: number;
+  /** Coût moyen du produit juste avant cette réception. */
+  prevAvgCost?: number;
+  /** Stock du produit juste après cette réception. */
+  resultStockQty?: number;
+  /** Coût moyen du produit juste après cette réception. */
+  resultAvgCost?: number;
 }
 
 export interface BizPurchase {
@@ -152,6 +179,13 @@ export interface BizPurchase {
   date: string;
   createdAt: string;
   createdBy?: string;
+  /**
+   * Cette facture a été enregistrée en coût moyen pondéré : ses lignes portent
+   * la photo du calcul et elle a fait évoluer le CUMP des produits reçus.
+   * Absent ou faux ⇒ achat classique, le prix d'achat du produit est simplement
+   * remplacé par celui payé — le comportement historique de l'application.
+   */
+  useAverageCost?: boolean;
 }
 
 export interface BizSale {
@@ -785,6 +819,16 @@ export interface ModuleState {
    * creates a new row every time.
    */
   posPinned: string[];
+  /**
+   * Option « coût moyen pondéré » de la partie : quand elle est active, le
+   * formulaire d'achat arrive avec la case cochée et les réceptions mettent à
+   * jour le CUMP des produits (voir `src/lib/bizAverageCost.ts`).
+   *
+   * Absente ⇒ désactivée : rien ne change par rapport au comportement
+   * historique. Le réglage n'est qu'une valeur par défaut — chaque achat garde
+   * la trace de ce qu'il a RÉELLEMENT fait dans `BizPurchase.useAverageCost`.
+   */
+  avgCostEnabled?: boolean;
 }
 
 /**

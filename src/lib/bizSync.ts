@@ -53,6 +53,8 @@ export interface SyncMeta {
   deletedIds?: Record<string, string>;
   /** Horodatage du dernier changement d'ordre des accès rapides du POS. */
   posPinnedUpd?: string;
+  /** Horodatage du dernier basculement de l'option « coût moyen pondéré ». */
+  avgCostEnabledUpd?: string;
 }
 
 export type SyncModuleState = ModuleState & SyncMeta;
@@ -150,6 +152,17 @@ export function mergeModuleState(base: SyncModuleState, incoming: SyncModuleStat
   } else {
     out.posPinned = asArray(base.posPinned);
     if (basePin) out.posPinnedUpd = basePin;
+  }
+
+  // Option « coût moyen pondéré » : même règle, le dernier réglage l'emporte.
+  const baseAvg = base.avgCostEnabledUpd || '';
+  const inAvg = incoming.avgCostEnabledUpd || '';
+  if (inAvg > baseAvg) {
+    out.avgCostEnabled = !!incoming.avgCostEnabled;
+    out.avgCostEnabledUpd = inAvg;
+  } else {
+    out.avgCostEnabled = !!base.avgCostEnabled;
+    if (baseAvg) out.avgCostEnabledUpd = baseAvg;
   }
 
   out.deletedIds = tombs;

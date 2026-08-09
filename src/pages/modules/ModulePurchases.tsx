@@ -1,12 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import {
   ShoppingCart, Plus, Search, Trash2 as TrashIcon, X, Truck, Receipt, Wallet, CircleDollarSign, Package,
-  Tag, Banknote, Droplet,
+  Tag, Banknote, Droplet, Scale, Info,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty } from '@/src/lib/bizConfig';
 import { deleteBizPurchase, describePurchaseRollback, purchaseStockDeltas, totalRolledBack } from '@/src/lib/bizPurchase';
+import {
+  snapshotFor, stampLine, lineSnapshot, effectiveAvgCost, usesAverageCost, roundCost,
+} from '@/src/lib/bizAverageCost';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
@@ -110,7 +113,14 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
                 </div>
                 {p.rest > 0 ? <Badge tone="danger">Crédit</Badge> : <Badge tone="success">Payé</Badge>}
               </div>
-              <p className="text-[11px] text-slate-400 mt-1">{formatDate(p.date)} • {p.items.length} article(s)</p>
+              <p className="text-[11px] text-slate-400 mt-1 flex flex-wrap items-center gap-1.5">
+                <span>{formatDate(p.date)} • {p.items.length} article(s)</span>
+                {usesAverageCost(p) && (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-violet-50 text-violet-700 border border-violet-200 px-1.5 py-0.5 font-bold">
+                    <Scale className="w-3 h-3" /> Coût moyen
+                  </span>
+                )}
+              </p>
               <div className="grid grid-cols-3 gap-2 mt-3">
                 <div className="rounded-xl bg-slate-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(p.total)}</p></div>
                 <div className="rounded-xl bg-emerald-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm">{money(p.paid)}</p></div>
@@ -197,6 +207,49 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
                 </tr>
               ))}
             </Table>
+            {/* Coût moyen pondéré — les chiffres du JOUR de la réception.
+                Rouvrir cette facture dans six mois affichera exactement les
+                mêmes : rien n'est recalculé avec le coût moyen d'aujourd'hui. */}
+            {usesAverageCost(viewing) && (
+              <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3 sm:p-4">
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <Scale className="w-4 h-4 text-violet-700" />
+                  <p className="text-[11px] font-black uppercase tracking-widest text-violet-800">
+                    Coût moyen pondéré — calcul de cette réception
+                  </p>
+                </div>
+                <div className="space-y-2.5">
+                  {viewing.items.map((it, i) => {
+                    const snap = lineSnapshot(it);
+                    if (!snap) return null;
+                    const prevValue = roundCost(Math.max(0, snap.prevStockQty) * snap.prevAvgCost);
+                    const totalQty = roundCost(Math.max(0, snap.prevStockQty) + snap.purchaseQty);
+                    return (
+                      <div key={i} className="rounded-xl bg-white border border-violet-100 p-3">
+                        <p className="text-sm font-black text-slate-800 mb-2">{it.productName}</p>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2">
+                          <div><p className="text-[10px] uppercase font-black text-slate-400">Qté achetée</p><p className="font-bold tabular-nums text-slate-700 text-sm">{formatQty(snap.purchaseQty)}</p></div>
+                          <div><p className="text-[10px] uppercase font-black text-slate-400">Stock précédent</p><p className="font-bold tabular-nums text-slate-700 text-sm">{formatQty(snap.prevStockQty)}</p></div>
+                          <div><p className="text-[10px] uppercase font-black text-slate-400">Coût moyen préc.</p><p className="font-bold tabular-nums text-slate-700 text-sm">{money(snap.prevAvgCost)}</p></div>
+                          <div><p className="text-[10px] uppercase font-black text-slate-400">Prix d'achat payé</p><p className="font-bold tabular-nums text-[#002d87] text-sm">{money(snap.purchaseUnitCost)}</p></div>
+                          <div><p className="text-[10px] uppercase font-black text-slate-400">Stock après</p><p className="font-bold tabular-nums text-slate-700 text-sm">{formatQty(snap.resultStockQty)}</p></div>
+                          <div><p className="text-[10px] uppercase font-black text-violet-500">Nouveau coût moyen</p><p className="font-black tabular-nums text-violet-700 text-sm">{money(snap.resultAvgCost)}</p></div>
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-violet-100 text-[11px] text-slate-500 tabular-nums leading-relaxed">
+                          Valeur du stock précédent : {formatQty(Math.max(0, snap.prevStockQty))} × {money(snap.prevAvgCost)} = {money(prevValue)}
+                          <span className="mx-1.5 text-slate-300">•</span>
+                          Valeur reçue : {formatQty(snap.purchaseQty)} × {money(snap.purchaseUnitCost)} = {money(snap.purchaseTotalCost)}
+                          <span className="block text-violet-800 font-semibold">
+                            {money(roundCost(prevValue + snap.purchaseTotalCost))} ÷ {formatQty(totalQty)} = {money(snap.resultAvgCost)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-3 gap-2 sm:gap-3">
               <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{money(viewing.total)}</p></div>
               <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{money(viewing.paid)}</p></div>
@@ -224,6 +277,14 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const isEdit = !!initial;
 
   const [items, setItems] = useState<BizLineItem[]>(initial?.items || []);
+  /**
+   * Option « coût moyen pondéré ». Une facture déjà enregistrée garde ce qu'elle
+   * a RÉELLEMENT fait ; un nouvel achat part du réglage de la partie, pour que
+   * l'utilisateur n'ait pas à recocher la case à chaque livraison (une
+   * réception oubliée fausserait la moyenne de tout le stock).
+   */
+  const [useAvg, setUseAvg] = useState(
+    initial ? usesAverageCost(initial) : !!biz.state.avgCostEnabled);
   const [pQuery, setPQuery] = useState('');
   const [supplierId, setSupplierId] = useState(initial?.supplierId || '');
   const [date, setDate] = useState(initial ? initial.date.split('T')[0] : new Date().toISOString().split('T')[0]);
@@ -268,8 +329,22 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const updItem = (id: string, patch: Partial<BizLineItem>) => setItems(prev => prev.map(it => it.productId === id ? { ...it, ...patch } : it));
   const rmItem = (id: string) => setItems(prev => prev.filter(it => it.productId !== id));
 
-  /** Writes a line's commercial settings back onto the product it points to. */
-  const applyToProduct = (it: BizLineItem, addStock: boolean) => {
+  /**
+   * Writes a line's commercial settings back onto the product it points to.
+   *
+   * `snap` n'est fourni qu'à la CRÉATION d'un achat au coût moyen : le produit
+   * prend alors le CUMP calculé comme coût de revient (c'est lui qui vaut le
+   * stock et qui donne la marge au point de vente), et le prix réellement payé
+   * au fournisseur est conservé à part dans `lastPurchasePrice`.
+   *
+   * Sans `snap`, la fonction se comporte exactement comme avant : le prix
+   * d'achat du produit devient le dernier prix payé.
+   */
+  const applyToProduct = (
+    it: BizLineItem,
+    addStock: boolean,
+    snap?: { resultAvgCost: number },
+  ) => {
     const prod = products.find(p => p.id === it.productId);
     if (!prod) return;
     biz.update('products', {
@@ -277,7 +352,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
       principalQty: addStock ? prod.principalQty + it.qty : prod.principalQty,
       currentQty: addStock ? prod.currentQty + it.qty : prod.currentQty,
       minQty: it.minQty ?? prod.minQty,
-      purchasePrice: it.unitPrice,
+      purchasePrice: snap ? snap.resultAvgCost : it.unitPrice,
+      ...(snap ? { averageCost: snap.resultAvgCost, lastPurchasePrice: it.unitPrice } : {}),
       salePrice: it.salePrice ?? prod.salePrice,
       hasExpiration: it.hasExpiration ?? prod.hasExpiration,
       expirationDate: it.hasExpiration ? it.expirationDate : prod.expirationDate,
@@ -293,23 +369,53 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
     if (items.length === 0) { toast.error('Ajoutez au moins un produit'); return; }
     if (!supplierId) { toast.error('Sélectionnez un fournisseur'); return; }
     const supplier = suppliers.find(s => s.id === supplierId);
+
+    // Coût moyen : chaque produit est calculé POUR LUI-MÊME (jamais une moyenne
+    // de la facture entière) et la photo du calcul est figée sur la ligne, pour
+    // que la facture reste lisible telle quelle dans dix achats.
+    const applyAvg = useAvg && !isEdit;
+    const savedItems = applyAvg
+      ? items.map(it => {
+        const prod = products.find(p => p.id === it.productId);
+        if (!prod) return it;
+        return stampLine(it, snapshotFor(prod, it.qty, it.unitPrice));
+      })
+      : items;
+
     const purchase: BizPurchase = {
       id: initial?.id || newId(),
       ref: initial?.ref || `A-${String(biz.state.purchases.length + 1).padStart(4, '0')}`,
       supplierId, supplierName: supplier?.name || '—',
-      items, total, paid, rest, date: new Date(date).toISOString(),
+      items: savedItems, total, paid, rest, date: new Date(date).toISOString(),
       createdAt: initial?.createdAt || new Date().toISOString(), createdBy: 'Admin',
+      // Une facture existante garde son mode d'origine : rebasculer l'option
+      // après coup ne doit pas réécrire une histoire qui a déjà servi.
+      ...(isEdit ? (initial?.useAverageCost ? { useAverageCost: true } : {}) : (useAvg ? { useAverageCost: true } : {})),
     };
+
     if (isEdit) {
       biz.update('purchases', purchase);
       // Le stock n'est ajouté qu'à la création — une modification ne réapplique
       // que les prix et le seuil, sinon la quantité serait comptée deux fois.
-      items.forEach(it => applyToProduct(it, false));
+      // Le coût moyen n'est pas recalculé non plus, pour la même raison : la
+      // photo figée sur la facture reste la vérité de cette réception.
+      items.forEach(it => applyToProduct(it, false, undefined));
     } else {
       biz.add('purchases', purchase);
-      items.forEach(it => applyToProduct(it, true));
+      savedItems.forEach(it => {
+        const snap = applyAvg ? lineSnapshot(it) : null;
+        applyToProduct(it, true, snap ? { resultAvgCost: snap.resultAvgCost } : undefined);
+      });
     }
-    toast.success(isEdit ? 'Achat modifié — prix mis à jour' : 'Achat créé, stock et prix mis à jour');
+
+    // Le choix devient le réglage par défaut de la partie pour les prochains achats.
+    if (!isEdit && useAvg !== !!biz.state.avgCostEnabled) biz.patch({ avgCostEnabled: useAvg });
+
+    toast.success(isEdit
+      ? 'Achat modifié — prix mis à jour'
+      : applyAvg
+        ? 'Achat créé — stock, prix et coût moyen pondéré mis à jour'
+        : 'Achat créé, stock et prix mis à jour');
     onClose();
   };
 
@@ -346,6 +452,41 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
               <p className="text-[10px] uppercase font-black text-slate-400">Reste</p>
               <p className={`font-black tabular-nums text-sm sm:text-lg ${rest > 0 ? 'text-red-600' : 'text-slate-500'}`}>{money(rest)}</p>
             </div>
+          </div>
+
+          {/* Option « coût moyen pondéré » — désactivée par défaut, elle ne
+              change rien tant que l'utilisateur ne l'allume pas. */}
+          <div className={`rounded-2xl border p-3 sm:p-4 ${useAvg ? 'bg-violet-50 border-violet-200' : 'bg-slate-50 border-slate-200'}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${useAvg ? 'bg-violet-600 text-white' : 'bg-white text-slate-400 border border-slate-200'}`}>
+                  <Scale className="w-4.5 h-4.5" style={{ width: 18, height: 18 }} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-slate-800">Coût moyen pondéré (CUMP)</p>
+                  <p className="text-[11px] text-slate-500 leading-snug mt-0.5">
+                    {useAvg
+                      ? "Chaque produit reçu recalcule son coût de revient au prorata des quantités : (stock × coût moyen + reçu × prix payé) ÷ total. Le prix payé au fournisseur reste inscrit tel quel sur la facture."
+                      : "Désactivé : le prix d'achat du produit devient simplement le dernier prix payé, comme aujourd'hui. Activez l'option pour valoriser le stock au coût moyen."}
+                  </p>
+                </div>
+              </div>
+              {isEdit ? (
+                <Badge tone={usesAverageCost(initial!) ? 'primary' : 'neutral'}>
+                  {usesAverageCost(initial!) ? 'Achat enregistré au coût moyen' : 'Achat au dernier prix'}
+                </Badge>
+              ) : (
+                <Switch checked={useAvg} onChange={setUseAvg} label={useAvg ? 'Activé' : 'Désactivé'} />
+              )}
+            </div>
+            {isEdit && (
+              <p className="mt-2 text-[11px] text-slate-500 flex items-start gap-1.5">
+                <Info className="w-3.5 h-3.5 shrink-0 mt-px" />
+                Le coût moyen n'est pas recalculé sur une modification : les chiffres figés à la
+                réception restent la mémoire de cette facture. Pour repartir d'un calcul juste,
+                supprimez l'achat et ressaisissez-le.
+              </p>
+            )}
           </div>
 
           {/* 1. Produits — recherche puis saisie ligne par ligne */}
@@ -401,6 +542,11 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                   const detailUnit = it.detailUnit || prod?.detailUnit || 'L';
                   const capacity = Number(it.detailCapacity ?? prod?.detailCapacity) || 0;
                   const autoDetail = capacity > 0 ? (it.salePrice ?? 0) / capacity : 0;
+                  // Aperçu du coût moyen : recalculé en direct pendant la saisie,
+                  // relu tel quel (photo figée) sur une facture déjà enregistrée.
+                  const avgSnap = isEdit
+                    ? lineSnapshot(it)
+                    : (useAvg && prod ? snapshotFor(prod, it.qty, it.unitPrice) : null);
                   return (
                     <div key={it.productId} className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                       {/* Line header */}
@@ -477,6 +623,54 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                               </button>
                             </div>
                           </div>
+                        </div>
+                      )}
+
+                      {/* Impact sur le coût moyen pondéré de CE produit */}
+                      {avgSnap && (
+                        <div className="mx-3 sm:mx-4 mb-4 rounded-2xl border border-violet-200 bg-violet-50 p-3 sm:p-4">
+                          <div className="flex flex-wrap items-center gap-2 mb-3">
+                            <Scale className="w-4 h-4 text-violet-700" />
+                            <p className="text-[11px] font-black uppercase tracking-widest text-violet-800">
+                              Impact sur le coût moyen
+                            </p>
+                            {isEdit && <Badge tone="neutral">Chiffres figés à la réception</Badge>}
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2 sm:gap-3">
+                            <div className="rounded-xl bg-white border border-violet-100 px-3 py-2">
+                              <p className="text-[10px] uppercase font-black text-slate-400">Stock précédent</p>
+                              <p className="font-black tabular-nums text-slate-700 text-sm">{formatQty(avgSnap.prevStockQty)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white border border-violet-100 px-3 py-2">
+                              <p className="text-[10px] uppercase font-black text-slate-400">Coût moyen précédent</p>
+                              <p className="font-black tabular-nums text-slate-700 text-sm">{money(avgSnap.prevAvgCost)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white border border-violet-100 px-3 py-2">
+                              <p className="text-[10px] uppercase font-black text-slate-400">Prix payé (cette facture)</p>
+                              <p className="font-black tabular-nums text-[#002d87] text-sm">{money(avgSnap.purchaseUnitCost)}</p>
+                            </div>
+                            <div className="rounded-xl bg-white border border-violet-100 px-3 py-2">
+                              <p className="text-[10px] uppercase font-black text-slate-400">Stock après</p>
+                              <p className="font-black tabular-nums text-slate-700 text-sm">{formatQty(avgSnap.resultStockQty)}</p>
+                            </div>
+                            <div className="rounded-xl bg-violet-600 px-3 py-2 col-span-2 sm:col-span-1">
+                              <p className="text-[10px] uppercase font-black text-violet-200">Nouveau coût moyen</p>
+                              <p className="font-black tabular-nums text-white text-sm">{money(avgSnap.resultAvgCost)}</p>
+                            </div>
+                          </div>
+                          {/* Le calcul en toutes lettres — l'utilisateur doit pouvoir
+                              refaire l'opération de tête et retrouver le même chiffre. */}
+                          <p className="mt-2.5 text-[11px] text-violet-900/80 tabular-nums leading-relaxed">
+                            ({formatQty(Math.max(0, avgSnap.prevStockQty))} × {money(avgSnap.prevAvgCost)}
+                            {' '}+ {formatQty(avgSnap.purchaseQty)} × {money(avgSnap.purchaseUnitCost)})
+                            {' '}÷ {formatQty(Math.max(0, avgSnap.prevStockQty) + avgSnap.purchaseQty)}
+                            {' '}= <strong>{money(avgSnap.resultAvgCost)}</strong>
+                            {avgSnap.prevStockQty <= 0 && (
+                              <span className="block text-violet-700">
+                                Stock précédent nul ou négatif : le coût moyen repart du prix payé sur cette réception.
+                              </span>
+                            )}
+                          </p>
                         </div>
                       )}
 

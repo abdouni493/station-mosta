@@ -16,7 +16,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
   Flame, RotateCcw, Trash, User, Beaker, ShoppingBag, FileWarning, Upload, CloudOff, Loader2,
-  RefreshCw, CheckCircle2, History,
+  RefreshCw, CheckCircle2, History, Scale,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -644,6 +644,35 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 </div>
               ))}
             </div>
+            {/* Coût moyen pondéré — n'apparaît que sur les produits déjà reçus
+                par un achat au coût moyen. Le dernier prix payé est montré à
+                côté : ce ne sont pas la même information, et les confondre fait
+                valoriser le stock à un prix qui n'a jamais été payé en moyenne. */}
+            {viewing.averageCost !== undefined && (
+              <div className="rounded-xl bg-violet-50 border border-violet-200 p-3">
+                <p className="text-[10px] uppercase font-black text-violet-800 flex items-center gap-1.5 mb-2">
+                  <Scale className="w-3.5 h-3.5" /> Valorisation au coût moyen pondéré
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-white border border-violet-100 p-2.5">
+                    <p className="text-[10px] uppercase font-bold text-slate-400">Coût moyen d'achat</p>
+                    <p className="font-black text-violet-700 tabular-nums text-sm">{money(viewing.averageCost)}</p>
+                  </div>
+                  <div className="rounded-lg bg-white border border-violet-100 p-2.5">
+                    <p className="text-[10px] uppercase font-bold text-slate-400">Dernier prix payé</p>
+                    <p className="font-black text-slate-700 tabular-nums text-sm">
+                      {viewing.lastPurchasePrice !== undefined ? money(viewing.lastPurchasePrice) : '—'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-white border border-violet-100 p-2.5">
+                    <p className="text-[10px] uppercase font-bold text-slate-400">Valeur du stock</p>
+                    <p className="font-black text-slate-700 tabular-nums text-sm">
+                      {money(viewing.currentQty * viewing.averageCost)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
             {viewing.description && <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Description</p><p className="text-sm text-slate-600">{viewing.description}</p></div>}
             {viewing.hasExpiration && viewing.expirationDate && (
               <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-center gap-2 text-amber-700">

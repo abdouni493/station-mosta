@@ -122,6 +122,8 @@ function reducer(state: BizState, action: Action): BizState {
       // L'ordre des accès rapides du POS n'est pas une liste d'entités : il se
       // départage sur son propre horodatage.
       if ('posPinned' in patch) patch.posPinnedUpd = nowIso();
+      // Idem pour l'option « coût moyen pondéré » de la partie.
+      if ('avgCostEnabled' in patch) patch.avgCostEnabledUpd = nowIso();
       return { ...state, [action.module]: { ...mod, ...patch } };
     }
     case 'REPLACE':
