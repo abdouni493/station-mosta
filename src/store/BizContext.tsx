@@ -36,6 +36,7 @@ import { emptyBizState, EMPTY_MODULE } from '../lib/bizSeed';
 import { loadBizStoreSnapshot, saveBizStore, subscribeTable } from '../lib/supabase';
 import { loadBizSessions } from '../lib/bizSessions';
 import { mergeBizState, stampItem, nowIso, SyncModuleState } from '../lib/bizSync';
+import { purgeSeedRows, relinkOrphanRefs } from '../lib/bizSeedPurge';
 
 const STORAGE_KEY = 'stationpro_biz_v1';
 
@@ -172,70 +173,6 @@ const MERGED_COLLECTIONS: BizCollection[] = [
   'inventaires',
 ];
 
-/**
- * Empreinte des lignes du jeu de démonstration retiré : `cafeteria-prod-3`,
- * `lavage-rep-1`, `cafeteria-cli-2`… Toutes suivaient ce moule, alors que la
- * moindre ligne créée dans l'application porte un identifiant tiré au hasard
- * (`newId()` → UUID). La distinction est donc sans ambiguïté : rien de ce qui a
- * été saisi par un utilisateur ne peut correspondre à ce motif.
- *
- * `restaurant` et `magasin` en font partie : ces deux parties ont été retirées,
- * mais `fold()` (plus bas) a reversé leurs lignes — identifiants compris — dans
- * Cafétéria et Lavage, où elles s'affichent encore.
- */
-const SEED_ID =
-  /^(?:cafeteria|lavage|restaurant|magasin)-(?:acp|cat|cli|cmp|csh|dst|exp|fic|mrq|prod|prd|pur|rep|role|sale|srv|sup|wrk)-\d+/;
-
-/**
- * Efface les lignes de démonstration d'une partie — et pose une pierre tombale
- * sur chacune.
- *
- * POURQUOI CE NETTOYAGE : ces lignes revenaient après avoir été supprimées. Un
- * poste ouvert sans copie locale repartait du jeu constant, le fusionnait avec
- * la copie du serveur, puis la lui renvoyait — annulant la suppression faite
- * ailleurs. Le jeu constant n'existe plus, mais il dort encore dans les copies
- * déjà enregistrées : celle du navigateur ET celle de Supabase.
- *
- * `migrate` s'applique aux deux (voir `loadInitial`, `pull` et `pushNow`), donc
- * les deux sont assainies, et le premier enregistrement renvoie la version
- * propre au serveur. Les pierres tombales servent de garde-fou pendant la
- * transition : tant qu'un poste tourne encore sur l'ancienne version et repousse
- * ses lignes de démonstration, la fusion les rejette au lieu de les réafficher.
- */
-function purgeSeedRows(mod: any): void {
-  const killed: string[] = [];
-  for (const coll of MERGED_COLLECTIONS) {
-    const list = mod[coll];
-    if (!Array.isArray(list)) continue;
-    const kept = list.filter((x: any) => {
-      if (!x?.id || !SEED_ID.test(x.id)) return true;
-      killed.push(x.id);
-      return false;
-    });
-    if (kept.length !== list.length) mod[coll] = kept;
-  }
-
-  // Les accès rapides du point de vente désignent leur ligne par
-  // `produit:<id>` / `fiche:<id>` : un raccourci vers une ligne de
-  // démonstration n'a plus rien à pointer, il ne resterait qu'un libellé brut
-  // dans l'écran « Organiser ».
-  if (Array.isArray(mod.posPinned)) {
-    const keptPins = mod.posPinned.filter((k: any) => {
-      const id = typeof k === 'string' ? k.slice(k.indexOf(':') + 1) : '';
-      return !SEED_ID.test(id);
-    });
-    if (keptPins.length !== mod.posPinned.length) {
-      mod.posPinned = keptPins;
-      mod.posPinnedUpd = nowIso();
-    }
-  }
-
-  if (!killed.length) return;
-  const at = nowIso();
-  const tombs: Record<string, string> = { ...(mod.deletedIds || {}) };
-  for (const id of killed) if (!tombs[id]) tombs[id] = at;
-  mod.deletedIds = tombs;
-}
 
 /**
  * Brings a state saved by an older build up to the current shape:
@@ -276,8 +213,12 @@ function migrate(raw: any): BizState | null {
     for (const k of Object.keys(base)) if (!Array.isArray(mod[k])) mod[k] = base[k];
     // Méta-données de fusion (ajoutées par une version plus récente).
     if (!mod.deletedIds || typeof mod.deletedIds !== 'object') mod.deletedIds = {};
-    // Reste du jeu de démonstration retiré : il ne doit plus rien peupler.
+    // Reste du jeu de démonstration retiré : il ne doit plus rien peupler —
+    // sans pour autant couper les liens des lignes de la station.
     purgeSeedRows(mod);
+    // Filet pour les copies déjà abîmées par la première version du nettoyage :
+    // un produit sans catégorie vivante retrouve la sienne par son nom.
+    relinkOrphanRefs(mod);
 
     mod.reparations = (mod.reparations as any[]).map(r => {
       const legacyServices: { price?: number }[] = Array.isArray(r.services) ? r.services : [];
