@@ -20,6 +20,31 @@ export interface AuthState {
   isAuthenticated: boolean;
 }
 
+/** getSession() renews the token first, so it needs room on a slow link. */
+const SESSION_FETCH_TIMEOUT_MS = 12_000;
+/**
+ * A role lookup that never answers must not hold the whole app on the splash
+ * screen. `fetchRole` walks up to six sequential PostgREST calls, and each one
+ * first awaits supabase-js's token refresh — on a rate-limited or half-open
+ * connection that chain stays pending for minutes. Bound it, release the UI
+ * with the least-privileged role, and let the lookup upgrade the role when it
+ * finally lands.
+ */
+const ROLE_LOOKUP_TIMEOUT_MS = 10_000;
+/** Last-resort backstop, sitting behind both bounded steps above. */
+const SAFETY_TIMEOUT_MS = SESSION_FETCH_TIMEOUT_MS + ROLE_LOOKUP_TIMEOUT_MS + 3_000;
+
+/** Rejects with `<label> timeout` if `promise` has not settled within `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timeout`)), ms);
+    promise.then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 /**
  * Optimized auth hook for fast page refreshes.
  * - Uses localStorage cache for instant load
@@ -173,10 +198,41 @@ export function useAuth() {
     }
   };
 
+  /**
+   * Resolve the signed-in user's role, then release the splash screen.
+   *
+   * The release is guaranteed. If the lookup has not answered within
+   * ROLE_LOOKUP_TIMEOUT_MS the UI is unblocked with the least privileged role —
+   * never 'admin' — and the same in-flight lookup keeps running, upgrading the
+   * role as soon as it lands. Previously `isLoading` was only ever cleared from
+   * the lookup's own .then/.catch, so a request that never settled left the app
+   * on <AppLoader /> for ever.
+   */
+  const resolveRole = (uid: string) => {
+    const lookup = fetchRole(uid);
+
+    lookup.then(role => {
+      roleResolved.current = true;
+      if (mountedRef.current) setAuth(prev => ({ ...prev, userRole: role, isLoading: false }));
+    }).catch(() => {
+      roleResolved.current = true;
+      if (mountedRef.current) setAuth(prev => ({ ...prev, isLoading: false }));
+    });
+
+    profileFetchRef.current = withTimeout(lookup, ROLE_LOOKUP_TIMEOUT_MS, 'role lookup')
+      .then(() => undefined)
+      .catch((err: Error) => {
+        if (roleResolved.current) return; // the lookup answered in time
+        console.warn('[useAuth]', err.message, '— releasing the UI with least privilege');
+        if (mountedRef.current) {
+          setAuth(prev => (prev.isLoading ? { ...prev, userRole: 'pompiste', isLoading: false } : prev));
+        }
+      });
+  };
+
   useEffect(() => {
     mountedRef.current = true;
     let safetyTimeout: NodeJS.Timeout | null = null;
-    let initComplete = false;
 
     async function initAuth() {
       try {
@@ -186,7 +242,7 @@ export function useAuth() {
         const getSessionPromise = supabase.auth.getSession();
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(() => reject(new Error('Session fetch timeout')), 12000);
+          timeoutHandle = setTimeout(() => reject(new Error('Session fetch timeout')), SESSION_FETCH_TIMEOUT_MS);
         });
 
         let session: Session | null = null;
@@ -229,17 +285,7 @@ export function useAuth() {
           });
 
           // Step 3: Fetch role in background, then release loader
-          profileFetchRef.current = fetchRole(session.user.id).then((role) => {
-            roleResolved.current = true;
-            if (mountedRef.current) {
-              setAuth(prev => ({ ...prev, userRole: role, isLoading: false }));
-            }
-          }).catch(() => {
-            roleResolved.current = true;
-            if (mountedRef.current) {
-              setAuth(prev => ({ ...prev, isLoading: false }));
-            }
-          });
+          resolveRole(session.user.id);
         } else {
           // No session — go to login immediately
           setAuth({
@@ -256,28 +302,31 @@ export function useAuth() {
         if (mountedRef.current) {
           setAuth(prev => ({ ...prev, isLoading: false }));
         }
-      } finally {
-        initComplete = true;
-        if (safetyTimeout) clearTimeout(safetyTimeout);
       }
     }
 
     // Safety backstop: never leave the user stuck on the spinner for ever.
     //
-    // It fires AFTER initAuth's own 12 s budget, so by then the session state has
-    // already been decided (live session, stored session, or none) and clearing
-    // the spinner cannot dump a signed-in user on the login page any more.
-    // If only the role lookup is still pending we release the UI with the least
-    // privileged role — never 'admin' — and let fetchRole correct it.
+    // It fires AFTER initAuth's session budget and the role lookup's, so by then
+    // the session state has already been decided (live session, stored session,
+    // or none) and clearing the spinner cannot dump a signed-in user on the
+    // login page any more. If only the role lookup is still pending we release
+    // the UI with the least privileged role — never 'admin' — and let fetchRole
+    // correct it.
+    //
+    // It is deliberately NOT cancelled when initAuth returns: initAuth returns
+    // as soon as the role lookup has been *started*, and cancelling there is
+    // what used to leave a lookup that never settles holding the splash screen
+    // with nothing left alive to release it.
     safetyTimeout = setTimeout(() => {
-      if (!mountedRef.current || initComplete) return;
+      if (!mountedRef.current || !authRef.current.isLoading) return;
       console.warn('[useAuth] Safety timeout — forcing loading state clear');
-      setAuth(prev => ({
+      setAuth(prev => (prev.isLoading ? {
         ...prev,
         userRole:  prev.isAuthenticated && !roleResolved.current ? 'pompiste' : prev.userRole,
         isLoading: false,
-      }));
-    }, 15000);
+      } : prev));
+    }, SAFETY_TIMEOUT_MS);
 
     initAuth();
 
@@ -332,17 +381,7 @@ export function useAuth() {
             isAuthenticated: true,
           });
 
-          profileFetchRef.current = fetchRole(session.user.id).then((role) => {
-            roleResolved.current = true;
-            if (mountedRef.current) {
-              setAuth(prev => ({ ...prev, userRole: role, isLoading: false }));
-            }
-          }).catch(() => {
-            roleResolved.current = true;
-            if (mountedRef.current) {
-              setAuth(prev => ({ ...prev, isLoading: false }));
-            }
-          });
+          resolveRole(session.user.id);
         } else if (event === 'SIGNED_OUT') {
           if (mountedRef.current) {
             setAuth({
