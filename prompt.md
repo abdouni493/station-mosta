@@ -161,3 +161,12 @@ make it add that prime to that final amount to pay
 
 
 fix the interface design of payment button action interface make sure to make it bigger and make it better design and colors and make it more organized with this new updates and make sure to make it large like the interface of creation new brigade and like the interface of create the purchase of carburant and products purchase
+
+
+
+
+add new option on the last interface of create brigades on the interface of comptablity add new option of justification make it for recieve products as purchase to the armoire that will working like this : 
+sometimes the suppliers comes to sell the products to the station to the pompistes directly to put them on the armoires so the pompiste will pay that products with money of brigade then he have to justifiy the decalage money with purchase that products to let him search about that products and set the purchased quantity and let it load the purchase price with possibility of edit it manually and make it when user create the the brigade then make that quantity with add to that product on that selected armoire 
+and make sure to make the creation of brigades will save the quantities of all the armoire products on the creation of the brigade and make it display on the justification with sell products from the armoire let it display the quantity of each product on the previous brigade and if user made a transfer of product form the stock to armoire then make it display also like this : quantity of the product on the previous brigade plus the transfered quantity and make make sure to make this new informations of justification with purchase products to armoire make it dispaly on the fiche briagade details and make sure to make it display the detais of the quanitty initial of each product on the previous brigade and make this new informations dipslay also on the fiche journalier 
+give me the sql code that i have to run it of rthi new updates then push all updates to repo with merge code without pull request : 
+
