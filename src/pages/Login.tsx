@@ -6,7 +6,7 @@ import {
   CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { signIn, signUpAdmin, signOut, adminExists } from "../lib/supabase";
+import { signIn, signUpAdmin, signOut, adminExists, probeBackend, BACKEND_STATUS_MESSAGE } from "../lib/supabase";
 import { useAppState } from "../store/AppContext";
 
 type UserRole = 'admin' | 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
@@ -87,13 +87,21 @@ const Login = ({ onLogin }: LoginProps) => {
       // Only a genuine credential rejection should say "identifiants invalides":
       // reporting a blocked or rate-limited connection that way sends people
       // hunting for a password problem that does not exist.
-      setLoginError(
-        result.reason === 'rate_limited'
-          ? "Trop de tentatives de connexion depuis ce réseau. Patientez une minute puis réessayez."
-          : result.reason === 'network'
-            ? "Serveur injoignable depuis ce poste. Vérifiez la connexion Internet, puis réessayez."
-            : t('login.error_invalid'),
-      );
+      if (result.reason === 'rate_limited') {
+        setLoginError("Trop de tentatives de connexion depuis ce réseau. Patientez une minute puis réessayez.");
+        return;
+      }
+      if (result.reason === 'network') {
+        // « Vérifiez votre connexion Internet » est faux neuf fois sur dix : le
+        // poste est en ligne et c'est la BASE qui ne répond pas. On demande à
+        // qui appartient la panne avant de l'annoncer.
+        setLoading(true);
+        const status = await probeBackend();
+        setLoading(false);
+        setLoginError(BACKEND_STATUS_MESSAGE[status === 'ok' ? 'database' : status]);
+        return;
+      }
+      setLoginError(t('login.error_invalid'));
       return;
     }
 

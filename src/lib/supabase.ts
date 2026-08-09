@@ -80,8 +80,30 @@ export function readPersistedSession(): PersistedSession | null {
  * replayed, so no write is ever duplicated. Only 429s — which the limiter
  * rejects before any processing — are retried for every method.
  */
-const REQUEST_TIMEOUT_MS = 20_000;
-const MAX_RETRIES = 3;
+/**
+ * Budget d'UNE tentative.
+ *
+ * Il était de 20 s avec trois reprises : une requête vers une base qui ne répond
+ * plus coûtait donc 20+1+20+2+20+4+20 ≈ 87 SECONDES avant de rendre la main, et
+ * l'hydratation en lance une quarantaine. L'application paraissait morte pendant
+ * plusieurs minutes là où elle aurait dû dire « le serveur ne répond pas » tout
+ * de suite. Une requête saine revient en moins de 300 ms : huit secondes laissent
+ * vingt-cinq fois la marge nécessaire, même sur un lien de station lent.
+ *
+ * Réduire les reprises AIDE aussi le serveur : réessayer contre une base déjà
+ * saturée ne fait qu'ajouter des connexions à une file qui n'avance plus.
+ */
+const REQUEST_TIMEOUT_MS = 8_000;
+const MAX_RETRIES = 1;
+/**
+ * Un envoi de fichier n'est pas une requête : une photo de bon de livraison sur
+ * le lien d'une station met légitimement plus de huit secondes. Lui appliquer le
+ * budget des requêtes de données couperait des envois parfaitement sains — et un
+ * POST n'est jamais rejoué, il serait donc simplement perdu.
+ */
+const UPLOAD_TIMEOUT_MS = 60_000;
+
+const isStorageRequest = (url: string) => url.includes('/storage/v1/');
 // The refresh endpoint retries only once here. Every postgrest call awaits
 // getSession(), so a long backoff chain inside a refresh would stall the whole
 // app; auth-js has its own paced retry loop for the 503 we hand back, and that
@@ -121,6 +143,7 @@ async function fetchWithRetry(
   // Only replay requests that cannot have taken effect server-side.
   const replayable = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
   const callerSignal = init?.signal ?? undefined;
+  const budget = isStorageRequest(urlOf(input)) ? UPLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
 
   let lastError: unknown;
 
@@ -128,7 +151,7 @@ async function fetchWithRetry(
     // Per-attempt timeout — a request that never settles must not wedge the app.
     const controller = new AbortController();
     const onCallerAbort = () => controller.abort();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), budget);
     callerSignal?.addEventListener('abort', onCallerAbort);
 
     try {
@@ -187,6 +210,58 @@ async function resilientFetch(input: RequestInfo | URL, init?: RequestInit): Pro
 
   return shared.clone();
 }
+
+// ─── Diagnostic : QUELLE couche est en panne ? ─────────────────────────────────
+/**
+ * `ok` — tout répond.
+ * `database` — le serveur Supabase répond, mais les requêtes de DONNÉES non : la
+ *   base est saturée, redémarre, ou son pool de connexions est épuisé. Le poste
+ *   et Internet n'y sont pour RIEN.
+ * `offline` — le serveur n'est pas joignable du tout : là, c'est bien le réseau.
+ *
+ * Cette distinction n'est pas cosmétique. « Vérifiez la connexion Internet »
+ * affiché alors que le lien est parfait envoie l'utilisateur débrancher sa box
+ * pendant des heures pour un problème qui est côté serveur.
+ */
+export type BackendStatus = 'ok' | 'database' | 'offline';
+
+/** `fetch` NU : ni reprise ni file d'attente — un diagnostic doit être rapide. */
+async function rawFetch(url: string, ms: number, headers?: Record<string, string>): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal, headers });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function probeBackend(): Promise<BackendStatus> {
+  // 1. Une vraie requête de données, courte : c'est elle qui compte.
+  const data = await rawFetch(
+    `${SUPABASE_URL}/rest/v1/station_settings?select=id&limit=1`, 6_000,
+    { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  );
+  if (data && data.status < 500) return 'ok';
+
+  // 2. Pas de données. La passerelle répond-elle quand même ? Sans clé elle rend
+  //    un 401 immédiat SANS toucher à la base — c'est le test qui sépare
+  //    « réseau coupé » de « base en carafe ».
+  const gateway = await rawFetch(`${SUPABASE_URL}/rest/v1/`, 5_000);
+  return gateway ? 'database' : 'offline';
+}
+
+/** Message prêt à afficher pour chaque état — même vocabulaire partout. */
+export const BACKEND_STATUS_MESSAGE: Record<Exclude<BackendStatus, 'ok'>, string> = {
+  database:
+    "Le serveur de données ne répond pas (base saturée ou en redémarrage). "
+    + "Votre connexion Internet fonctionne : il n'y a rien à faire sur ce poste, "
+    + "réessayez dans quelques minutes.",
+  offline:
+    "Serveur injoignable depuis ce poste. Vérifiez la connexion Internet, puis réessayez.",
+};
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
