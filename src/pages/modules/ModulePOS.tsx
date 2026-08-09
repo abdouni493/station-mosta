@@ -444,9 +444,15 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
         </div>
       )}
 
-      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-4 ${mySession ? '' : 'opacity-50 pointer-events-none'}`}>
-        {/* Catalogue */}
-        <div className="lg:col-span-2 space-y-4">
+      {/* Comptoir & encaissement.
+          Sur grand écran, ce bloc occupe une hauteur d'écran fixe et CHAQUE
+          colonne défile pour son compte : le caissier fait défiler les produits
+          sans jamais perdre de vue le panier ni le bouton « Valider la vente »,
+          qui restent épinglés à droite. Sous `lg`, tout revient au fil normal de
+          la page (le panier passe sous la grille), comme avant. */}
+      <div className={`grid grid-cols-1 lg:grid-cols-3 gap-4 lg:h-[calc(100vh-14rem)] lg:min-h-[480px] ${mySession ? '' : 'opacity-50 pointer-events-none'}`}>
+        {/* Catalogue — la seule colonne qui défile avec les produits */}
+        <div className="lg:col-span-2 lg:min-h-0 lg:overflow-y-auto custom-scrollbar lg:pr-2 space-y-4">
           <div className="card-glass p-3 flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -490,42 +496,42 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
               <Package className="w-10 h-10 mx-auto mb-2 text-slate-300" />Aucun produit disponible
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5">
               {filtered.map(s => (
                 <div key={`${s.kind}-${s.id}`} role="button" tabIndex={0}
                   onClick={() => addToCart(s)}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); addToCart(s); } }}
-                  className={`card-glass p-3 text-left card-hover group flex flex-col justify-between relative cursor-pointer ${isPinned(s) ? 'ring-2 ring-[#FFB800]' : ''}`}>
+                  className={`card-glass p-2 text-left card-hover group flex flex-col justify-between relative cursor-pointer ${isPinned(s) ? 'ring-2 ring-[#FFB800]' : ''}`}>
                   {/* Pin / unpin — quick access for the best sellers. */}
                   <button type="button" onClick={e => { e.stopPropagation(); togglePin(s); }}
                     title={isPinned(s) ? "Retirer de l'accès rapide" : "Épingler en accès rapide"}
-                    className={`absolute top-2 right-2 z-10 w-7 h-7 rounded-lg flex items-center justify-center border transition-colors
+                    className={`absolute top-1.5 right-1.5 z-10 w-6 h-6 rounded-lg flex items-center justify-center border transition-colors
                       ${isPinned(s)
                         ? 'bg-[#FFB800] border-[#FFB800] text-white'
                         : 'bg-white/90 border-slate-200 text-slate-300 hover:text-[#FFB800] opacity-0 group-hover:opacity-100 focus:opacity-100'}`}>
-                    <Star className={`w-3.5 h-3.5 ${isPinned(s) ? 'fill-white' : ''}`} />
+                    <Star className={`w-3 h-3 ${isPinned(s) ? 'fill-white' : ''}`} />
                   </button>
                   <div>
                     {s.imageUrl ? (
-                      <div className="w-full h-28 rounded-xl overflow-hidden mb-2 relative bg-slate-100 border border-slate-200/60 shadow-inner">
+                      <div className="w-full h-20 rounded-lg overflow-hidden mb-1.5 relative bg-slate-100 border border-slate-200/60 shadow-inner">
                         <img src={s.imageUrl} alt={s.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                       </div>
                     ) : (
-                      <div className="w-full h-16 rounded-xl bg-gradient-to-br from-[#003087]/10 to-[#FFB800]/10 flex items-center justify-center mb-2">
-                        {s.kind === 'fiche' ? <Beaker className="w-6 h-6 text-[#003087]" /> : <Package className="w-6 h-6 text-[#003087]" />}
+                      <div className="w-full h-12 rounded-lg bg-gradient-to-br from-[#003087]/10 to-[#FFB800]/10 flex items-center justify-center mb-1.5">
+                        {s.kind === 'fiche' ? <Beaker className="w-5 h-5 text-[#003087]" /> : <Package className="w-5 h-5 text-[#003087]" />}
                       </div>
                     )}
-                    <p className="font-bold text-slate-700 text-sm leading-tight line-clamp-2">{s.name}</p>
+                    <p className="font-bold text-slate-700 text-xs leading-tight line-clamp-2">{s.name}</p>
                   </div>
-                  <div className="flex items-center justify-between mt-1">
-                    <span className="font-black text-[#002d87] text-sm tabular-nums">
-                      {money(s.price)}{s.detail ? <span className="text-[10px] font-bold">/{s.detailUnit}</span> : null}
+                  <div className="flex items-center justify-between gap-1 mt-1">
+                    <span className="font-black text-[#002d87] text-xs tabular-nums">
+                      {money(s.price)}{s.detail ? <span className="text-[9px] font-bold">/{s.detailUnit}</span> : null}
                     </span>
                     <Badge tone={s.avail <= 0 ? 'danger' : s.avail <= 5 ? 'warning' : 'neutral'}>
                       {formatQty(s.avail)} {s.unit}
                     </Badge>
                   </div>
-                  <div className="flex flex-wrap gap-1 mt-1.5">
+                  <div className="flex flex-wrap gap-1 mt-1">
                     {isPinned(s) && <Badge tone="warning">Accès rapide</Badge>}
                     {s.kind === 'fiche' && <Badge tone="primary">Vente rapide</Badge>}
                     {s.detail && <Badge tone="info">Au détail</Badge>}
@@ -553,8 +559,8 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           )}
         </div>
 
-        {/* Cart */}
-        <div className="space-y-4">
+        {/* Panier & encaissement — épinglé : il ne défile jamais avec les produits */}
+        <div className="lg:min-h-0 lg:overflow-y-auto custom-scrollbar space-y-4 lg:pb-1">
           <div className="card-glass p-4">
             <div className="mb-3">
               <div className="flex gap-2 mb-2">
