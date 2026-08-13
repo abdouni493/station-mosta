@@ -3,7 +3,9 @@
  *
  * Le même tableau de bord sert les trois parties (Carburant, Cafétéria, Lavage) :
  * seul l'avis affiché change. Chaque avis est une carte datée avec le nom du
- * client, ses coordonnées, son message, et trois décisions :
+ * client, ses coordonnées, son message, et trois décisions. Le nom et le
+ * téléphone sont FACULTATIFS sur la page publique : un avis peut arriver
+ * anonyme, et l'écran doit le dire clairement plutôt que d'afficher un vide.
  *
  *   • MARQUER COMME LU — c'est ce geste, et lui seul, qui éteint la pastille
  *     rouge de la barre latérale. Un avis reste « nouveau » tant que personne
@@ -17,10 +19,10 @@
 import React, { useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
-  MessageSquare, Mail, Phone, User, Trash2, Eye, Check, CheckCheck, Undo2,
+  MessageSquare, Mail, Phone, User, UserX, Trash2, Eye, Check, CheckCheck, Undo2,
   Clock, Inbox, CalendarDays, MailOpen,
 } from 'lucide-react';
-import { ClientFeedback, FeedbackPart, FEEDBACK_PART_META } from '@/src/lib/feedbacks';
+import { ClientFeedback, FeedbackPart, FEEDBACK_PART_META, feedbackAuthor } from '@/src/lib/feedbacks';
 import { useFeedbacks, usePartFeedbacks } from '@/src/store/FeedbackContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
@@ -65,8 +67,8 @@ export default function FeedbacksBoard({
   const filtered = useMemo(() => feedbacks.filter(f => {
     const q = search.trim().toLowerCase();
     const matchQ = !q
-      || f.fullName.toLowerCase().includes(q)
-      || f.phone.toLowerCase().includes(q)
+      || (f.fullName || '').toLowerCase().includes(q)
+      || (f.phone || '').toLowerCase().includes(q)
       || (f.email || '').toLowerCase().includes(q)
       || f.message.toLowerCase().includes(q);
     return matchQ && (status === 'all' || f.status === status) && inPeriod(f.createdAt, period, from, to);
@@ -74,7 +76,7 @@ export default function FeedbacksBoard({
 
   const doMarkRead = async (f: ClientFeedback) => {
     const res = await markRead(f.id, currentUserName || undefined);
-    if (res.ok) toast.success(`Avis de ${f.fullName} marqué comme lu`);
+    if (res.ok) toast.success(`Avis de ${feedbackAuthor(f)} marqué comme lu`);
     else toast.error(res.error || 'Impossible de marquer cet avis');
   };
 
@@ -213,7 +215,7 @@ export default function FeedbacksBoard({
       <Confirm
         open={!!toDelete}
         title="Supprimer cet avis"
-        message={`Supprimer définitivement l'avis de ${toDelete?.fullName ?? ''} ? Cette action est irréversible.`}
+        message={`Supprimer définitivement l'avis de ${toDelete ? feedbackAuthor(toDelete) : ''} ? Cette action est irréversible.`}
         onConfirm={doDelete} onCancel={() => setToDelete(null)}
       />
       <Confirm
@@ -241,12 +243,20 @@ function FeedbackCard({
     <GlassCard className={isNew ? '!border-amber-300 ring-1 ring-amber-200' : undefined}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="font-black text-slate-800 truncate flex items-center gap-1.5">
-            <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />{f.fullName}
+          {/* Nom et téléphone sont facultatifs sur la page publique : un avis
+              anonyme se présente comme tel plutôt que d'afficher un vide. */}
+          <h3 className={`font-black truncate flex items-center gap-1.5 ${f.fullName ? 'text-slate-800' : 'text-slate-400 italic'}`}>
+            <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />{feedbackAuthor(f)}
           </h3>
-          <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
-            <Phone className="w-3 h-3" />{f.phone}
-          </p>
+          {f.phone ? (
+            <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
+              <Phone className="w-3 h-3" />{f.phone}
+            </p>
+          ) : (
+            <p className="text-xs text-slate-300 flex items-center gap-1 mt-0.5 italic">
+              <Phone className="w-3 h-3" />Sans téléphone
+            </p>
+          )}
         </div>
         <Badge tone={isNew ? 'warning' : 'success'}>{isNew ? 'Nouveau' : 'Lu'}</Badge>
       </div>
@@ -307,7 +317,7 @@ function FeedbackDetail({
   return (
     <Modal
       open onClose={onClose} icon={MessageSquare} size="lg"
-      title={`Avis de ${f.fullName}`}
+      title={f.fullName ? `Avis de ${f.fullName}` : 'Avis anonyme'}
       subtitle={`${meta.emoji} ${meta.label} — reçu le ${formatDateTime(f.createdAt)}`}
       footer={<>
         {canDelete && (
@@ -331,13 +341,27 @@ function FeedbackDetail({
           <Badge tone="info">{meta.label}</Badge>
         </div>
 
-        {/* Coordonnées — cliquables : rappeler un client ne doit pas demander de recopier. */}
+        {/* Coordonnées — cliquables quand elles existent : rappeler un client ne
+            doit pas demander de recopier. Les trois champs sont facultatifs sur
+            la page publique, d'où la tuile « Non communiqué » plutôt qu'un trou. */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <ContactTile icon={Phone} label="Téléphone" value={f.phone} href={`tel:${f.phone.replace(/\s/g, '')}`} />
+          <ContactTile icon={User} label="Nom" value={f.fullName || 'Non communiqué'} muted={!f.fullName} />
+          {f.phone
+            ? <ContactTile icon={Phone} label="Téléphone" value={f.phone} href={`tel:${f.phone.replace(/\s/g, '')}`} />
+            : <ContactTile icon={Phone} label="Téléphone" value="Non communiqué" muted />}
           {f.email
             ? <ContactTile icon={Mail} label="E-mail" value={f.email} href={`mailto:${f.email}`} />
-            : <ContactTile icon={Mail} label="E-mail" value="Non communiqué" />}
+            : <ContactTile icon={Mail} label="E-mail" value="Non communiqué" muted />}
         </div>
+
+        {!f.phone && !f.email && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-start gap-2.5">
+            <UserX className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-sm text-amber-800 font-semibold">
+              Avis déposé anonymement — aucune coordonnée pour répondre à ce client.
+            </p>
+          </div>
+        )}
 
         <div>
           <p className="label-field">Message du client</p>
@@ -363,16 +387,16 @@ function FeedbackDetail({
 }
 
 function ContactTile({
-  icon: Icon, label, value, href,
-}: { icon: React.ElementType; label: string; value: string; href?: string }) {
+  icon: Icon, label, value, href, muted,
+}: { icon: React.ElementType; label: string; value: string; href?: string; muted?: boolean }) {
   const body = (
     <>
-      <span className="w-9 h-9 rounded-xl bg-[#eef3fc] flex items-center justify-center shrink-0">
-        <Icon className="w-4 h-4 text-[#003087]" />
+      <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${muted ? 'bg-slate-100' : 'bg-[#eef3fc]'}`}>
+        <Icon className={`w-4 h-4 ${muted ? 'text-slate-300' : 'text-[#003087]'}`} />
       </span>
       <span className="min-w-0">
         <span className="block text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</span>
-        <span className="block text-sm font-bold text-slate-700 truncate">{value}</span>
+        <span className={`block text-sm truncate ${muted ? 'text-slate-400 italic font-semibold' : 'font-bold text-slate-700'}`}>{value}</span>
       </span>
     </>
   );

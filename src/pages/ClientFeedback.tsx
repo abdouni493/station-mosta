@@ -3,9 +3,10 @@
  *
  * La seule page de l'application qui s'ouvre SANS compte. Un client de la
  * station y dépose son retour : la partie concernée (carburant, cafétéria ou
- * lavage), son nom, son téléphone, éventuellement son e-mail, et ce qu'il a à
- * dire. L'avis part dans `client_feedbacks` et s'allume aussitôt en pastille
- * rouge dans le menu de la partie visée.
+ * lavage) et ce qu'il a à dire. Il peut y ajouter son nom, son téléphone et son
+ * e-mail s'il veut être rappelé — les trois sont FACULTATIFS, un avis anonyme
+ * vaut mieux qu'un avis jamais déposé. L'avis part dans `client_feedbacks` et
+ * s'allume aussitôt en pastille rouge dans le menu de la partie visée.
  *
  * Elle vit VOLONTAIREMENT hors de `AppProvider` / `BizProvider` : rien de la
  * station n'est chargé ici, donc rien ne peut fuir vers un visiteur. Le nom et
@@ -16,7 +17,7 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Fuel, MessageSquare, User, Phone, Mail, Send, CheckCircle2, AlertCircle,
-  ArrowLeft, Loader2, ShieldCheck, Clock,
+  ArrowLeft, Loader2, ShieldCheck, Clock, Info,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { FEEDBACK_PARTS, FeedbackPart, submitClientFeedback } from '../lib/feedbacks';
@@ -55,8 +56,10 @@ export default function ClientFeedback() {
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
 
-  const canSend =
-    !!part && fullName.trim().length >= 2 && phone.trim().length >= 4 && message.trim().length >= 3;
+  /** Le strict nécessaire : une partie et un message. Le reste est offert. */
+  const canSend = !!part && message.trim().length >= 3;
+  /** Le remerciement ne promet un rappel que si le client a laissé de quoi le joindre. */
+  const [leftContact, setLeftContact] = useState(false);
 
   const send = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -66,13 +69,14 @@ export default function ClientFeedback() {
     const res = await submitClientFeedback({ part, fullName, phone, email, message });
     setSending(false);
     if (!res.ok) { setError(res.error || "Envoi impossible — réessayez."); return; }
+    setLeftContact(!!phone.trim() || !!email.trim());
     setSent(true);
   };
 
   /** Reprendre à zéro pour déposer un second avis. */
   const reset = () => {
     setPart(null); setFullName(''); setPhone(''); setEmail(''); setMessage('');
-    setError(null); setSent(false);
+    setError(null); setSent(false); setLeftContact(false);
   };
 
   return (
@@ -102,7 +106,7 @@ export default function ClientFeedback() {
 
         <AnimatePresence mode="wait">
           {sent ? (
-            <ThankYou key="thanks" onAgain={reset} />
+            <ThankYou key="thanks" onAgain={reset} contactLeft={leftContact} />
           ) : (
             <motion.form
               key="form"
@@ -141,18 +145,37 @@ export default function ClientFeedback() {
                 </div>
               </section>
 
-              {/* 2. Qui êtes-vous */}
+              {/* 2. Le message — la seule chose vraiment demandée. */}
+              <section>
+                <p className="text-[11px] font-black uppercase tracking-wider text-[#002d87] mb-1">
+                  2. Votre message <span className="text-red-500">*</span>
+                </p>
+                <p className="text-xs text-slate-400 mb-2">
+                  Dites-nous ce qui s'est bien passé, ou ce qui devrait être amélioré.
+                </p>
+                <textarea
+                  value={message} onChange={e => setMessage(e.target.value)} rows={5} maxLength={4000}
+                  className="input-field" placeholder="Décrivez votre expérience…" />
+                <p className="text-[11px] text-slate-400 mt-1 text-right tabular-nums">{message.length} / 4000</p>
+              </section>
+
+              {/* 3. Qui êtes-vous — entièrement facultatif : on peut rester anonyme. */}
               <section className="space-y-3">
                 <div>
-                  <p className="text-[11px] font-black uppercase tracking-wider text-[#002d87]">2. Vos coordonnées</p>
-                  <p className="text-xs text-slate-400">Elles servent uniquement à vous répondre.</p>
+                  <p className="text-[11px] font-black uppercase tracking-wider text-[#002d87]">
+                    3. Vos coordonnées
+                    <span className="ml-1.5 text-slate-400 font-bold normal-case tracking-normal">— facultatif</span>
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Elles servent uniquement à vous répondre. Laissez-les vides pour envoyer votre avis anonymement.
+                  </p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <PublicField icon={User} label="Nom complet" required>
+                  <PublicField icon={User} label="Nom complet" hint="Facultatif">
                     <input value={fullName} onChange={e => setFullName(e.target.value)}
                       className="input-field" placeholder="Votre nom et prénom" maxLength={120} autoComplete="name" />
                   </PublicField>
-                  <PublicField icon={Phone} label="Téléphone" required>
+                  <PublicField icon={Phone} label="Téléphone" hint="Facultatif">
                     <input value={phone} onChange={e => setPhone(e.target.value)} type="tel"
                       className="input-field" placeholder="0X XX XX XX XX" maxLength={40} autoComplete="tel" />
                   </PublicField>
@@ -161,18 +184,10 @@ export default function ClientFeedback() {
                   <input value={email} onChange={e => setEmail(e.target.value)} type="email"
                     className="input-field" placeholder="vous@exemple.com" maxLength={160} autoComplete="email" />
                 </PublicField>
-              </section>
-
-              {/* 3. Le message */}
-              <section>
-                <p className="text-[11px] font-black uppercase tracking-wider text-[#002d87] mb-1">3. Votre message</p>
-                <p className="text-xs text-slate-400 mb-2">
-                  Dites-nous ce qui s'est bien passé, ou ce qui devrait être amélioré.
+                <p className="text-[11px] text-slate-400 flex items-start gap-1.5">
+                  <Info className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  Sans téléphone ni e-mail, votre message sera bien lu — mais nous ne pourrons pas vous répondre.
                 </p>
-                <textarea
-                  value={message} onChange={e => setMessage(e.target.value)} rows={5} maxLength={4000}
-                  className="input-field" placeholder="Décrivez votre expérience…" />
-                <p className="text-[11px] text-slate-400 mt-1 text-right tabular-nums">{message.length} / 4000</p>
               </section>
 
               {error && (
@@ -194,7 +209,9 @@ export default function ClientFeedback() {
                 </button>
                 {!canSend && !sending && (
                   <p className="text-[11px] text-slate-400 text-center">
-                    Choisissez une partie, puis renseignez votre nom, votre téléphone et votre message.
+                    {!part
+                      ? 'Choisissez d\'abord la partie de la station concernée.'
+                      : 'Écrivez votre message — vos coordonnées, elles, restent facultatives.'}
                   </p>
                 )}
                 <p className="text-[11px] text-slate-400 flex items-center justify-center gap-1.5">
@@ -235,11 +252,12 @@ function PublicField({
 
 // ─── Écran de remerciement ────────────────────────────────────────────────────
 /**
- * Ce que le client doit comprendre en sortant : son message est ARRIVÉ, et
- * quelqu'un le rappellera. C'est la seule confirmation qu'il aura — il n'a pas
- * de compte pour venir vérifier plus tard.
+ * Ce que le client doit comprendre en sortant : son message est ARRIVÉ. C'est la
+ * seule confirmation qu'il aura — il n'a pas de compte pour venir vérifier plus
+ * tard. On ne lui promet un rappel QUE s'il a laissé de quoi le joindre :
+ * promettre une réponse à un client anonyme, c'est promettre dans le vide.
  */
-function ThankYou({ onAgain }: { onAgain: () => void; key?: React.Key }) {
+function ThankYou({ onAgain, contactLeft }: { onAgain: () => void; contactLeft: boolean; key?: React.Key }) {
   return (
     <motion.div
       key="thanks"
@@ -259,14 +277,19 @@ function ThankYou({ onAgain }: { onAgain: () => void; key?: React.Key }) {
 
       <h2 className="text-2xl font-black text-[#002d87]">Merci pour votre retour !</h2>
       <p className="text-slate-500 mt-3 max-w-md mx-auto leading-relaxed">
-        Votre message a bien été transmis à l'équipe concernée. Nous vous
-        contacterons très prochainement au numéro que vous nous avez laissé.
+        {contactLeft
+          ? <>Votre message a bien été transmis à l'équipe concernée. Nous vous
+              contacterons très prochainement grâce aux coordonnées que vous nous avez laissées.</>
+          : <>Votre message a bien été transmis à l'équipe concernée. Vous l'avez
+              envoyé anonymement : il sera lu, mais nous ne pourrons pas vous répondre.</>}
       </p>
 
       <div className="mt-6 rounded-2xl bg-slate-50 border border-slate-200 p-4 flex items-center justify-center gap-2.5">
         <Clock className="w-4 h-4 text-[#003087] shrink-0" />
         <p className="text-sm font-semibold text-slate-600">
-          Un responsable vous répondra sous peu.
+          {contactLeft
+            ? 'Un responsable vous répondra sous peu.'
+            : 'Un responsable en prendra connaissance sous peu.'}
         </p>
       </div>
 

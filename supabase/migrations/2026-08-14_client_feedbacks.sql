@@ -4,6 +4,8 @@
 --  HOW TO RUN
 --    Supabase → SQL Editor → New query → coller CE fichier entier → Run.
 --    Le script est IDEMPOTENT : il peut être relancé sans risque.
+--    PUIS enchaîner sur 2026-08-14_client_feedbacks_optional_contact.sql, qui
+--    rend le nom et le téléphone facultatifs (seul le message est exigé).
 --
 --  CE QUE FAIT CE SCRIPT
 --    1.  public.client_feedbacks — un avis déposé par un client depuis la page

@@ -1,10 +1,17 @@
 /**
  * ─── Retours clients — la boîte aux lettres publique de la station ─────────────
  *
- * Un client dépose son avis depuis la page publique `/client` (aucun compte, on
- * ne lui demande rien d'autre que son nom, son téléphone et ce qu'il a à dire).
- * L'avis est rattaché à UNE partie : carburant, cafétéria ou lavage — et c'est
- * l'écran « Retours clients » de cette partie qui l'affiche.
+ * Un client dépose son avis depuis la page publique `/client` (aucun compte, et
+ * rien d'obligatoire hormis la partie visée et le message). L'avis est rattaché
+ * à UNE partie : carburant, cafétéria ou lavage — et c'est l'écran « Retours
+ * clients » de cette partie qui l'affiche.
+ *
+ * NOM ET TÉLÉPHONE FACULTATIFS
+ *   Un avis peut arriver anonyme : le client pressé, ou celui qui ne veut pas se
+ *   nommer, a quand même quelque chose à dire. Les coordonnées ne servent qu'à
+ *   rappeler — leur absence n'empêche donc rien, elle prive juste la station de
+ *   la réponse. Côté application, `fullName` et `phone` sont donc optionnels
+ *   PARTOUT : jamais de `f.phone.trim()` sans garde.
  *
  * POURQUOI UNE TABLE À PART, ET PAS LE BLOB `biz_store`
  *   Le blob des parties commerciales n'est lisible et inscriptible que par un
@@ -25,8 +32,10 @@ export type FeedbackStatus = 'unread' | 'read';
 export interface ClientFeedback {
   id: string;
   part: FeedbackPart;
-  fullName: string;
-  phone: string;
+  /** Absent quand le client n'a pas voulu se nommer. */
+  fullName?: string;
+  /** Absent quand le client ne souhaite pas être rappelé. */
+  phone?: string;
   email?: string;
   message: string;
   status: FeedbackStatus;
@@ -35,14 +44,21 @@ export interface ClientFeedback {
   readBy?: string;
 }
 
-/** Ce que la page publique envoie. */
+/** Ce que la page publique envoie — seuls `part` et `message` sont exigés. */
 export interface FeedbackDraft {
   part: FeedbackPart;
-  fullName: string;
-  phone: string;
+  fullName?: string;
+  phone?: string;
   email?: string;
   message: string;
 }
+
+/**
+ * Comment nommer l'auteur d'un avis à l'écran. Centralisé ici pour que les
+ * écrans internes disent tous la même chose d'un client resté anonyme.
+ */
+export const feedbackAuthor = (f: { fullName?: string }): string =>
+  f.fullName?.trim() || 'Client anonyme';
 
 /** Présentation d'une partie — partagée par la page publique et les écrans internes. */
 export const FEEDBACK_PARTS: {
@@ -65,8 +81,8 @@ export const isFeedbackPart = (v: unknown): v is FeedbackPart =>
 interface FeedbackRow {
   id: string;
   part: string;
-  full_name: string;
-  phone: string;
+  full_name: string | null;
+  phone: string | null;
   email: string | null;
   message: string;
   status: string;
@@ -79,9 +95,11 @@ function rowToFeedback(r: FeedbackRow): ClientFeedback {
   return {
     id: r.id,
     part: (isFeedbackPart(r.part) ? r.part : 'fuel'),
-    fullName: r.full_name,
-    phone: r.phone,
-    email: r.email || undefined,
+    // Un champ vide vaut « non renseigné » : la base d'une station qui n'a pas
+    // encore reçu la migration peut encore contenir des chaînes vides.
+    fullName: r.full_name?.trim() || undefined,
+    phone: r.phone?.trim() || undefined,
+    email: r.email?.trim() || undefined,
     message: r.message,
     status: r.status === 'read' ? 'read' : 'unread',
     createdAt: r.created_at,
@@ -100,30 +118,51 @@ export function isMissingFeedbackTable(err?: { code?: string; message?: string }
   return /relation .* does not exist|could not find the table|schema cache/i.test(err.message || '');
 }
 
+/**
+ * Base restée à la PREMIÈRE version de la table, où le nom et le téléphone
+ * étaient obligatoires : un avis anonyme s'y heurte à une violation de
+ * contrainte (23502 not null, 23514 check). Le visiteur n'a rien fait de mal —
+ * il faut lui dire quoi faire, pas lui montrer le message de PostgreSQL.
+ */
+function isLegacyRequiredContact(err?: { code?: string; message?: string } | null): boolean {
+  if (!err) return false;
+  const onContactColumn = /full_name|phone/i.test(err.message || '');
+  return (err.code === '23502' || err.code === '23514') && onContactColumn;
+}
+
 // ─── Dépôt d'un avis (page publique, sans compte) ──────────────────────────────
 
 /**
  * Enregistre l'avis d'un client. L'erreur est RENDUE, jamais avalée : la page
  * publique doit pouvoir dire « ce n'est pas parti, réessayez » plutôt que
  * d'afficher un remerciement pour un message perdu.
+ *
+ * Seuls la partie et le message sont exigés. Le nom et le téléphone ne sont
+ * vérifiés QUE si le client en a saisi un : laisser le champ vide est un choix
+ * légitime, y écrire « a » ou « 12 » est une faute de frappe qu'il vaut mieux
+ * signaler tout de suite que découvrir en essayant de rappeler.
  */
 export async function submitClientFeedback(
   draft: FeedbackDraft,
 ): Promise<{ ok: boolean; error?: string }> {
-  const fullName = draft.fullName.trim();
-  const phone = draft.phone.trim();
+  const fullName = draft.fullName?.trim() || '';
+  const phone = draft.phone?.trim() || '';
   const message = draft.message.trim();
   const email = draft.email?.trim();
 
-  if (fullName.length < 2) return { ok: false, error: 'Indiquez votre nom complet.' };
-  if (phone.length < 4) return { ok: false, error: 'Indiquez un numéro de téléphone valide.' };
   if (message.length < 3) return { ok: false, error: 'Décrivez votre retour en quelques mots.' };
+  if (fullName && fullName.length < 2) {
+    return { ok: false, error: 'Votre nom semble incomplet — complétez-le ou laissez le champ vide.' };
+  }
+  if (phone && phone.length < 4) {
+    return { ok: false, error: 'Ce numéro semble incomplet — corrigez-le ou laissez le champ vide.' };
+  }
 
   try {
     const { error } = await supabase.from('client_feedbacks').insert({
       part: draft.part,
-      full_name: fullName.slice(0, 120),
-      phone: phone.slice(0, 40),
+      full_name: fullName ? fullName.slice(0, 120) : null,
+      phone: phone ? phone.slice(0, 40) : null,
       email: email ? email.slice(0, 160) : null,
       message: message.slice(0, 4000),
       status: 'unread',
@@ -134,6 +173,12 @@ export async function submitClientFeedback(
       return {
         ok: false,
         error: "Le service de retours n'est pas encore activé sur cette station. Merci de contacter l'accueil.",
+      };
+    }
+    if (isLegacyRequiredContact(error)) {
+      return {
+        ok: false,
+        error: 'Cette station demande encore votre nom et votre téléphone : renseignez-les pour envoyer votre avis.',
       };
     }
     return { ok: false, error: error.message };
