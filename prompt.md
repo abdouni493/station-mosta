@@ -165,8 +165,11 @@ fix the interface design of payment button action interface make sure to make it
 
 
 
-add new option on the last interface of create brigades on the interface of comptablity add new option of justification make it for recieve products as purchase to the armoire that will working like this : 
-sometimes the suppliers comes to sell the products to the station to the pompistes directly to put them on the armoires so the pompiste will pay that products with money of brigade then he have to justifiy the decalage money with purchase that products to let him search about that products and set the purchased quantity and let it load the purchase price with possibility of edit it manually and make it when user create the the brigade then make that quantity with add to that product on that selected armoire 
-and make sure to make the creation of brigades will save the quantities of all the armoire products on the creation of the brigade and make it display on the justification with sell products from the armoire let it display the quantity of each product on the previous brigade and if user made a transfer of product form the stock to armoire then make it display also like this : quantity of the product on the previous brigade plus the transfered quantity and make make sure to make this new informations of justification with purchase products to armoire make it dispaly on the fiche briagade details and make sure to make it display the detais of the quanitty initial of each product on the previous brigade and make this new informations dipslay also on the fiche journalier 
-give me the sql code that i have to run it of rthi new updates then push all updates to repo with merge code without pull request : 
+
+
+fix the interface of create new brigade on the last interface of create brigade make it when user choose the justification with products make sure to make it load the price of that product when user select that product 
+
+make the interface of comptability on the interface of create brigade better organized with integrate the justification with purchase or selling on the same part with better organisation and make it user can select multiple selling and purchases on the same creation of brigade and make sure to make the design of text boxes better design of searching 
+
+fix the interface of comptability make new option when user click on justification with acompte make possibility of when user click on acompte then its will make for the user option for seach about the pompiste with his name with possibility of create multiple acomptes onthe same interface and same creation and make sure when user create the acompte then make sure to make it display on the card of that pompiste and on the history of that pompiste 
 
