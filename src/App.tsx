@@ -35,6 +35,9 @@ import MyPayments from "./pages/MyPayments";
 import MySettings from "./pages/MySettings";
 import CaisseGenerale from "./pages/CaisseGenerale";
 import BankAccounts from "./pages/BankAccounts";
+import Feedbacks from "./pages/Feedbacks";
+import ClientFeedback from "./pages/ClientFeedback";
+import { FeedbackProvider } from "./store/FeedbackContext";
 
 // ─── Business modules (Cafétéria / Lavage & Réparation) ───────────────────────
 import { BizProvider } from "./store/BizContext";
@@ -54,6 +57,7 @@ import ModuleCaisse from "./pages/modules/ModuleCaisse";
 import ModuleReports from "./pages/modules/ModuleReports";
 import ModuleReparations from "./pages/modules/ModuleReparations";
 import ModuleEncaissements from "./pages/modules/ModuleEncaissements";
+import ModuleFeedbacks from "./pages/modules/ModuleFeedbacks";
 import GeneralReports from "./pages/GeneralReports";
 
 // Builds the route list for one business module based on its capabilities.
@@ -83,6 +87,7 @@ function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
     add('expenses', <ModuleExpenses moduleKey={key} />);
     add('caisse', <ModuleCaisse moduleKey={key} />);
     add('reports', <ModuleReports moduleKey={key} />);
+    add('feedbacks', <ModuleFeedbacks moduleKey={key} />);
   } else {
     add('stock', <ModuleStock moduleKey={key} />);
     add('inventaire', <ModuleInventaire moduleKey={key} />);
@@ -99,6 +104,7 @@ function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
     add('expenses', <ModuleExpenses moduleKey={key} />);
     add('caisse', <ModuleCaisse moduleKey={key} />);
     add('reports', <ModuleReports moduleKey={key} />);
+    add('feedbacks', <ModuleFeedbacks moduleKey={key} />);
   }
   return routes;
 }
@@ -128,6 +134,7 @@ const ROUTE_TO_MODULE: Record<string, string> = {
   "/reports":          "Rapports",
   "/caisse-generale":  "Caisse Générale",
   "/bank-accounts":    "Comptes Bancaires",
+  "/feedbacks":        "Retours Clients",
 };
 
 // ─── ProtectedRoute Component ─────────────────────────────────────────────────
@@ -300,7 +307,6 @@ const DbLoader = () => (
 
 export default function App() {
   const { i18n } = useTranslation();
-  const auth = useAuth();
 
   useEffect(() => {
     document.documentElement.dir  = i18n.dir();
@@ -311,6 +317,24 @@ export default function App() {
   useEffect(() => { installAutoTranslate(); }, []);
   // Re-sweep after each auth/render phase so newly mounted screens translate too.
   useEffect(() => { if (i18n.language === 'ar') sweep(); });
+
+  // Le routeur est monté AVANT toute vérification de session : `/client` est la
+  // page publique où un client dépose son avis, elle doit s'ouvrir sans compte
+  // et sans attendre la résolution de la session. Tout le reste de
+  // l'application passe par `<AuthGate>`, qui n'a pas bougé.
+  return (
+    <Router>
+      <Routes>
+        <Route path="/client" element={<ClientFeedback />} />
+        <Route path="*"       element={<AuthGate />} />
+      </Routes>
+    </Router>
+  );
+}
+
+// ─── Everything behind the login ──────────────────────────────────────────────
+function AuthGate() {
+  const auth = useAuth();
 
   // While checking session
   if (auth.isLoading) return <AppLoader phase={auth.phase} onSkip={auth.releaseNow} />;
@@ -335,11 +359,16 @@ export default function App() {
   return (
     <AppProvider key={auth.userId ?? 'session'}>
       <BizProvider>
-        <AppContent
-          userRole={auth.userRole}
-          userId={auth.userId}
-          onLogout={auth.logout}
-        />
+        {/* Les retours clients sont chargés une seule fois pour toute
+            l'application : la barre latérale en tire ses alertes, les trois
+            écrans « Retours clients » y lisent leur liste. */}
+        <FeedbackProvider>
+          <AppContent
+            userRole={auth.userRole}
+            userId={auth.userId}
+            onLogout={auth.logout}
+          />
+        </FeedbackProvider>
       </BizProvider>
     </AppProvider>
   );
@@ -449,9 +478,8 @@ function AppContent({
         onClose={(id) => dispatch({ type: 'REMOVE_TOAST', payload: id })}
       />
 
-      <Router>
-        <AppRoutes onLogout={onLogout} />
-      </Router>
+      {/* Le <Router> est monté par <App> (au-dessus de la page publique). */}
+      <AppRoutes onLogout={onLogout} />
     </>
   );
 }
@@ -496,6 +524,9 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         {/* Finance — trésorerie */}
         <Route path="/caisse-generale"  element={<ProtectedRoute element={<CaisseGenerale />} moduleId="Caisse Générale" />} />
         <Route path="/bank-accounts"    element={<ProtectedRoute element={<BankAccounts />} moduleId="Comptes Bancaires" />} />
+
+        {/* Retours clients — partie Carburant (page publique : /client) */}
+        <Route path="/feedbacks"        element={<ProtectedRoute element={<Feedbacks />} moduleId="Retours Clients" />} />
 
         {/* Analytics */}
         <Route path="/statistics"       element={<ProtectedRoute element={<Statistics />} moduleId="Statistiques" />} />

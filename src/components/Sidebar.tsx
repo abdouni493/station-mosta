@@ -8,12 +8,13 @@ import {
   BarChart2, Archive, UserCog, DollarSign, Building2, ChevronRight, X,
   Wallet, CalendarCheck, Shield, UserCheck, Calendar,
   FlaskConical, Beaker, ShoppingBag, Car, Utensils, Coffee, Droplets, FileBarChart,
-  BellRing, Landmark, PiggyBank
+  BellRing, Landmark, PiggyBank, MessageSquare
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { useAppState, UserPermissions, ModuleWorkerSession, AppUserRole } from "../store/AppContext";
 import { useBizAll } from "../store/BizContext";
+import { useFeedbacks } from "../store/FeedbackContext";
 import { MODULES, ModuleKey } from "../lib/bizConfig";
 
 // --- Types ---
@@ -80,6 +81,7 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
     items.push({ label: "Dépenses",             icon: CreditCard,  path: `${b}/expenses` });
     items.push({ label: "Caisse",               icon: Wallet,      path: `${b}/caisse` });
     items.push({ label: "Rapports",             icon: BarChart2,   path: `${b}/reports` });
+    items.push({ label: "Retours clients",      icon: MessageSquare, path: `${b}/feedbacks` });
   } else {
     items.push({ label: "Gestion de stock",     icon: Package,     path: `${b}/stock` });
     items.push({ label: "Inventaire",           icon: ClipboardList, path: `${b}/inventaire` });
@@ -96,6 +98,7 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
     items.push({ label: "Dépenses",             icon: CreditCard,  path: `${b}/expenses` });
     items.push({ label: "Caisse",               icon: Wallet,      path: `${b}/caisse` });
     items.push({ label: "Rapports",             icon: BarChart2,   path: `${b}/reports` });
+    items.push({ label: "Retours clients",      icon: MessageSquare, path: `${b}/feedbacks` });
   }
   return { id: key, label: cfg.label, items };
 }
@@ -131,6 +134,7 @@ const ADMIN_NAV_GROUPS: NavGroup[] = [
       { label: "Fiche Journalière",  icon: FileText,     path: "/daily-report",    moduleId: "Rapports" },
       { label: "Statistiques",       icon: TrendingUp,   path: "/statistics",      moduleId: "Statistiques" },
       { label: "Rapports Carburant", icon: Receipt,      path: "/reports",         moduleId: "Rapports" },
+      { label: "Retours Clients",    icon: MessageSquare, path: "/feedbacks",      moduleId: "Retours Clients" },
     ]
   },
   buildModuleNavGroup("cafeteria"),
@@ -172,6 +176,7 @@ const WORKER_MODULE_NAV: Record<string, ModuleNavDef> = {
   // Analytique
   "Statistiques":      { label: "Statistiques",      icon: BarChart2,    path: "/statistics",      group: "stats" },
   "Rapports":          { label: "Rapports",          icon: Receipt,      path: "/reports",         group: "stats" },
+  "Retours Clients":   { label: "Retours Clients",   icon: MessageSquare, path: "/feedbacks",      group: "stats" },
   // Mon compte
   "Mes Paiements":     { label: "Mes Paiements",     icon: Wallet,       path: "/my-payments",     group: "personal" },
 };
@@ -202,6 +207,9 @@ const DASHBOARD_ITEM: NavItem = { label: "Tableau de Bord", icon: LayoutDashboar
 /** Number of pending items per route path, e.g. `{ "/lavage/reparations": 3 }`. */
 function useNavAlerts(): Record<string, number> {
   const biz = useBizAll();
+  // Avis clients jamais ouverts — même traitement que les demandes en attente :
+  // une pastille rouge tant que personne n'a marqué l'avis comme lu.
+  const { unreadByPart } = useFeedbacks();
   return useMemo(() => {
     const out: Record<string, number> = {};
     for (const key of Object.keys(MODULES) as ModuleKey[]) {
@@ -212,9 +220,12 @@ function useNavAlerts(): Record<string, number> {
       const interventions = (mod.reparations || []).filter(r => r.status === "pending").length;
       if (demandes > 0) out[`${base}/encaissements`] = demandes;
       if (interventions > 0) out[`${base}/reparations`] = interventions;
+      if (unreadByPart[key] > 0) out[`${base}/feedbacks`] = unreadByPart[key];
     }
+    // Partie Carburant : son écran de retours vit à la racine.
+    if (unreadByPart.fuel > 0) out["/feedbacks"] = unreadByPart.fuel;
     return out;
-  }, [biz]);
+  }, [biz, unreadByPart]);
 }
 
 /** Red pill carrying the number of pending items. */
@@ -291,6 +302,7 @@ const PART_IFACE_NAV: Record<string, { label: string; icon: React.ElementType }>
   expenses:    { label: "Dépenses",             icon: CreditCard },
   caisse:      { label: "Caisse",               icon: Wallet },
   reports:     { label: "Rapports",             icon: BarChart2 },
+  feedbacks:   { label: "Retours clients",      icon: MessageSquare },
 };
 
 function buildModuleWorkerNav(worker?: ModuleWorkerSession): NavGroup[] {

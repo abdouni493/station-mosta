@@ -117,6 +117,7 @@ export const BACKUP_TABLES: BackupTableSpec[] = [
   { table: 'daily_reports',                    label: 'Rapports journaliers' },
   { table: 'permission_templates',             label: 'Modèles de permissions' },
   { table: 'activity_log',                     label: 'Journal d\'activité' },
+  { table: 'client_feedbacks',                 label: 'Retours clients (page publique /client)' },
   // Parties commerciales — Cafétéria & Lavage
   { table: 'biz_sessions',                     label: 'Sessions de caisse (Cafétéria / Lavage)' },
   { table: 'biz_store',                        label: 'Données Cafétéria & Lavage (produits, ventes, achats, employés…)' },

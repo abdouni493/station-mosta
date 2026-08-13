@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Target, Calendar, Fuel, Store, Gauge, Wrench, Map,
   ClipboardList, Package, ShoppingCart, Archive, Users, Truck, UsersRound,
   UserCog, Building2, CreditCard, FileText, BarChart2, Receipt,
-  Settings as SettingsIcon, Wallet,
+  Settings as SettingsIcon, Wallet, MessageSquare,
 } from 'lucide-react';
 import type React from 'react';
 import type { UserPermission, UserPermissions } from '../store/AppContext';
@@ -97,6 +97,10 @@ export const GROUPS: GroupDef[] = [
   {
     title: "Analytique & Paramètres",
     modules: [
+      // Les avis déposés par les clients sur la page publique /client. Pas de
+      // « créer » : personne, dans la station, n'écrit un avis à la place d'un
+      // client — on ne peut que le lire, le marquer traité ou le supprimer.
+      { id: "Retours Clients", label: "Retours Clients", icon: MessageSquare, actions: ['modifier', 'supprimer'] },
       { id: "Statistiques", label: "Statistiques", icon: BarChart2,    actions: ['imprimer', 'exporter'] },
       { id: "Rapports",     label: "Rapports",     icon: Receipt,      actions: ['imprimer', 'exporter'] },
       { id: "Paramètres",   label: "Paramètres",   icon: SettingsIcon, actions: ['modifier'] },

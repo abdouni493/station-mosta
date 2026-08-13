@@ -898,6 +898,7 @@ export const MODULE_INTERFACES: { id: string; label: string }[] = [
   { id: 'expenses', label: 'Dépenses' },
   { id: 'caisse', label: 'Caisse' },
   { id: 'reports', label: 'Rapports' },
+  { id: 'feedbacks', label: 'Retours clients' },
 ];
 
 export const INTERFACE_ACTIONS = ['voir', 'creer', 'modifier', 'supprimer'] as const;
@@ -917,12 +918,13 @@ export function interfacesForModule(key: ModuleKey): { id: string; label: string
   const ids = cfg.isService
     ? [
         'reparations', 'encaissements', 'pos', 'sales', 'stock', 'inventaire', 'purchases',
-        'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports',
+        'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports', 'feedbacks',
       ]
     : [
         'stock', 'inventaire', 'purchases',
         ...(cfg.hasProduction ? ['production', 'comptoir'] : []),
         'pos', 'sales', 'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports',
+        'feedbacks',
       ];
   return ids
     .map(id => MODULE_INTERFACES.find(i => i.id === id))
