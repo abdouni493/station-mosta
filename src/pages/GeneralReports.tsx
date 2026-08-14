@@ -14,10 +14,10 @@ import { useBizAll, useBiz } from '@/src/store/BizContext';
 import { useAppState, useAppDispatch, CAISSE_ID } from '@/src/store/AppContext';
 import { money, formatDate, Modal, Badge, Confirm, Table } from '@/src/components/biz/Kit';
 import { computeModuleReport, computeCarburantReport, consolidate, within, PartReport, GlobalReport } from '@/src/lib/bizReporting';
-import { computeWorkforce } from '@/src/lib/workforceReporting';
-import { computeTreasuryReport } from '@/src/lib/treasuryReporting';
-import { computeStockValuation } from '@/src/lib/stockValuation';
-import { computeWorkingCapital } from '@/src/lib/workingCapital';
+import { computeWorkforce, WorkforceReport } from '@/src/lib/workforceReporting';
+import { computeTreasuryReport, TreasuryReport } from '@/src/lib/treasuryReporting';
+import { computeStockValuation, StockValuation } from '@/src/lib/stockValuation';
+import { computeWorkingCapital, WorkingCapitalReport } from '@/src/lib/workingCapital';
 import { summarizeInventaires } from '@/src/lib/inventaire';
 import {
   computeCarburantAnalytics, computeModuleAnalytics, consolidateAnalytics,
@@ -123,7 +123,7 @@ export default function GeneralReports() {
   /** Réglages de zakât — conservés sur ce poste d'une session à l'autre. */
   const [zakatConfig, setZakatConfig] = useState<ZakatConfig>(() => loadZakatConfig());
 
-  const reports = useMemo(() => ({
+  const reports: Record<'carburant' | 'cafeteria' | 'lavage', PartReport> = useMemo(() => ({
     carburant: computeCarburantReport(app, range.from, range.to),
     // Le grand livre est passé aux parties commerciales : sans lui, leur caisse
     // ignorait les virements partis de leur coffre vers la banque.
@@ -136,11 +136,16 @@ export default function GeneralReports() {
     [reports, range],
   );
 
-  const workforce = useMemo(() => computeWorkforce(app, biz, range.from, range.to), [app, biz, range]);
-  const treasury = useMemo(() => computeTreasuryReport(app, biz, range.from, range.to), [app, biz, range]);
+  // Ces annotations ne sont pas décoratives : `@types/react` n'est pas installé,
+  // donc tout ce que rend un hook vaut `any` et rien de ce qui en sort n'est
+  // vérifié. C'est ainsi qu'un `parts[].workers` — un champ qui n'a jamais
+  // existé — a traversé la compilation pour planter à l'écran. Nommer le type
+  // rebranche le compilateur sur tout ce qui lit ces rapports.
+  const workforce: WorkforceReport = useMemo(() => computeWorkforce(app, biz, range.from, range.to), [app, biz, range]);
+  const treasury: TreasuryReport = useMemo(() => computeTreasuryReport(app, biz, range.from, range.to), [app, biz, range]);
 
   // ── Valeur du stock — les deux valorisations, activité par activité ──
-  const stockValuation = useMemo(() => computeStockValuation(app, biz), [app, biz]);
+  const stockValuation: StockValuation = useMemo(() => computeStockValuation(app, biz), [app, biz]);
 
   // ── Inventaires — les comptages de chaque partie et leurs décalages ──
   // Chaque inventaire porte déjà son rapport d'écarts figé : on ne fait que les
@@ -155,7 +160,7 @@ export default function GeneralReports() {
 
   // ── Fonds de roulement — bâti SUR la trésorerie et les rapports déjà calculés,
   //    pour qu'il ne puisse jamais annoncer un autre chiffre qu'eux. ──
-  const workingCapital = useMemo(
+  const workingCapital: WorkingCapitalReport = useMemo(
     () => computeWorkingCapital(treasury, global.parts, stockValuation),
     [treasury, global.parts, stockValuation]);
 
@@ -423,29 +428,35 @@ export default function GeneralReports() {
     }));
 
     // ── Employés — le dossier de chacun, toutes activités confondues ──
-    const workerRows: DetailRow[] = workforce.parts.flatMap(p => p.workers.map(w => ({
-      id: `wf-${p.key}-${w.id}`,
-      label: `${p.emoji} ${w.name}`,
+    // Les employés forment une liste PLATE sur le rapport, chacun portant sa
+    // partie (`part` / `partLabel` / `partEmoji`) ; `parts`, lui, ne porte que
+    // des totaux par activité — aucun employé n'y est rattaché.
+    const workerRows: DetailRow[] = (workforce.workers || []).map(w => ({
+      id: `wf-${w.part}-${w.id}`,
+      label: `${w.partEmoji} ${w.name}`,
       sub: [
         w.role,
+        w.speciality,
         `salaire ${money(w.salaryAmount)}/${w.salaryType}`,
         `versé ${money(w.paymentsTotal)}`,
         w.acomptesTotal ? `acomptes ${money(w.acomptesTotal)}` : undefined,
         w.absencesCount ? `${w.absencesCount} absence(s)` : undefined,
       ].filter(Boolean).join(' · '),
-      badge: w.hasAccount ? { text: 'Compte actif', tone: 'success' } : undefined,
+      badge: w.hasAccount && w.accountActive
+        ? { text: 'Compte actif', tone: 'success' as const }
+        : { text: w.partLabel, tone: 'info' as const },
       amount: w.dueNow, amountTone: w.dueNow > 0 ? 'red' : 'slate',
-    })));
+    }));
 
     // ── Salaires versés — chaque paiement, employé par employé ──
-    const salaryRows: DetailRow[] = workforce.parts.flatMap(p => p.workers.flatMap(w =>
-      w.payments.map(pay => ({
+    const salaryRows: DetailRow[] = (workforce.workers || []).flatMap(w =>
+      (w.payments || []).map(pay => ({
         id: `pay-${w.id}-${pay.id}`, date: pay.date,
-        label: `${p.emoji} ${w.name}`,
+        label: `${w.partEmoji} ${w.name}`,
         sub: [pay.label, pay.description, pay.mode].filter(Boolean).join(' · '),
-        badge: { text: p.label, tone: 'info' as const },
+        badge: { text: w.partLabel, tone: 'info' as const },
         amount: pay.amount, amountTone: 'green' as const,
-      }))))
+      })))
       .sort(byDateDesc);
 
     // ── Brigades couvertes — la vente de carburant, brigade par brigade ──
