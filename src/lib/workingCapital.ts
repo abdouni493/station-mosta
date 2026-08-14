@@ -161,6 +161,14 @@ export function computeWorkingCapital(
   // grand livre dès qu'un versement y a été enregistré. Elle est affichée pour
   // que le gérant sache d'où vient l'argent, mais JAMAIS additionnée — sinon la
   // même recette serait comptée deux fois et cet écran contredirait les autres.
+  // Des mouvements POSTÉRIEURS à la période comptent dans le solde sans compter
+  // dans ses flux : sans les nommer, « ouverture + entrées − sorties » ne
+  // retombait pas sur le solde affiché et l'écart passait pour une erreur.
+  const caisseAfter = treasury.caisseDetail?.after || 0;
+  const afterNote = caisseAfter
+    ? ` · ${caisseAfter > 0 ? '+' : '−'}${fmt(Math.abs(caisseAfter))} après la période`
+    : '';
+
   const cashRows: WCRow[] = [
     {
       id: 'caisse-generale',
@@ -168,7 +176,7 @@ export function computeWorkingCapital(
       // Le solde seul ne disait pas d'où il venait ni ce que la période avait
       // changé. On déroule le calcul : ouverture + entrées − sorties = solde.
       sub: `Ouverture ${fmt(treasury.caisseOpening)} · +${fmt(treasury.caisseIn)} encaissés `
-        + `· −${fmt(treasury.caisseOut)} décaissés sur la période`,
+        + `· −${fmt(treasury.caisseOut)} décaissés sur la période${afterNote}`,
       amount: treasury.caisseBalance,
       partKey: 'systeme',
       partLabel: 'Finance',
@@ -262,7 +270,9 @@ export function computeWorkingCapital(
 
   const cash = block('cash', 'Caisse générale', 'Argent liquide — solde du grand livre', cashRows, 1,
     `Sur la période : ${fmt(treasury.caisseOpening)} au départ, +${fmt(treasury.caisseIn)} encaissés, `
-    + `−${fmt(treasury.caisseOut)} décaissés, soit ${fmt(treasury.caisseBalance)} aujourd'hui. `
+    + `−${fmt(treasury.caisseOut)} décaissés`
+    + (caisseAfter ? `, puis ${fmt(caisseAfter)} de mouvements postérieurs` : '')
+    + `, soit ${fmt(treasury.caisseBalance)} aujourd'hui. `
     + 'Seule la caisse générale est comptée. Les caisses des activités, en dessous, sont la position reconstituée '
     + 'sur leurs propres documents : elles expliquent d\'où vient l\'argent, mais les additionner compterait deux '
     + 'fois les recettes déjà versées au grand livre.',

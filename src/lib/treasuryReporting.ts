@@ -20,12 +20,41 @@ import { within } from './bizReporting';
 
 export const CAISSE_ID = 'CAISSE';
 
+/**
+ * Les coffres de chaque activité (mêmes identifiants que `AppContext`). Un
+ * virement au départ de l'un d'eux est une SORTIE d'espèces : sans eux, le
+ * rapport comptait ces virements pour zéro et la caisse de l'activité restait
+ * gonflée de l'argent déjà parti en banque.
+ */
+export const CAISSE_PART_ID = {
+  carburant: 'CAISSE_CARBURANT',
+  cafeteria: 'CAISSE_CAFETERIA',
+  lavage: 'CAISSE_LAVAGE',
+} as const;
+
+export const CASH_ACCOUNT_IDS: string[] = [CAISSE_ID, ...Object.values(CAISSE_PART_ID)];
+
+export const CASH_ACCOUNT_LABEL: Record<string, string> = {
+  [CAISSE_ID]: 'Caisse générale',
+  [CAISSE_PART_ID.carburant]: 'Caisse Carburant',
+  [CAISSE_PART_ID.cafeteria]: 'Caisse Cafétéria',
+  [CAISSE_PART_ID.lavage]: 'Caisse Lavage & Réparation',
+};
+
+const isCashAccount = (id?: string): boolean => !!id && CASH_ACCOUNT_IDS.includes(id);
+
 export type TreasuryPartKey = 'carburant' | 'cafeteria' | 'lavage' | 'systeme';
 
 export const TX_LABEL: Record<string, string> = {
   DEPOSIT: 'Dépôt', WITHDRAW: 'Retrait', TRANSFER: 'Virement',
   PURCHASE: 'Achat', SALE: 'Vente', EXPENSE: 'Dépense',
   BRIGADE: 'Brigade', TPE: 'TPE', SALARY: 'Salaire', ADJUST: 'Ajustement',
+};
+
+/** Document qui a écrit la ligne — pour que le détail dise d'où vient l'argent. */
+export const ORIGIN_LABEL: Record<string, string> = {
+  purchase: 'Achat carburant', expense: 'Dépense', brigade: 'Brigade',
+  client_payment: 'Règlement client',
 };
 
 export const TREASURY_PART_LABEL: Record<TreasuryPartKey, string> = {
@@ -68,6 +97,64 @@ export interface TreasuryPartBalance {
   inflow: number; outflow: number;
 }
 
+// ─── Caisse générale : le solde, expliqué mouvement par mouvement ────────────
+/** Un mouvement qui touche la caisse générale, vu DEPUIS la caisse. */
+export interface CaisseLine {
+  id: string;
+  date: string;
+  nature: string;
+  label: string;
+  /** L'autre bout du mouvement : d'où l'argent vient, ou où il est parti. */
+  counterpart: string;
+  /** Signé sur la caisse : > 0 = espèces entrées, < 0 = espèces sorties. */
+  amount: number;
+  reference?: string;
+  part: TreasuryPartKey;
+  partLabel: string;
+  /** Document d'origine (achat, dépense, brigade…) quand la ligne en a un. */
+  origin?: string;
+  /** Place du mouvement par rapport à la période lue. */
+  bucket: 'avant' | 'periode' | 'apres';
+}
+
+/** Tous les mouvements de même nature et de même sens, additionnés. */
+export interface CaisseGroup {
+  key: string;
+  label: string;
+  direction: 'in' | 'out';
+  count: number;
+  /** Toujours positif — le sens est porté par `direction`. */
+  total: number;
+  lines: CaisseLine[];
+}
+
+/**
+ * Le calcul complet du solde de la caisse générale :
+ *
+ *     ouverture + entrées − sorties = solde de fin de période
+ *                        ( + mouvements postérieurs ) = solde d'aujourd'hui
+ *
+ * Chaque terme est décomposé par nature puis jusqu'à la ligne, pour qu'un solde
+ * négatif se lise et s'explique au lieu d'être subi.
+ */
+export interface CaisseBreakdown {
+  /** Solde de la caisse la veille du début de période. */
+  opening: number;
+  in: number;
+  out: number;
+  /** ouverture + entrées − sorties. */
+  periodEnd: number;
+  /** Mouvements POSTÉRIEURS à la période — ils comptent dans le solde réel. */
+  after: number;
+  /** Le solde d'aujourd'hui : `periodEnd + after`. */
+  balance: number;
+  groups: CaisseGroup[];
+  lines: CaisseLine[];
+  openingLines: CaisseLine[];
+  afterLines: CaisseLine[];
+  counts: { period: number; in: number; out: number; before: number; after: number };
+}
+
 export interface TreasuryReport {
   from: string; to: string;
   caisseBalance: number;
@@ -77,6 +164,8 @@ export interface TreasuryReport {
   caisseOpening: number;
   caisseIn: number;
   caisseOut: number;
+  /** Le solde de la caisse générale expliqué jusqu'à la ligne. */
+  caisseDetail: CaisseBreakdown;
   /** Total des comptes bancaires à l'ouverture de la période, et leurs flux. */
   bankOpening: number;
   bankIn: number;
@@ -127,8 +216,77 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   const caisseOut = txsInRange.filter(t => t.accountFrom === CAISSE_ID).reduce((s, t) => s + num(t.amount), 0);
   const accName = (id?: string) => {
     if (!id) return 'Externe';
-    if (id === CAISSE_ID) return 'Caisse générale';
-    return bankAccounts.find(a => a.id === id)?.name || '—';
+    return CASH_ACCOUNT_LABEL[id] || bankAccounts.find(a => a.id === id)?.name || '—';
+  };
+  const refOf = (t: any) =>
+    [t.chequeNumber && `Chèque ${t.chequeNumber}`, t.bordereauNumber && `Bordereau ${t.bordereauNumber}`]
+      .filter(Boolean).join(' • ') || undefined;
+
+  // ── Le solde de la caisse, expliqué ───────────────────────────────────────
+  // Le chiffre affiché ne se discute pas : c'est la somme des mouvements du
+  // grand livre qui touchent la caisse. Ce qui manquait, c'est de pouvoir le
+  // VÉRIFIER — d'où le découpage en trois temps (avant / pendant / après la
+  // période) puis par nature, jusqu'à la ligne. Les trois temps forment une
+  // partition de tous les mouvements de la caisse : leur somme est donc, par
+  // construction, exactement le solde ci-dessus.
+  const caisseLineOf = (t: any, bucket: CaisseLine['bucket']): CaisseLine => {
+    const isIn = t.accountTo === CAISSE_ID;
+    const nature = TX_LABEL[t.kind] || t.kind;
+    const part = (t.part || 'systeme') as TreasuryPartKey;
+    return {
+      id: t.id, date: t.date, nature,
+      label: t.description || nature,
+      counterpart: accName(isIn ? t.accountFrom : t.accountTo),
+      amount: isIn ? num(t.amount) : -num(t.amount),
+      reference: refOf(t),
+      part, partLabel: TREASURY_PART_LABEL[part] || TREASURY_PART_LABEL.systeme,
+      origin: t.refType ? (ORIGIN_LABEL[t.refType] || t.refType) : undefined,
+      bucket,
+    };
+  };
+  const byDateDesc = (a: { date: string }, b: { date: string }) =>
+    new Date(b.date).getTime() - new Date(a.date).getTime();
+  /** Un mouvement ne touche la caisse que par UN seul de ses deux comptes. */
+  const caisseTxs = txs.filter(t =>
+    (t.accountTo === CAISSE_ID) !== (t.accountFrom === CAISSE_ID));
+  const caisseOpeningLines = caisseTxs.filter(beforeFrom).map(t => caisseLineOf(t, 'avant')).sort(byDateDesc);
+  const caissePeriodLines = caisseTxs.filter(t => within(t.date, from, to)).map(t => caisseLineOf(t, 'periode')).sort(byDateDesc);
+  // Tout ce qui n'est ni avant ni dans la période lui est postérieur : ces
+  // mouvements sont dans le solde réel sans être dans les flux de la période.
+  // Sans eux, « ouverture + entrées − sorties » ne retombait pas sur le solde.
+  const caisseAfterLines = caisseTxs
+    .filter(t => !beforeFrom(t) && !within(t.date, from, to))
+    .map(t => caisseLineOf(t, 'apres')).sort(byDateDesc);
+
+  const groupMap = new Map<string, CaisseGroup>();
+  for (const l of caissePeriodLines) {
+    const direction: 'in' | 'out' = l.amount >= 0 ? 'in' : 'out';
+    const key = `${l.nature}|${direction}`;
+    const g = groupMap.get(key)
+      || { key, label: l.nature, direction, count: 0, total: 0, lines: [] as CaisseLine[] };
+    g.count += 1;
+    g.total += Math.abs(l.amount);
+    g.lines.push(l);
+    groupMap.set(key, g);
+  }
+  const caisseAfter = caisseAfterLines.reduce((s, l) => s + l.amount, 0);
+  const caisseDetail: CaisseBreakdown = {
+    opening: caisseOpening,
+    in: caisseIn, out: caisseOut,
+    periodEnd: caisseOpening + caisseIn - caisseOut,
+    after: caisseAfter,
+    balance: caisseBalance,
+    groups: Array.from(groupMap.values()).sort((a, b) => b.total - a.total),
+    lines: caissePeriodLines,
+    openingLines: caisseOpeningLines,
+    afterLines: caisseAfterLines,
+    counts: {
+      period: caissePeriodLines.length,
+      in: caissePeriodLines.filter(l => l.amount >= 0).length,
+      out: caissePeriodLines.filter(l => l.amount < 0).length,
+      before: caisseOpeningLines.length,
+      after: caisseAfterLines.length,
+    },
   };
 
   const accounts: TreasuryAccount[] = bankAccounts.map(a => {
@@ -151,8 +309,7 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
             label: t.description || TX_LABEL[t.kind] || t.kind,
             counterpart: accName(isIn ? t.accountFrom : t.accountTo),
             amount: isIn ? num(t.amount) : -num(t.amount),
-            reference: [t.chequeNumber && `Chèque ${t.chequeNumber}`, t.bordereauNumber && `Bordereau ${t.bordereauNumber}`]
-              .filter(Boolean).join(' • ') || undefined,
+            reference: refOf(t),
           };
         }),
     };
@@ -167,24 +324,35 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   const push = (m: Omit<TreasuryMovement, 'partLabel'>) =>
     all.push({ ...m, partLabel: TREASURY_PART_LABEL[m.part] });
 
-  // 1. Treasury ledger — the only rows that move the caisse générale.
+  // 1. Treasury ledger — the only rows that move the caisses of the station.
   for (const t of txs) {
     const nature = TX_LABEL[t.kind] || t.kind;
     let amount = num(t.amount);
     if (t.kind === 'WITHDRAW') amount = -amount;
-    else if (t.kind === 'TRANSFER') amount = t.accountFrom === CAISSE_ID ? -amount : (t.accountTo === CAISSE_ID ? amount : 0);
+    // Un virement est signé du point de vue des CAISSES : décaissement quand
+    // l'argent quitte l'une d'elles, encaissement quand il y arrive, neutre
+    // entre deux comptes bancaires. Ne regarder que la caisse générale faisait
+    // compter pour zéro les virements des caisses d'activité.
+    else if (t.kind === 'TRANSFER') amount = isCashAccount(t.accountFrom) ? -amount : (isCashAccount(t.accountTo) ? amount : 0);
     else if (['PURCHASE', 'EXPENSE', 'SALARY'].includes(t.kind)) amount = -amount;
     push({
       id: t.id, date: t.date, nature, part: (t.part || 'systeme') as TreasuryPartKey,
       label: t.description || nature, amount, isLedger: true,
       accounts: [t.accountFrom && accName(t.accountFrom), t.accountTo && accName(t.accountTo)].filter(Boolean).join(' → ') || undefined,
-      reference: [t.chequeNumber && `Chèque ${t.chequeNumber}`, t.bordereauNumber && `Bordereau ${t.bordereauNumber}`]
-        .filter(Boolean).join(' • ') || undefined,
+      reference: refOf(t),
     });
   }
 
-  // 2. Fuel-part documents.
+  // 2. Fuel-part documents — SEULEMENT ceux qui n'ont pas écrit leur propre
+  //    ligne au grand livre, sinon le même argent est compté deux fois. Chaque
+  //    achat réglé, chaque dépense payée et chaque brigade clôturée laisse déjà
+  //    une ligne au grand livre : elles gonflaient les encaissements, les
+  //    décaissements et le flux net du rapport (même règle que l'écran Caisse
+  //    Générale, qui ne peut donc plus annoncer d'autres totaux).
+  const ledgered = new Set(
+    txs.filter(t => t.refType && t.refId).map(t => `${t.refType}:${t.refId}`));
   for (const p of purchases) {
+    if (ledgered.has(`purchase:${p.id}`)) continue;
     push({
       id: `pur-${p.id}`, date: p.date, nature: 'Achat', part: 'carburant', isLedger: false,
       label: `Achat carburant ${p.invoiceNumber ? `n° ${p.invoiceNumber}` : ''} — ${suppliers.find(s => s.id === p.supplierId)?.name || 'Fournisseur'}`.trim(),
@@ -192,12 +360,14 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     });
   }
   for (const e of expenses) {
+    if (ledgered.has(`expense:${e.id}`)) continue;
     push({
       id: `exp-${e.id}`, date: e.date, nature: 'Dépense', part: 'carburant', isLedger: false,
       label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(), amount: -num(e.amount),
     });
   }
   for (const a of accountings) {
+    if (ledgered.has(`brigade:${a.brigadeId}`)) continue;
     const br = brigades.find(b => b.id === a.brigadeId);
     push({
       id: `bri-${a.id}`, date: br?.startDatetime || br?.date || new Date().toISOString(),
@@ -251,6 +421,10 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // ── Cash position of each part (all dates — it is a solde) ────────────────
+  // La position d'une activité, ce sont ses propres documents PLUS tout ce que
+  // le grand livre a enregistré sur SON coffre : un virement vers la banque a
+  // bien vidé cette caisse-là. Sans ce terme, le rapport annonçait une caisse
+  // encore pleine d'un argent déjà parti — et contredisait la Caisse Générale.
   const partBalance = (key: ModuleKey): number => {
     const m = biz[key];
     if (!m) return 0;
@@ -261,12 +435,14 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     const purPaid = (m.purchases || []).reduce((s, x) => s + num(x.paid), 0);
     const exp = (m.expenses || []).reduce((s, x) => s + num(x.amount), 0);
     const sal = (m.workers || []).reduce((s, w) => s + (w.payments || []).reduce((a, p) => a + num(p.amount), 0), 0);
-    return dep + salesPaid + repPaid - wit - purPaid - exp - sal;
+    return dep + salesPaid + repPaid - wit - purPaid - exp - sal
+      + ledgerNetFor(CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID], txs);
   };
   const carburantBalance =
     accountings.reduce((s, a) => s + num(a.cashReceived), 0)
     - purchases.reduce((s, p) => s + num(p.amountPaid), 0)
-    - expenses.reduce((s, e) => s + num(e.amount), 0);
+    - expenses.reduce((s, e) => s + num(e.amount), 0)
+    + ledgerNetFor(CAISSE_PART_ID.carburant, txs);
 
   const flowsOf = (key: TreasuryPartKey) => {
     const rows = movements.filter(m => m.part === key);
@@ -306,7 +482,7 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   return {
     from, to,
     caisseBalance, bankTotal, grandTotal: caisseBalance + bankTotal,
-    caisseOpening, caisseIn, caisseOut,
+    caisseOpening, caisseIn, caisseOut, caisseDetail,
     bankOpening, bankIn, bankOut,
     accounts, partBalances, movements,
     inflow, outflow, net: inflow - outflow,

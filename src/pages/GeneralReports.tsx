@@ -32,6 +32,7 @@ import StockValueView from '@/src/components/biz/StockValueView';
 import ZakatView from '@/src/components/biz/ZakatView';
 import InventaireReportView, { collectLosses } from '@/src/components/biz/InventaireReportView';
 import GlobalAnalyticsView from '@/src/components/biz/GlobalAnalyticsView';
+import CaisseDetailModal from '@/src/components/biz/CaisseDetailModal';
 import {
   ModuleFiche, GlobalFiche, PurchasesFiche, PAY_MODE_LABEL, printFiche,
   FuelPurchaseDetail, FuelTypeGroup, payInfoOf, groupPurchasesByFuelType,
@@ -106,6 +107,8 @@ export default function GeneralReports() {
   const [showPurchases, setShowPurchases] = useState(false);
   // Which KPI card's drill-down is open (every card is clickable → its detail list).
   const [activeCard, setActiveCard] = useState<CardKey | null>(null);
+  /** Détail du solde de la caisse générale — ouvert depuis sa carte. */
+  const [showCaisse, setShowCaisse] = useState(false);
   /** Découpage du temps des analyses — automatique tant qu'on n'y touche pas. */
   const [grain, setGrain] = useState<Granularity | undefined>(undefined);
   /** Réglages de zakât — conservés sur ce poste d'une session à l'autre. */
@@ -574,7 +577,7 @@ export default function GeneralReports() {
             <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar">
               <AnimatePresence mode="wait">
                 <motion.div key={active} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} workingCapital={workingCapital} stock={stockValuation} inventaires={inventaireParts} inventaireLossTotal={inventaireLossTotal} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} />}
+                  {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} workingCapital={workingCapital} stock={stockValuation} inventaires={inventaireParts} inventaireLossTotal={inventaireLossTotal} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} onOpenCaisse={() => setShowCaisse(true)} />}
                   {active === 'analyses' && <GlobalAnalyticsView parts={analytics.parts} global={analytics.global} onGranularity={setGrain} />}
                   {active === 'fonds' && <WorkingCapitalView report={workingCapital} />}
                   {active === 'stock' && <StockValueView valuation={stockValuation} />}
@@ -605,6 +608,15 @@ export default function GeneralReports() {
       <CardDetailModal
         detail={activeCard ? cardDetails[activeCard] : null}
         onClose={() => setActiveCard(null)}
+      />
+
+      {/* Le solde de la caisse générale, expliqué mouvement par mouvement */}
+      <CaisseDetailModal
+        open={showCaisse}
+        onClose={() => setShowCaisse(false)}
+        detail={treasury.caisseDetail}
+        from={range.from}
+        to={range.to}
       />
 
       {/* Off-screen printable fiches */}
@@ -726,7 +738,7 @@ function ResultBand({ salesTotal, cogs, grossMargin, chargesTotal, destroyedValu
   );
 }
 
-function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital: wc, stock: sv, inventaires: invs, inventaireLossTotal, onSelect, onOpenPurchases, onOpenCard }: {
+function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital: wc, stock: sv, inventaires: invs, inventaireLossTotal, onSelect, onOpenPurchases, onOpenCard, onOpenCaisse }: {
   global: GlobalReport;
   workforce: ReturnType<typeof computeWorkforce>;
   treasury: ReturnType<typeof computeTreasuryReport>;
@@ -737,6 +749,8 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
   onSelect: (k: ActiveKey) => void;
   onOpenPurchases: () => void;
   onOpenCard: (k: CardKey) => void;
+  /** Ouvre le détail complet du solde de la caisse générale. */
+  onOpenCaisse: () => void;
 }) {
   const chargesTotal = g.expensesTotal + g.salariesPaid;
   return (
@@ -813,9 +827,24 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
           <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => onSelect('tresorerie')}>Tout le détail →</button>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-          <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#001f5c,#003087)' }}>
-            <div className="flex items-center gap-2 text-blue-200"><PiggyBank className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Caisse générale</span></div>
-            <p className="text-3xl font-black tabular-nums mt-1.5 text-[#FFB800]">{money(tr.caisseBalance)}</p>
+          {/* Le solde de la caisse ouvre son propre calcul : ouverture, entrées,
+              sorties, puis chaque mouvement. Un découvert passe au rouge et le
+              dit — affiché en doré comme les autres, il ne s'expliquait pas. */}
+          <button onClick={onOpenCaisse} className="rounded-2xl p-5 text-white text-left transition-transform hover:-translate-y-0.5"
+            style={{ background: tr.caisseBalance < 0 ? 'linear-gradient(135deg,#7f1d1d,#b91c1c)' : 'linear-gradient(135deg,#001f5c,#003087)' }}>
+            <div className="flex items-center justify-between gap-2">
+              <div className={cn('flex items-center gap-2', tr.caisseBalance < 0 ? 'text-red-100' : 'text-blue-200')}>
+                <PiggyBank className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Caisse générale</span>
+              </div>
+              {tr.caisseBalance < 0 && <span className="badge badge-danger shrink-0">Découvert</span>}
+            </div>
+            <p className={cn('text-3xl font-black tabular-nums mt-1.5', tr.caisseBalance < 0 ? 'text-white' : 'text-[#FFB800]')}>{money(tr.caisseBalance)}</p>
+            <p className={cn('text-[11px] mt-0.5 tabular-nums', tr.caisseBalance < 0 ? 'text-red-100' : 'text-blue-200')}>
+              Ouverture {money(tr.caisseOpening)} · +{money(tr.caisseIn)} · −{money(tr.caisseOut)}
+            </p>
+            <p className={cn('text-[11px] font-black mt-1.5 flex items-center gap-1', tr.caisseBalance < 0 ? 'text-white' : 'text-[#FFB800]')}>
+              Voir le détail du calcul <ChevronRight className="w-3 h-3" />
+            </p>
           </button>
           <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#065f46,#047857)' }}>
             <div className="flex items-center gap-2 text-emerald-100"><Landmark className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Total en banque</span></div>
