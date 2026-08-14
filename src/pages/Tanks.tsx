@@ -1,15 +1,19 @@
 import React, { useState, useMemo } from "react";
 import {
   Plus, Edit2, Trash2, History, Calculator, AlertCircle,
-  X, ChevronDown, Droplets, Database, Settings2, ArrowRight, Percent, Star
+  X, ChevronDown, Droplets, Database, Settings2, ArrowRight, Percent, Star, RefreshCw
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, litersFromDegrees, degreesFromLiters, newId } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Tank, FuelType } from "../store/AppContext";
 import { tankQuantitiesOf } from "../lib/fuelPurchase";
 import { brigadeTankConsumption } from "../lib/brigadeTanks";
+import { tankLedgers, realignTankDeltas, hasDrift } from "../lib/tankLevels";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
+
+/** Litres, sans décimale et avec les séparateurs français. */
+const L = (n: number) => (Number(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 });
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const FUEL_TYPES: FuelType[] = ["ESSENCE", "GASOIL", "GPL", "DIESEL", "SUPER"];
@@ -23,11 +27,12 @@ const fuelColors: Record<string, { bg: string; text: string; bar: string }> = {
 };
 
 // ── TankCard ─────────────────────────────────────────────────────────────────
-const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, onGplCalc, onToggleFavorite, canEdit = true, canDelete = true }: any) => {
+const TankCard = ({ tank, settings, ledger, onEdit, onDelete, onHistory, onConverter, onGplCalc, onToggleFavorite, onRealign, canEdit = true, canDelete = true }: any) => {
   // `current` is the authoritative level: every writer (modal save, calcul GPL,
   // livraisons RPC, clôture brigade, inventaire, saisie manuelle) persists it,
   // whereas `degrees` can lag (manual level outside the curve, inventaire).
   const displayLiters = tank.current;
+  const drifted = hasDrift(ledger);
   // Guard against capacity === 0 to avoid NaN/Infinity.
   const pct = tank.capacity > 0
     ? Math.min(100, (displayLiters / tank.capacity) * 100)
@@ -126,6 +131,46 @@ const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, on
           ))}
         </div>
 
+        {/* ── D'où vient ce niveau ────────────────────────────────────────────
+            Les trois chiffres qui expliquent la jauge : ce que les ACHATS ont
+            livré, ce que les BRIGADES ont débité, et le niveau qui en découle.
+            Affichés sur la carte, ils permettent de contrôler la cuve sans
+            ouvrir l'historique — et de voir immédiatement si le niveau
+            enregistré a décroché des documents. */}
+        {ledger && (
+          <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-2.5">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase">Achats</p>
+                <p className="text-xs font-black text-green-600 tabular-nums mt-0.5">+{L(ledger.purchased + ledger.delivered)}</p>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase">Brigades</p>
+                <p className="text-xs font-black text-orange-600 tabular-nums mt-0.5">−{L(ledger.consumed)}</p>
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase">Théorique</p>
+                <p className="text-xs font-black text-blue-700 tabular-nums mt-0.5">{L(ledger.expected)} L</p>
+              </div>
+            </div>
+
+            {drifted && (
+              <div className="mt-2 pt-2 border-t border-amber-200/70">
+                <p className="text-[10px] font-bold text-amber-700 leading-snug">
+                  Niveau enregistré {L(ledger.stored)} L — {ledger.drift > 0 ? "au-dessus" : "en dessous"} des
+                  documents de {L(Math.abs(ledger.drift))} L.
+                </p>
+                {canEdit && (
+                  <button onClick={onRealign}
+                    className="mt-1.5 text-[10px] font-black uppercase tracking-wider text-amber-700 hover:text-amber-900 underline flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3" /> Aligner sur les documents
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {isAlert && (
           <div className="flex items-center gap-2 bg-red-50 rounded-xl px-3 py-2">
             <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 animate-pulse" />
@@ -151,7 +196,7 @@ const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, on
  * affichait une consommation égale au niveau entier de la cuve dès que le
  * relevé de fin valait zéro.
  */
-const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes, purchases, pumpNozzles, pumps }: any) => {
+const TankHistoryModal = ({ tank, ledger, onClose, brigades, deliveryNotes, purchases, pumpNozzles, pumps }: any) => {
   const history = useMemo(() => {
     const items: any[] = [];
 
@@ -213,12 +258,14 @@ const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes, purchases, p
     return items.sort((a, b) => b.date - a.date);
   }, [tank.id, brigades, deliveryNotes, purchases, pumpNozzles, pumps]);
 
-  // Récapitulatif : le niveau affiché sur la carte doit pouvoir se relire ici.
-  const totals = useMemo(() => {
-    const inL = history.filter(i => i.type === 'APP').reduce((s, i) => s + i.amount, 0);
-    const outL = history.filter(i => i.type === 'MINUS').reduce((s, i) => s + i.amount, 0);
-    return { inL, outL };
-  }, [history]);
+  // Récapitulatif : les MÊMES chiffres que la carte de la cuve — ils viennent du
+  // même calcul (`lib/tankLevels.ts`), pour que l'historique ne puisse jamais
+  // raconter une autre histoire que la jauge.
+  const totals = useMemo(() => ({
+    inL: ledger ? ledger.purchased + ledger.delivered : history.filter(i => i.type === 'APP').reduce((s, i) => s + i.amount, 0),
+    outL: ledger ? ledger.consumed : history.filter(i => i.type === 'MINUS').reduce((s, i) => s + i.amount, 0),
+    expected: ledger?.expected as number | undefined,
+  }), [history, ledger]);
 
   return (
     <div className="modal-shell z-[60]">
@@ -252,6 +299,13 @@ const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes, purchases, p
             <div className="bg-white rounded-2xl border border-blue-100 p-3 text-center">
               <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Niveau actuel</p>
               <p className="text-lg font-black text-blue-700 tabular-nums">{(tank.current || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L</p>
+              {/* Quand le compteur a décroché des pièces ci-dessous, on le dit
+                  ici plutôt que de laisser l'utilisateur refaire l'addition. */}
+              {totals.expected !== undefined && Math.abs((tank.current || 0) - totals.expected) > 1 && (
+                <p className="text-[9px] font-bold text-amber-600 mt-1">
+                  théorique : {totals.expected.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L
+                </p>
+              )}
             </div>
           </div>
           {history.length > 0 ? (
@@ -634,6 +688,43 @@ const Tanks = () => {
   const criticalCount = tanks.filter(t => t.current < t.alertThreshold).length;
   const favoriteCount = tanks.filter(t => !!t.isFavorite).length;
 
+  /**
+   * Le niveau que les DOCUMENTS annoncent, cuve par cuve : achats livrés moins
+   * litres débités par les brigades. Recalculé à chaque rendu — il ne peut donc
+   * ni se périmer ni être effacé par une écriture ratée, contrairement à la
+   * colonne `current` qui, elle, n'est qu'un compteur.
+   */
+  const ledgers = useMemo(
+    () => tankLedgers(tanks, { purchases, deliveryNotes, brigades, pumpNozzles, pumps }),
+    [tanks, purchases, deliveryNotes, brigades, pumpNozzles, pumps]);
+
+  const driftedTanks = useMemo(
+    () => tanks.filter(t => hasDrift(ledgers[t.id])), [tanks, ledgers]);
+
+  /**
+   * Ramène les cuves sur leur niveau théorique. L'écart est envoyé en DELTA
+   * (RPC `adjust_tank_level`), jamais en valeur absolue : c'est la seule route
+   * qui reste juste quand deux postes écrivent en même temps.
+   */
+  const realign = (only?: Tank) => {
+    const target = only ? [only] : driftedTanks;
+    const deltas = realignTankDeltas(target, { purchases, deliveryNotes, brigades, pumpNozzles, pumps });
+    if (!deltas.length) {
+      dispatch({ type: "ADD_TOAST", payload: { type: "info", message: "Les niveaux correspondent déjà aux documents." } });
+      return;
+    }
+    dispatch({ type: "ADJUST_TANK_LEVELS", payload: deltas });
+    dispatch({
+      type: "ADD_TOAST",
+      payload: {
+        type: "success",
+        message: only
+          ? `${only.name} alignée sur ses documents : ${(ledgers[only.id]?.expected || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L`
+          : `${deltas.length} cuve${deltas.length > 1 ? "s" : ""} alignée${deltas.length > 1 ? "s" : ""} sur les achats et les brigades`,
+      },
+    });
+  };
+
   const toggleFavorite = (tank: Tank) => {
     dispatch({ type: "UPDATE_TANK", payload: { ...tank, isFavorite: !tank.isFavorite } });
     dispatch({
@@ -689,6 +780,11 @@ const Tanks = () => {
             {criticalCount > 0 && (
               <span className="badge badge-danger">{criticalCount} critique{criticalCount > 1 ? "s" : ""}</span>
             )}
+            {driftedTanks.length > 0 && (
+              <span className="badge bg-amber-50 text-amber-700">
+                {driftedTanks.length} à réaligner
+              </span>
+            )}
           </div>
         </div>
         {/* NOUVELLE CUVE — only shown if the user has create permission */}
@@ -701,6 +797,31 @@ const Tanks = () => {
           </button>
         )}
       </div>
+
+      {/* ── Cuves décrochées des documents ──────────────────────────────────
+          Le niveau d'une cuve est un compteur : si une écriture est perdue, il
+          reste faux jusqu'à ce qu'on le remette d'aplomb. Ce bandeau dit de
+          combien, et le remet en un clic — sur les achats et les brigades
+          enregistrés, rien d'autre. */}
+      {perm.modifier && driftedTanks.length > 0 && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs font-black text-amber-900">
+                {driftedTanks.length} cuve{driftedTanks.length > 1 ? "s ne correspondent" : " ne correspond"} plus à ses documents
+              </p>
+              <p className="text-[11px] text-amber-700 font-bold mt-0.5">
+                {driftedTanks.map(t => `${t.name} : ${L(t.current)} L au lieu de ${L(ledgers[t.id]?.expected || 0)} L`).join(" · ")}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => realign()}
+            className="shrink-0 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-black uppercase tracking-widest rounded-lg px-4 py-2.5 transition-colors flex items-center gap-2">
+            <RefreshCw className="w-3.5 h-3.5" /> Tout aligner
+          </button>
+        </div>
+      )}
 
       {/* Type filter chips — "Tous" resets to show all, "Favoris" ne garde que les cuves épinglées */}
       <div className="flex gap-2 flex-wrap">
@@ -737,6 +858,7 @@ const Tanks = () => {
               key={tank.id}
               tank={tank}
               settings={settings}
+              ledger={ledgers[tank.id]}
               canEdit={perm.modifier}
               canDelete={perm.supprimer}
               onEdit={() => { setEditTank(tank); setShowModal(true); }}
@@ -745,6 +867,7 @@ const Tanks = () => {
               onConverter={() => setConverterTank(tank)}
               onGplCalc={() => setGplCalcTank(tank)}
               onToggleFavorite={() => toggleFavorite(tank)}
+              onRealign={() => realign(tank)}
             />
           ))}
         </div>
@@ -770,6 +893,7 @@ const Tanks = () => {
         {historyTank && (
           <TankHistoryModal
             tank={historyTank}
+            ledger={ledgers[historyTank.id]}
             onClose={() => setHistoryTank(null)}
             brigades={brigades}
             deliveryNotes={deliveryNotes}

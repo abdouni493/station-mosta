@@ -3374,7 +3374,18 @@ export const AppProvider = ({ children }: AppProviderProps) => {
   const syncedDispatch = useCallback((action: AppAction): void => {
     dispatch(action); // optimistic update first — UI stays snappy
 
-    syncToSupabase(action).catch(async (err: unknown) => {
+    syncToSupabase(action).then(async () => {
+      // Le niveau des cuves est le seul chiffre que le SERVEUR calcule et non le
+      // client : `adjust_tank_level` fait `current = current + delta` sur la
+      // ligne verrouillée. L'optimisme local part, lui, de l'état du navigateur —
+      // périmé dès qu'un autre poste a livré ou clôturé une brigade entre-temps,
+      // et borné différemment (la RPC plafonne à 0). On relit donc les cuves
+      // juste après l'écriture : l'écran Cuves affiche alors ce que la base
+      // contient VRAIMENT, sans attendre un rechargement de l'application.
+      if (action.type === 'ADJUST_TANK_LEVELS') {
+        await refetchEntityAfterAction(action, dispatch);
+      }
+    }).catch(async (err: unknown) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('[syncedDispatch] DB write failed:', (action as any).type, errMsg);
 
