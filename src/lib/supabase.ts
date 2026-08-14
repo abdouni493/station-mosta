@@ -102,8 +102,32 @@ const MAX_RETRIES = 1;
  * POST n'est jamais rejoué, il serait donc simplement perdu.
  */
 const UPLOAD_TIMEOUT_MS = 60_000;
+/**
+ * L'ÉTAT PARTAGÉ DES PARTIES N'EST PAS UNE REQUÊTE ORDINAIRE.
+ *
+ * `biz_store` tient tout ce que contiennent la Cafétéria et le Lavage dans UNE
+ * ligne JSON : 665 Ko aujourd'hui, dont 567 Ko d'historique de ventes. Elle part
+ * en entier à chaque enregistrement. Sur le lien montant d'une station, envoyer
+ * 665 Ko demande couramment dix à vingt secondes — le budget de huit secondes
+ * abandonnait donc des enregistrements parfaitement sains, et l'écran de la
+ * Gestion de stock annonçait « Le serveur refuse les enregistrements —
+ * TimeoutError » alors que la base n'avait aucun problème.
+ *
+ * Ce budget-là ne couvre QUE ces deux points d'entrée, ceux dont on sait que la
+ * charge utile est volumineuse. Tout le reste garde huit secondes : une requête
+ * de données saine revient en moins de 300 ms, et une base en carafe doit être
+ * signalée vite.
+ *
+ * Ce n'est pas un pansement sur la lenteur : les produits, eux, ont quitté ce
+ * blob pour leur propre table (`biz_products`, migration 2026-08-15) et ne
+ * dépendent plus du tout de ce budget. Les ventes suivront le même chemin.
+ */
+const BULK_STATE_TIMEOUT_MS = 45_000;
 
 const isStorageRequest = (url: string) => url.includes('/storage/v1/');
+/** L'écriture (RPC) et la lecture de la grosse ligne JSON partagée. */
+const isBulkStateRequest = (url: string) =>
+  url.includes('/rest/v1/rpc/biz_store_save') || url.includes('/rest/v1/biz_store');
 // The refresh endpoint retries only once here. Every postgrest call awaits
 // getSession(), so a long backoff chain inside a refresh would stall the whole
 // app; auth-js has its own paced retry loop for the 503 we hand back, and that
@@ -143,7 +167,10 @@ async function fetchWithRetry(
   // Only replay requests that cannot have taken effect server-side.
   const replayable = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
   const callerSignal = init?.signal ?? undefined;
-  const budget = isStorageRequest(urlOf(input)) ? UPLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+  const url = urlOf(input);
+  const budget = isStorageRequest(url) ? UPLOAD_TIMEOUT_MS
+    : isBulkStateRequest(url) ? BULK_STATE_TIMEOUT_MS
+      : REQUEST_TIMEOUT_MS;
 
   let lastError: unknown;
 

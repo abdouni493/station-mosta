@@ -180,16 +180,20 @@ function patchDraft(draftId: string, fn: (d: ProductDraft) => ProductDraft): voi
 // ─── Réconciliation ────────────────────────────────────────────────────────────
 
 /**
- * Confronte les brouillons à la réalité : le catalogue chargé d'un côté, l'état
- * de la synchronisation de l'autre.
+ * Confronte les brouillons à la réalité : le catalogue chargé d'un côté, ce que
+ * la base a réellement accepté de l'autre.
  *
- *  • produit présent ET tout est enregistré → le brouillon a fait son travail,
+ *  • produit présent ET sa ligne est en base → le brouillon a fait son travail,
  *    il part ;
- *  • produit présent mais quelque chose attend encore d'être enregistré → le
- *    brouillon RESTE : être dans le catalogue de ce poste ne prouve rien ;
- *  • produit absent du catalogue            → « perdu » : c'est exactement le
+ *  • produit présent mais sa ligne attend encore d'être écrite → le brouillon
+ *    RESTE : être dans le catalogue de ce poste ne prouve rien ;
+ *  • produit absent du catalogue             → « perdu » : c'est exactement le
  *    symptôme « j'ai créé un produit, j'ai rafraîchi, il n'y était plus ». Le
  *    brouillon reste sous les yeux de l'utilisateur avec son bouton de renvoi.
+ *
+ * `isConfirmed` se prononce PRODUIT PAR PRODUIT depuis que les fiches ont leur
+ * propre table : une fiche bien écrite n'a plus à attendre que TOUT le reste
+ * (ventes, caisse, dépenses…) soit enregistré pour que son brouillon disparaisse.
  *
  * Un brouillon tout juste créé (< 20 s) est laissé tranquille : son
  * enregistrement est probablement encore en vol.
@@ -197,8 +201,8 @@ function patchDraft(draftId: string, fn: (d: ProductDraft) => ProductDraft): voi
 export function reconcileDrafts(
   moduleKey: ModuleKey,
   productIds: Set<string>,
-  /** Vrai quand plus aucune modification locale n'attend d'être enregistrée. */
-  storeSynced: boolean,
+  /** Vrai quand la base a accusé réception de CE produit. */
+  isConfirmed: (productId: string) => boolean,
 ): void {
   const all = readAll();
   const graceLimit = new Date(Date.now() - 20_000).toISOString();
@@ -209,11 +213,11 @@ export function reconcileDrafts(
     if (d.moduleKey !== moduleKey) { next.push(d); continue; }
 
     if (productIds.has(d.product.id)) {
-      // Confirmé : le produit est dans le catalogue ET l'état courant — celui
-      // qui le contient — a été accepté par le serveur. Vrai aussi après un
-      // échec rattrapé tout seul par une tentative suivante : l'alerte s'efface
-      // d'elle-même au lieu de rester à tort.
-      if (storeSynced) { changed = true; continue; }
+      // Confirmé : le produit est dans le catalogue ET sa ligne a été acceptée
+      // par la base. Vrai aussi après un échec rattrapé tout seul par une
+      // tentative suivante : l'alerte s'efface d'elle-même au lieu de rester à
+      // tort.
+      if (isConfirmed(d.product.id)) { changed = true; continue; }
       next.push(d);
       continue;
     }

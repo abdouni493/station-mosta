@@ -99,11 +99,15 @@ function sessionToRow(moduleKey: ModuleKey, s: BizSession): Record<string, unkno
 }
 
 /**
- * True while the `biz_sessions` table is missing (migration not run yet).
- * Checked on the Postgres / PostgREST code, never on the message alone: an RLS
- * refusal also names the table and must NOT be mistaken for an absent table.
+ * True while the table is missing (migration not run yet). Checked on the
+ * Postgres / PostgREST code, never on the message alone: an RLS refusal also
+ * names the table and must NOT be mistaken for an absent table.
+ *
+ * Partagé avec `bizProducts.ts` — deux copies de ce test finiraient par diverger,
+ * et celle qui se tromperait ferait passer une panne pour une migration
+ * manquante (donc un repli silencieux au lieu d'une erreur).
  */
-function isMissingTable(err?: { code?: string; message?: string } | null): boolean {
+export function isMissingTable(err?: { code?: string; message?: string } | null): boolean {
   if (!err) return false;
   if (err.code === '42P01' || err.code === 'PGRST205' || err.code === 'PGRST202') return true;
   return /relation .* does not exist|could not find the table|schema cache/i.test(err.message || '');

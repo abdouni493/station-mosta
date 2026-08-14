@@ -168,7 +168,13 @@ export function buildProduct(
 }
 
 /**
- * Enregistre un produit et NE REND LA MAIN QU'UNE FOIS LE SERVEUR D'ACCORD.
+ * Enregistre un produit et NE REND LA MAIN QU'UNE FOIS LA BASE D'ACCORD.
+ *
+ * La fiche part dans sa propre table (`biz_products`) : une ligne de quelques
+ * centaines d'octets, confirmée en une fraction de seconde. Elle n'attend plus
+ * l'envoi de l'état partagé complet — 665 Ko qui expiraient au bout de huit
+ * secondes sur le lien de la station, et faisaient échouer la création d'un
+ * produit alors que la base allait parfaitement bien.
  *
  * Le brouillon est écrit AVANT la première tentative : à partir de cet instant,
  * même un rafraîchissement immédiat, une coupure réseau ou un refus du serveur
@@ -330,12 +336,14 @@ export function ProductModal({
     setSaving(true);
     try {
       if (isEdit) {
-        biz.update('products', product);
         onSaved?.(product);
         onClose();
-        const res = await biz.flush();
+        // La fiche modifiée part dans sa ligne, et on attend le verdict : une
+        // modification annoncée « enregistrée » sans l'être, c'est un prix de
+        // vente faux au point de vente jusqu'au prochain rechargement.
+        const res = await biz.updateAndConfirm('products', product);
         if (res.ok) toast.success('Produit modifié');
-        else toast.error(`Modification non enregistrée sur le serveur — ${res.error}`, { duration: 7000 });
+        else toast.error(`Modification non enregistrée en base — ${res.error}`, { duration: 7000 });
         return;
       }
 

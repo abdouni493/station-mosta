@@ -120,7 +120,11 @@ export const BACKUP_TABLES: BackupTableSpec[] = [
   { table: 'client_feedbacks',                 label: 'Retours clients (page publique /client)' },
   // Parties commerciales — Cafétéria & Lavage
   { table: 'biz_sessions',                     label: 'Sessions de caisse (Cafétéria / Lavage)' },
-  { table: 'biz_store',                        label: 'Données Cafétéria & Lavage (produits, ventes, achats, employés…)' },
+  // Le catalogue a sa propre table depuis le 2026-08-15. Le blob en garde une
+  // copie, mais c'est CETTE table qui fait autorité au chargement : l'oublier
+  // ici sauvegarderait un catalogue périmé sans que rien ne le signale.
+  { table: 'biz_products',                     label: 'Catalogue produits (Cafétéria / Lavage)' },
+  { table: 'biz_store',                        label: 'Données Cafétéria & Lavage (ventes, achats, employés…)' },
 ];
 
 /** Le blob des parties commerciales : restauré par FUSION, jamais en écrasement. */

@@ -111,6 +111,40 @@ function pruneTombstones(tombs: Record<string, string>): Record<string, string> 
 const asArray = (v: unknown): any[] => (Array.isArray(v) ? v : []);
 
 /**
+ * Fusionne DEUX listes de lignes portant un `id` — le cœur de la fusion, isolé
+ * parce qu'il sert à deux endroits : au blob JSON complet (`mergeModuleState`)
+ * et aux produits, qui ont désormais leur propre table (`bizProducts.ts`). Une
+ * seconde implémentation finirait par diverger, et les deux copies d'un même
+ * produit ne se départageraient plus de la même façon.
+ *
+ * `base` gagne à égalité d'horodatage : on lui passe toujours le côté LOCAL.
+ */
+export function mergeRows<T extends { id: string }>(
+  base: T[],
+  incoming: T[],
+  tombstones: Record<string, string> = {},
+): T[] {
+  const map = new Map<string, T>();
+  for (const item of asArray(base)) if (item?.id) map.set(item.id, item);
+  for (const item of asArray(incoming)) {
+    if (!item?.id) continue;
+    const prev = map.get(item.id);
+    map.set(item.id, prev ? pickNewer(prev, item) : item);
+  }
+
+  return [...map.values()]
+    // Une ligne supprimée ne revient que si elle a été modifiée APRÈS coup.
+    .filter(item => {
+      const killedAt = tombstones[(item as any).id];
+      return !killedAt || writeStamp(item) > killedAt;
+    })
+    .sort((x, y) => {
+      const sx = sortStamp(x), sy = sortStamp(y);
+      return sx === sy ? 0 : sx > sy ? -1 : 1;   // le plus récent en tête
+    });
+}
+
+/**
  * Fusionne DEUX états d'une même partie.
  *
  * `base` est le côté qui gagne à égalité — on lui passe toujours l'état LOCAL,
@@ -122,24 +156,7 @@ export function mergeModuleState(base: SyncModuleState, incoming: SyncModuleStat
   const out: any = { ...EMPTY_MODULE(), ...base };
 
   for (const coll of MERGE_COLLECTIONS) {
-    const map = new Map<string, any>();
-    for (const item of asArray(base[coll])) if (item?.id) map.set(item.id, item);
-    for (const item of asArray(incoming[coll])) {
-      if (!item?.id) continue;
-      const prev = map.get(item.id);
-      map.set(item.id, prev ? pickNewer(prev, item) : item);
-    }
-
-    out[coll] = [...map.values()]
-      // Une ligne supprimée ne revient que si elle a été modifiée APRÈS coup.
-      .filter(item => {
-        const killedAt = tombs[item.id];
-        return !killedAt || writeStamp(item) > killedAt;
-      })
-      .sort((x, y) => {
-        const sx = sortStamp(x), sy = sortStamp(y);
-        return sx === sy ? 0 : sx > sy ? -1 : 1;   // le plus récent en tête
-      });
+    out[coll] = mergeRows(asArray(base[coll]), asArray(incoming[coll]), tombs);
   }
 
   // Ordre des accès rapides du point de vente : une simple valeur, le dernier

@@ -12,7 +12,7 @@
  *    Rapports (bénéfice net = marge − dépenses − salaires − destructions).
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
   Flame, RotateCcw, Trash, User, Beaker, ShoppingBag, FileWarning, Upload, CloudOff, Loader2,
@@ -21,7 +21,7 @@ import {
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizProduct, BizDestruction, formatQty } from '@/src/lib/bizConfig';
-import { useBiz, useBizSync } from '@/src/store/BizContext';
+import { useBiz, useBizSync, useBizProductsSync } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
   ProductDraft, DRAFT_STATUS_META, subscribeDrafts, getDraftsSnapshot,
@@ -43,6 +43,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'stock');
   const sync = useBizSync();
+  /** Ce que la BASE a accepté du catalogue — la seule chose qui compte ici. */
+  const catalogue = useBizProductsSync();
   const { currentUserName, currentModuleWorker, settings } = useAppState();
   const { products, categories, marques, destructions } = biz.state;
 
@@ -122,23 +124,41 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const productIds = useMemo(() => new Set(products.map(p => p.id)), [products]);
   const storeSynced = !sync.pending && !sync.saving && !sync.error;
 
+  /**
+   * Une fiche est CONFIRMÉE quand sa ligne est en base. Depuis que les produits
+   * ont leur propre table, cela se juge produit par produit : un brouillon n'est
+   * plus retenu parce qu'une vente ou une dépense, ailleurs, attend son tour.
+   * Tant que la table n'existe pas (migration non passée), c'est l'ancien
+   * critère — « tout le blob est enregistré » — qui s'applique.
+   */
+  const isConfirmed = useCallback(
+    (id: string) => (catalogue.relational ? !catalogue.pending.has(id) : storeSynced),
+    [catalogue, storeSynced]);
+
+  /** Fiches de CETTE partie en attente d'écriture (la file couvre les deux). */
+  const pendingHere = useMemo(
+    () => [...catalogue.pending].filter(id => productIds.has(id)).length,
+    [catalogue.pending, productIds]);
+
   // Confronte les brouillons au catalogue à chaque fois que l'un des deux bouge :
   // ce qui est bien arrivé disparaît, ce qui manque est signalé.
   useEffect(() => {
-    reconcileDrafts(moduleKey, productIds, storeSynced);
-  }, [moduleKey, productIds, storeSynced]);
+    reconcileDrafts(moduleKey, productIds, isConfirmed);
+  }, [moduleKey, productIds, isConfirmed]);
 
   /**
    * « Envoyer au stock » — remet le produit du brouillon dans le catalogue (s'il
-   * n'y est plus) et n'efface le brouillon QUE si le serveur confirme.
+   * n'y est plus) et n'efface le brouillon QUE si la base confirme.
    */
   const pushDraft = async (d: ProductDraft): Promise<boolean> => {
     setSendingDraft(d.id);
     retryDraft(d.id);
     try {
+      // Déjà au catalogue : on RÉÉCRIT sa ligne (un second `add` en ferait un
+      // doublon). Absent : on l'ajoute.
       const alreadyInCatalogue = products.some(p => p.id === d.product.id);
       const res = alreadyInCatalogue
-        ? await biz.flush()
+        ? await biz.updateAndConfirm('products', d.product)
         : await biz.addAndConfirm('products', d.product);
       if (res.ok) { resolveDraft(d.id); return true; }
       failDraft(d.id, res.error);
@@ -235,20 +255,21 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
           sub={`${stockDestructions.filter(d => !d.recovered).length} destruction(s)`} />
       </div>
 
-      {/* Une création qui n'est pas arrivée jusqu'au serveur se voit ici, tout
+      {/* Une création qui n'est pas arrivée jusqu'à la base se voit ici, tout
           de suite — plus jamais un « Produit créé » qui ne l'était pas. */}
-      {(drafts.length > 0 || sync.error) && tab !== 'drafts' && (
+      {(drafts.length > 0 || catalogue.error || sync.error) && tab !== 'drafts' && (
         <button onClick={() => setTab('drafts')}
           className="w-full text-left rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-center gap-3 hover:bg-amber-100 transition-colors">
           <CloudOff className="w-5 h-5 text-amber-600 shrink-0" />
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-black text-amber-800">
               {drafts.length > 0
-                ? `${drafts.length} produit(s) non enregistré(s) sur le serveur`
-                : 'Enregistrement en échec'}
+                ? `${drafts.length} produit(s) non enregistré(s) en base`
+                : catalogue.error ? 'Le catalogue n\'a pas pu être écrit'
+                  : 'Enregistrement en échec'}
             </span>
             <span className="block text-xs text-amber-700">
-              {sync.error || 'Ouvrez les brouillons pour les renvoyer au catalogue.'}
+              {catalogue.error || sync.error || 'Ouvrez les brouillons pour les renvoyer au catalogue.'}
             </span>
           </span>
           <span className="btn-secondary !py-2 !px-3 text-xs shrink-0">Voir les brouillons</span>
@@ -489,9 +510,10 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-black text-slate-700">À quoi sert cet onglet</p>
               <p className="text-xs text-slate-500 leading-relaxed mt-0.5">
-                Chaque produit créé est d'abord écrit dans ce poste, puis envoyé au serveur.
-                Tant que le serveur n'a pas confirmé, la saisie reste ici — réseau coupé,
-                serveur injoignable, session expirée. Rien n'est perdu :
+                Chaque produit créé est d'abord écrit dans ce poste, puis envoyé à la base —
+                sa propre ligne, quelques centaines d'octets, confirmée en une fraction de
+                seconde. Tant que la base n'a pas confirmé, la saisie reste ici : réseau
+                coupé, serveur injoignable, session expirée. Rien n'est perdu :
                 « Envoyer au stock » la remet dans le catalogue et la renvoie.
               </p>
             </div>
@@ -509,18 +531,44 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
             <StatCard icon={CloudOff} label="En échec" value={drafts.filter(d => d.status === 'failed').length} tone="red" />
             <StatCard icon={AlertTriangle} label="Perdus" value={drafts.filter(d => d.status === 'lost').length} tone="red"
               sub="absents du catalogue" />
-            <StatCard icon={sync.error ? CloudOff : CheckCircle2}
-              label="Serveur" value={sync.saving ? 'Envoi…' : sync.error ? 'Hors service' : sync.pending ? 'En attente' : 'À jour'}
-              tone={sync.error ? 'red' : sync.pending || sync.saving ? 'amber' : 'green'}
-              sub={sync.lastSavedAt ? `Dernier envoi ${formatDate(sync.lastSavedAt)}` : undefined} />
+            <StatCard icon={catalogue.error ? CloudOff : CheckCircle2}
+              label="Catalogue en base"
+              value={catalogue.saving ? 'Envoi…'
+                : catalogue.error ? 'En échec'
+                  : pendingHere ? `${pendingHere} en attente` : 'À jour'}
+              tone={catalogue.error ? 'red' : catalogue.saving || pendingHere ? 'amber' : 'green'}
+              sub={catalogue.relational
+                ? 'écriture directe — une ligne par produit'
+                : 'via l\'état partagé (migration non passée)'} />
           </div>
 
-          {sync.error && (
+          {catalogue.error && (
             <div className="rounded-2xl border border-red-200 bg-red-50 p-4 flex items-start gap-3">
               <CloudOff className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-black text-red-700">Le serveur refuse les enregistrements</p>
-                <p className="text-xs text-red-600 mt-0.5 break-words">{sync.error}</p>
+                <p className="text-sm font-black text-red-700">La base refuse l'écriture des produits</p>
+                <p className="text-xs text-red-600 mt-0.5 break-words">{catalogue.error}</p>
+                <p className="text-[11px] text-red-500 mt-1">
+                  Les fiches en attente repartent d'elles-mêmes ; « Envoyer au stock » force un essai.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Le reste de la partie (ventes, achats, destructions, caisse…) voyage
+              encore dans l'état partagé. Son échec ne retient PLUS les produits,
+              mais il doit rester visible : ces données-là, elles, attendent. */}
+          {sync.error && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
+              <CloudOff className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-black text-amber-800">
+                  Le reste des données de la partie n'est pas enregistré
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5 break-words">{sync.error}</p>
+                <p className="text-[11px] text-amber-600 mt-1">
+                  Ventes, achats, destructions et caisse — le catalogue, lui, est écrit à part.
+                </p>
               </div>
               <button className="btn-secondary !py-2 !px-3 text-xs shrink-0" onClick={() => sync.flush()}>
                 <RefreshCw className="w-4 h-4" /> Réessayer

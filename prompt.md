@@ -163,5 +163,3 @@ make it add that prime to that final amount to pay
 fix the interface design of payment button action interface make sure to make it bigger and make it better design and colors and make it more organized with this new updates and make sure to make it large like the interface of creation new brigade and like the interface of create the purchase of carburant and products purchase
 
 
-
-
