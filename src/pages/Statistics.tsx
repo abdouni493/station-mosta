@@ -13,6 +13,7 @@ import ChartBox from "../components/ChartBox";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useModulePermission } from "../store/AppContext";
+import { derivedFuelSales } from "../lib/carburantSales";
 // xlsx pèse ~400 Ko : chargé à la demande au clic « Exporter », pas au démarrage.
 
 /* ── Colour palette matching the Sidebar ── */
@@ -108,10 +109,14 @@ const CustomTooltip = ({ active, payload, label }: any) => {
    MAIN COMPONENT
 ════════════════════════════════════════ */
 const Statistics = () => {
+  const app = useAppState();
   const {
-    fuelSales, shopSales, pumps, products, tanks, brigades,
+    shopSales, pumps, products, tanks, brigades,
     brigadeChefs, pompistes, expenses, deliveryNotes, purchases
-  } = useAppState();
+  } = app;
+  // Reconstruites depuis les brigades : `fuel_sales` n'est plus alimentée, et
+  // les courbes de volume comme les répartitions par carburant restaient à plat.
+  const fuelSales = useMemo(() => derivedFuelSales(app), [app]);
   const perm = useModulePermission('Statistiques');
 
   const [period, setPeriod]   = useState<string>("Ce mois");
@@ -134,41 +139,47 @@ const Statistics = () => {
       days[ds] = { day: temp.toLocaleDateString("fr-FR", { day: "numeric", month: "short" }), gasoil: 0, super95: 0 };
       temp.setDate(temp.getDate() + 1);
     }
+    // Le carburant est porté par la LIGNE elle-même : une brigade couvre toutes
+    // les pompes, et `Pump.type` n'est de toute façon qu'un miroir du premier
+    // pistolet — il attribuait donc le mauvais carburant dès qu'une pompe en
+    // servait plusieurs.
     filteredFuel.forEach(s => {
-      const ds   = s.date.split("T")[0];
-      const pump = pumps.find(p => p.id === s.pumpId);
-      if (days[ds]) {
-        if (pump?.type === "SUPER" || pump?.type === "SANS_PLOMB") days[ds].super95 += s.liters;
-        else days[ds].gasoil += s.liters;
-      }
+      const ds = s.date.split("T")[0];
+      if (!days[ds]) return;
+      if (s.fuelType === "SUPER" || s.fuelType === "SANS_PLOMB" || s.fuelType === "ESSENCE") days[ds].super95 += s.liters;
+      else days[ds].gasoil += s.liters;
     });
     return Object.values(days);
-  }, [filteredFuel, pumps, dateStart, dateEnd]);
+  }, [filteredFuel, dateStart, dateEnd]);
 
   /* ── Revenue by category ── */
   const catData = useMemo(() => {
-    const gasoil = filteredFuel.filter(s => { const p = pumps.find(pm => pm.id === s.pumpId); return p?.type !== "SUPER" && p?.type !== "SANS_PLOMB"; }).reduce((a, c) => a + c.total, 0);
-    const sp95   = filteredFuel.filter(s => { const p = pumps.find(pm => pm.id === s.pumpId); return p?.type === "SUPER" || p?.type === "SANS_PLOMB"; }).reduce((a, c) => a + c.total, 0);
+    const isEssence = (t: string) => t === "SUPER" || t === "SANS_PLOMB" || t === "ESSENCE";
+    const gasoil = filteredFuel.filter(s => !isEssence(s.fuelType)).reduce((a, c) => a + c.total, 0);
+    const sp95   = filteredFuel.filter(s => isEssence(s.fuelType)).reduce((a, c) => a + c.total, 0);
     const shop   = filteredShop.reduce((a, c) => a + c.total, 0);
     return [
       { name: "Gasoil",   value: gasoil, color: C.blue600  },
       { name: "Super 95", value: sp95,   color: C.red      },
       { name: "Boutique", value: shop,   color: C.green    },
     ].filter(v => v.value > 0);
-  }, [filteredFuel, filteredShop, pumps]);
+  }, [filteredFuel, filteredShop]);
 
-  /* ── Pump performance ── */
+  /* ── Volume distribué, carburant par carburant ──
+     Le classement se faisait PAR POMPE, ce qu'une brigade ne permet plus de
+     dire : elle couvre toutes les pompes à la fois. Le carburant, lui, est
+     connu pistolet par pistolet — c'est donc lui qui porte le classement. */
   const pumpPerf = useMemo(() => {
     const perf: Record<string, { liters: number; revenue: number }> = {};
     filteredFuel.forEach(s => {
-      const name = pumps.find(p => p.id === s.pumpId)?.name ?? s.pumpId;
+      const name = s.fuelType || "Carburant";
       if (!perf[name]) perf[name] = { liters: 0, revenue: 0 };
       perf[name].liters  += s.liters;
       perf[name].revenue += s.total;
     });
     return Object.entries(perf).map(([n, v]) => ({ name: n, liters: v.liters, revenue: v.revenue }))
                                .sort((a, b) => b.liters - a.liters);
-  }, [filteredFuel, pumps]);
+  }, [filteredFuel]);
 
   /* ── Cuve levels ── */
   const tankData = useMemo(() => tanks.map(t => ({
@@ -224,7 +235,7 @@ const Statistics = () => {
   /* ── Export ── */
   const exportXLS = async () => {
     const XLSX = await import("xlsx");
-    const data = pumpPerf.map(p => ({ Pompe: p.name, Litres: p.liters, Recette: p.revenue }));
+    const data = pumpPerf.map(p => ({ Carburant: p.name, Litres: p.liters, Recette: p.revenue }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Pompes");
@@ -350,7 +361,7 @@ const Statistics = () => {
 
           {/* Pump performance bar chart */}
           {(dataType === "Tous" || dataType === "Carburant") && pumpPerf.length > 0 && (
-            <Section title="Performance Pompes — Volume Distribué" icon={Wrench}>
+            <Section title="Volume distribué par carburant" icon={Wrench}>
               <ChartBox height={256}>
                 <BarChart data={pumpPerf} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
@@ -534,7 +545,7 @@ const Statistics = () => {
             </div>
             <p className="text-sm font-black text-white leading-snug tracking-tight relative z-10">
               {pumpPerf.length > 0
-                ? `La pompe la plus active est "${pumpPerf[0].name}" avec ${pumpPerf[0].liters.toLocaleString()} L distribués.`
+                ? `Le carburant le plus vendu est "${pumpPerf[0].name}" avec ${pumpPerf[0].liters.toLocaleString()} L distribués.`
                 : "Aucune donnée de vente pour la période sélectionnée."}
             </p>
             {topProds.length > 0 && (

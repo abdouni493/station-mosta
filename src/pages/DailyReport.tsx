@@ -10,6 +10,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission } from "../store/AppContext";
+import { computeCarburantSales, derivedPumpStats, derivedTankSales } from "../lib/carburantSales";
 import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
 import { brigadeNozzleRows, brigadePompisteGroups, justifiedByPompiste } from "../lib/brigadeCalc";
 import Skeleton from "../components/Skeleton";
@@ -75,11 +76,12 @@ const SectionHeader = ({ num, label, icon: Icon, colorClass = "bg-blue-900/10 te
 /* ─── Main Component ─── */
 const DailyReport = () => {
   const dispatch = useAppDispatch();
+  const app = useAppState();
   const {
     tanks, brigades, pumps, pumpNozzles, deliveryNotes, products, expenses,
-    fuelSales, shopSales, settings, brigadeChefs, pompistes, purchases, clients,
+    shopSales, settings, brigadeChefs, pompistes, purchases, clients,
     tracks, brigadeAccountings, gerants, magasinWorkers, brigadeDecalageAlerts = []
-  } = useAppState();
+  } = app;
   const perm = useModulePermission('Fiche Journalière');
 
   const reportRef = useRef<HTMLDivElement>(null);
@@ -109,7 +111,15 @@ const DailyReport = () => {
     end.setHours(23, 59, 59);
     const inRange = (d: string) => { const dt = new Date(d); return dt >= start && dt <= end; };
 
-    const selFuel     = fuelSales.filter(s => inRange(s.date));
+    // ── Le carburant vendu vient des BRIGADES ────────────────────────────────
+    // Ce bloc lisait `fuel_sales`, une table que plus aucun écran n'alimente :
+    // recette carburant, litres vendus, sorties de cuve et volume par pompe
+    // valaient tous ZÉRO, alors même que la fiche du bas, elle, additionnait
+    // correctement les relevés de pistolets. Les deux moitiés de cet écran se
+    // contredisaient donc ligne à ligne. Tout part maintenant des brigades.
+    const carburant   = computeCarburantSales(app, startDate, endDate);
+    const perPump     = derivedPumpStats(app, startDate, endDate);
+    const perTank     = derivedTankSales(app, startDate, endDate);
     const selShop     = shopSales.filter(s => inRange(s.date));
     const selExp      = expenses.filter(e => inRange(e.date));
     // Brigades are selected by their END date: a brigade belongs to the fiche
@@ -127,8 +137,10 @@ const DailyReport = () => {
     /* 1. TANKS */
     const tankSummary = tanks.map(tank => {
       const received  = selDel.filter(d => d.tankId === tank.id).reduce((a, c) => a + c.liters, 0);
-      const sold      = selFuel.filter(s => pumps.find(p => p.id === s.pumpId)?.tankId === tank.id)
-                                .reduce((a, c) => a + c.liters, 0);
+      // Les litres sortis de CETTE cuve, d'après les pistolets qui y sont
+      // raccordés — et non d'après `pump.tankId`, qui n'est qu'un miroir du
+      // premier pistolet de la pompe.
+      const sold      = perTank[tank.id]?.liters ?? 0;
       const startLvl  = tank.current - received + sold;
       const theorEnd  = startLvl + received - sold;
       const gap       = tank.current - theorEnd;
@@ -153,9 +165,9 @@ const DailyReport = () => {
     /* 2. PUMPS */
     const pumpSummary = pumps.map(pump => {
       const tank = tanks.find(t => t.id === pump.tankId);
-      const pSales = selFuel.filter(s => s.pumpId === pump.id);
-      const totalLiters = pSales.reduce((a, c) => a + c.liters, 0);
-      const totalRevenue = pSales.reduce((a, c) => a + c.total, 0);
+      const ps = perPump[pump.id] ?? { liters: 0, revenue: 0, txCount: 0 };
+      const totalLiters = ps.liters;
+      const totalRevenue = ps.revenue;
 
       // Per-brigade index readings
       const brigadeIndices = selBrigades
@@ -232,12 +244,18 @@ const DailyReport = () => {
     });
 
     /* 4. PAYMENT BREAKDOWN */
+    // La répartition par mode ne se lit plus sur un champ de la vente — une
+    // brigade n'en a pas — mais sur sa comptabilité de clôture : espèces
+    // remises, TPE encaissé en banque, bons clients passés en créance.
     const payments = {
-      especes: [...selFuel, ...selShop].filter(s => s.paymentMode === "ESPECES").reduce((a, c) => a + c.total, 0),
-      bons:     selFuel.filter(s => s.paymentMode === "BON").reduce((a, c) => a + c.total, 0),
-      cheques:  selFuel.filter(s => s.paymentMode === "CHEQUE").reduce((a, c) => a + c.total, 0),
-      credit:   selFuel.filter(s => s.paymentMode === "CREDIT").reduce((a, c) => a + c.total, 0),
-      avance:   selFuel.filter(s => s.paymentMode === "AVANCE").reduce((a, c) => a + c.total, 0),
+      especes: carburant.cash
+        + selShop.filter(s => s.paymentMode === "ESPECES").reduce((a, c) => a + c.total, 0),
+      bons:     carburant.credit,
+      cheques:  0,
+      credit:   carburant.credit,
+      avance:   0,
+      tpe:      carburant.tpe,
+      manquant: carburant.rest,
     };
 
     /* 5. SHOP */
@@ -263,7 +281,7 @@ const DailyReport = () => {
     selExp.forEach(e => { expByCategory[e.category] = (expByCategory[e.category] ?? 0) + e.amount; });
 
     /* 7. FINANCIAL SUMMARY */
-    const fuelRevenue  = selFuel.reduce((a, c) => a + c.total, 0);
+    const fuelRevenue  = carburant.revenue;
     const totalRevenue = fuelRevenue + shopRevenue;
     const totalCost    = fuelPurchasesTotal + shopPurchasesTotal + totalExpenses;
     const grossProfit  = totalRevenue - fuelPurchasesTotal;
@@ -439,8 +457,8 @@ const DailyReport = () => {
       topShopProds, fuelRevenue, totalRevenue, fuelPurchasesTotal, shopPurchasesTotal,
       totalExpenses, expByCategory, grossProfit, netProfit, clientDebts,
       workerPayments, totalWorkerPayments,
-      fuelCount: selFuel.length, shopCount: selShop.length,
-      totalLiters: selFuel.reduce((a, c) => a + c.liters, 0),
+      fuelCount: carburant.counts.brigades, shopCount: selShop.length,
+      totalLiters: carburant.liters,
       // Fiche journalière (clean template)
       fiche: {
         fuelRows, fuelTotals, brigadeCash,
@@ -451,7 +469,7 @@ const DailyReport = () => {
         comparisonAlerts,
       },
     };
-  }, [isGenerated, startDate, endDate, fuelSales, shopSales, expenses, brigades,
+  }, [isGenerated, startDate, endDate, app, shopSales, expenses, brigades,
       tanks, pumps, pumpNozzles, deliveryNotes, purchases, brigadeChefs, pompistes,
       clients, tracks, brigadeAccountings, settings, gerants, magasinWorkers, brigadeDecalageAlerts]);
 
@@ -1145,12 +1163,14 @@ const DailyReport = () => {
               <SectionHeader num="04" label="Encaissements Carburant" icon={CreditCard}
                 colorClass="bg-green-50 text-green-700" />
               <div className="space-y-3">
+                {/* Les quatre natures que porte réellement la clôture d'une
+                    brigade. « Bons » et « Crédit » désignaient la même somme et
+                    l'additionnaient donc deux fois dans le total. */}
                 {[
-                  { label: "Espèces (Cash)",        v: reportData.payments.especes, icon: DollarSign, c: "text-green-700"  },
-                  { label: "Bons / Coupons",         v: reportData.payments.bons,    icon: FileText,   c: "text-blue-700"  },
-                  { label: "Chèques / Virements",    v: reportData.payments.cheques, icon: CreditCard, c: "text-purple-700"},
-                  { label: "Crédit Clients",         v: reportData.payments.credit,  icon: AlertCircle,c: "text-orange-600"},
-                  { label: "Avances Clients",        v: reportData.payments.avance,  icon: Star,        c: "text-indigo-600"},
+                  { label: "Espèces (Cash)",   v: reportData.payments.especes,  icon: DollarSign,  c: "text-green-700"  },
+                  { label: "TPE / TAG",        v: reportData.payments.tpe,      icon: CreditCard,  c: "text-purple-700" },
+                  { label: "Bons / Crédit Clients", v: reportData.payments.credit, icon: FileText, c: "text-orange-600" },
+                  { label: "Manquant non justifié", v: reportData.payments.manquant, icon: AlertCircle, c: "text-red-600" },
                 ].map(row => (
                   <div key={row.label} className="flex justify-between items-center p-4 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
                     <div className="flex items-center gap-3">
@@ -1166,7 +1186,7 @@ const DailyReport = () => {
                      style={{ background: `linear-gradient(135deg, ${C.blue800}, ${C.blue600})` }}>
                   <span className="text-[10px] uppercase tracking-[0.3em] opacity-70">Total Carburant</span>
                   <span className="text-2xl tracking-tighter">
-                    {(reportData.payments.especes + reportData.payments.bons + reportData.payments.cheques + reportData.payments.credit + reportData.payments.avance).toLocaleString()} DA
+                    {(reportData.payments.especes + reportData.payments.tpe + reportData.payments.credit).toLocaleString()} DA
                   </span>
                 </div>
               </div>

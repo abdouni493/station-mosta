@@ -40,7 +40,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Client, bankBalanceOf, TreasuryTransaction } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Client, bankBalanceOf, TreasuryTransaction, CAISSE_ID } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
@@ -296,27 +296,47 @@ const Clients = () => {
 
     dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment } });
 
-    // TPE → credit the terminal's bank account so the règlement shows up in that
-    // account's historique (same ledger the « Comptes Bancaires » screen reads).
-    if (tpeAccount) {
+    // ── Le règlement entre dans le grand livre, QUEL QUE SOIT son mode ────────
+    // Seul le TPE écrivait sa ligne : un client qui réglait sa dette en espèces
+    // faisait disparaître la créance sans que l'argent n'arrive nulle part. La
+    // caisse restait donc plus basse que le tiroir, et le rapport annonçait un
+    // découvert. Chaque mode atterrit maintenant sur son compte : la caisse pour
+    // les espèces, le compte bancaire choisi pour le TPE, le chèque et le virement.
+    const destination = tpeAccount
+      ? tpeAccount.id
+      : paymentForm.mode === 'ESPECES'
+        ? CAISSE_ID
+        : (paymentForm.bankAccountId || undefined);
+    const destinationLabel = tpeAccount
+      ? tpeAccount.name
+      : paymentForm.mode === 'ESPECES'
+        ? 'la caisse'
+        : (liveBankAccounts.find(a => a.id === destination)?.name || 'aucun compte');
+
+    if (destination) {
       const tx: TreasuryTransaction = {
         id: newId(),
         date: new Date(paymentForm.date).toISOString(),
-        kind: 'TPE',
+        kind: tpeAccount ? 'TPE' : 'SALE',
         amount: paymentForm.amount,
-        description: [`Règlement dette client — ${selectedClient.name}`, invoiceRef].filter(Boolean).join(' · '),
-        accountTo: tpeAccount.id,
+        description: [
+          `Règlement dette client — ${selectedClient.name}`,
+          invoiceRef,
+          PAYMENT_MODE_LABEL[paymentForm.mode] || paymentForm.mode,
+        ].filter(Boolean).join(' · '),
+        accountTo: destination,
         part: 'carburant',
         refType: 'client_payment',
         refId: payment.id,
+        chequeNumber: paymentForm.mode === 'CHEQUE' ? (paymentForm.chequeNumber || undefined) : undefined,
         createdBy: currentUserName,
         createdAt: new Date().toISOString(),
       };
       dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
     }
 
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: tpeAccount
-      ? `Règlement TPE encaissé sur ${tpeAccount.name}: -${paymentForm.amount.toLocaleString()} DA`
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: destination
+      ? `Règlement encaissé sur ${destinationLabel} : -${paymentForm.amount.toLocaleString()} DA`
       : `Règlement enregistré: -${paymentForm.amount.toLocaleString()} DA` } });
 
     const updatedClient: Client = {
@@ -1739,16 +1759,28 @@ const Clients = () => {
                   </div>
                 )}
 
-                {/* TPE — the terminal's bank account, credited in the treasury ledger.
-                    Same list (name + solde) as the « Comptes Bancaires » screen. */}
-                {paymentForm.mode === "TPE" && (
+                {/* Où va l'argent. Un règlement en espèces tombe dans la caisse ;
+                    tout le reste atterrit sur un compte bancaire à désigner.
+                    Seul le TPE demandait ce compte : un chèque encaissé ne créditait
+                    donc AUCUN compte, la dette disparaissait et l'argent avec elle. */}
+                {paymentForm.mode === "ESPECES" ? (
+                  <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-100">
+                    <p className="text-[9px] font-black text-emerald-700 uppercase ml-1 flex items-center gap-1.5">
+                      <Wallet className="w-3.5 h-3.5" /> Encaissé en caisse générale
+                    </p>
+                    <p className="text-[9px] font-bold text-emerald-600/70 italic leading-relaxed px-1 mt-1">
+                      Le montant entre dans la caisse et apparaît dans le journal de la Caisse Générale.
+                    </p>
+                  </div>
+                ) : (
                   <div className="space-y-2 p-4 rounded-2xl bg-blue-50/60 border border-blue-100">
                     <label className="text-[9px] font-black text-blue-700 uppercase ml-1 flex items-center gap-1.5">
-                      <Building2 className="w-3.5 h-3.5" /> Compte bancaire du TPE
+                      <Building2 className="w-3.5 h-3.5" />
+                      {paymentForm.mode === "TPE" ? "Compte bancaire du TPE" : "Compte bancaire crédité"}
                     </label>
                     {liveBankAccounts.length === 0 ? (
                       <p className="text-[10px] font-bold text-red-500 italic leading-relaxed px-1">
-                        Aucun compte bancaire. Créez-en un dans « Comptes Bancaires » pour encaisser par TPE.
+                        Aucun compte bancaire. Créez-en un dans « Comptes Bancaires » pour encaisser ce règlement.
                       </p>
                     ) : (
                       <>
@@ -1780,14 +1812,14 @@ const Clients = () => {
                 <button onClick={() => { setShowPayment(false); setSelectedSale(null); }} className="px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all italic">Annuler</button>
                 <button
                   onClick={() => handleRecordPayment(false)}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt || (paymentForm.mode === "TPE" && !paymentForm.bankAccountId)}
+                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
                   className="flex-1 min-w-[140px] px-4 py-2.5 bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:bg-emerald-50 transition-all flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 className="w-4 h-4" /> Valider
                 </button>
                 <button
                   onClick={() => handleRecordPayment(true)}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt || (paymentForm.mode === "TPE" && !paymentForm.bankAccountId)}
+                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
                   className="flex-1 min-w-[180px] px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
                 >
                   <Printer className="w-4 h-4 text-yellow-400" /> Valider & Imprimer Reçu

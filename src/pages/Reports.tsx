@@ -11,6 +11,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useModulePermission } from "../store/AppContext";
+import { derivedFuelSales, derivedPumpStats, computeCarburantSales } from "../lib/carburantSales";
 import { exportElementToPdf } from "../lib/pdf";
 // xlsx pèse ~400 Ko : chargé à la demande au clic « Excel », pas au démarrage.
 
@@ -165,11 +166,20 @@ const DataTable = ({ headers, rows, emptyMsg = "Aucune donnée" }: {
    MAIN COMPONENT
 ════════════════════════════════════════ */
 const Reports = () => {
+  const app = useAppState();
   const {
-    fuelSales, shopSales, tanks, pumps, brigades, deliveryNotes, expenses,
+    shopSales, tanks, pumps, brigades, deliveryNotes, expenses,
     products, brigadeChefs, pompistes, gerants, magasinWorkers, clients,
     suppliers, purchases, settings, tracks
-  } = useAppState();
+  } = app;
+  // La vente de carburant, c'est la BRIGADE. Cet écran lisait `fuel_sales`, une
+  // table que plus aucun écran n'écrit : recette carburant, volume vendu et
+  // croissance d'une période à l'autre valaient tous zéro.
+  const fuelSales = useMemo(() => derivedFuelSales(app), [app]);
+  // Ce qui est réellement rentré du carburant, par nature : espèces remises,
+  // TPE encaissé en banque, bons clients passés en créance, et le manquant. Ces
+  // montants vivent dans la comptabilité de clôture des brigades — jamais dans
+  // un « mode de paiement » porté par une vente.
   const perm = useModulePermission('Rapports');
 
   const [activeCategory, setActiveCategory] = useState("Opérations");
@@ -190,6 +200,10 @@ const Reports = () => {
 
   /* ── Filtered data ── */
   const fSales  = useMemo(() => fuelSales.filter(s => inRange(s.date)), [fuelSales, startDate, endDate]);
+  const fuelCollected = useMemo(() => {
+    const r = computeCarburantSales(app, startDate, endDate);
+    return { cash: r.cash, tpe: r.tpe, credit: r.credit, rest: r.rest };
+  }, [app, startDate, endDate]);
   const sSales  = useMemo(() => shopSales.filter(s => inRange(s.date)), [shopSales, startDate, endDate]);
   const bBrig   = useMemo(() => brigades.filter(b => inRange(b.date)).filter(
     b => filterChef === "Tous" || b.chefId === filterChef
@@ -247,17 +261,13 @@ const Reports = () => {
 
   const lowStockProds = products.filter(p => p.stock <= (p.minStock ?? 0));
 
-  /* ── Fuel by pump ── */
-  const pumpStats = useMemo(() => {
-    const m: Record<string, { liters: number; revenue: number; txCount: number }> = {};
-    fSales.forEach(s => {
-      if (!m[s.pumpId]) m[s.pumpId] = { liters: 0, revenue: 0, txCount: 0 };
-      m[s.pumpId].liters  += s.liters;
-      m[s.pumpId].revenue += s.total;
-      m[s.pumpId].txCount += 1;
-    });
-    return m;
-  }, [fSales]);
+  /* ── Volume & recette de chaque pompe ──
+     Le compte se tenait sur `fuel_sales.pumpId`, une table que plus rien
+     n'alimente : toutes les pompes affichaient 0 L. Il vient maintenant des
+     RELEVÉS DE PISTOLETS des brigades, qui les portent réellement. */
+  const pumpStats = useMemo(
+    () => derivedPumpStats(app, startDate, endDate),
+    [app, startDate, endDate]);
 
   /* ── Payment mode stats ── */
   const fuelByMode = useMemo(() => {
@@ -305,8 +315,8 @@ const Reports = () => {
     let data: any[] = [];
     if (activeCategory === "Opérations" || activeCategory === "Carburant") {
       data = fSales.map(s => ({
-        Date: s.date, Pompe: pumps.find(p => p.id === s.pumpId)?.name ?? s.pumpId,
-        Litres: s.liters, Total_DA: s.total, Paiement: s.paymentMode
+        Date: s.date, Brigade: s.shift ?? "—", Carburant: s.fuelType,
+        Litres: s.liters, Prix_Litre: s.pricePerLiter, Total_DA: s.total,
       }));
     } else if (activeCategory === "Magasin") {
       data = sSales.map(s => ({
@@ -677,10 +687,12 @@ const Reports = () => {
       case "Contacts": {
         const clientsWithDebt    = clients.filter(c => c.debt > 0).sort((a, b) => b.debt - a.debt);
         const clientsWithBalance = clients.filter(c => c.balance > 0).sort((a, b) => b.balance - a.balance);
-        const activeClientIds    = new Set([
-          ...fSales.filter(s => s.clientId).map(s => s.clientId),
-          ...sSales.filter(s => s.clientId).map(s => s.clientId),
-        ]);
+        // Les ventes de carburant sont portées par les brigades et ne nomment
+        // pas de client : les bons clients vivent dans la comptabilité de la
+        // brigade. Seules les factures magasin désignent donc un client ici.
+        const activeClientIds    = new Set(
+          sSales.filter(s => s.clientId).map(s => s.clientId),
+        );
         return (
           <div className="space-y-8">
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -960,9 +972,9 @@ const Reports = () => {
                 <div className="p-5 rounded-2xl border border-green-200 bg-green-50/40">
                   <p className="text-[10px] font-black text-green-700 uppercase tracking-widest mb-3">Entrées</p>
                   {[
-                    { l: "Carburant — Espèces",  v: fSales.filter(s=>s.paymentMode==="ESPECES").reduce((a,c)=>a+c.total,0) },
-                    { l: "Carburant — Chèques",  v: fSales.filter(s=>s.paymentMode==="CHEQUE").reduce((a,c)=>a+c.total,0) },
-                    { l: "Carburant — Bons",     v: fSales.filter(s=>s.paymentMode==="BON").reduce((a,c)=>a+c.total,0) },
+                    { l: "Carburant — Espèces (brigades)", v: fuelCollected.cash },
+                    { l: "Carburant — TPE / TAG",          v: fuelCollected.tpe },
+                    { l: "Carburant — Bons clients",       v: fuelCollected.credit },
                     { l: "Magasin — Espèces",    v: sSales.filter(s=>s.paymentMode==="ESPECES").reduce((a,c)=>a+c.total,0) },
                     { l: "Magasin — Chèques",    v: sSales.filter(s=>s.paymentMode==="CHEQUE").reduce((a,c)=>a+c.total,0) },
                   ].filter(r => r.v > 0).map(r => (
@@ -1016,8 +1028,10 @@ const Reports = () => {
         const netMargin    = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
         const pumpUtil     = pumps.length > 0 ? (pumps.filter(p => p.status === "Actif").length / pumps.length) * 100 : 0;
         const avgLiters    = fSales.length > 0 ? totalVolume / fSales.length : 0;
+        // Le carburant ne nomme pas son client (voir « Contacts ») : le
+        // classement se fait sur les factures magasin, qui, elles, le nomment.
         const topClients   = clients
-          .map(c => ({ ...c, totalBuys: fSales.filter(s => s.clientId === c.id).reduce((a, s) => a + s.total, 0) }))
+          .map(c => ({ ...c, totalBuys: sSales.filter(s => s.clientId === c.id).reduce((a, s) => a + s.total, 0) }))
           .filter(c => c.totalBuys > 0).sort((a, b) => b.totalBuys - a.totalBuys).slice(0, 5);
         return (
           <div className="space-y-8">

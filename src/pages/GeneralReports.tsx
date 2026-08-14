@@ -63,8 +63,17 @@ const SECTIONS: { id: ActiveKey; label: string; icon: React.ElementType; hint: s
 const PART_SECTIONS: ActiveKey[] = ['carburant', 'cafeteria', 'lavage'];
 
 // ─── Card drill-downs ─────────────────────────────────────────────────────────
-/** The KPI cards that open a detail list (Achats has its own richer modal). */
-type CardKey = 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions' | 'clientDebt' | 'supplierDebt' | 'alerts' | 'returns' | 'pertes';
+/**
+ * Les cartes KPI qui ouvrent une liste détaillée (les Achats ont leur propre
+ * modale, plus riche). AUCUNE carte n'annonce plus un montant sans donner accès
+ * aux opérations qui le composent : un chiffre qu'on ne peut pas vérifier n'est
+ * pas un chiffre, c'est une affirmation.
+ */
+type CardKey =
+  | 'salesTotal' | 'expenses' | 'netGain' | 'stockValue' | 'destructions'
+  | 'clientDebt' | 'supplierDebt' | 'alerts' | 'returns' | 'pertes'
+  | 'banks' | 'flux' | 'workers' | 'salaries' | 'brigades' | 'works'
+  | 'workingCapital' | 'stockSell' | 'cogs';
 
 /** One line of a card's underlying list. `onDelete` is absent for derived rows. */
 interface DetailRow {
@@ -116,8 +125,10 @@ export default function GeneralReports() {
 
   const reports = useMemo(() => ({
     carburant: computeCarburantReport(app, range.from, range.to),
-    cafeteria: computeModuleReport(biz.cafeteria, 'cafeteria', range.from, range.to),
-    lavage: computeModuleReport(biz.lavage, 'lavage', range.from, range.to),
+    // Le grand livre est passé aux parties commerciales : sans lui, leur caisse
+    // ignorait les virements partis de leur coffre vers la banque.
+    cafeteria: computeModuleReport(biz.cafeteria, 'cafeteria', range.from, range.to, app.treasuryTransactions),
+    lavage: computeModuleReport(biz.lavage, 'lavage', range.from, range.to, app.treasuryTransactions),
   }), [biz, app, range]);
 
   const global: GlobalReport = useMemo(
@@ -240,14 +251,23 @@ export default function GeneralReports() {
     const clientName = (id?: string) => app.clients?.find((c: any) => c.id === id)?.name;
     const byDateDesc = (a: DetailRow, b: DetailRow) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime();
 
-    // ── Ventes totales — fuel + shop (carburant) + biz sales/reparations ──
+    // ── Ventes totales — brigades + magasin (carburant) + biz sales/reparations ──
+    // La vente de carburant, c'est la BRIGADE. Cette liste lisait `fuelSales`,
+    // une table que plus aucun écran n'alimente : le carburant y pesait zéro,
+    // alors qu'il est de loin la première recette de la station.
     const salesRows: DetailRow[] = [];
-    (app.fuelSales || []).filter((s: any) => within(s.date, range.from, range.to)).forEach((s: any) => salesRows.push({
-      id: `fuel-${s.id}`, date: s.date,
-      label: `⛽ Carburant — ${(s.liters || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`,
-      sub: clientName(s.clientId) || 'Comptoir', amount: s.total || 0, amountTone: 'green',
-      onDelete: () => dispatch({ type: 'DELETE_FUEL_SALE', payload: s.id }),
-      confirmMessage: `Supprimer cette vente carburant de ${money(s.total || 0)} ? Le mouvement sera retiré définitivement.`,
+    reports.carburant.fuelBrigades.forEach(b => salesRows.push({
+      id: `bri-${b.id}`, date: b.date,
+      label: `⛽ Brigade ${b.shift} — ${b.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`,
+      sub: [
+        `Chef ${b.chefName}`,
+        `espèces ${money(b.cash)}`,
+        b.tpe ? `TPE ${money(b.tpe)}` : undefined,
+        b.credit ? `bons clients ${money(b.credit)}` : undefined,
+        Math.abs(b.rest) > 0.01 ? `manquant ${money(b.rest)}` : undefined,
+      ].filter(Boolean).join(' · '),
+      badge: { text: b.closed ? 'Clôturée' : 'En cours', tone: b.closed ? 'success' : 'warning' },
+      amount: b.revenue, amountTone: 'green',
     }));
     (app.shopSales || []).filter((s: any) => within(s.date, range.from, range.to)).forEach((s: any) => salesRows.push({
       id: `shop-${s.id}`, date: s.date,
@@ -352,15 +372,24 @@ export default function GeneralReports() {
     })));
     destructionRows.sort(byDateDesc);
 
-    // ── Valeur du stock — produits valorisés ──
+    // ── Valeur du stock — cuves ET produits, valorisés au prix d'achat ──
+    // Les litres dormant dans les cuves — le premier actif de la station —
+    // étaient absents de cette liste : seuls les produits boutique y figuraient.
     const stockRows: DetailRow[] = [];
-    (app.products || []).forEach((p: any) => stockRows.push({
-      id: `carb-${p.id}`, label: `⛽ ${p.name}`,
-      sub: `${(p.stock || 0).toLocaleString('fr-FR')} ${p.unit || ''} × ${money(p.buyPrice || 0)}`,
-      amount: (p.stock || 0) * (p.buyPrice || 0), amountTone: 'blue',
-      onDelete: () => dispatch({ type: 'DELETE_PRODUCT', payload: p.id }),
-      confirmMessage: `Supprimer le produit « ${p.name} » ? Il disparaîtra de l'inventaire.`,
-    }));
+    reports.carburant.stockLines.forEach(l => {
+      const isTank = l.id.startsWith('tank-');
+      const productId = l.id;
+      stockRows.push({
+        id: `carb-${l.id}`, label: `⛽ ${l.name}`,
+        sub: `${l.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} ${l.unit || ''} × ${money(l.buyPrice)}`,
+        badge: isTank ? { text: 'Cuve', tone: 'info' } : undefined,
+        amount: l.value, amountTone: 'blue',
+        // Une cuve ne se supprime pas depuis un rapport : elle se gère depuis
+        // l'écran Cuves, où le niveau et les mouvements sont tenus.
+        onDelete: isTank ? undefined : () => dispatch({ type: 'DELETE_PRODUCT', payload: productId }),
+        confirmMessage: `Supprimer le produit « ${l.name} » ? Il disparaîtra de l'inventaire.`,
+      });
+    });
     (['cafeteria', 'lavage'] as const).forEach(k => (stateOf(k).products || []).forEach((p: any) => stockRows.push({
       id: `${k}-${p.id}`, label: `${reports[k].emoji} ${p.name}`,
       sub: `${(p.currentQty || 0).toLocaleString('fr-FR')} ${p.unit || ''} × ${money(p.purchasePrice || 0)}`,
@@ -369,6 +398,125 @@ export default function GeneralReports() {
       confirmMessage: `Supprimer le produit « ${p.name} » ?`,
     })));
     stockRows.sort((a, b) => b.amount - a.amount);
+
+    // ── Comptes bancaires — un par ligne, avec ce que la période a fait bouger ──
+    const bankRows: DetailRow[] = treasury.accounts.map(a => ({
+      id: `bank-${a.id}`,
+      label: `🏛️ ${a.name}`,
+      sub: [
+        a.accountNumber ? `N° ${a.accountNumber}` : undefined,
+        `début de période ${money(a.openingBalance)}`,
+        `+${money(a.credit)} reçus · −${money(a.debit)} sortis`,
+        `${a.movesCount} mouvement(s) au total`,
+      ].filter(Boolean).join(' · '),
+      badge: { text: `${a.moves.length} sur la période`, tone: 'info' },
+      amount: a.balance, amountTone: a.balance >= 0 ? 'green' : 'red',
+    }));
+
+    // ── Journal consolidé de la période — chaque opération de la station ──
+    const fluxRows: DetailRow[] = treasury.movements.map(m => ({
+      id: `flux-${m.id}`, date: m.date,
+      label: `${m.partLabel} — ${m.label}`,
+      sub: [m.nature, m.accounts, m.reference].filter(Boolean).join(' · '),
+      badge: { text: m.amount >= 0 ? 'Encaissement' : 'Décaissement', tone: m.amount >= 0 ? 'success' : 'danger' },
+      amount: m.amount, amountTone: m.amount >= 0 ? 'green' : 'red',
+    }));
+
+    // ── Employés — le dossier de chacun, toutes activités confondues ──
+    const workerRows: DetailRow[] = workforce.parts.flatMap(p => p.workers.map(w => ({
+      id: `wf-${p.key}-${w.id}`,
+      label: `${p.emoji} ${w.name}`,
+      sub: [
+        w.role,
+        `salaire ${money(w.salaryAmount)}/${w.salaryType}`,
+        `versé ${money(w.paymentsTotal)}`,
+        w.acomptesTotal ? `acomptes ${money(w.acomptesTotal)}` : undefined,
+        w.absencesCount ? `${w.absencesCount} absence(s)` : undefined,
+      ].filter(Boolean).join(' · '),
+      badge: w.hasAccount ? { text: 'Compte actif', tone: 'success' } : undefined,
+      amount: w.dueNow, amountTone: w.dueNow > 0 ? 'red' : 'slate',
+    })));
+
+    // ── Salaires versés — chaque paiement, employé par employé ──
+    const salaryRows: DetailRow[] = workforce.parts.flatMap(p => p.workers.flatMap(w =>
+      w.payments.map(pay => ({
+        id: `pay-${w.id}-${pay.id}`, date: pay.date,
+        label: `${p.emoji} ${w.name}`,
+        sub: [pay.label, pay.description, pay.mode].filter(Boolean).join(' · '),
+        badge: { text: p.label, tone: 'info' as const },
+        amount: pay.amount, amountTone: 'green' as const,
+      }))))
+      .sort(byDateDesc);
+
+    // ── Brigades couvertes — la vente de carburant, brigade par brigade ──
+    const brigadeRows: DetailRow[] = reports.carburant.fuelBrigades.map(b => ({
+      id: `brg-${b.id}`, date: b.date,
+      label: `⛽ Brigade ${b.shift} — ${b.chefName}`,
+      sub: [
+        `${b.liters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`,
+        b.byFuel.map(f => `${f.type} ${f.liters.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L`).join(', '),
+        `espèces ${money(b.cash)}`,
+        b.tpe ? `TPE ${money(b.tpe)}` : undefined,
+        b.credit ? `bons ${money(b.credit)}` : undefined,
+        Math.abs(b.rest) > 0.01 ? `manquant ${money(b.rest)}` : 'soldée',
+      ].filter(Boolean).join(' · '),
+      badge: { text: b.closed ? 'Clôturée' : 'En cours', tone: b.closed ? 'success' : 'warning' },
+      amount: b.revenue, amountTone: 'green',
+    }));
+
+    // ── Travaux lavage / réparation + sessions cafétéria ──
+    const workRows: DetailRow[] = [];
+    reports.lavage.sales.filter(s => s.kind !== 'Vente').forEach(s => workRows.push({
+      id: `work-${s.id}`, date: s.date,
+      label: `🔧 ${s.kind} · ${s.ref}`, sub: s.client || 'Comptoir',
+      badge: s.rest > 0 ? { text: `reste ${money(s.rest)}`, tone: 'warning' } : { text: 'Payé', tone: 'success' },
+      amount: s.total, amountTone: 'green',
+    }));
+    reports.cafeteria.sales.forEach(s => workRows.push({
+      id: `caf-${s.id}`, date: s.date,
+      label: `☕ ${s.kind} · ${s.ref}`, sub: s.client || 'Comptoir',
+      amount: s.total, amountTone: 'green',
+    }));
+    workRows.sort(byDateDesc);
+
+    // ── Fonds de roulement — chaque terme du calcul, bloc par bloc ──
+    const wcRows: DetailRow[] = [
+      workingCapital.cash, workingCapital.banks, workingCapital.receivables,
+      workingCapital.stock, workingCapital.payables,
+    ].flatMap(b => b.rows.map(row => ({
+      id: `wc-${b.key}-${row.id}`,
+      date: row.date,
+      label: `${row.emoji || '•'} ${row.label}`,
+      sub: [b.label, row.sub].filter(Boolean).join(' · '),
+      badge: row.informational
+        ? { text: 'indicatif — hors total', tone: 'neutral' as const }
+        : { text: b.sign > 0 ? 'ajouté' : 'retranché', tone: b.sign > 0 ? 'success' as const : 'danger' as const },
+      amount: b.sign > 0 ? row.amount : -row.amount,
+      amountTone: row.informational ? 'slate' as const : b.sign > 0 ? 'green' as const : 'red' as const,
+    })));
+
+    // ── Stock au prix de vente — la marge qui dort en réserve ──
+    const stockSellRows: DetailRow[] = stockValuation.parts.flatMap(p =>
+      p.sections.flatMap(sec => sec.lines.filter(l => l.sellValue !== 0 || l.buyValue !== 0).map(l => ({
+        id: `sv-${p.key}-${sec.key}-${l.id}`,
+        label: `${p.emoji} ${l.name}`,
+        sub: [
+          sec.label,
+          `${l.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} ${l.unit || ''}`.trim(),
+          `achat ${money(l.buyPrice)} → vente ${money(l.sellPrice)}`,
+          `marge ${money(l.margin)}`,
+        ].filter(Boolean).join(' · '),
+        amount: l.sellValue, amountTone: 'blue' as const,
+      })))).sort((a, b) => b.amount - a.amount);
+
+    // ── Coût des marchandises vendues — par produit, toutes activités ──
+    const cogsRows: DetailRow[] = global.parts.flatMap(p =>
+      p.salesByProduct.filter(x => x.cost !== 0).map(x => ({
+        id: `cogs-${p.key}-${x.name}`,
+        label: `${p.emoji} ${x.name}`,
+        sub: `${x.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} ${x.unit || ''} vendus · CA ${money(x.revenue)} · gain ${money(x.gain)}`,
+        amount: x.cost, amountTone: 'amber' as const,
+      }))).sort((a, b) => b.amount - a.amount);
 
     // ── Dettes clients ──
     const clientDebtRows: DetailRow[] = [];
@@ -450,8 +598,18 @@ export default function GeneralReports() {
       clientDebt:   { title: 'Dettes clients', icon: Users, subtitle: 'Encours clients (toutes dates)', rows: clientDebtRows, total: global.clientDebtTotal, totalLabel: 'Total encours' },
       supplierDebt: { title: 'Dettes fournisseurs', icon: Truck, subtitle: 'Encours fournisseurs (toutes dates)', rows: supplierDebtRows, total: global.supplierDebtTotal, totalLabel: 'Total encours' },
       alerts:       { title: 'Alertes', icon: AlertTriangle, subtitle: 'Stock bas et péremptions', rows: alertRows, total: alertRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Valeur concernée', note: 'Alertes calculées — non supprimables.' },
+      banks:        { title: 'Comptes bancaires', icon: Landmark, subtitle: 'Solde de chaque compte et ce que la période y a fait', rows: bankRows, total: treasury.bankTotal, totalLabel: 'Total en banque', note: `Sur la période : ${money(treasury.bankOpening)} au départ, +${money(treasury.bankIn)} reçus, −${money(treasury.bankOut)} sortis. Le solde d'un compte est son solde d'ouverture plus TOUS ses mouvements, quelle que soit la période affichée. Ouvrez « Caisse & Banques » pour l'historique complet d'un compte.` },
+      flux:         { title: 'Journal de la période', icon: Layers, subtitle: 'Chaque opération de la station, toutes activités confondues', rows: fluxRows, total: treasury.net, totalLabel: 'Flux net', note: `+${money(treasury.inflow)} encaissés, −${money(treasury.outflow)} décaissés sur ${treasury.counts.movements} opération(s), dont ${treasury.counts.ledgerLines} issues du grand livre. Un document qui a déjà écrit sa ligne au grand livre (achat réglé, dépense payée, brigade clôturée) n'est compté qu'une fois.` },
+      workers:      { title: 'Employés de la station', icon: UsersRound, subtitle: 'Tous les employés, toutes activités confondues', rows: workerRows, total: workforce.totals.dueNow, totalLabel: 'Reste à régler', note: `${workforce.totals.workers} employé(s), dont ${workforce.totals.withAccount} avec un compte actif. Le montant de chaque ligne est ce qu'il reste à lui verser aujourd'hui. Ouvrez « Employés & Personnel » pour le dossier complet de chacun.` },
+      salaries:     { title: 'Salaires versés', icon: Banknote, subtitle: 'Chaque paiement de la période', rows: salaryRows, total: workforce.totals.salariesPaid, totalLabel: 'Total versé', note: `${money(workforce.totals.acomptes)} d'acomptes ont par ailleurs été avancés sur la période. Les salaires se corrigent depuis la fiche de l'employé concerné.` },
+      brigades:     { title: 'Brigades — les ventes de carburant', icon: Fuel, subtitle: 'Chaque brigade, ses litres et ce qui est rentré', rows: brigadeRows, total: reports.carburant.fuelBrigades.reduce((s, b) => s + b.revenue, 0), totalLabel: "Chiffre d'affaires", note: `${reports.carburant.fuelLiters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L vendus. Le chiffre d'affaires du carburant vient des BRIGADES : les pistolets donnent les litres, la comptabilité de clôture dit ce qui est rentré en espèces, par TPE, en bons clients, et ce qui manque. Corrigez une brigade depuis l'écran Brigades.` },
+      works:        { title: 'Travaux & prestations', icon: Car, subtitle: 'Lavages, réparations et ventes cafétéria de la période', rows: workRows, total: workRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Total facturé' },
+      workingCapital: { title: 'Fonds de roulement', icon: Scale, subtitle: 'Chaque terme du calcul, ligne par ligne', rows: wcRows, total: workingCapital.workingCapital, totalLabel: 'Fonds de roulement', note: `Trésorerie ${money(workingCapital.treasuryTotal)} + créances ${money(workingCapital.receivablesTotal)} + stock ${money(workingCapital.stockValue)} − dettes ${money(workingCapital.payablesTotal)}. Les lignes marquées « indicatif » sont la position reconstituée de chaque activité : elles expliquent d'où vient l'argent mais ne sont pas additionnées, sinon la même recette compterait deux fois.` },
+      stockSell:    { title: 'Stock au prix de vente', icon: TrendingUp, subtitle: "Ce que la réserve rapportera si tout part au prix affiché", rows: stockSellRows, total: stockValuation.sellValue, totalLabel: 'Valeur de vente', note: `Au prix d'achat la même réserve vaut ${money(stockValuation.buyValue)} : l'écart, ${money(stockValuation.margin)}, est une marge LATENTE — elle n'existe que si la marchandise se vend.` },
+      cogs:         { title: 'Coût des marchandises vendues', icon: Layers, subtitle: 'Ce que les ventes de la période ont réellement coûté', rows: cogsRows, total: global.cogs, totalLabel: 'Coût total', note: `Ventes ${money(global.salesTotal)} − coût des marchandises ${money(global.cogs)} = marge brute ${money(global.grossMargin)}. C'est la part du prix de vente qui n'est PAS un gain : les litres achetés, les ingrédients, le prix d'achat des articles.` },
     };
-  }, [global, reports, app, biz, range, dispatch, cafeteriaBiz, lavageBiz, inventaireLosses, inventaireLossTotal]);
+  }, [global, reports, app, biz, range, dispatch, cafeteriaBiz, lavageBiz, inventaireLosses, inventaireLossTotal,
+    treasury, workforce, workingCapital, stockValuation]);
 
   const activeReport: PartReport | null = PART_SECTIONS.includes(active)
     ? reports[active as 'carburant' | ModuleKey]
@@ -509,19 +667,34 @@ export default function GeneralReports() {
         <span className="ml-auto text-xs text-slate-400 flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> {formatDate(range.from)} → {formatDate(range.to)}</span>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Nav */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 items-start">
+        {/* ── Nav « Rapports Consolidés » ──────────────────────────────────────
+            Elle se tenait en `sticky` sans jamais borner sa hauteur : passé une
+            dizaine de sections, son bas passait SOUS le pied de page et devenait
+            inatteignable. Elle se comporte maintenant comme la barre latérale de
+            l'application — sa hauteur ne dépasse jamais l'écran, seule sa LISTE
+            défile, et l'entête comme le pied restent en place. Le contenu, lui,
+            défile normalement avec la page. */}
         <div className="lg:col-span-1">
-          <div className="rounded-2xl overflow-hidden shadow-xl sticky top-4" style={{ background: 'linear-gradient(170deg, #001233 0%, #001f5c 35%, #003087 70%, #002470 100%)' }}>
-            <div className="px-5 py-5 flex items-center gap-3 border-b border-white/10">
+          <div className="rounded-2xl overflow-hidden shadow-xl flex flex-col lg:sticky lg:top-2 lg:max-h-[calc(100vh-5.5rem)]"
+            style={{ background: 'linear-gradient(170deg, #001233 0%, #001f5c 35%, #003087 70%, #002470 100%)' }}>
+            <div className="px-5 py-4 flex items-center gap-3 border-b border-white/10 shrink-0">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center shadow-lg shrink-0" style={{ background: 'linear-gradient(135deg, #FFB800 0%, #e6a000 100%)' }}><FileBarChart className="w-5 h-5 text-[#001f5c]" /></div>
-              <div><p className="text-white font-black text-sm leading-none">Rapports</p><p className="text-[10px] font-semibold uppercase tracking-widest mt-0.5" style={{ color: 'rgba(255,184,0,0.65)' }}>Consolidés</p></div>
+              <div className="min-w-0">
+                <p className="text-white font-black text-sm leading-none truncate">Rapports</p>
+                <p className="text-[10px] font-semibold uppercase tracking-widest mt-0.5" style={{ color: 'rgba(255,184,0,0.65)' }}>Consolidés</p>
+              </div>
+              <span className="ml-auto text-[10px] font-black tabular-nums text-white/30 shrink-0">{SECTIONS.length}</span>
             </div>
-            <div className="px-3 py-3 space-y-0.5">
+            {/* Seule cette liste défile — `min-h-0` est ce qui autorise un enfant
+                flex à rétrécir sous sa hauteur naturelle et donc à défiler. */}
+            <nav className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 py-3 space-y-1">
               {SECTIONS.map(s => {
                 const Icon = s.icon; const isActive = active === s.id;
                 const rep = PART_SECTIONS.includes(s.id) ? reports[s.id as 'carburant' | ModuleKey] : null;
-                // Cross-cutting sections show a count instead of a net-gain figure.
+                // Chaque section porte SON chiffre : le gain d'une activité, la
+                // trésorerie, le fonds de roulement… Une pastille vide ne dirait
+                // rien, et un montant faux serait pire.
                 const badge = rep
                   ? { text: money(rep.netGain).replace(' DA', ''), cls: rep.netGain >= 0 ? 'text-emerald-300' : 'text-red-300' }
                   : s.id === 'employes'
@@ -534,47 +707,75 @@ export default function GeneralReports() {
                           ? { text: money(stockValuation.buyValue).replace(' DA', ''), cls: 'text-amber-300' }
                           : s.id === 'inventaires'
                             ? { text: money(inventaireLossTotal).replace(' DA', ''), cls: inventaireLossTotal > 0 ? 'text-red-300' : 'text-emerald-300' }
+                          : s.id === 'zakat'
+                            ? { text: money(zakatInputs.caisse + zakatInputs.banques).replace(' DA', ''), cls: 'text-violet-200' }
                           : s.id === 'analyses'
                             ? { text: `${analytics.global.trendPct >= 0 ? '+' : ''}${analytics.global.trendPct.toFixed(0)}%`, cls: analytics.global.trendPct >= 0 ? 'text-emerald-300' : 'text-red-300' }
-                            : null;
+                            : s.id === 'global'
+                              ? { text: money(global.netGain).replace(' DA', ''), cls: global.netGain >= 0 ? 'text-emerald-300' : 'text-red-300' }
+                              : null;
                 return (
-                  <button key={s.id} onClick={() => setActive(s.id)} className={cn('sidebar-link w-full', isActive ? 'sidebar-link-active' : 'sidebar-link-inactive')}>
-                    <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center shrink-0', isActive ? 'bg-[#001f5c]/20' : 'bg-white/6')}><Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[#001f5c]' : 'text-blue-200')} /></div>
-                    <span className="text-sm leading-none flex-1 text-left">{s.label}</span>
-                    {badge ? <span className={cn('text-[10px] font-black tabular-nums px-1.5 py-0.5 rounded', badge.cls)}>{badge.text}</span> : null}
-                    {isActive && <ChevronRight className="w-3 h-3 text-[#001f5c]/50 shrink-0" />}
+                  <button key={s.id} onClick={() => setActive(s.id)} title={s.hint}
+                    className={cn('w-full rounded-xl px-2.5 py-2 flex items-center gap-2.5 transition-all text-left group',
+                      isActive
+                        ? 'bg-[#FFB800] shadow-lg shadow-black/20'
+                        : 'hover:bg-white/10 active:bg-white/15')}>
+                    <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors',
+                      isActive ? 'bg-[#001f5c]/15' : 'bg-white/[0.07] group-hover:bg-white/15')}>
+                      <Icon className={cn('w-4 h-4', isActive ? 'text-[#001f5c]' : 'text-blue-200')} />
+                    </div>
+                    <span className="min-w-0 flex-1">
+                      <span className={cn('block text-[13px] font-bold leading-tight truncate',
+                        isActive ? 'text-[#001f5c]' : 'text-blue-50')}>{s.label}</span>
+                      <span className={cn('block text-[10px] leading-tight truncate mt-0.5',
+                        isActive ? 'text-[#001f5c]/60' : 'text-blue-300/50')}>{s.hint}</span>
+                    </span>
+                    {badge && (
+                      <span className={cn('text-[10px] font-black tabular-nums shrink-0 px-1.5 py-0.5 rounded',
+                        isActive ? 'text-[#001f5c] bg-black/10' : badge.cls)}>{badge.text}</span>
+                    )}
                   </button>
                 );
               })}
-            </div>
-            {/* Total gain footer */}
-            <div className="px-5 py-4 border-t border-white/10 space-y-3" style={{ background: 'rgba(0,0,0,0.15)' }}>
+            </nav>
+            {/* Pied — les deux totaux que le gérant garde sous les yeux */}
+            <div className="px-4 py-3.5 border-t border-white/10 space-y-2.5 shrink-0" style={{ background: 'rgba(0,0,0,0.2)' }}>
               <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-white/40">Gain net total</p>
-                <p className={cn('text-2xl font-black tabular-nums leading-tight', global.netGain >= 0 ? 'text-emerald-400' : 'text-red-400')}>{money(global.netGain)}</p>
+                <p className="text-[9px] font-black uppercase tracking-widest text-white/40">Gain net total</p>
+                <p className={cn('text-xl font-black tabular-nums leading-tight', global.netGain >= 0 ? 'text-emerald-400' : 'text-red-400')}>{money(global.netGain)}</p>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-lg bg-white/5 px-2.5 py-2">
+                <div className="rounded-lg bg-white/5 px-2.5 py-1.5">
                   <p className="text-[9px] font-black uppercase tracking-wide text-white/40">Trésorerie</p>
-                  <p className="text-[13px] font-black tabular-nums text-[#FFB800] leading-tight">{money(treasury.grandTotal)}</p>
+                  <p className={cn('text-[12px] font-black tabular-nums leading-tight', treasury.grandTotal >= 0 ? 'text-[#FFB800]' : 'text-red-400')}>{money(treasury.grandTotal)}</p>
                 </div>
-                <div className="rounded-lg bg-white/5 px-2.5 py-2">
+                <div className="rounded-lg bg-white/5 px-2.5 py-1.5">
                   <p className="text-[9px] font-black uppercase tracking-wide text-white/40">Employés</p>
-                  <p className="text-[13px] font-black tabular-nums text-white leading-tight">{workforce.totals.workers}</p>
+                  <p className="text-[12px] font-black tabular-nums text-white leading-tight">{workforce.totals.workers}</p>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Content */}
-        <div className="lg:col-span-3">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden flex flex-col min-h-[700px]" style={{ boxShadow: 'var(--shadow-xl)' }}>
-            <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white px-8 py-5 flex items-center gap-4 shrink-0">
+        {/* ── Contenu ──────────────────────────────────────────────────────────
+            Plus de hauteur imposée ni de zone à défilement interne : la section
+            s'étend sur toute sa longueur et c'est la PAGE qui défile. On ne se
+            retrouve donc plus à faire glisser une petite fenêtre à l'intérieur
+            d'une grande. Seul l'entête reste collé pour dire où l'on est. */}
+        <div className="lg:col-span-3 min-w-0">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden" style={{ boxShadow: 'var(--shadow-xl)' }}>
+            <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-900 text-white px-6 lg:px-8 py-5 flex items-center gap-4 sticky top-0 z-10">
               <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'rgba(255,184,0,0.2)', border: '1px solid rgba(255,184,0,0.3)' }}><ActiveIcon className="w-4 h-4 text-yellow-400" /></div>
-              <div><h2 className="font-black text-sm uppercase tracking-widest italic leading-none">{activeInfo.label}</h2><p className="text-[10px] text-blue-200 mt-0.5 font-bold">{activeInfo.hint}</p></div>
+              <div className="min-w-0">
+                <h2 className="font-black text-sm uppercase tracking-widest italic leading-none truncate">{activeInfo.label}</h2>
+                <p className="text-[10px] text-blue-200 mt-0.5 font-bold truncate">{activeInfo.hint}</p>
+              </div>
+              <span className="ml-auto text-[10px] font-bold text-blue-200/70 tabular-nums whitespace-nowrap hidden sm:block">
+                {formatDate(range.from)} → {formatDate(range.to)}
+              </span>
             </div>
-            <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar">
+            <div className="p-5 sm:p-6 lg:p-8">
               <AnimatePresence mode="wait">
                 <motion.div key={active} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
                   {active === 'global' && <GlobalOverview global={global} workforce={workforce} treasury={treasury} workingCapital={workingCapital} stock={stockValuation} inventaires={inventaireParts} inventaireLossTotal={inventaireLossTotal} onSelect={setActive} onOpenPurchases={() => setShowPurchases(true)} onOpenCard={setActiveCard} onOpenCaisse={() => setShowCaisse(true)} />}
@@ -774,10 +975,10 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
           sub={`${g.counts.purchases} facture(s) · payé ${money(g.purchasesPaid)}`
             + (g.purchasesDebt > 0 ? ` · dette ${money(g.purchasesDebt)}` : ' · soldées')}
           onClick={onOpenPurchases} cta="Détail par carburant" />
-        <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(chargesTotal)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
+        <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(chargesTotal)} sub={`Dépenses ${money(g.expensesTotal)} · salaires ${money(g.salariesPaid)}`} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
         {/* Le coût des marchandises vendues : la part du prix de vente qui n'est
-            pas un gain (les ingrédients, le prix d'achat). */}
-        <OverviewCard icon={Layers} tone="amber" label="Coût marchandises" value={money(g.cogs)} sub={`Marge brute ${money(g.grossMargin)}`} onClick={() => onOpenCard('netGain')} cta="Décomposition du gain" />
+            pas un gain (les ingrédients, le prix d'achat, les litres achetés). */}
+        <OverviewCard icon={Layers} tone="amber" label="Coût marchandises" value={money(g.cogs)} sub={`Marge brute ${money(g.grossMargin)}`} onClick={() => onOpenCard('cogs')} cta="Détail par produit" />
         <OverviewCard icon={Boxes} tone="amber" label="Valeur du stock" value={money(g.stockValue)} sub={`${g.counts.products} produits`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
         <OverviewCard icon={Flame} tone="red" label="Destructions" value={money(g.destroyedValue)} sub="marchandise perdue" onClick={() => onOpenCard('destructions')} cta="Voir le détail" />
         {/* Pertes d'inventaire : la marchandise qui manquait au comptage, que
@@ -810,11 +1011,11 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
           <OverviewCard icon={Scale} tone={wc.workingCapital >= 0 ? 'green' : 'red'} label="Fonds de roulement"
             value={money(wc.workingCapital)}
             sub={`Trésorerie ${money(wc.treasuryTotal)} + créances + stock ${money(wc.stockValue)} − dettes`}
-            onClick={() => onSelect('fonds')} cta="Détail par compte" />
+            onClick={() => onOpenCard('workingCapital')} cta="Chaque ligne du calcul" />
           <OverviewCard icon={Boxes} tone="amber" label="Stock au prix d'achat" value={money(sv.buyValue)}
-            sub={`${sv.count} référence(s)`} onClick={() => onSelect('stock')} cta="Valeur du stock" />
+            sub={`${sv.count} référence(s)`} onClick={() => onOpenCard('stockValue')} cta="Voir le détail" />
           <OverviewCard icon={TrendingUp} tone="blue" label="Stock au prix de vente" value={money(sv.sellValue)}
-            sub={`Marge latente ${money(sv.margin)}`} onClick={() => onSelect('stock')} cta="Voir le détail" />
+            sub={`Marge latente ${money(sv.margin)}`} onClick={() => onOpenCard('stockSell')} cta="Voir le détail" />
           <OverviewCard icon={Moon} tone="purple" label="Zakât" value="Calculer"
             sub="Assiette, nisâb et taux paramétrables" onClick={() => onSelect('zakat')} cta="Ouvrir le calcul" />
         </div>
@@ -846,15 +1047,23 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
               Voir le détail du calcul <ChevronRight className="w-3 h-3" />
             </p>
           </button>
-          <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#065f46,#047857)' }}>
+          <button onClick={() => onOpenCard('banks')} className="rounded-2xl p-5 text-white text-left transition-transform hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#065f46,#047857)' }}>
             <div className="flex items-center gap-2 text-emerald-100"><Landmark className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Total en banque</span></div>
             <p className="text-3xl font-black tabular-nums mt-1.5">{money(tr.bankTotal)}</p>
-            <p className="text-[11px] text-emerald-100 mt-0.5">{tr.counts.accounts} compte(s)</p>
+            <p className="text-[11px] text-emerald-100 mt-0.5 tabular-nums">
+              Ouverture {money(tr.bankOpening)} · +{money(tr.bankIn)} · −{money(tr.bankOut)}
+            </p>
+            <p className="text-[11px] font-black mt-1.5 flex items-center gap-1 text-emerald-100">
+              {tr.counts.accounts} compte(s) — voir le détail <ChevronRight className="w-3 h-3" />
+            </p>
           </button>
-          <button onClick={() => onSelect('tresorerie')} className="rounded-2xl p-5 text-white text-left" style={{ background: 'linear-gradient(135deg,#4c1d95,#6d28d9)' }}>
+          <button onClick={() => onOpenCard('flux')} className="rounded-2xl p-5 text-white text-left transition-transform hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#4c1d95,#6d28d9)' }}>
             <div className="flex items-center gap-2 text-violet-200"><Layers className="w-4 h-4" /><span className="text-[11px] font-bold uppercase tracking-wide">Flux net de la période</span></div>
             <p className="text-3xl font-black tabular-nums mt-1.5">{money(tr.net)}</p>
-            <p className="text-[11px] text-violet-200 mt-0.5">+{money(tr.inflow)} · −{money(tr.outflow)} · {tr.counts.movements} opérations</p>
+            <p className="text-[11px] text-violet-200 mt-0.5 tabular-nums">+{money(tr.inflow)} · −{money(tr.outflow)}</p>
+            <p className="text-[11px] font-black mt-1.5 flex items-center gap-1 text-violet-200">
+              {tr.counts.movements} opérations — voir le journal <ChevronRight className="w-3 h-3" />
+            </p>
           </button>
         </div>
       </div>
@@ -866,10 +1075,10 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
           <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => onSelect('employes')}>Dossier de chaque employé →</button>
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <OverviewCard icon={UsersRound} tone="blue" label="Employés" value={String(wf.totals.workers)} sub={`${wf.totals.withAccount} compte(s) actif(s)`} />
-          <OverviewCard icon={Banknote} tone="green" label="Salaires versés" value={money(wf.totals.salariesPaid)} sub={`${money(wf.totals.acomptes)} d'acomptes`} />
-          <OverviewCard icon={Target} tone="purple" label="Brigades couvertes" value={String(wf.totals.brigades)} sub={`${wf.totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L vendus`} />
-          <OverviewCard icon={Car} tone="cyan" label="Travaux lavage / réparation" value={String(wf.totals.works)} sub={`${wf.totals.sessions} sessions cafétéria`} />
+          <OverviewCard icon={UsersRound} tone="blue" label="Employés" value={String(wf.totals.workers)} sub={`${wf.totals.withAccount} compte(s) actif(s)`} onClick={() => onOpenCard('workers')} cta="Voir le détail" />
+          <OverviewCard icon={Banknote} tone="green" label="Salaires versés" value={money(wf.totals.salariesPaid)} sub={`${money(wf.totals.acomptes)} d'acomptes`} onClick={() => onOpenCard('salaries')} cta="Chaque paiement" />
+          <OverviewCard icon={Target} tone="purple" label="Brigades couvertes" value={String(wf.totals.brigades)} sub={`${wf.totals.liters.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L vendus`} onClick={() => onOpenCard('brigades')} cta="Voir les brigades" />
+          <OverviewCard icon={Car} tone="cyan" label="Travaux lavage / réparation" value={String(wf.totals.works)} sub={`${wf.totals.sessions} sessions cafétéria`} onClick={() => onOpenCard('works')} cta="Voir le détail" />
         </div>
         <div className="card-glass overflow-hidden">
           <div className="overflow-x-auto custom-scrollbar">
@@ -960,26 +1169,71 @@ const AMOUNT_TONE: Record<string, string> = {
 
 function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClose: () => void }) {
   const [confirmRow, setConfirmRow] = useState<DetailRow | null>(null);
-  // Drop any pending confirmation when the opened card changes.
-  useEffect(() => { setConfirmRow(null); }, [detail]);
+  /** Recherche libre — certaines listes dépassent la centaine de lignes. */
+  const [query, setQuery] = useState('');
+  // Drop any pending confirmation (and the search) when the opened card changes.
+  useEffect(() => { setConfirmRow(null); setQuery(''); }, [detail]);
+
+  const rows = useMemo(() => {
+    if (!detail) return [] as DetailRow[];
+    const q = query.trim().toLowerCase();
+    if (!q) return detail.rows;
+    return detail.rows.filter(r =>
+      `${r.label} ${r.sub || ''} ${r.badge?.text || ''}`.toLowerCase().includes(q));
+  }, [detail, query]);
+
   if (!detail) return null;
   const Icon = detail.icon;
   const deletable = detail.rows.some(r => r.onDelete);
+  // Le total du filtre, à côté du total général : on voit ce que la recherche
+  // pèse dans l'ensemble sans avoir à faire l'addition soi-même.
+  const shownTotal = rows.reduce((s, r) => s + r.amount, 0);
+  const filtered = rows.length !== detail.rows.length;
+  const credits = detail.rows.filter(r => r.amount > 0).length;
+  const debits = detail.rows.filter(r => r.amount < 0).length;
+
   return (
     <Modal open onClose={onClose} icon={Icon} size="2xl" fullHeight
       title={detail.title} subtitle={detail.subtitle || `${detail.rows.length} ligne(s)`}
       footer={<>
-        <div className="mr-auto flex items-center gap-2 text-sm font-black text-[#002d87]">
-          <span className="text-slate-400 font-bold text-xs uppercase tracking-wide">{detail.totalLabel}</span> {money(detail.total)}
+        <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="flex items-center gap-2 text-sm font-black text-[#002d87]">
+            <span className="text-slate-400 font-bold text-xs uppercase tracking-wide">{detail.totalLabel}</span> {money(detail.total)}
+          </span>
+          {filtered && (
+            <span className="flex items-center gap-2 text-xs font-black text-[#003087]">
+              <span className="text-slate-400 font-bold uppercase tracking-wide">Filtré</span>
+              {rows.length} ligne(s) · {money(shownTotal)}
+            </span>
+          )}
         </div>
         <button className="btn-ghost" onClick={onClose}>Fermer</button>
       </>}>
       <div className="space-y-4">
-        {detail.note && <p className="text-[11px] text-slate-400 italic px-1">{detail.note}</p>}
+        {/* Bandeau de tête : ce que la liste contient, en un coup d'œil */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="badge badge-info">{detail.rows.length} ligne(s)</span>
+          {credits > 0 && <span className="badge badge-success">{credits} en entrée</span>}
+          {debits > 0 && <span className="badge badge-danger">{debits} en sortie</span>}
+          {deletable && <span className="badge badge-warning">Lignes supprimables</span>}
+          {detail.rows.length > 8 && (
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Rechercher dans la liste…"
+              className="input-field !w-auto ml-auto !h-9 text-xs min-w-[200px]" />
+          )}
+        </div>
+
+        {detail.note && <p className="text-[11px] text-slate-400 italic px-1 leading-relaxed">{detail.note}</p>}
+
         {detail.rows.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-slate-200 p-10 text-center">
             <FileBarChart className="w-10 h-10 mx-auto mb-3 text-slate-200" />
             <p className="text-sm font-bold text-slate-400">Aucune ligne sur cette période.</p>
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-2xl border-2 border-dashed border-slate-200 p-10 text-center">
+            <FileBarChart className="w-10 h-10 mx-auto mb-3 text-slate-200" />
+            <p className="text-sm font-bold text-slate-400">Aucune ligne ne correspond à « {query} ».</p>
           </div>
         ) : (
           <Table head={<>
@@ -988,7 +1242,7 @@ function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClo
             <th className="table-head text-right">Montant</th>
             {deletable && <th className="table-head text-right">Action</th>}
           </>}>
-            {detail.rows.map(r => (
+            {rows.map(r => (
               <tr key={r.id} className="hover:bg-slate-50">
                 <td className="table-cell whitespace-nowrap text-slate-500">{r.date ? formatDate(r.date) : '—'}</td>
                 <td className="table-cell">
@@ -996,7 +1250,7 @@ function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClo
                     <span className="font-bold text-slate-700">{r.label}</span>
                     {r.badge && <Badge tone={r.badge.tone}>{r.badge.text}</Badge>}
                   </div>
-                  {r.sub && <div className="text-[11px] text-slate-400">{r.sub}</div>}
+                  {r.sub && <div className="text-[11px] text-slate-400 leading-relaxed">{r.sub}</div>}
                 </td>
                 <td className={cn('table-cell text-right tabular-nums font-black', AMOUNT_TONE[r.amountTone || 'slate'])}>{money(r.amount)}</td>
                 {deletable && (
@@ -1009,6 +1263,14 @@ function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClo
                 )}
               </tr>
             ))}
+            <tr className="bg-blue-50/60">
+              <td className="table-cell" />
+              <td className="table-cell font-black text-[#002d87]">
+                {filtered ? `TOTAL AFFICHÉ — ${rows.length} sur ${detail.rows.length} ligne(s)` : `TOTAL — ${detail.totalLabel.toLowerCase()}`}
+              </td>
+              <td className="table-cell text-right tabular-nums font-black text-[#002d87]">{money(filtered ? shownTotal : detail.total)}</td>
+              {deletable && <td className="table-cell" />}
+            </tr>
           </Table>
         )}
       </div>

@@ -26,7 +26,7 @@ type Tab = 'rapport' | 'produits' | 'analyses';
 export default function ModuleReports({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
-  const { settings } = useAppState();
+  const { settings, treasuryTransactions } = useAppState();
   const st = biz.state;
   const ficheRef = useRef<HTMLDivElement>(null);
 
@@ -38,7 +38,11 @@ export default function ModuleReports({ moduleKey }: { moduleKey: ModuleKey }) {
   /** Découpage du temps des graphiques — automatique tant qu'on n'y touche pas. */
   const [grain, setGrain] = useState<Granularity | undefined>(undefined);
 
-  const report = useMemo(() => computeModuleReport(st, moduleKey, range.from, range.to), [st, moduleKey, range]);
+  // Le grand livre entre dans le calcul : la caisse de la partie doit compter les
+  // virements partis de son coffre, comme le fait l'écran Caisse Générale.
+  const report = useMemo(
+    () => computeModuleReport(st, moduleKey, range.from, range.to, treasuryTransactions),
+    [st, moduleKey, range, treasuryTransactions]);
   // Les analyses servent AUSSI l'onglet « Bénéfices par produit » : c'est la même
   // table de produits, donc le même gain — les deux écrans ne peuvent pas diverger.
   const analytics = useMemo(

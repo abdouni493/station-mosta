@@ -10,23 +10,16 @@
  */
 import { ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale } from './bizConfig';
 import { unpaidSupplierInvoices, purchasePaid, purchaseRest } from './supplierDebt';
+import { computeCarburantSales, computeCarburantCash, FuelBrigadeSale } from './carburantSales';
+import { CAISSE_PART_ID, ledgerNetFor } from '../store/AppContext';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 // ─── Date helper ─────────────────────────────────────────────────────────────
-export const within = (dateStr: string, from: string, to: string): boolean => {
-  if (!dateStr) return false;
-  const d = new Date(dateStr).getTime();
-  if (Number.isNaN(d)) return false;
-  return (!from || d >= new Date(from).getTime()) && (!to || d <= new Date(to + 'T23:59:59').getTime());
-};
-
-export const daysUntil = (dateStr?: string): number => {
-  if (!dateStr) return Infinity;
-  const t = new Date(dateStr).getTime();
-  if (Number.isNaN(t)) return Infinity;
-  return Math.ceil((t - Date.now()) / 86_400_000);
-};
+// La règle vit dans `period.ts` — elle est partagée avec `carburantSales`, que ce
+// fichier lit. La ré-exporter garde tous les appelants historiques inchangés.
+export { within, daysUntil } from './period';
+import { within, daysUntil } from './period';
 
 // ─── Detail row types ────────────────────────────────────────────────────────
 export interface SaleRow {
@@ -41,6 +34,8 @@ export interface ProductGain { name: string; qty: number; unit?: string; revenue
 export interface DebtRow { id: string; ref: string; name: string; date: string; total: number; paid: number; rest: number; }
 export interface ExpenseRow { id: string; kind: 'Dépense' | 'Salaire' | 'Acompte' | 'Absence'; label: string; description?: string; amount: number; date: string; }
 export interface StockAlertRow { id: string; name: string; category?: string; currentQty: number; minQty: number; deficit: number; unit?: string; value: number; }
+/** Une référence en stock et ce qu'elle vaut — le détail de « Valeur du stock ». */
+export interface StockLineRow { id: string; name: string; category?: string; qty: number; unit?: string; buyPrice: number; value: number; }
 export interface ExpiryAlertRow { id: string; name: string; category?: string; expirationDate: string; daysLeft: number; currentQty: number; unit?: string; value: number; status: 'expired' | 'soon'; }
 export interface WorkerRow {
   id: string; name: string; role: string; salaryType: string; salaryAmount: number; paid: boolean;
@@ -50,6 +45,20 @@ export interface WorkerRow {
   net: number;
 }
 export interface CaisseRow { id: string; type: 'deposit' | 'withdraw'; amount: number; date: string; description?: string; category?: string; }
+/**
+ * Un mouvement d'espèces d'une activité, vu DEPUIS son tiroir. C'est de ces
+ * lignes-là qu'est fait le « Solde caisse » : la carte ne montrait qu'un montant,
+ * et un solde négatif n'avait alors aucun moyen de s'expliquer.
+ */
+export interface CaisseMovementRow {
+  id: string;
+  date: string;
+  nature: string;
+  label: string;
+  /** Signé sur la caisse : > 0 = espèces entrées, < 0 = espèces sorties. */
+  amount: number;
+  reference?: string;
+}
 export interface DestructionRow {
   id: string; name: string; qty: number; value: number; reason?: string; date: string;
   /** D'où vient le produit détruit : le catalogue (stock) ou le comptoir. */
@@ -135,9 +144,25 @@ export interface PartReport {
   destructions: DestructionRow[];
   productions: ProductionRow[];
   returns: ReturnRow[];
+  /** Chaque référence en stock, valorisée — le détail de `stockValue`. */
+  stockLines: StockLineRow[];
+  /** Le solde de caisse expliqué mouvement par mouvement (toutes dates). */
+  caisseMovements: CaisseMovementRow[];
+  /** Entrées / sorties d'espèces qui composent `caisseBalance`. */
+  caisseFlow: { in: number; out: number };
+  /** Brigades de la période — la vraie vente de carburant. Vide ailleurs. */
+  fuelBrigades: FuelBrigadeSale[];
+  /** Litres de carburant vendus sur la période. */
+  fuelLiters: number;
 
   counts: { products: number; clients: number; suppliers: number; sales: number; purchases: number; workers: number; returns: number };
 }
+
+/** Résume une liste de mouvements de caisse en ses deux flux. */
+const flowOf = (rows: CaisseMovementRow[]) => ({
+  in: rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0),
+  out: rows.filter(r => r.amount < 0).reduce((s, r) => s - r.amount, 0),
+});
 
 // ─── Coût de revient d'une ligne vendue ──────────────────────────────────────
 /** Ce qu'une ligne vendue peut être : d'où vient réellement la marchandise. */
@@ -211,7 +236,15 @@ export function makeCostResolver(st: ModuleState) {
 }
 
 // ─── Module (biz) report ─────────────────────────────────────────────────────
-export function computeModuleReport(st: ModuleState, key: ModuleKey, from: string, to: string): PartReport {
+/**
+ * `txs` — le grand livre de la station. Sans lui, la caisse d'une partie
+ * ignorait les VIREMENTS partis de son coffre : elle restait pleine d'un argent
+ * déjà versé en banque, et contredisait l'écran Caisse Générale, qui les compte.
+ * Le paramètre est facultatif pour ne casser aucun appelant existant.
+ */
+export function computeModuleReport(
+  st: ModuleState, key: ModuleKey, from: string, to: string, txs: any[] = [],
+): PartReport {
   const cfg = MODULES[key];
   const { unitOf, costOfItem } = makeCostResolver(st);
 
@@ -410,13 +443,53 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
   const clientDebtTotal = clientDebts.reduce((s, x) => s + x.rest, 0);
   const supplierDebtTotal = supplierDebts.reduce((s, x) => s + x.rest, 0);
   const stockValue = st.products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0);
-  const caisseBalance =
-    st.caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0)
-    - st.caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0)
-    // L'argent rendu au client sur un retour est bien sorti du tiroir.
-    + st.sales.reduce((s, x) => s + netCashOfSale(x), 0)
-    - st.purchases.reduce((s, x) => s + x.paid, 0)
-    - st.expenses.reduce((s, e) => s + e.amount, 0);
+
+  // ── Le solde de caisse, ligne par ligne ───────────────────────────────────
+  // Mêmes termes que l'écran Caisse Générale, dans le même ordre : dépôts,
+  // encaissements, retraits, achats réglés, dépenses, salaires, puis les
+  // virements du coffre de la partie. Les lignes sont le calcul lui-même, ce qui
+  // rend un solde négatif lisible au lieu d'être subi.
+  const caisseMovements: CaisseMovementRow[] = [
+    ...st.caisse.map(c => ({
+      id: `csh-${c.id}`, date: c.date,
+      nature: c.type === 'deposit' ? 'Dépôt' : 'Retrait',
+      label: c.description || (c.type === 'deposit' ? 'Dépôt de caisse' : 'Retrait de caisse'),
+      amount: c.type === 'deposit' ? num(c.amount) : -num(c.amount),
+    })),
+    // L'argent rendu au client sur un retour est bien sorti du tiroir : c'est
+    // `netCashOfSale` qui le sait, pas le montant facturé.
+    ...st.sales.filter(x => netCashOfSale(x) !== 0).map(x => ({
+      id: `sale-${x.id}`, date: x.date, nature: 'Vente',
+      label: `Vente ${x.ref} — ${x.clientName}`, amount: netCashOfSale(x),
+    })),
+    ...(st.reparations || []).filter(r => num(r.paid) > 0).map(r => ({
+      id: `rep-${r.id}`, date: r.date, nature: 'Vente',
+      label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
+      amount: num(r.paid),
+    })),
+    ...st.purchases.filter(x => num(x.paid) > 0).map(x => ({
+      id: `pur-${x.id}`, date: x.date, nature: 'Achat',
+      label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
+    })),
+    ...st.expenses.map(e => ({
+      id: `exp-${e.id}`, date: e.date, nature: 'Dépense',
+      label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -num(e.amount),
+    })),
+    ...st.workers.flatMap(w => (w.payments || []).map(p => ({
+      id: `pay-${p.id}`, date: p.date, nature: 'Salaire',
+      label: `Salaire ${w.name} — ${p.period}`, amount: -num(p.amount),
+    }))),
+    ...(txs || [])
+      .filter((t: any) => (t.accountTo === CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID])
+        !== (t.accountFrom === CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID]))
+      .map((t: any) => ({
+        id: t.id, date: t.date, nature: 'Virement',
+        label: t.description || 'Virement de caisse',
+        amount: t.accountTo === CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID] ? num(t.amount) : -num(t.amount),
+        reference: t.chequeNumber || t.bordereauNumber,
+      })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const caisseBalance = caisseMovements.reduce((s, m) => s + m.amount, 0);
   const netGain = grossMargin - expensesTotal - salariesPaid - destroyedValue - lossValue;
 
   return {
@@ -427,6 +500,14 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
     clientDebtTotal, supplierDebtTotal, stockValue, caisseBalance, netGain,
     sales, purchases, salesByProduct, clientDebts, supplierDebts, expenses, expensesByCategory,
     stockAlerts, expiryAlerts, workers, caisse, destructions, productions, returns,
+    stockLines: st.products
+      .map(p => ({
+        id: p.id, name: p.name, category: p.categoryName, qty: p.currentQty,
+        unit: p.unit, buyPrice: p.purchasePrice, value: p.currentQty * p.purchasePrice,
+      }))
+      .sort((a, b) => b.value - a.value),
+    caisseMovements, caisseFlow: flowOf(caisseMovements),
+    fuelBrigades: [], fuelLiters: 0,
     counts: {
       products: st.products.length, clients: st.clients.length, suppliers: st.suppliers.length,
       sales: effectiveSales.length + repsInRange.length, purchases: purchasesInRange.length,
@@ -436,29 +517,36 @@ export function computeModuleReport(st: ModuleState, key: ModuleKey, from: strin
 }
 
 // ─── Carburant (fuel-station) report from the Supabase AppContext ─────────────
+/**
+ * Le rapport de l'activité Carburant.
+ *
+ * Il lisait la table `fuel_sales`, que plus AUCUN écran n'écrit : la vente de
+ * carburant passe par les brigades depuis longtemps. Résultat, ce rapport
+ * annonçait zéro litre et zéro dinar de recette carburant, tout en retranchant
+ * les achats et les dépenses pour leur montant entier — d'où le fameux
+ * « Solde caisse −973 867,40 DA », qui n'était rien d'autre que la somme des
+ * sorties d'une activité privée de ses recettes.
+ *
+ * Les ventes viennent maintenant de `carburantSales`, c'est-à-dire des brigades
+ * elles-mêmes, et le solde de caisse de `computeCarburantCash` — la même
+ * fonction que celle de l'écran Caisse Générale, pour que les deux écrans ne
+ * puissent plus se contredire.
+ */
 export function computeCarburantReport(app: any, from: string, to: string): PartReport {
   const products: any[] = app.products || [];
   const clients: any[] = app.clients || [];
   const suppliers: any[] = app.suppliers || [];
-  const fuelSales: any[] = (app.fuelSales || []).filter((s: any) => within(s.date, from, to));
   const shopSales: any[] = (app.shopSales || []).filter((s: any) => within(s.date, from, to));
   const purchasesAll: any[] = app.purchases || [];
   const purchasesInRange = purchasesAll.filter((p: any) => within(p.date, from, to));
   const expensesInRange: any[] = (app.expenses || []).filter((e: any) => within(e.date, from, to));
 
   const prodById = new Map(products.map(p => [p.id, p]));
-  const pumpById = new Map((app.pumps || []).map((p: any) => [p.id, p]));
 
-  // Fuel by type (buy vs sell) — pump type drives the buy price (as in the Fiche Journalière).
-  const fuelByType: Record<string, { qty: number; revenue: number; cost: number }> = {};
-  fuelSales.forEach(s => {
-    const type = (pumpById.get(s.pumpId) as any)?.type || s.fuelType || s.type || 'Carburant';
-    (fuelByType[type] ||= { qty: 0, revenue: 0, cost: 0 });
-    fuelByType[type].qty += s.liters || 0;
-    fuelByType[type].revenue += s.total || 0;
-    const buy = (app.settings?.fuelBuyPrices?.[type]) || 0;
-    fuelByType[type].cost += (s.liters || 0) * buy;
-  });
+  // ── Carburant : les brigades de la période ──
+  const fuel = computeCarburantSales(app, from, to);
+  const cash = computeCarburantCash(app);
+
   // Shop by product
   const shopByProduct: Record<string, { qty: number; revenue: number; cost: number; unit?: string }> = {};
   shopSales.forEach(s => (s.items || []).forEach((i: any) => {
@@ -469,16 +557,28 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     shopByProduct[i.productName].cost += i.quantity * (prod?.buyPrice || 0);
   }));
   const salesByProduct: ProductGain[] = [
-    ...Object.entries(fuelByType).map(([name, v]) => ({ name, qty: v.qty, unit: 'L', revenue: v.revenue, cost: v.cost, gain: v.revenue - v.cost })),
+    ...fuel.byFuel.map(f => ({
+      name: `Carburant — ${f.type}`, qty: f.liters, unit: 'L',
+      revenue: f.revenue, cost: f.cost, gain: f.gain,
+    })),
     ...Object.entries(shopByProduct).map(([name, v]) => ({ name, qty: v.qty, unit: v.unit, revenue: v.revenue, cost: v.cost, gain: v.revenue - v.cost })),
   ].sort((a, b) => b.revenue - a.revenue);
 
-  // Shop invoices as sale rows (compact)
-  const sales: SaleRow[] = shopSales.map(s => ({
-    id: s.id, ref: s.id?.slice(0, 8) || '—', kind: 'Magasin', date: s.date, client: clients.find(c => c.id === s.clientId)?.name || 'Comptoir',
-    total: s.total, paid: s.amountPaid ?? s.total, rest: s.rest ?? 0,
-    items: (s.items || []).map((i: any) => ({ name: i.productName, qty: i.quantity, unitPrice: i.price, total: i.quantity * i.price })),
-  })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Ventes : une ligne par brigade (le carburant), puis les factures magasin.
+  const sales: SaleRow[] = [
+    ...fuel.brigades.map(b => ({
+      id: b.id, ref: b.ref, kind: 'Brigade', date: b.date, client: b.chefName,
+      total: b.revenue,
+      // Encaissé = espèces + TPE. Les bons clients et le manquant restent dus.
+      paid: b.cash + b.tpe, rest: Math.max(0, b.credit + b.rest),
+      items: b.byFuel.map(f => ({ name: f.type, qty: f.liters, unitPrice: f.price, total: f.revenue })),
+    })),
+    ...shopSales.map(s => ({
+      id: s.id, ref: s.id?.slice(0, 8) || '—', kind: 'Magasin', date: s.date, client: clients.find(c => c.id === s.clientId)?.name || 'Comptoir',
+      total: s.total, paid: s.amountPaid ?? s.total, rest: s.rest ?? 0,
+      items: (s.items || []).map((i: any) => ({ name: i.productName, qty: i.quantity, unitPrice: i.price, total: i.quantity * i.price })),
+    })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const purchases: PurchaseRow[] = purchasesInRange.map((p: any) => ({
     id: p.id, ref: p.invoiceNumber || p.blNumber || p.id?.slice(0, 8) || '—', date: p.date,
@@ -509,8 +609,57 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
       total: inv.total, paid: inv.paid, rest: inv.rest,
     }));
 
-  const expenses: ExpenseRow[] = expensesInRange.map((e: any) => ({ id: e.id, kind: 'Dépense' as const, label: e.category || 'Dépense', description: e.description, amount: e.amount, date: e.date }))
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // ── Employés de la station ────────────────────────────────────────────────
+  // Pompistes, chefs de brigade, gérants et magasiniers sont payés PAR
+  // l'activité Carburant. Le rapport les ignorait complètement : son gain net
+  // était donc calculé sans la première de ses charges.
+  const fuelStaff: { list: any[]; role: string }[] = [
+    { list: app.pompistes || [], role: 'Pompiste' },
+    { list: app.brigadeChefs || [], role: 'Chef de brigade' },
+    { list: app.gerants || [], role: 'Gérant' },
+    { list: app.magasinWorkers || [], role: 'Magasin' },
+  ];
+  const workers: WorkerRow[] = fuelStaff.flatMap(({ list, role }) => list.map((w: any) => {
+    const acomptes = (w.acomptes || []).map((a: any) => ({
+      date: a.date, amount: num(a.amount), description: a.description, paid: !!a.isPaid,
+    }));
+    const absences = (w.absences || []).map((a: any) => ({
+      date: a.date, cost: num(a.cost), description: a.description, paid: !!a.isPaid,
+    }));
+    const payments = (w.paymentRecord || []).map((p: any) => ({
+      period: p.month || '—', date: p.paymentDate, amount: num(p.netSalary), description: p.notes,
+    }));
+    const acomptesTotal = acomptes.reduce((s: number, a: any) => s + a.amount, 0);
+    const acomptesUnpaid = acomptes.filter((a: any) => !a.paid).reduce((s: number, a: any) => s + a.amount, 0);
+    const absencesTotal = absences.reduce((s: number, a: any) => s + a.cost, 0);
+    const paymentsTotal = payments.reduce((s: number, p: any) => s + p.amount, 0);
+    const salaryAmount = num(w.salary ?? w.baseSalary ?? w.salaryAmount);
+    return {
+      id: w.id, name: w.name, role: w.roleName || role,
+      salaryType: w.salaryType || 'mois', salaryAmount,
+      paid: paymentsTotal > 0,
+      acomptes, acomptesTotal, acomptesUnpaid,
+      absences, absencesTotal, absencesCount: absences.length,
+      payments, paymentsTotal,
+      net: Math.max(0, salaryAmount - acomptesUnpaid - absencesTotal),
+    };
+  }));
+
+  const salaryRows: ExpenseRow[] = fuelStaff.flatMap(({ list }) => list.flatMap((w: any) =>
+    (w.paymentRecord || []).filter((p: any) => within(p.paymentDate, from, to)).map((p: any) => ({
+      id: `sal-${w.id}-${p.id}`, kind: 'Salaire' as const, label: w.name,
+      description: `Salaire ${p.month || ''}`.trim(), amount: num(p.netSalary), date: p.paymentDate,
+    }))));
+  const acompteRows: ExpenseRow[] = fuelStaff.flatMap(({ list }) => list.flatMap((w: any) =>
+    (w.acomptes || []).filter((a: any) => within(a.date, from, to)).map((a: any) => ({
+      id: `aco-${w.id}-${a.id}`, kind: 'Acompte' as const, label: w.name,
+      description: a.description || 'Acompte', amount: num(a.amount), date: a.date,
+    }))));
+
+  const expenses: ExpenseRow[] = [
+    ...expensesInRange.map((e: any) => ({ id: e.id, kind: 'Dépense' as const, label: e.category || 'Dépense', description: e.description, amount: e.amount, date: e.date })),
+    ...salaryRows, ...acompteRows,
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const expByCat: Record<string, number> = {};
   expensesInRange.forEach((e: any) => { const k = e.category || 'Autre'; expByCat[k] = (expByCat[k] || 0) + e.amount; });
   const expensesByCategory = Object.entries(expByCat).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
@@ -520,17 +669,42 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     .sort((a, b) => b.deficit - a.deficit);
 
   // Totals
-  const salesTotal = fuelSales.reduce((s, x) => s + (x.total || 0), 0) + shopSales.reduce((s, x) => s + (x.total || 0), 0);
-  const salesPaid = fuelSales.reduce((s, x) => s + (x.total || 0), 0) + shopSales.reduce((s, x) => s + (x.amountPaid ?? x.total ?? 0), 0);
+  // Le chiffre d'affaires du carburant est celui des brigades ; l'encaissé, ce
+  // qui en est réellement rentré (espèces + TPE) — un bon client n'est pas encore
+  // de l'argent.
+  const salesTotal = fuel.revenue + shopSales.reduce((s, x) => s + (x.total || 0), 0);
+  const salesPaid = fuel.collected + shopSales.reduce((s, x) => s + (x.amountPaid ?? x.total ?? 0), 0);
   const purchasesTotal = purchasesInRange.reduce((s: number, x: any) => s + num(x.total), 0);
   const purchasesPaid = purchasesInRange.reduce((s: number, x: any) => s + purchasePaid(x), 0);
   const cogs = salesByProduct.reduce((s, x) => s + x.cost, 0);
   const grossMargin = salesTotal - cogs;
   const expensesTotal = expensesInRange.reduce((s: number, x: any) => s + (x.amount || 0), 0);
+  const salariesPaid = salaryRows.reduce((s, x) => s + x.amount, 0);
+  const acomptesPeriod = acompteRows.reduce((s, x) => s + x.amount, 0);
   const clientDebtTotal = clientDebts.reduce((s, x) => s + x.rest, 0);
   const supplierDebtTotal = supplierDebts.reduce((s, x) => s + x.rest, 0);
-  const stockValue = products.reduce((s, p) => s + (p.stock || 0) * (p.buyPrice || 0), 0);
-  const netGain = grossMargin - expensesTotal;
+
+  // ── Stock — les CUVES d'abord, puis le magasin ────────────────────────────
+  // Le rapport ne comptait que les produits boutique : les dizaines de milliers
+  // de litres dormant dans les cuves — de loin le premier actif de la station —
+  // valaient zéro. L'écran « Valeur du stock », lui, les comptait : les deux se
+  // contredisaient. Mêmes lignes, même valorisation au prix d'achat des deux côtés.
+  const stockLines: StockLineRow[] = [
+    ...(app.tanks || []).map((t: any) => {
+      const qty = num(t.current);
+      const buyPrice = num(app.settings?.fuelBuyPrices?.[t.type]);
+      return {
+        id: `tank-${t.id}`, name: `${t.name} (${t.type})`, category: 'Carburant en cuve',
+        qty, unit: 'L', buyPrice, value: qty * buyPrice,
+      };
+    }),
+    ...products.map((p: any) => ({
+      id: p.id, name: p.name, category: p.category || 'Magasin',
+      qty: num(p.stock), unit: p.unit, buyPrice: num(p.buyPrice), value: num(p.stock) * num(p.buyPrice),
+    })),
+  ].sort((a, b) => b.value - a.value);
+  const stockValue = stockLines.reduce((s, l) => s + l.value, 0);
+  const netGain = grossMargin - expensesTotal - salariesPaid;
 
   return {
     key: 'carburant', label: 'Carburant', emoji: '⛽', from, to,
@@ -538,13 +712,19 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     // définitives (litres livrés), d'où des compteurs de retours à zéro.
     salesTotal, salesPaid, returnsTotal: 0, refundedTotal: 0, restockedCost: 0,
     purchasesTotal, purchasesPaid, cogs, grossMargin,
-    expensesTotal, salariesPaid: 0, acomptesPeriod: 0, productionValue: 0, productionCost: 0, lossValue: 0, destroyedValue: 0,
-    clientDebtTotal, supplierDebtTotal, stockValue, caisseBalance: salesPaid - purchasesPaid - expensesTotal, netGain,
+    expensesTotal, salariesPaid, acomptesPeriod, productionValue: 0, productionCost: 0, lossValue: 0, destroyedValue: 0,
+    clientDebtTotal, supplierDebtTotal, stockValue,
+    // Le solde vient du MÊME calcul que l'écran Caisse Générale.
+    caisseBalance: cash.balance, netGain,
     sales, purchases, salesByProduct, clientDebts, supplierDebts, expenses, expensesByCategory,
-    stockAlerts, expiryAlerts: [], workers: [], caisse: [], destructions: [], productions: [], returns: [],
+    stockAlerts, expiryAlerts: [], workers, caisse: [], destructions: [], productions: [], returns: [],
+    stockLines,
+    caisseMovements: cash.lines, caisseFlow: { in: cash.inflow, out: cash.outflow },
+    fuelBrigades: fuel.brigades, fuelLiters: fuel.liters,
     counts: {
       products: products.length, clients: clients.length, suppliers: suppliers.length,
-      sales: fuelSales.length + shopSales.length, purchases: purchasesInRange.length, workers: 0, returns: 0,
+      sales: fuel.brigades.length + shopSales.length, purchases: purchasesInRange.length,
+      workers: workers.length, returns: 0,
     },
   };
 }

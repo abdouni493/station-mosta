@@ -30,6 +30,7 @@ import {
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey } from '../lib/bizConfig';
+import { carburantCashBalance } from '../lib/carburantSales';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
   Table, money, formatDate, PeriodFilter, Period, inPeriod,
@@ -109,12 +110,13 @@ export default function CaisseGenerale() {
       + ledgerNetFor(CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID], treasuryTransactions);
   };
 
-  const carburantBalance = useMemo(() => {
-    const cash = brigadeAccountings.reduce((s, a) => s + (a.cashReceived || 0), 0);
-    const purchasesPaid = purchases.reduce((s, p) => s + (p.amountPaid || 0), 0);
-    const exp = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-    return cash - purchasesPaid - exp + ledgerNetFor(CAISSE_PART_ID.carburant, treasuryTransactions);
-  }, [brigadeAccountings, purchases, expenses, treasuryTransactions]);
+  /**
+   * La caisse Carburant — une seule définition, partagée avec les Rapports
+   * Généraux (`lib/carburantSales`). Le calcul fait ici retranchait le montant
+   * payé de CHAQUE achat, chèques et virements compris : de l'argent qui n'est
+   * jamais passé par le tiroir creusait donc un découvert imaginaire.
+   */
+  const carburantBalance = useMemo(() => carburantCashBalance(state), [state]);
 
   const partBalances = useMemo(() => ({
     carburant: carburantBalance,
@@ -172,6 +174,10 @@ export default function CaisseGenerale() {
       });
     }
     for (const a of brigadeAccountings) {
+      // Une brigade clôturée a DÉJÀ écrit sa ligne au grand livre : la repousser
+      // ici comptait ses espèces une seconde fois dans le journal et gonflait les
+      // encaissements de la période. Même règle que pour les achats et dépenses.
+      if (ledgered.has(`brigade:${a.brigadeId}`)) continue;
       const br = brigades.find(b => b.id === a.brigadeId);
       out.push({
         id: `bri-${a.id}`, date: br?.date || new Date().toISOString(), nature: 'Brigade', part: 'carburant',

@@ -16,7 +16,8 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { BizState, ModuleKey, MODULES, netCashOfSale } from './bizConfig';
-import { within } from './bizReporting';
+import { within } from './period';
+import { computeCarburantCash } from './carburantSales';
 
 export const CAISSE_ID = 'CAISSE';
 
@@ -438,11 +439,11 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     return dep + salesPaid + repPaid - wit - purPaid - exp - sal
       + ledgerNetFor(CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID], txs);
   };
-  const carburantBalance =
-    accountings.reduce((s, a) => s + num(a.cashReceived), 0)
-    - purchases.reduce((s, p) => s + num(p.amountPaid), 0)
-    - expenses.reduce((s, e) => s + num(e.amount), 0)
-    + ledgerNetFor(CAISSE_PART_ID.carburant, txs);
+  // La caisse Carburant a UNE seule définition, partagée avec l'écran Caisse
+  // Générale et le rapport Carburant (`lib/carburantSales`). Le calcul fait ici
+  // retranchait le montant payé de CHAQUE achat, chèques et virements compris :
+  // il annonçait un découvert que le tiroir n'avait jamais connu.
+  const carburantBalance = computeCarburantCash(app).balance;
 
   const flowsOf = (key: TreasuryPartKey) => {
     const rows = movements.filter(m => m.part === key);

@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import ChartBox from "../components/ChartBox";
 import { useAppState, useAppDispatch } from "../store/AppContext";
+import { derivedFuelSales } from "../lib/carburantSales";
 import { MODULES } from "../lib/bizConfig";
 import { useNavigate } from "react-router-dom";
 import AlertsWidget, { AlertItem, useDismissedAlerts, useCurrentUserAlerts } from "../components/AlertsWidget";
@@ -394,12 +395,18 @@ DashboardHeader.displayName = 'DashboardHeader';
 /* ─── Main Dashboard ─── */
 const Dashboard = () => {
   const navigate = useNavigate();
+  const app = useAppState();
   const {
-    tanks, products, brigades, clients, fuelSales, shopSales,
+    tanks, products, brigades, clients, shopSales,
     pompistes, pumps, expenses, brigadeChefs, suppliers,
     currentUserRole, currentModuleWorker, settings,
-  } = useAppState();
+  } = app;
   const dispatch = useAppDispatch();
+
+  // Les ventes de carburant viennent des BRIGADES : la table `fuel_sales` que
+  // cet écran lisait n'est plus alimentée, et la recette du jour comme la courbe
+  // des sept derniers jours affichaient donc zéro dinar de carburant.
+  const fuelSales = useMemo(() => derivedFuelSales(app), [app]);
 
   // ── Décalage acceptance settings (per case) ───────────────────────────────
   const [showDecalageSettings, setShowDecalageSettings] = useState(false);

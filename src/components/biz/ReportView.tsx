@@ -12,7 +12,7 @@ import React, { useState } from 'react';
 import {
   TrendingUp, ShoppingCart, CreditCard, CircleDollarSign, Wallet, Boxes, Users, Truck,
   AlertTriangle, CalendarClock, Banknote, PackageX, Beaker, ChevronDown, ChevronRight, Layers,
-  Undo2, PackageCheck,
+  Undo2, PackageCheck, Fuel, Droplets, Landmark, ArrowDownCircle, ArrowUpCircle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
@@ -20,6 +20,7 @@ import { Modal, money, formatDate, Table, Badge } from '@/src/components/biz/Kit
 import { PartReport } from '@/src/lib/bizReporting';
 
 const fmtDate = (s: string) => (s ? formatDate(s) : '—');
+const liters = (n: number) => `${(n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`;
 
 // ─── Clickable KPI card ──────────────────────────────────────────────────────
 function MetricCard({ icon: Icon, label, value, sub, tone = 'blue', onClick, count }: {
@@ -347,6 +348,302 @@ export function ReturnTable({ rows }: { rows: PartReport['returns'] }) {
   );
 }
 
+/**
+ * ─── Le solde de caisse, expliqué ─────────────────────────────────────────────
+ * La carte « Solde caisse » n'affichait qu'un montant. Quand il passait sous
+ * zéro — le fameux −973 867,40 DA du rapport Carburant — rien à l'écran ne
+ * permettait de savoir POURQUOI, ni quelle ligne allait de travers. Ce tableau
+ * est le calcul lui-même : chaque espèce entrée, chaque espèce sortie, groupées
+ * par nature puis listées une par une, dont la somme EST le solde affiché.
+ */
+export function CaisseTable({ rows, balance, flow }: {
+  rows: PartReport['caisseMovements'];
+  balance: number;
+  flow: PartReport['caisseFlow'];
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  if (!rows.length) return <Empty text="Aucun mouvement d'espèces enregistré" />;
+
+  // Regroupement par nature ET par sens : « Achat » sortant et « Achat » entrant
+  // (un remboursement) sont deux choses différentes et ne doivent pas se compenser.
+  const groups = new Map<string, { key: string; nature: string; dir: 'in' | 'out'; total: number; rows: typeof rows }>();
+  rows.forEach(r => {
+    const dir: 'in' | 'out' = r.amount >= 0 ? 'in' : 'out';
+    const key = `${r.nature}|${dir}`;
+    const g = groups.get(key) || { key, nature: r.nature, dir, total: 0, rows: [] as typeof rows };
+    g.total += Math.abs(r.amount);
+    g.rows.push(r);
+    groups.set(key, g);
+  });
+  const list = [...groups.values()].sort((a, b) => b.total - a.total);
+
+  return (
+    <div className="space-y-3">
+      {/* Le calcul en une ligne */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="rounded-2xl p-4 text-white" style={{ background: 'linear-gradient(135deg,#065f46,#047857)' }}>
+          <div className="flex items-center gap-2 text-emerald-100">
+            <ArrowDownCircle className="w-4 h-4" /><span className="text-[10px] font-black uppercase tracking-wide">Espèces entrées</span>
+          </div>
+          <p className="text-2xl font-black tabular-nums mt-1">{money(flow.in)}</p>
+        </div>
+        <div className="rounded-2xl p-4 text-white" style={{ background: 'linear-gradient(135deg,#991b1b,#dc2626)' }}>
+          <div className="flex items-center gap-2 text-red-100">
+            <ArrowUpCircle className="w-4 h-4" /><span className="text-[10px] font-black uppercase tracking-wide">Espèces sorties</span>
+          </div>
+          <p className="text-2xl font-black tabular-nums mt-1">{money(flow.out)}</p>
+        </div>
+        <div className="rounded-2xl p-4 text-white"
+          style={{ background: balance < 0 ? 'linear-gradient(135deg,#7f1d1d,#b91c1c)' : 'linear-gradient(135deg,#001f5c,#003087)' }}>
+          <div className="flex items-center justify-between gap-2">
+            <div className={cn('flex items-center gap-2', balance < 0 ? 'text-red-100' : 'text-blue-200')}>
+              <Wallet className="w-4 h-4" /><span className="text-[10px] font-black uppercase tracking-wide">Solde</span>
+            </div>
+            {balance < 0 && <span className="badge badge-danger shrink-0">Découvert</span>}
+          </div>
+          <p className={cn('text-2xl font-black tabular-nums mt-1', balance < 0 ? 'text-white' : 'text-[#FFB800]')}>{money(balance)}</p>
+        </div>
+      </div>
+
+      {/* Par nature — cliquer déroule les lignes */}
+      <div className="card-glass overflow-hidden">
+        <div className="overflow-x-auto custom-scrollbar">
+          <table className="w-full border-collapse">
+            <thead><tr>
+              <th className="table-head w-8" /><th className="table-head">Nature</th><th className="table-head">Sens</th>
+              <th className="table-head text-right">Opérations</th><th className="table-head text-right">Montant</th>
+            </tr></thead>
+            <tbody>
+              {list.map(g => {
+                const isOpen = open === g.key;
+                return (
+                  <React.Fragment key={g.key}>
+                    <tr className="cursor-pointer hover:bg-slate-50" onClick={() => setOpen(isOpen ? null : g.key)}>
+                      <td className="table-cell text-slate-400">{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</td>
+                      <td className="table-cell font-bold">{g.nature}</td>
+                      <td className="table-cell">
+                        <Badge tone={g.dir === 'in' ? 'success' : 'danger'}>{g.dir === 'in' ? 'Entrée' : 'Sortie'}</Badge>
+                      </td>
+                      <td className="table-cell tabular-nums text-right text-slate-500">{g.rows.length}</td>
+                      <td className={cn('table-cell tabular-nums text-right font-black', g.dir === 'in' ? 'text-emerald-600' : 'text-red-600')}>
+                        {g.dir === 'in' ? '+' : '−'}{money(g.total)}
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr><td colSpan={5} className="bg-slate-50/70 px-4 py-3">
+                        <div className="space-y-1.5">
+                          {g.rows.map(r => (
+                            <div key={r.id} className="flex items-center justify-between gap-3 rounded-xl bg-white border border-slate-100 px-3 py-2">
+                              <span className="text-[11px] text-slate-400 shrink-0 w-24">{fmtDate(r.date)}</span>
+                              <span className="text-xs text-slate-600 flex-1 truncate">{r.label}</span>
+                              {r.reference && <span className="badge badge-neutral shrink-0">{r.reference}</span>}
+                              <span className={cn('font-black tabular-nums text-xs shrink-0', r.amount >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                                {r.amount >= 0 ? '+' : '−'}{money(Math.abs(r.amount))}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              <tr className="bg-blue-50/60">
+                <td className="table-cell" />
+                <td className="table-cell font-black text-[#002d87]" colSpan={3}>SOLDE — entrées {money(flow.in)} − sorties {money(flow.out)}</td>
+                <td className={cn('table-cell tabular-nums text-right font-black', balance >= 0 ? 'text-emerald-600' : 'text-red-600')}>{money(balance)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p className="text-[11px] text-slate-400 italic px-1">
+        Seules les espèces comptent ici : un achat réglé par chèque ou par virement n'est jamais passé par
+        le tiroir. Le solde couvre TOUTES les dates — ce qu'il y a dans la caisse aujourd'hui ne dépend pas
+        de la période choisie. C'est le même chiffre que l'écran Caisse Générale.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * ─── Les brigades : la vraie vente de carburant ───────────────────────────────
+ * Une brigade clôturée EST une vente : ses pistolets disent les litres et le
+ * chiffre d'affaires, sa comptabilité dit ce qui est rentré (espèces, TPE, bons
+ * clients) et ce qui manque. Le rapport lisait auparavant une table `fuel_sales`
+ * que plus aucun écran n'alimente — d'où un carburant à zéro recette.
+ */
+export function FuelBrigadeTable({ rows }: { rows: PartReport['fuelBrigades'] }) {
+  const [open, setOpen] = useState<string | null>(null);
+  if (!rows.length) return <Empty text="Aucune brigade sur la période" />;
+  const t = rows.reduce((a, b) => ({
+    liters: a.liters + b.liters, revenue: a.revenue + b.revenue, cash: a.cash + b.cash,
+    tpe: a.tpe + b.tpe, credit: a.credit + b.credit, rest: a.rest + b.rest,
+  }), { liters: 0, revenue: 0, cash: 0, tpe: 0, credit: 0, rest: 0 });
+
+  return (
+    <div className="card-glass overflow-hidden">
+      <div className="overflow-x-auto custom-scrollbar">
+        <table className="w-full border-collapse">
+          <thead><tr>
+            <th className="table-head w-8" /><th className="table-head">Brigade</th><th className="table-head">Chef</th>
+            <th className="table-head">Date</th><th className="table-head text-right">Litres</th>
+            <th className="table-head text-right">Chiffre d'affaires</th><th className="table-head text-right">Espèces</th>
+            <th className="table-head text-right">TPE</th><th className="table-head text-right">Bons clients</th>
+            <th className="table-head text-right">Manquant</th><th className="table-head">Statut</th>
+          </tr></thead>
+          <tbody>
+            {rows.map(b => {
+              const isOpen = open === b.id;
+              return (
+                <React.Fragment key={b.id}>
+                  <tr className="cursor-pointer hover:bg-slate-50" onClick={() => setOpen(isOpen ? null : b.id)}>
+                    <td className="table-cell text-slate-400">{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</td>
+                    <td className="table-cell font-bold whitespace-nowrap">{b.shift}</td>
+                    <td className="table-cell text-slate-500">{b.chefName}</td>
+                    <td className="table-cell whitespace-nowrap text-slate-500">{fmtDate(b.date)}</td>
+                    <td className="table-cell tabular-nums text-right font-bold">{liters(b.liters)}</td>
+                    <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(b.revenue)}</td>
+                    <td className="table-cell tabular-nums text-right text-emerald-600">{money(b.cash)}</td>
+                    <td className="table-cell tabular-nums text-right text-blue-700">{money(b.tpe)}</td>
+                    <td className="table-cell tabular-nums text-right text-amber-700">{money(b.credit)}</td>
+                    <td className={cn('table-cell tabular-nums text-right font-bold', Math.abs(b.rest) > 0.01 ? 'text-red-600' : 'text-slate-300')}>{money(b.rest)}</td>
+                    <td className="table-cell"><Badge tone={b.closed ? 'success' : 'warning'}>{b.status}</Badge></td>
+                  </tr>
+                  {isOpen && (
+                    <tr><td colSpan={11} className="bg-slate-50/70 px-4 py-4">
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="rounded-xl bg-white border border-slate-100 p-3">
+                          <p className="text-[11px] font-black uppercase tracking-wide text-[#003087] mb-2 flex items-center gap-1.5">
+                            <Fuel className="w-3.5 h-3.5" /> Par carburant
+                          </p>
+                          {b.byFuel.length === 0 ? <p className="text-xs text-slate-400 italic">Aucun litre relevé.</p> : (
+                            <div className="space-y-1.5">
+                              {b.byFuel.map(f => (
+                                <div key={f.type} className="flex items-center justify-between gap-2 text-xs">
+                                  <span className="font-bold text-slate-700 w-24 shrink-0">{f.type}</span>
+                                  <span className="text-slate-400 tabular-nums">{liters(f.liters)} × {money(f.price)}</span>
+                                  <span className="text-amber-700 tabular-nums text-[11px]">coût {money(f.cost)}</span>
+                                  <span className="ml-auto font-black tabular-nums text-[#002d87]">{money(f.revenue)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="rounded-xl bg-white border border-slate-100 p-3">
+                          <p className="text-[11px] font-black uppercase tracking-wide text-[#003087] mb-2 flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5" /> Par pompiste
+                          </p>
+                          {b.pompistes.length === 0 ? <p className="text-xs text-slate-400 italic">Aucun pompiste enregistré.</p> : (
+                            <div className="space-y-1.5">
+                              {b.pompistes.map(p => (
+                                <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
+                                  <span className="font-bold text-slate-700 truncate flex-1">{p.name}</span>
+                                  <span className="text-slate-400 tabular-nums shrink-0">{liters(p.liters)}</span>
+                                  <span className="text-slate-500 tabular-nums shrink-0">dû {money(p.theoretical)}</span>
+                                  <span className="text-emerald-600 tabular-nums shrink-0">rendu {money(p.cash + p.justified)}</span>
+                                  <span className={cn('font-black tabular-nums shrink-0', Math.abs(p.ecart) > 0.01 ? 'text-red-600' : 'text-slate-300')}>{money(p.ecart)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </td></tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            <tr className="bg-blue-50/60">
+              <td className="table-cell" />
+              <td className="table-cell font-black text-[#002d87]" colSpan={3}>TOTAL — {rows.length} brigade(s)</td>
+              <td className="table-cell tabular-nums text-right font-black">{liters(t.liters)}</td>
+              <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(t.revenue)}</td>
+              <td className="table-cell tabular-nums text-right font-black text-emerald-600">{money(t.cash)}</td>
+              <td className="table-cell tabular-nums text-right font-black text-blue-700">{money(t.tpe)}</td>
+              <td className="table-cell tabular-nums text-right font-black text-amber-700">{money(t.credit)}</td>
+              <td className="table-cell tabular-nums text-right font-black text-red-600">{money(t.rest)}</td>
+              <td className="table-cell" />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Le gain net, décomposé étape par étape — la carte « Total des gains ». */
+export function GainBreakdown({ report: r }: { report: PartReport }) {
+  const steps: { label: string; value: number; sign: '' | '−' | '='; hint: string }[] = [
+    { label: "Chiffre d'affaires", value: r.salesTotal, sign: '', hint: `${r.counts.sales} opération(s) facturée(s)` },
+    { label: 'Coût des marchandises vendues', value: r.cogs, sign: '−', hint: "ce que la marchandise vendue a coûté à l'achat" },
+    { label: 'Marge brute', value: r.grossMargin, sign: '=', hint: 'ce que la vente laisse avant les charges' },
+    { label: 'Dépenses', value: r.expensesTotal, sign: '−', hint: `${r.expensesByCategory.length} catégorie(s)` },
+    { label: 'Salaires versés', value: r.salariesPaid, sign: '−', hint: 'paie de la période' },
+    ...(r.destroyedValue > 0 ? [{ label: 'Destructions', value: r.destroyedValue, sign: '−' as const, hint: 'marchandise perdue' }] : []),
+    ...(r.lossValue > 0 ? [{ label: 'Pertes de production', value: r.lossValue, sign: '−' as const, hint: 'écarts de fabrication' }] : []),
+    { label: 'Gain net', value: r.netGain, sign: '=', hint: 'ce qui reste réellement' },
+  ];
+  return (
+    <div className="space-y-3">
+      <Table head={<><th className="table-head" /><th className="table-head">Étape</th><th className="table-head text-right">Montant</th></>}>
+        {steps.map(s => (
+          <tr key={s.label} className={s.sign === '=' ? 'bg-slate-50' : undefined}>
+            <td className="table-cell text-center text-slate-300 font-black w-8">{s.sign}</td>
+            <td className="table-cell">
+              <div className="font-bold text-slate-700">{s.label}</div>
+              <div className="text-[11px] text-slate-400">{s.hint}</div>
+            </td>
+            <td className={cn('table-cell tabular-nums text-right font-black',
+              s.label === 'Gain net' ? (s.value >= 0 ? 'text-emerald-600' : 'text-red-600')
+                : s.sign === '−' ? 'text-red-600' : 'text-[#002d87]')}>{money(s.value)}</td>
+          </tr>
+        ))}
+      </Table>
+      <p className="text-[11px] text-slate-400 italic px-1">
+        Un produit vendu {money(30)} qui a coûté {money(12)} rapporte {money(18)} : c'est ce montant-là qui
+        alimente le gain, jamais le prix de vente entier. Le gain se calcule sur ce qui a été VENDU — il ne
+        dit pas ce qu'il y a dans la caisse (voir « Solde caisse »).
+      </p>
+    </div>
+  );
+}
+
+/** La valeur du stock, référence par référence — cuves de carburant comprises. */
+export function StockValueTable({ rows, total }: { rows: PartReport['stockLines']; total: number; }) {
+  if (!rows.length) return <Empty text="Aucune référence en stock" />;
+  return (
+    <>
+      <Table head={<>
+        <th className="table-head">Référence</th><th className="table-head">Catégorie</th>
+        <th className="table-head text-right">Quantité</th><th className="table-head text-right">Prix d'achat</th>
+        <th className="table-head text-right">Valeur</th>
+      </>}>
+        {rows.map(p => (
+          <tr key={p.id}>
+            <td className="table-cell font-bold">{p.name}</td>
+            <td className="table-cell text-slate-400">{p.category || '—'}</td>
+            <td className={cn('table-cell tabular-nums text-right', p.qty < 0 && 'text-red-600 font-bold')}>
+              {p.qty.toLocaleString('fr-FR', { maximumFractionDigits: 2 })}{p.unit ? ` ${p.unit}` : ''}
+            </td>
+            <td className="table-cell tabular-nums text-right text-slate-500">{money(p.buyPrice)}</td>
+            <td className="table-cell tabular-nums text-right font-bold text-blue-700">{money(p.value)}</td>
+          </tr>
+        ))}
+        <tr className="bg-blue-50/60">
+          <td className="table-cell font-black text-[#002d87]" colSpan={4}>TOTAL — au prix d'achat</td>
+          <td className="table-cell tabular-nums text-right font-black text-blue-700">{money(total)}</td>
+        </tr>
+      </Table>
+      <div className="card-glass px-5 py-3 text-[11px] text-slate-400 italic">
+        Valorisé au PRIX D'ACHAT, jamais au prix de vente : la marge n'existe qu'une fois la marchandise
+        vendue. Un prix d'achat resté à zéro dans les réglages donne une valeur nulle — c'est là qu'il faut
+        regarder si un stock bien réel s'affiche à {money(0)}.
+      </div>
+    </>
+  );
+}
+
 function Empty({ text = 'Aucune donnée sur la période' }: { text?: string }) {
   return <div className="card-glass p-6 text-center text-slate-400 text-sm">{text}</div>;
 }
@@ -365,7 +662,12 @@ function Section({ title, icon: Icon, children, right }: { title: string; icon: 
 }
 
 // ─── Detail modal ────────────────────────────────────────────────────────────
-type DetailKey = 'sales' | 'purchases' | 'gains' | 'expenses' | 'clientDebts' | 'supplierDebts' | 'stock' | 'expiry' | 'workers' | 'destructions' | 'returns' | null;
+// Chaque carte KPI ouvre le détail de SON calcul : plus une seule ne se contente
+// d'annoncer un montant que rien à l'écran ne permet de vérifier.
+type DetailKey =
+  | 'sales' | 'purchases' | 'gains' | 'gain' | 'expenses' | 'clientDebts' | 'supplierDebts'
+  | 'stock' | 'stockValue' | 'expiry' | 'workers' | 'destructions' | 'returns'
+  | 'caisse' | 'brigades' | null;
 
 // ─── Main view ───────────────────────────────────────────────────────────────
 export default function ReportView({ report: r }: { report: PartReport }) {
@@ -373,6 +675,13 @@ export default function ReportView({ report: r }: { report: PartReport }) {
 
   const financial: [string, number, ('good' | 'bad' | 'neutral')?][] = [
     ["Chiffre d'affaires", r.salesTotal, 'good'], ['Ventes encaissées', r.salesPaid], ['Coût marchandises', r.cogs],
+    ...(r.fuelBrigades.length
+      ? ([['Espèces des brigades', r.fuelBrigades.reduce((s, b) => s + b.cash, 0), 'good'],
+        ['TPE / TAG encaissés', r.fuelBrigades.reduce((s, b) => s + b.tpe, 0)],
+        ['Bons clients (crédit)', r.fuelBrigades.reduce((s, b) => s + b.credit, 0), 'bad'],
+        ['Manquants de brigade', r.fuelBrigades.reduce((s, b) => s + b.rest, 0), 'bad'],
+      ] as [string, number, ('good' | 'bad' | 'neutral')?][])
+      : []),
     ['Retours & échanges', r.returnsTotal, r.returnsTotal > 0 ? 'bad' : undefined],
     ['Remboursé aux clients', r.refundedTotal, r.refundedTotal > 0 ? 'bad' : undefined],
     ['Marge brute', r.grossMargin, r.grossMargin >= 0 ? 'good' : 'bad'], ['Total achats', r.purchasesTotal], ['Achats payés', r.purchasesPaid],
@@ -383,27 +692,51 @@ export default function ReportView({ report: r }: { report: PartReport }) {
   ];
 
   const modalTitle: Record<Exclude<DetailKey, null>, string> = {
-    sales: 'Détail des ventes', purchases: 'Détail des achats', gains: 'Gains par produit', expenses: 'Dépenses, salaires & acomptes',
+    sales: 'Détail des ventes', purchases: 'Détail des achats', gains: 'Gains par produit',
+    gain: 'Comment le gain net est calculé', expenses: 'Dépenses, salaires & acomptes',
     clientDebts: 'Dettes des clients', supplierDebts: 'Dettes envers les fournisseurs', stock: 'Alertes de stock',
+    stockValue: 'Valeur du stock, référence par référence',
     expiry: 'Alertes d\'expiration', workers: 'Comptes des employés', destructions: 'Produits détruits',
     returns: 'Retours & échanges — ventes annulées',
+    caisse: 'Solde de caisse — le calcul, mouvement par mouvement',
+    brigades: 'Brigades — les ventes de carburant de la période',
   };
+
+  const isFuel = r.fuelBrigades.length > 0;
 
   return (
     <div className="space-y-8">
-      {/* KPI cards */}
+      {/* KPI cards — chacune ouvre le détail complet de son propre calcul */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <MetricCard icon={TrendingUp} tone="green" label="Ventes (CA)" value={money(r.salesTotal)}
           sub={r.counts.returns ? `${r.counts.sales} opérations — ${r.counts.returns} annulée(s) exclue(s)` : `${r.counts.sales} opérations`}
           onClick={() => setDetail('sales')} />
-        <MetricCard icon={ShoppingCart} tone="purple" label="Achats" value={money(r.purchasesTotal)} sub={`${r.counts.purchases} factures`} onClick={() => setDetail('purchases')} />
+        <MetricCard icon={ShoppingCart} tone="purple" label="Achats" value={money(r.purchasesTotal)} sub={`${r.counts.purchases} factures · payé ${money(r.purchasesPaid)}`} onClick={() => setDetail('purchases')} />
         <MetricCard icon={Layers} tone="cyan" label="Marge brute" value={money(r.grossMargin)} sub={`CA − coût marchandises ${money(r.cogs)}`} onClick={() => setDetail('gains')} />
-        <MetricCard icon={CircleDollarSign} tone={r.netGain >= 0 ? 'green' : 'red'} label="Total des gains" value={money(r.netGain)} sub="gain réel, coûts déduits" />
-        <MetricCard icon={CreditCard} tone="red" label="Dépenses" value={money(r.expensesTotal)} sub={`${r.expenses.length} lignes`} onClick={() => setDetail('expenses')} />
-        <MetricCard icon={Wallet} tone="blue" label="Solde caisse" value={money(r.caisseBalance)} />
-        <MetricCard icon={Boxes} tone="amber" label="Valeur stock" value={money(r.stockValue)} sub={`${r.counts.products} produits`} />
-        <MetricCard icon={Users} tone="slate" label="Employés" value={String(r.counts.workers)} sub="voir comptes" onClick={() => r.workers.length ? setDetail('workers') : undefined} />
+        <MetricCard icon={CircleDollarSign} tone={r.netGain >= 0 ? 'green' : 'red'} label="Total des gains" value={money(r.netGain)} sub="gain réel, coûts déduits" onClick={() => setDetail('gain')} />
+        <MetricCard icon={CreditCard} tone="red" label="Dépenses" value={money(r.expensesTotal)} sub={`${r.expenses.length} lignes${r.salariesPaid ? ` · salaires ${money(r.salariesPaid)}` : ''}`} onClick={() => setDetail('expenses')} />
+        {/* Le solde de caisse ouvre son propre calcul : entrées, sorties, puis
+            chaque mouvement. Un découvert passe au rouge et s'explique. */}
+        <MetricCard icon={Wallet} tone={r.caisseBalance < 0 ? 'red' : 'blue'} label="Solde caisse" value={money(r.caisseBalance)}
+          sub={`+${money(r.caisseFlow.in)} · −${money(r.caisseFlow.out)}`} onClick={() => setDetail('caisse')} />
+        <MetricCard icon={Boxes} tone="amber" label="Valeur stock" value={money(r.stockValue)} sub={`${r.counts.products} produits`} onClick={() => setDetail('stockValue')} />
+        <MetricCard icon={Users} tone="slate" label="Employés" value={String(r.counts.workers)} sub={r.salariesPaid ? `${money(r.salariesPaid)} versés` : 'voir comptes'} onClick={() => r.workers.length ? setDetail('workers') : undefined} />
       </div>
+
+      {/* Carburant — les brigades sont la vente. Sans elles, cette activité
+          n'aurait aucune recette : la table `fuel_sales` n'est plus alimentée. */}
+      {isFuel && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <MetricCard icon={Fuel} tone="blue" label="Brigades" value={String(r.fuelBrigades.length)}
+            sub="ventes de carburant" count={r.fuelBrigades.length} onClick={() => setDetail('brigades')} />
+          <MetricCard icon={Droplets} tone="purple" label="Litres vendus" value={liters(r.fuelLiters)}
+            sub="relevés aux pistolets" onClick={() => setDetail('brigades')} />
+          <MetricCard icon={Banknote} tone="green" label="Espèces encaissées" value={money(r.fuelBrigades.reduce((s, b) => s + b.cash, 0))}
+            sub="remises par les pompistes" onClick={() => setDetail('brigades')} />
+          <MetricCard icon={Landmark} tone="cyan" label="TPE / TAG" value={money(r.fuelBrigades.reduce((s, b) => s + b.tpe, 0))}
+            sub="encaissé en banque" onClick={() => setDetail('brigades')} />
+        </div>
+      )}
 
       {/* Debt + alert cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -436,6 +769,20 @@ export default function ReportView({ report: r }: { report: PartReport }) {
           ))}
         </div>
       </Section>
+
+      {/* Le solde de caisse, expliqué à la ligne — plus jamais un montant sec. */}
+      <Section title="Solde de caisse — le calcul" icon={Wallet}
+        right={<span className="text-[11px] text-slate-400 font-medium">Cliquez une nature pour dérouler ses mouvements</span>}>
+        <CaisseTable rows={r.caisseMovements} balance={r.caisseBalance} flow={r.caisseFlow} />
+      </Section>
+
+      {/* Carburant — les brigades de la période */}
+      {isFuel && (
+        <Section title="Brigades — les ventes de carburant" icon={Fuel}
+          right={<span className="text-[11px] text-slate-400 font-medium">{liters(r.fuelLiters)} sur {r.fuelBrigades.length} brigade(s)</span>}>
+          <FuelBrigadeTable rows={r.fuelBrigades} />
+        </Section>
+      )}
 
       {/* Sales by product */}
       <Section title="Ventes par produit" icon={TrendingUp}><ProductGainTable rows={r.salesByProduct} /></Section>
@@ -543,14 +890,18 @@ export default function ReportView({ report: r }: { report: PartReport }) {
             {detail === 'sales' && <SalesTable rows={r.sales} />}
             {detail === 'purchases' && <PurchasesTable rows={r.purchases} />}
             {detail === 'gains' && <ProductGainTable rows={r.salesByProduct} />}
+            {detail === 'gain' && <GainBreakdown report={r} />}
             {detail === 'expenses' && <ExpenseTable rows={r.expenses} />}
             {detail === 'clientDebts' && <DebtTable rows={r.clientDebts} tone="client" />}
             {detail === 'supplierDebts' && <DebtTable rows={r.supplierDebts} tone="supplier" />}
             {detail === 'stock' && <StockAlertTable rows={r.stockAlerts} />}
+            {detail === 'stockValue' && <StockValueTable rows={r.stockLines} total={r.stockValue} />}
             {detail === 'expiry' && <ExpiryTable rows={r.expiryAlerts} />}
             {detail === 'workers' && <WorkerTable rows={r.workers} />}
             {detail === 'destructions' && <DestructionTable rows={r.destructions} />}
             {detail === 'returns' && <ReturnTable rows={r.returns} />}
+            {detail === 'caisse' && <CaisseTable rows={r.caisseMovements} balance={r.caisseBalance} flow={r.caisseFlow} />}
+            {detail === 'brigades' && <FuelBrigadeTable rows={r.fuelBrigades} />}
           </motion.div>
         </AnimatePresence>
       </Modal>

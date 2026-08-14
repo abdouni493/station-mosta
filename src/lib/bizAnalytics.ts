@@ -20,7 +20,9 @@
 import {
   ModuleState, ModuleKey, MODULES, isReversedSale, prestationsOf,
 } from './bizConfig';
-import { makeCostResolver, within } from './bizReporting';
+import { makeCostResolver } from './bizReporting';
+import { within } from './period';
+import { computeCarburantSales } from './carburantSales';
 
 // ─── Découpage du temps ──────────────────────────────────────────────────────
 export type Granularity = 'day' | 'week' | 'month';
@@ -492,22 +494,21 @@ export function computeCarburantAnalytics(
 
   const products: any[] = app?.products || [];
   const prodById = new Map(products.map(p => [p.id, p]));
-  const pumpById = new Map((app?.pumps || []).map((p: any) => [p.id, p]));
-  const buyPrices: Record<string, number> = app?.settings?.fuelBuyPrices || {};
   const acc = new Map<string, Acc>();
 
-  // ── Carburant à la pompe ──
-  (app?.fuelSales || []).filter((s: any) => within(s.date, from, to)).forEach((s: any) => {
-    const k = keyOfDate(s.date, g);
-    const type = (pumpById.get(s.pumpId) as any)?.type || s.fuelType || s.type || 'Carburant';
-    const liters = s.liters || 0;
-    const revenue = s.total || 0;
-    const cost = liters * (buyPrices[type] || 0);
-    const a = touch(acc, `fuel-${type}`, () => ({
-      id: `fuel-${type}`, name: type, category: 'Carburant', unit: 'L', kind: 'carburant' as ProductKind,
-    }));
-    record(a, s.date, k, liters, revenue, cost);
-    bump(s.date, { revenue, cost, gain: revenue - cost, qty: liters, count: 1 });
+  // ── Carburant à la pompe — les BRIGADES ──
+  // La table `fuel_sales` n'est plus écrite : les analyses lisaient donc une
+  // table vide et la courbe du carburant restait plate à zéro pendant que les
+  // achats, eux, creusaient le résultat. La vente de carburant, c'est la brigade.
+  computeCarburantSales(app, from, to).brigades.forEach(b => {
+    const k = keyOfDate(b.date, g);
+    b.byFuel.forEach(f => {
+      const a = touch(acc, `fuel-${f.type}`, () => ({
+        id: `fuel-${f.type}`, name: f.type, category: 'Carburant', unit: 'L', kind: 'carburant' as ProductKind,
+      }));
+      record(a, b.date, k, f.liters, f.revenue, f.cost);
+    });
+    bump(b.date, { revenue: b.revenue, cost: b.cost, gain: b.revenue - b.cost, qty: b.liters, count: 1 });
   });
 
   // ── Boutique de la station ──
