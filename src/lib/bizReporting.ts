@@ -9,6 +9,9 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale } from './bizConfig';
+import { unpaidSupplierInvoices, purchasePaid, purchaseRest } from './supplierDebt';
+
+const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 // ─── Date helper ─────────────────────────────────────────────────────────────
 export const within = (dateStr: string, from: string, to: string): boolean => {
@@ -478,17 +481,33 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
   })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const purchases: PurchaseRow[] = purchasesInRange.map((p: any) => ({
-    id: p.id, ref: p.invoiceNumber || p.id?.slice(0, 8) || '—', date: p.date, supplier: suppliers.find(s => s.id === p.supplierId)?.name || '—',
-    total: p.total, paid: p.amountPaid || 0, rest: p.rest || 0,
+    id: p.id, ref: p.invoiceNumber || p.blNumber || p.id?.slice(0, 8) || '—', date: p.date,
+    supplier: suppliers.find(s => s.id === p.supplierId)?.name || '—',
+    // Montants recalculés sur les règlements de l'achat : les colonnes
+    // `amount_paid` / `rest` peuvent traîner un arrondi ou une valeur écrite par
+    // une version antérieure, et le rapport ne doit jamais en hériter.
+    total: num(p.total), paid: purchasePaid(p), rest: Math.max(0, purchaseRest(p)),
     items: (p.items || []).map((i: any) => ({ name: i.productName, qty: i.quantity, unitPrice: i.buyPrice, total: i.total ?? i.quantity * i.buyPrice })),
   })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const clientDebts: DebtRow[] = clients.filter(c => (c.debt || 0) > 0)
     .map(c => ({ id: c.id, ref: '—', name: c.name, date: '', total: c.debt, paid: 0, rest: c.debt }))
     .sort((a, b) => b.rest - a.rest);
-  const supplierDebts: DebtRow[] = suppliers.filter(s => (s.balance || 0) > 0)
-    .map(s => ({ id: s.id, ref: '—', name: s.name, date: '', total: s.balance, paid: 0, rest: s.balance }))
-    .sort((a, b) => b.rest - a.rest);
+
+  // ── Dettes fournisseurs — une ligne PAR FACTURE non soldée ────────────────
+  // On lisait la colonne `suppliers.balance`, que l'écran Achats Carburant n'a
+  // jamais alimentée : la carte annonçait 0 alors que des factures entières
+  // restaient dues. Les dettes sont maintenant reconstruites sur les achats et
+  // les anciens bons de livraison — la même source que l'écran Fournisseurs et
+  // que le fonds de roulement. Toutes les factures de la station sont comptées,
+  // carburant ET magasin : cette partie couvre les deux. Un encours n'a pas de
+  // période — une facture d'il y a trois mois est due aujourd'hui — elle figure
+  // donc dans le total quelle que soit la fenêtre choisie.
+  const supplierDebts: DebtRow[] = unpaidSupplierInvoices(app)
+    .map(inv => ({
+      id: inv.id, ref: inv.ref, name: inv.supplierName, date: inv.date,
+      total: inv.total, paid: inv.paid, rest: inv.rest,
+    }));
 
   const expenses: ExpenseRow[] = expensesInRange.map((e: any) => ({ id: e.id, kind: 'Dépense' as const, label: e.category || 'Dépense', description: e.description, amount: e.amount, date: e.date }))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -503,8 +522,8 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
   // Totals
   const salesTotal = fuelSales.reduce((s, x) => s + (x.total || 0), 0) + shopSales.reduce((s, x) => s + (x.total || 0), 0);
   const salesPaid = fuelSales.reduce((s, x) => s + (x.total || 0), 0) + shopSales.reduce((s, x) => s + (x.amountPaid ?? x.total ?? 0), 0);
-  const purchasesTotal = purchasesInRange.reduce((s: number, x: any) => s + (x.total || 0), 0);
-  const purchasesPaid = purchasesInRange.reduce((s: number, x: any) => s + (x.amountPaid || 0), 0);
+  const purchasesTotal = purchasesInRange.reduce((s: number, x: any) => s + num(x.total), 0);
+  const purchasesPaid = purchasesInRange.reduce((s: number, x: any) => s + purchasePaid(x), 0);
   const cogs = salesByProduct.reduce((s, x) => s + x.cost, 0);
   const grossMargin = salesTotal - cogs;
   const expensesTotal = expensesInRange.reduce((s: number, x: any) => s + (x.amount || 0), 0);
@@ -535,6 +554,10 @@ export interface GlobalReport {
   from: string; to: string;
   parts: PartReport[];
   salesTotal: number; purchasesTotal: number; expensesTotal: number; salariesPaid: number;
+  /** Part des achats de la période DÉJÀ réglée. */
+  purchasesPaid: number;
+  /** Reste dû sur les achats de la période — la dette née sur cette fenêtre. */
+  purchasesDebt: number;
   /** Coût des marchandises vendues — ce que les ventes ont réellement coûté. */
   cogs: number;
   grossMargin: number; clientDebtTotal: number; supplierDebtTotal: number; stockValue: number;
@@ -551,6 +574,10 @@ export function consolidate(parts: PartReport[], from: string, to: string): Glob
     from, to, parts,
     salesTotal: sum(p => p.salesTotal),
     purchasesTotal: sum(p => p.purchasesTotal),
+    purchasesPaid: sum(p => p.purchasesPaid),
+    // Ce qui reste dû sur les achats de la période — jamais négatif, un achat
+    // trop payé ne compense pas la dette d'un autre.
+    purchasesDebt: sum(p => Math.max(0, p.purchasesTotal - p.purchasesPaid)),
     expensesTotal: sum(p => p.expensesTotal),
     salariesPaid: sum(p => p.salariesPaid),
     cogs: sum(p => p.cogs),

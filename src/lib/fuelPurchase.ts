@@ -14,6 +14,7 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import type { Purchase, TreasuryTransaction } from '../store/AppContext';
+import { supplierBalance, supplierStats } from './supplierDebt';
 
 export interface TankDelta { tankId: string; deltaLiters: number }
 
@@ -91,21 +92,36 @@ export function describeTankDeltas(deltas: TankDelta[], tanks: TankLike[]): stri
  *   1. les litres livrés sont RETIRÉS des cuves concernées ;
  *   2. les mouvements de trésorerie de l'achat sont annulés (l'argent revient
  *      dans la caisse / sur le compte bancaire) ;
- *   3. l'achat lui-même est supprimé.
+ *   3. la dette du fournisseur est RECALCULÉE sans cet achat — sans quoi une
+ *      facture impayée supprimée continuait d'être réclamée ;
+ *   4. l'achat lui-même est supprimé.
  *
+ * `app` doit porter `treasuryTransactions`, `purchases`, `suppliers` et
+ * `deliveryNotes` : le solde fournisseur est reconstruit sur ces documents.
  * Retourne les deltas appliqués aux cuves pour que l'appelant puisse l'annoncer.
  */
 export function deleteFuelPurchase(
   purchase: Purchase,
-  treasuryTransactions: TreasuryTransaction[],
+  app: { treasuryTransactions?: TreasuryTransaction[]; purchases?: any[]; suppliers?: any[]; deliveryNotes?: any[] },
   dispatch: (action: any) => void,
 ): TankDelta[] {
   const deltas = tankDeltasOf(purchase, -1);
   if (deltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: deltas });
 
-  (treasuryTransactions || [])
+  (app?.treasuryTransactions || [])
     .filter(t => t.refType === 'purchase' && t.refId === purchase.id)
     .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
+
+  const supplier = (app?.suppliers || []).find(s => s.id === purchase.supplierId);
+  if (supplier) {
+    const without = { ...app, purchases: (app?.purchases || []).filter(p => p.id !== purchase.id) };
+    const balance = supplierBalance(without, supplier.id);
+    const totalPurchases = supplierStats(without, supplier.id).totalPurchased;
+    if (Math.abs((supplier.balance || 0) - balance) > 0.01
+      || Math.abs((supplier.totalPurchases || 0) - totalPurchases) > 0.01) {
+      dispatch({ type: 'UPDATE_SUPPLIER', payload: { ...supplier, balance, totalPurchases } });
+    }
+  }
 
   dispatch({ type: 'DELETE_PURCHASE', payload: purchase.id });
   return deltas;

@@ -39,6 +39,7 @@ import { appointmentOf, apptTone, apptLabel } from '../lib/paymentAppointments';
 import {
   deleteFuelPurchase, tankDeltasBetween, tankDeltasOf, describeTankDeltas, litersOf,
 } from '../lib/fuelPurchase';
+import { supplierBalance, supplierStats, purchaseRest } from '../lib/supplierDebt';
 
 const todayISO = () => new Date().toISOString().split('T')[0];
 
@@ -67,7 +68,11 @@ const modeForAccount = (accountId: string): PurchasePayment['mode'] =>
   accountId === CAISSE_ID ? 'ESPECES' : 'VIREMENT';
 
 const STATUS_TONE: Record<string, any> = {
-  'Payé': 'success', 'Partiel': 'warning', 'À payer': 'danger', 'En attente livraison': 'neutral',
+  'Payé': 'success',
+  'Dette partielle': 'warning', 'Dette': 'danger',
+  // Libellés historiques — mêmes situations, achats enregistrés avant.
+  'Partiel': 'warning', 'À payer': 'danger',
+  'En attente livraison': 'neutral',
 };
 
 export default function FuelPurchases() {
@@ -105,13 +110,18 @@ export default function FuelPurchases() {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [fuelPurchases, suppliers, search, period, from, to]);
 
+  // Les compteurs suivent la PÉRIODE et la recherche affichées : ils lisaient
+  // toute l'histoire pendant que la liste, elle, était filtrée — les deux ne
+  // parlaient donc jamais des mêmes achats. La dette est recalculée facture par
+  // facture (`purchaseRest`) plutôt que lue dans la colonne `rest`, qui peut
+  // traîner un reliquat d'arrondi ou une valeur écrite par une ancienne version.
   const stats = useMemo(() => ({
-    count: fuelPurchases.length,
-    total: fuelPurchases.reduce((s, p) => s + (p.total || 0), 0),
-    paid: fuelPurchases.reduce((s, p) => s + (p.amountPaid || 0), 0),
-    debt: fuelPurchases.reduce((s, p) => s + (p.rest || 0), 0),
-    liters: fuelPurchases.reduce((s, p) => s + (p.items || []).reduce((a, i) => a + (i.quantity || 0), 0), 0),
-  }), [fuelPurchases]);
+    count: filtered.length,
+    total: filtered.reduce((s, p) => s + (p.total || 0), 0),
+    paid: filtered.reduce((s, p) => s + (p.amountPaid || 0), 0),
+    debt: filtered.reduce((s, p) => s + Math.max(0, purchaseRest(p)), 0),
+    liters: filtered.reduce((s, p) => s + (p.items || []).reduce((a, i) => a + (i.quantity || 0), 0), 0),
+  }), [filtered]);
 
   /**
    * Removes a purchase: the litres it delivered are taken back OUT of the cuves
@@ -122,7 +132,7 @@ export default function FuelPurchases() {
   const del = () => {
     if (!toDelete) return;
     const fresh = purchases.find(p => p.id === toDelete.id) || toDelete;
-    const deltas = deleteFuelPurchase(fresh, treasuryTransactions, dispatch);
+    const deltas = deleteFuelPurchase(fresh, state, dispatch);
     const liters = litersOf(fresh);
     toast.success(deltas.length
       ? `Achat supprimé — ${liters.toLocaleString('fr-FR')} L retirés des cuves`
@@ -346,10 +356,19 @@ function buyPriceOf(type: FuelType | undefined, settings: any): number {
   return Number(settings?.fuelBuyPrices?.[type]) || 0;
 }
 
+/**
+ * Statut d'un achat, décidé par le RESTE À PAYER et par lui seul.
+ *
+ * Tant que la facture n'est pas soldée, l'achat est une DETTE envers le
+ * fournisseur — et le dit. « À payer » restait ambigu (une facture à payer plus
+ * tard n'était pas lue comme un dû), et un paiement partiel n'annonçait rien du
+ * tout. Les deux états portent maintenant le mot « Dette » ; l'ancien libellé
+ * reste reconnu pour les achats enregistrés avant ce changement.
+ */
 function statusFor(total: number, paid: number): Purchase['status'] {
-  if (paid <= 0) return 'À payer';
-  if (paid + 0.001 >= total) return 'Payé';
-  return 'Partiel';
+  const rest = (Number(total) || 0) - (Number(paid) || 0);
+  if (rest < 0.01) return 'Payé';
+  return paid > 0 ? 'Dette partielle' : 'Dette';
 }
 
 // ─── Create / edit ─────────────────────────────────────────────────────────────
@@ -412,7 +431,11 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
   const tvaAmount = tvaActive ? afterDiscount * (Number(tvaRate) || 0) / 100 : 0;
   const total = afterDiscount + tvaAmount;
   const paid = pays.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const rest = Math.max(0, total - paid);
+  // Une facture réglée au dinar près est réglée : les arrondis de TVA laissaient
+  // un reste de l'ordre du millième, qui suffisait à faire figurer l'achat dans
+  // les dettes fournisseurs et à réclamer un rendez-vous de paiement.
+  const rawRest = total - paid;
+  const rest = rawRest < 0.01 ? 0 : rawRest;
 
   // ── Cuve lines ───────────────────────────────────────────────────────────
   /** The cuve lines as they will be SAVED — also drives the live cuve preview. */
@@ -581,6 +604,28 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
       };
       dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
     });
+
+    // 4. Dette fournisseur — le solde du fournisseur est RECALCULÉ sur toutes ses
+    //    factures, celle-ci comprise. Sans cette étape la colonne `balance`
+    //    restait à zéro : un achat laissé impayé n'apparaissait ni sur la fiche
+    //    du fournisseur, ni dans les dettes des Rapports Généraux, ni dans le
+    //    fonds de roulement. Le total est reconstruit (jamais incrémenté) pour
+    //    qu'une modification ou une suppression le corrige d'elle-même.
+    const supplier = suppliers.find(s => s.id === supplierId);
+    if (supplier) {
+      const nextApp = {
+        ...state,
+        purchases: isEdit
+          ? purchases.map(p => (p.id === purchaseId ? purchase : p))
+          : [...purchases, purchase],
+      };
+      const balance = supplierBalance(nextApp, supplier.id);
+      const totalPurchases = supplierStats(nextApp, supplier.id).totalPurchased;
+      if (Math.abs((supplier.balance || 0) - balance) > 0.01
+        || Math.abs((supplier.totalPurchases || 0) - totalPurchases) > 0.01) {
+        dispatch({ type: 'UPDATE_SUPPLIER', payload: { ...supplier, balance, totalPurchases } });
+      }
+    }
 
     const apptMsg = apptOn && rest > 0 && apptDate
       ? ` — rendez-vous de paiement le ${formatDate(apptDate)}, rappel affiché sur le tableau de bord`
@@ -1181,7 +1226,8 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
 
   const value = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const newPaid = purchase.amountPaid + value;
-  const newRest = Math.max(0, purchase.total - newPaid);
+  const rawNewRest = purchase.total - newPaid;
+  const newRest = rawNewRest < 0.01 ? 0 : rawNewRest;
   const overpay = value > purchase.rest + 0.001;
 
   const save = () => {
@@ -1211,7 +1257,8 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
       },
     });
 
-    const supplierName = suppliers.find(s => s.id === purchase.supplierId)?.name || 'Fournisseur';
+    const supplier = suppliers.find(s => s.id === purchase.supplierId);
+    const supplierName = supplier?.name || 'Fournisseur';
     payments.forEach(pay => dispatch({
       type: 'ADD_TREASURY_TX',
       payload: {
@@ -1223,6 +1270,17 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
         createdBy: currentUserName, createdAt: new Date().toISOString(),
       },
     }));
+
+    // Régler une facture réduit la dette du fournisseur : son solde est
+    // reconstruit sur ses factures restantes, jamais décrémenté à l'aveugle.
+    if (supplier) {
+      const settled = { ...purchase, payments: [...(purchase.payments || []), ...payments], amountPaid: newPaid, rest: newRest };
+      const nextApp = { ...state, purchases: state.purchases.map(p => (p.id === purchase.id ? settled : p)) };
+      const balance = supplierBalance(nextApp, supplier.id);
+      if (Math.abs((supplier.balance || 0) - balance) > 0.01) {
+        dispatch({ type: 'UPDATE_SUPPLIER', payload: { ...supplier, balance } });
+      }
+    }
 
     toast.success(payments.length > 1
       ? `${payments.length} règlements enregistrés — ${money(value)}`

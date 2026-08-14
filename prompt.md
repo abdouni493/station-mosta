@@ -165,11 +165,3 @@ fix the interface design of payment button action interface make sure to make it
 
 
 
-
-
-fix the interface of create new brigade on the last interface of create brigade make it when user choose the justification with products make sure to make it load the price of that product when user select that product 
-
-make the interface of comptability on the interface of create brigade better organized with integrate the justification with purchase or selling on the same part with better organisation and make it user can select multiple selling and purchases on the same creation of brigade and make sure to make the design of text boxes better design of searching 
-
-fix the interface of comptability make new option when user click on justification with acompte make possibility of when user click on acompte then its will make for the user option for seach about the pompiste with his name with possibility of create multiple acomptes onthe same interface and same creation and make sure when user create the acompte then make sure to make it display on the card of that pompiste and on the history of that pompiste 
-

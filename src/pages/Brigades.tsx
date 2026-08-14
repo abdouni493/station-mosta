@@ -41,6 +41,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
+import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Skeleton from "../components/Skeleton";
@@ -419,13 +420,28 @@ const Brigades = () => {
       // 8-9. end references
       const endNozzleIndices: Record<string, number> = {};
       pumpNozzles.forEach(n => { endNozzleIndices[n.id] = wizEndNozzleIndices[n.id] ?? startNozzleIdx(n); });
-      const endTankLevelsObj: Record<string, { degrees: number; liters: number }> = {};
+
+      // Litres réellement débités par les pistolets, cuve par cuve — c'est LA
+      // seule chose qu'une brigade retire du stock.
+      const usedByTank = brigadeTankConsumption(
+        { startNozzleIndices, endNozzleIndices }, pumpNozzles, pumps);
+
+      // Niveau de fin enregistré sur la brigade. `measured` distingue la jauge
+      // relevée à la main (qui sert au décalage) du niveau simplement déduit du
+      // volume débité : sans ce drapeau, rouvrir une brigade sans relevé faisait
+      // apparaître un relevé fantôme égal au niveau de départ, donc un décalage
+      // inventé de toutes pièces.
+      const endTankLevelsObj: Record<string, { degrees: number; liters: number; measured?: boolean }> = {};
       tanks.forEach(t => {
         const deg = wizEndTankLevels[t.id];
         // For GPL the stored `degrees` value is the gauge percentage.
         endTankLevelsObj[t.id] = deg !== undefined
-          ? { degrees: deg, liters: tankLevelToLiters(t.id, deg) }
-          : { degrees: startTankDegrees(t), liters: startTankLiters(t) };
+          ? { degrees: deg, liters: tankLevelToLiters(t.id, deg), measured: true }
+          : {
+            degrees: startTankDegrees(t),
+            liters: Math.max(0, startTankLiters(t) - (usedByTank[t.id] || 0)),
+            measured: false,
+          };
       });
 
       const brigadeId = isEdit ? editingBrigade!.id : newId();
@@ -681,13 +697,17 @@ const Brigades = () => {
         dispatch({ type: 'ADD_BRIGADE_DECALAGE_ALERT', payload: alert });
       });
 
-      // 11. Update tanks to end values
-      tanks.forEach(t => {
-        const end = endTankLevelsObj[t.id];
-        if (end && wizEndTankLevels[t.id] !== undefined) {
-          dispatch({ type: 'UPDATE_TANK', payload: { ...t, degrees: end.degrees, current: end.liters } });
-        }
-      });
+      // 11. Cuves — on RETIRE les litres débités par les pistolets, on ne réécrit
+      //     JAMAIS le niveau en valeur absolue. Une écriture absolue déduite de
+      //     la jauge remettait les cuves à zéro dès que la table de conversion
+      //     était vide, et effaçait les litres apportés par les achats. À la
+      //     modification, seule la DIFFÉRENCE avec le volume déjà retiré par
+      //     cette brigade est appliquée — comme pour un achat carburant.
+      const tankDeltas = brigadeTankDeltas(
+        isEdit ? editingBrigade : null,
+        { startNozzleIndices, endNozzleIndices },
+        pumpNozzles, pumps);
+      if (tankDeltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: tankDeltas });
 
       // 12. Update each nozzle lastIndex to end value
       pumpNozzles.forEach(n => {
@@ -730,7 +750,13 @@ const Brigades = () => {
         });
       }
 
-      dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: isEdit ? "Brigade mise à jour avec succès !" : "Brigade créée et clôturée avec succès !" } });
+      // Le message dit ce que les cuves ont pris : c'est le seul endroit où le
+      // stock bouge, l'utilisateur doit pouvoir le vérifier tout de suite.
+      const litersOut = Object.values(usedByTank).reduce((s, n) => s + n, 0);
+      const cuveMsg = litersOut > 0
+        ? ` — ${litersOut.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L retirés des cuves`
+        : '';
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: (isEdit ? "Brigade mise à jour avec succès !" : "Brigade créée et clôturée avec succès !") + cuveMsg } });
       setShowModal(false);
       setEditingBrigade(null);
       resetForm();
@@ -777,8 +803,14 @@ const Brigades = () => {
     setEndDate(sEnd.date); setEndHour(sEnd.hh); setEndMinute(sEnd.mm);
 
     // end tank levels (degrees value; for GPL this is the gauge %)
+    // Seuls les relevés RÉELLEMENT saisis sont rechargés : un niveau simplement
+    // déduit du volume débité (`measured === false`) n'est pas un relevé, et le
+    // remettre dans le formulaire créerait un décalage qui n'a jamais existé.
+    // Les brigades enregistrées avant ce drapeau n'en ont pas : elles sont
+    // rechargées comme avant, pour ne pas perdre leur relevé.
     const endTanks: Record<string, number> = {};
     Object.entries(b.endTankLevels || {}).forEach(([tid, lvl]: [string, any]) => {
+      if (lvl?.measured === false) return;
       if (lvl && lvl.degrees !== undefined && lvl.degrees !== null) endTanks[tid] = lvl.degrees;
     });
     setWizEndTankLevels(endTanks);
@@ -895,13 +927,13 @@ const Brigades = () => {
       }
     });
 
-    // 2. Update Tanks
-    Object.entries(endTankLevels).forEach(([tankId, level]: [string, any]) => {
-      const tank = tanks.find(t => t.id === tankId);
-      if (tank) {
-        dispatch({ type: 'UPDATE_TANK', payload: { ...tank, degrees: level.degrees, current: level.liters } });
-      }
-    });
+    // 2. Cuves — même règle que l'assistant : on RETIRE le volume débité par les
+    //    pistolets, on ne réécrit pas le niveau à partir de la jauge.
+    const clotureDeltas = brigadeTankDeltas(
+      null,
+      { startNozzleIndices: activeBrigade.startNozzleIndices, endNozzleIndices: wizEndNozzleIndices },
+      pumpNozzles, pumps);
+    if (clotureDeltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: clotureDeltas });
 
     // 3. Update Pumps
     Object.entries(endIndices).forEach(([pumpId, index]) => {
@@ -2401,7 +2433,6 @@ const Brigades = () => {
                                 <div className="space-y-2">
                                   {justifs.map(j => {
                                     const patch = (changes: Partial<typeof j>) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: (prev[s.pompisteId] || []).map(x => x.id === j.id ? { ...x, ...changes } : x) }));
-                                    const fuelOptions = Object.keys(settings.fuelPrices || {});
                                     return (
                                     <div key={j.id} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-2">
                                       <div className="flex items-center justify-between">
@@ -2419,47 +2450,18 @@ const Brigades = () => {
                                       {/* Description (always) */}
                                       <input placeholder="Description" value={j.description} onChange={e => patch({ description: e.target.value })} className="input-field h-9 text-xs font-bold w-full" />
 
-                                      {/* Toggle: direct amount vs liter-based calc */}
-                                      <label className="flex items-center gap-2 cursor-pointer select-none">
-                                        <input type="checkbox" checked={!!j.byLiters} onChange={e => {
-                                          const byLiters = e.target.checked;
-                                          const price = settings.fuelPrices[(j.fuelType || s.primaryFuel) as any] || 0;
-                                          patch({ byLiters, ...(byLiters ? { amount: (j.liters || 0) * price, fuelType: j.fuelType || s.primaryFuel } : {}) });
-                                        }} className="w-3.5 h-3.5 accent-blue-700" />
-                                        <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">Calculer par litres (carburant)</span>
-                                      </label>
-
-                                      {j.byLiters ? (
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <div>
-                                            <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Carburant</label>
-                                            <select value={j.fuelType || s.primaryFuel} onChange={e => {
-                                              const fuelType = e.target.value;
-                                              const price = settings.fuelPrices[fuelType as any] || 0;
-                                              patch({ fuelType, amount: (j.liters || 0) * price });
-                                            }} className="input-field h-9 text-xs font-bold">
-                                              {fuelOptions.map(f => <option key={f} value={f}>{f} ({(settings.fuelPrices[f as any] || 0).toLocaleString('fr-FR')} DA/L)</option>)}
-                                            </select>
-                                          </div>
-                                          <div>
-                                            <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Litres</label>
-                                            <input type="number" placeholder="Litres" value={j.liters || ''} onChange={e => {
-                                              const liters = parseFloat(e.target.value) || 0;
-                                              const price = settings.fuelPrices[(j.fuelType || s.primaryFuel) as any] || 0;
-                                              patch({ liters, amount: liters * price });
-                                            }} className="input-field h-9 text-xs font-bold" />
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div>
-                                          <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Montant (DA)</label>
-                                          <input type="number" placeholder="Montant total" value={j.amount || ''} onChange={e => patch({ amount: parseFloat(e.target.value) || 0, liters: 0 })} className="input-field h-9 text-xs font-bold" />
-                                        </div>
-                                      )}
+                                      {/* Une justification se saisit en MONTANT, point.
+                                          Le calcul par litres a été retiré : le montant
+                                          justifié est celui du bon, du TPE ou du crédit
+                                          client — le déduire d'un volume et d'un prix
+                                          affiché ne faisait que le rendre approximatif. */}
+                                      <div>
+                                        <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Montant (DA)</label>
+                                        <input type="number" placeholder="Montant total" value={j.amount || ''} onChange={e => patch({ amount: parseFloat(e.target.value) || 0, liters: 0, byLiters: false })} className="input-field h-9 text-xs font-bold" />
+                                      </div>
 
                                       <p className="text-[10px] font-black text-right text-blue-700">
                                         Montant: {(j.amount || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD
-                                        {j.byLiters && j.liters ? <span className="text-slate-400 font-bold ml-1">({j.liters.toLocaleString('fr-FR')} L × {(settings.fuelPrices[(j.fuelType || s.primaryFuel) as any] || 0).toLocaleString('fr-FR')})</span> : null}
                                       </p>
                                     </div>
                                     );
@@ -2643,13 +2645,24 @@ const Brigades = () => {
       <ConfirmDialog
         isOpen={showConfirmDelete}
         title="Supprimer la Brigade"
-        message={`Êtes-vous sûr de vouloir supprimer la brigade ${selectedBrigade?.id} ? Cette action est irréversible.`}
+        message={`Êtes-vous sûr de vouloir supprimer la brigade ${selectedBrigade?.id} ? Cette action est irréversible.`
+          + (selectedBrigade && brigadeLiters(selectedBrigade, pumpNozzles, pumps) > 0
+            ? `\n\nLes ${brigadeLiters(selectedBrigade, pumpNozzles, pumps).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L qu'elle avait retirés seront REMIS dans les cuves.`
+            : '')}
         confirmLabel="Supprimer"
         danger={true}
         onConfirm={() => {
           if (selectedBrigade) {
+            // Une brigade supprimée n'a jamais eu lieu : ses litres reviennent
+            // dans les cuves, exactement comme la suppression d'un achat leur
+            // reprend les siens.
+            const backDeltas = brigadeTankDeltas(selectedBrigade, null, pumpNozzles, pumps);
+            if (backDeltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: backDeltas });
             dispatch({ type: 'DELETE_BRIGADE', payload: selectedBrigade.id });
-            dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: 'Brigade supprimée' } });
+            const back = brigadeLiters(selectedBrigade, pumpNozzles, pumps);
+            dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: back > 0
+              ? `Brigade supprimée — ${back.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L remis dans les cuves`
+              : 'Brigade supprimée' } });
           }
           setShowConfirmDelete(false);
           setSelectedBrigade(null);

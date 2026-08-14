@@ -6,6 +6,8 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn, litersFromDegrees, degreesFromLiters, newId } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Tank, FuelType } from "../store/AppContext";
+import { tankQuantitiesOf } from "../lib/fuelPurchase";
+import { brigadeTankConsumption } from "../lib/brigadeTanks";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 
@@ -136,14 +138,45 @@ const TankCard = ({ tank, settings, onEdit, onDelete, onHistory, onConverter, on
 };
 
 // ── TankHistoryModal ──────────────────────────────────────────────────────────
-const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes }: any) => {
+/**
+ * Le mouvement de la cuve, tel qu'il s'est réellement produit :
+ *
+ *   + les ACHATS CARBURANT livrés dans cette cuve (et les anciens Bons de
+ *     Livraison, pour les stations qui s'en servaient encore) ;
+ *   − les litres DÉBITÉS PAR LES PISTOLETS pendant chaque brigade.
+ *
+ * Cet écran ne listait que les Bons de Livraison — écran remplacé par « Achats
+ * Carburant » : aucune livraison n'apparaissait plus. Et il déduisait la
+ * consommation des brigades de l'écart entre deux relevés de jauge, ce qui
+ * affichait une consommation égale au niveau entier de la cuve dès que le
+ * relevé de fin valait zéro.
+ */
+const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes, purchases, pumpNozzles, pumps }: any) => {
   const history = useMemo(() => {
     const items: any[] = [];
 
-    // Approvisionnements (Delivery Notes) — a BL can deliver to several cuves
-    // via its `items`; only fall back to the legacy single-tank fields when no
-    // items exist, otherwise every cuve of the BL gets its own history entry.
-    deliveryNotes.forEach((d: any) => {
+    // Achats carburant — un achat peut remplir plusieurs cuves : seule la part
+    // livrée dans CETTE cuve est comptée.
+    (purchases || []).forEach((p: any) => {
+      const litersForTank = tankQuantitiesOf(p)[tank.id] || 0;
+      if (litersForTank <= 0) return;
+      const ref = p.invoiceNumber ? `Facture ${p.invoiceNumber}` : p.blNumber ? `BL ${p.blNumber}` : null;
+      items.push({
+        id: `pur-${p.id}-${tank.id}`,
+        date: new Date(p.date).getTime(),
+        displayDate: [new Date(p.date).toLocaleDateString('fr-FR'), ref].filter(Boolean).join(' • '),
+        type: 'APP',
+        label: 'Achat carburant',
+        amount: litersForTank,
+        status: p.status,
+      });
+    });
+
+    // Approvisionnements (anciens Bons de Livraison) — a BL can deliver to
+    // several cuves via its `items`; only fall back to the legacy single-tank
+    // fields when no items exist, otherwise every cuve of the BL gets its own
+    // history entry.
+    (deliveryNotes || []).forEach((d: any) => {
       const litersForTank = (d.items && d.items.length > 0)
         ? d.items
             .filter((it: any) => it.tankId === tank.id)
@@ -155,33 +188,37 @@ const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes }: any) => {
         date: new Date(d.date).getTime(),
         displayDate: d.blNumber ? `${d.date} • BL ${d.blNumber}` : d.date,
         type: 'APP',
-        label: 'Approvisionnement',
+        label: 'Approvisionnement (BL)',
         amount: litersForTank,
         status: d.status
       });
     });
 
-    // Consommations (Brigades)
-    brigades.filter((b: any) => b.startTankLevels && b.startTankLevels[tank.id]).forEach((b: any) => {
-      const start = b.startTankLevels[tank.id].liters || 0;
-      const end = b.endTankLevels?.[tank.id]?.liters || start;
-      const consumed = start - end;
-
-      if (consumed > 0 || b.status === 'Ouverte') {
-        items.push({
-          id: b.id,
-          date: new Date(b.date).getTime(),
-          displayDate: `${b.date} (${b.shift})`,
-          type: 'MINUS',
-          label: `Brigade - ${b.status}`,
-          amount: consumed,
-          status: b.status
-        });
-      }
+    // Consommations (Brigades) — les litres débités par les pistolets rattachés
+    // à cette cuve, c'est-à-dire exactement ce qui lui a été retiré.
+    (brigades || []).forEach((b: any) => {
+      const consumed = brigadeTankConsumption(b, pumpNozzles || [], pumps || [])[tank.id] || 0;
+      if (consumed <= 0) return;
+      items.push({
+        id: b.id,
+        date: new Date(b.date).getTime(),
+        displayDate: `${b.date} (${b.shift})`,
+        type: 'MINUS',
+        label: `Brigade — ${b.status}`,
+        amount: consumed,
+        status: b.status
+      });
     });
 
     return items.sort((a, b) => b.date - a.date);
-  }, [tank.id, brigades, deliveryNotes]);
+  }, [tank.id, brigades, deliveryNotes, purchases, pumpNozzles, pumps]);
+
+  // Récapitulatif : le niveau affiché sur la carte doit pouvoir se relire ici.
+  const totals = useMemo(() => {
+    const inL = history.filter(i => i.type === 'APP').reduce((s, i) => s + i.amount, 0);
+    const outL = history.filter(i => i.type === 'MINUS').reduce((s, i) => s + i.amount, 0);
+    return { inL, outL };
+  }, [history]);
 
   return (
     <div className="modal-shell z-[60]">
@@ -201,6 +238,22 @@ const TankHistoryModal = ({ tank, onClose, brigades, deliveryNotes }: any) => {
           <button onClick={onClose} className="hover:bg-white/20 p-2 rounded-lg transition-all"><X className="w-6 h-6" /></button>
         </div>
         <div className="p-8 flex-1 overflow-y-auto custom-scrollbar bg-slate-50/50">
+          {/* Ce qui est entré, ce qui est sorti, et le niveau qui en résulte —
+              les trois chiffres qui permettent de contrôler la carte de la cuve. */}
+          <div className="grid grid-cols-3 gap-3 mb-6">
+            <div className="bg-white rounded-2xl border border-green-100 p-3 text-center">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Livré (achats)</p>
+              <p className="text-lg font-black text-green-600 tabular-nums">+{totals.inL.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L</p>
+            </div>
+            <div className="bg-white rounded-2xl border border-orange-100 p-3 text-center">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Débité (brigades)</p>
+              <p className="text-lg font-black text-orange-600 tabular-nums">−{totals.outL.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L</p>
+            </div>
+            <div className="bg-white rounded-2xl border border-blue-100 p-3 text-center">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Niveau actuel</p>
+              <p className="text-lg font-black text-blue-700 tabular-nums">{(tank.current || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L</p>
+            </div>
+          </div>
           {history.length > 0 ? (
             <div className="space-y-4">
               {history.map((item: any) => (
@@ -554,7 +607,7 @@ const ConverterModal = ({ tank, settings, onClose }: any) => {
 
 // ── Tanks page ────────────────────────────────────────────────────────────────
 const Tanks = () => {
-  const { tanks, settings, brigades, deliveryNotes } = useAppState();
+  const { tanks, settings, brigades, deliveryNotes, purchases, pumpNozzles, pumps } = useAppState();
   const dispatch = useAppDispatch();
   const perm = useModulePermission('Cuves');
   const [showModal, setShowModal] = useState(false);
@@ -720,6 +773,9 @@ const Tanks = () => {
             onClose={() => setHistoryTank(null)}
             brigades={brigades}
             deliveryNotes={deliveryNotes}
+            purchases={purchases}
+            pumpNozzles={pumpNozzles}
+            pumps={pumps}
           />
         )}
         {gplCalcTank && (

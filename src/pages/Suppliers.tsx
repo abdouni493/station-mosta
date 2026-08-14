@@ -37,12 +37,14 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Supplier } from "../store/AppContext";
+import { supplierStats, unpaidSupplierInvoices } from "../lib/supplierDebt";
 import EmptyState from "../components/EmptyState";
 import ConfirmDialog from "../components/ConfirmDialog";
 
 const Suppliers = () => {
   const { t } = useTranslation();
-  const { suppliers, deliveryNotes } = useAppState();
+  const state = useAppState();
+  const { suppliers, deliveryNotes } = state;
   const perm = useModulePermission('Fournisseurs');
   const dispatch = useAppDispatch();
 
@@ -140,18 +142,31 @@ const Suppliers = () => {
     }, 800);
   };
 
+  /**
+   * Bilan d'un fournisseur : ACHATS et anciens bons de livraison réunis.
+   *
+   * Cet écran n'additionnait que les Bons de Livraison — un écran remplacé par
+   * « Achats Carburant ». Un fournisseur à qui l'on devait trois factures de
+   * carburant s'affichait donc à zéro. Le calcul passe par `lib/supplierDebt`,
+   * le même que les Rapports Généraux et le Fonds de roulement : les trois
+   * écrans ne peuvent plus annoncer trois chiffres différents.
+   */
   const getSupplierStats = (supplierId: string) => {
+    const base = supplierStats(state, supplierId);
     const sNotes = (deliveryNotes || []).filter(n => n.supplierId === supplierId);
-    const totalPurchased = sNotes.reduce((acc, n) => acc + (n.total || (n.liters * n.pricePerLiter)), 0);
-    const totalPaid = sNotes.reduce((acc, n) => acc + (n.payments?.reduce((pAcc, p) => pAcc + p.amount, 0) || 0), 0);
-    const balance = totalPurchased - totalPaid;
-    
     const overdue = sNotes.some(n => {
-       const balance = (n.total || (n.liters * n.pricePerLiter)) - (n.payments?.reduce((pAcc, p) => pAcc + p.amount, 0) || 0);
-       return balance > 0 && n.expiryDate && new Date(n.expiryDate) < new Date();
-    });
+      const rest = (n.total || (n.liters * n.pricePerLiter)) - (n.payments?.reduce((pAcc, p) => pAcc + p.amount, 0) || 0);
+      return rest > 0 && n.expiryDate && new Date(n.expiryDate) < new Date();
+    }) || unpaidSupplierInvoices(state, { supplierId }).some(
+      inv => inv.appointmentDate && new Date(inv.appointmentDate) < new Date());
 
-    return { totalPurchased, totalPaid, balance, overdue, deliveriesCount: sNotes.length };
+    return {
+      totalPurchased: base.totalPurchased,
+      totalPaid: base.totalPaid,
+      balance: base.balance,
+      overdue,
+      deliveriesCount: base.invoicesCount,
+    };
   };
 
   const supplierDetails = useMemo(() => {
@@ -159,8 +174,10 @@ const Suppliers = () => {
     return {
       stats: getSupplierStats(selectedSupplier.id),
       notes: (deliveryNotes || []).filter(n => n.supplierId === selectedSupplier.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+      /** Factures d'achat encore dues — ce que ce fournisseur réclame vraiment. */
+      unpaid: unpaidSupplierInvoices(state, { supplierId: selectedSupplier.id }),
     };
-  }, [selectedSupplier, deliveryNotes]);
+  }, [selectedSupplier, deliveryNotes, state]);
 
   const handlePayDebt = () => {
     if (!selectedDeliveryNote || paymentForm.amount <= 0) {
@@ -891,8 +908,59 @@ const Suppliers = () => {
                 {/* ACHATS & DETTES TAB */}
                 {activeTab === "achats" && (
                   <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
+                    {/* Factures d'achat encore dues — c'est de là que vient le
+                        « Solde Restant » affiché plus haut. Cette liste manquait :
+                        le solde tombait d'un calcul que rien à l'écran ne montrait. */}
+                    <div className="space-y-3">
+                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">Factures d'achat non soldées</h4>
+                      {supplierDetails.unpaid.length > 0 ? (
+                        <div className="overflow-hidden border border-red-100 rounded-2xl shadow-sm">
+                          <table className="w-full text-left border-collapse text-xs font-bold">
+                            <thead className="bg-red-50/60 text-red-900 uppercase text-[9px] tracking-wider border-b border-red-100">
+                              <tr>
+                                <th className="px-6 py-4">Date</th>
+                                <th className="px-6 py-4">Facture</th>
+                                <th className="px-6 py-4 text-right">Montant</th>
+                                <th className="px-6 py-4 text-right">Payé</th>
+                                <th className="px-6 py-4 text-right">Reste dû</th>
+                                <th className="px-6 py-4 text-center">Rendez-vous</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-red-50">
+                              {supplierDetails.unpaid.map(inv => (
+                                <tr key={`${inv.source}-${inv.id}`} className="hover:bg-red-50/40 transition-colors">
+                                  <td className="px-6 py-4 text-slate-500">{new Date(inv.date).toLocaleDateString('fr-FR')}</td>
+                                  <td className="px-6 py-4 text-blue-900 font-black">
+                                    {inv.ref}
+                                    <span className="ml-2 text-[9px] font-black uppercase text-slate-400">{inv.source === 'bl' ? 'BL' : inv.fuel ? 'Carburant' : 'Achat'}</span>
+                                  </td>
+                                  <td className="px-6 py-4 text-right text-slate-700">{inv.total.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA</td>
+                                  <td className="px-6 py-4 text-right text-emerald-600">{inv.paid.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA</td>
+                                  <td className="px-6 py-4 text-right text-red-600 font-black">{inv.rest.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA</td>
+                                  <td className="px-6 py-4 text-center text-slate-500">
+                                    {inv.appointmentDate ? new Date(inv.appointmentDate).toLocaleDateString('fr-FR') : '—'}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot className="bg-red-50 border-t border-red-100">
+                              <tr>
+                                <td colSpan={4} className="px-6 py-3 text-right text-[10px] font-black uppercase tracking-widest text-red-900">Total dû</td>
+                                <td className="px-6 py-3 text-right text-red-700 font-black">
+                                  {supplierDetails.unpaid.reduce((s, i) => s + i.rest, 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA
+                                </td>
+                                <td />
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="text-xs font-bold text-emerald-600 italic px-1">Aucune facture en attente — ce fournisseur est à jour.</p>
+                      )}
+                    </div>
+
                     <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">Bons de livraison & Dettes</h4>
-                    
+
                     {supplierDetails.notes.length > 0 ? (
                       <div className="overflow-hidden border border-slate-100 rounded-2xl shadow-sm">
                         <table className="w-full text-left border-collapse text-xs font-bold">

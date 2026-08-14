@@ -20,7 +20,11 @@ export const lit = (n: number) => (n || 0).toLocaleString('fr-FR', { maximumFrac
 const shortDate = (s: string) => { if (!s) return '—'; const d = new Date(s); return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString('fr-FR'); };
 
 /** Colour of a purchase status label on the printed sheet. */
-const statusColor = (s: string) => s === 'Payé' ? '#15803d' : s === 'Partiel' ? '#b45309' : s === 'En attente livraison' ? '#64748b' : '#dc2626';
+const statusColor = (s: string) =>
+  s === 'Payé' ? '#15803d'
+    : s === 'Dette partielle' || s === 'Partiel' ? '#b45309'
+      : s === 'En attente livraison' ? '#64748b'
+        : '#dc2626';
 
 /** Human labels for the payment modes carried by an achat carburant. */
 export const PAY_MODE_LABEL: Record<string, string> = { ESPECES: 'Espèces', CHEQUE: 'Chèque', VIREMENT: 'Virement' };

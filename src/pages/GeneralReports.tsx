@@ -37,6 +37,7 @@ import {
   FuelPurchaseDetail, FuelTypeGroup, payInfoOf, groupPurchasesByFuelType,
 } from '@/src/components/biz/ReportFiche';
 import { deleteFuelPurchase, tankDeltasOf, describeTankDeltas, litersOf } from '@/src/lib/fuelPurchase';
+import { unpaidSupplierInvoices, purchasePaid, purchaseRest } from '@/src/lib/supplierDebt';
 import { toast } from 'react-hot-toast';
 
 type ActiveKey =
@@ -209,8 +210,11 @@ export default function GeneralReports() {
         discountAmount: p.discountAmount || 0,
         tvaAmount: p.tvaAmount || 0,
         total: p.total || 0,
-        paid: p.amountPaid || 0,
-        rest: p.rest || 0,
+        // Payé / reste RECALCULÉS sur les règlements enregistrés : les colonnes
+        // figées de l'achat pouvaient annoncer un reste d'un millième de dinar
+        // (arrondi de TVA) ou une valeur d'une version antérieure.
+        paid: purchasePaid(p),
+        rest: Math.max(0, purchaseRest(p)),
         liters: (p.items || []).reduce((s: number, i: any) => s + (i.quantity || 0), 0),
         payments: (p.payments || []).map((pay: any) => ({
           mode: pay.mode,
@@ -375,12 +379,25 @@ export default function GeneralReports() {
     })));
     clientDebtRows.sort((a, b) => b.amount - a.amount);
 
-    // ── Dettes fournisseurs ──
-    const supplierDebtRows: DetailRow[] = [];
-    (app.suppliers || []).filter((s: any) => (s.balance || 0) > 0).forEach((s: any) => supplierDebtRows.push({
-      id: `carb-${s.id}`, label: `🚚 ${s.name}`, sub: s.phone, amount: s.balance, amountTone: 'red',
-      onDelete: () => dispatch({ type: 'DELETE_SUPPLIER', payload: s.id }),
-      confirmMessage: `Supprimer le fournisseur « ${s.name} » et son historique ? Action définitive.`,
+    // ── Dettes fournisseurs — UNE LIGNE PAR FACTURE NON SOLDÉE ──
+    // La carte lisait la colonne `suppliers.balance`, que l'écran Achats
+    // Carburant n'alimente pas : elle affichait 0 en permanence. Chaque ligne
+    // est désormais une facture réelle, avec son n°, sa date, son total et ce
+    // qui a déjà été réglé — le chiffre de la carte se vérifie donc à la ligne.
+    const supplierDebtRows: DetailRow[] = unpaidSupplierInvoices(app).map(inv => ({
+      id: `carb-${inv.source}-${inv.id}`,
+      date: inv.date,
+      label: `🚚 ${inv.supplierName}`,
+      sub: [
+        inv.source === 'bl' ? `Bon de livraison ${inv.ref}`
+          : `Facture ${inv.ref}${inv.fuel ? ' (carburant)' : ''}`,
+        `Total ${money(inv.total)} · payé ${money(inv.paid)}`,
+        inv.appointmentDate ? `rendez-vous de paiement le ${formatDate(inv.appointmentDate)}` : undefined,
+      ].filter(Boolean).join(' · '),
+      badge: inv.paid > 0
+        ? { text: 'Dette partielle', tone: 'warning' as const }
+        : { text: 'Dette', tone: 'danger' as const },
+      amount: inv.rest, amountTone: 'red',
     }));
     (['cafeteria', 'lavage'] as const).forEach(k => reports[k].supplierDebts.forEach(d => supplierDebtRows.push({
       id: `${k}-${d.id}`, label: `${reports[k].emoji} ${d.name}`, sub: d.ref, amount: d.rest, amountTone: 'red',
@@ -448,7 +465,7 @@ export default function GeneralReports() {
   const deletePurchase = (id: string) => {
     const purchase = (app.purchases || []).find((p: any) => p.id === id);
     if (!purchase) return;
-    const deltas = deleteFuelPurchase(purchase, app.treasuryTransactions || [], dispatch);
+    const deltas = deleteFuelPurchase(purchase, app, dispatch);
     const liters = litersOf(purchase);
     toast.success(deltas.length
       ? `Achat supprimé — ${liters.toLocaleString('fr-FR')} L retirés des cuves`
@@ -736,7 +753,13 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
       {/* KPI cards — chaque carte est cliquable et ouvre le détail de son calcul */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <OverviewCard icon={TrendingUp} tone="green" label="Ventes totales" value={money(g.salesTotal)} sub={`${g.counts.sales} opérations`} onClick={() => onOpenCard('salesTotal')} cta="Voir le détail" />
-        <OverviewCard icon={ShoppingCart} tone="purple" label="Achats totaux" value={money(g.purchasesTotal)} sub={`${g.counts.purchases} factures`} onClick={onOpenPurchases} cta="Détail par carburant" />
+        {/* Achats de la période : ce qui a été facturé, ce qui a été réglé, et ce
+            qui reste dû. La carte n'annonçait que le total facturé — impossible
+            d'y lire qu'une partie n'était pas payée. */}
+        <OverviewCard icon={ShoppingCart} tone="purple" label="Achats totaux" value={money(g.purchasesTotal)}
+          sub={`${g.counts.purchases} facture(s) · payé ${money(g.purchasesPaid)}`
+            + (g.purchasesDebt > 0 ? ` · dette ${money(g.purchasesDebt)}` : ' · soldées')}
+          onClick={onOpenPurchases} cta="Détail par carburant" />
         <OverviewCard icon={CreditCard} tone="red" label="Dépenses + salaires" value={money(chargesTotal)} onClick={() => onOpenCard('expenses')} cta="Voir le détail" />
         {/* Le coût des marchandises vendues : la part du prix de vente qui n'est
             pas un gain (les ingrédients, le prix d'achat). */}
@@ -750,7 +773,8 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
           sub={`${invs.reduce((s, p) => s + p.inventaires.filter(i => !!i.comparison).length, 0)} inventaire(s) comparé(s)`}
           onClick={() => onOpenCard('pertes')} cta="Voir le détail" />
         <OverviewCard icon={Users} tone="red" label="Dettes clients" value={money(g.clientDebtTotal)} onClick={() => onOpenCard('clientDebt')} cta="Voir le détail" />
-        <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)} onClick={() => onOpenCard('supplierDebt')} cta="Voir le détail" />
+        <OverviewCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(g.supplierDebtTotal)}
+          sub="Factures non soldées, toutes dates" onClick={() => onOpenCard('supplierDebt')} cta="Voir le détail" />
         <OverviewCard icon={AlertTriangle} tone="cyan" label="Alertes" value={`${g.stockAlerts + g.expiryAlerts}`} sub={`${g.stockAlerts} stock · ${g.expiryAlerts} exp.`} onClick={() => onOpenCard('alerts')} cta="Voir le détail" />
         {/* Ventes annulées : elles ne sont NI dans le CA NI dans les gains.
             La carte n'apparaît que s'il y en a eu sur la période. */}
@@ -970,7 +994,11 @@ function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClo
 
 // ─── Achats carburant — détail complet (drill-down du carte « Achats totaux ») ──
 const PURCHASE_STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
-  'Payé': 'success', 'Partiel': 'warning', 'À payer': 'danger', 'En attente livraison': 'neutral',
+  'Payé': 'success',
+  'Dette partielle': 'warning', 'Dette': 'danger',
+  // Libellés historiques des mêmes situations.
+  'Partiel': 'warning', 'À payer': 'danger',
+  'En attente livraison': 'neutral',
 };
 const PAY_MODE_TONE: Record<string, string> = {
   ESPECES: 'text-emerald-700 bg-emerald-50 border-emerald-200',

@@ -316,7 +316,13 @@ export interface Brigade {
   startIndices?: Record<string, number>;
   endIndices?: Record<string, number>;
   startTankLevels?: Record<string, { degrees: number; liters: number }>;
-  endTankLevels?: Record<string, { degrees: number; liters: number }>;
+  /**
+   * Niveau des cuves en fin de brigade. `measured` distingue la JAUGE relevée à
+   * la main — celle qui sert au calcul du décalage — du niveau simplement déduit
+   * du volume débité par les pistolets. Absent sur les brigades enregistrées
+   * avant l'ajout du drapeau : elles sont alors traitées comme un relevé.
+   */
+  endTankLevels?: Record<string, { degrees: number; liters: number; measured?: boolean }>;
   pompisteData?: Record<string, {
     litersSold: number;
     theoretical: number;
@@ -768,7 +774,13 @@ export interface Purchase {
   total: number;
   amountPaid: number;
   rest: number;
-  status: 'Payé' | 'Partiel' | 'À payer' | 'En attente livraison';
+  /**
+   * `Dette` / `Dette partielle` : la facture n'est pas soldée, le reste est dû
+   * au fournisseur et remonte dans les dettes fournisseurs (`lib/supplierDebt`).
+   * `Partiel` et `À payer` sont les libellés historiques des mêmes situations —
+   * conservés pour que les achats déjà enregistrés restent lisibles.
+   */
+  status: 'Payé' | 'Dette' | 'Dette partielle' | 'Partiel' | 'À payer' | 'En attente livraison';
   paymentMode?: 'ESPECES' | 'CHEQUE' | 'CREDIT' | 'VIREMENT';
   chequeNumber?: string;
   linkedDeliveryNoteId?: string;

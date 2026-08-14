@@ -101,6 +101,7 @@ export const FR_AR: Record<string, string> = {
   "Non Payé": "غير مدفوع",
   "Non payé": "غير مدفوع",
   "Partiel": "جزئي",
+  "Dette partielle": "دين جزئي",
   "À payer": "للدفع",
   "à Payer": "للدفع",
   "Dette": "دين",

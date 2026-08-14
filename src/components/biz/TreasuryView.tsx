@@ -66,7 +66,7 @@ function AccountCard({ a }: { a: TreasuryAccount; key?: React.Key }) {
         </div>
         <p className="text-[10px] uppercase font-bold text-blue-200 mt-3">Solde actuel</p>
         <p className="text-2xl font-black tabular-nums text-[#FFB800] leading-tight">{money(a.balance)}</p>
-        <p className="text-[11px] text-blue-200 mt-0.5">Ouverture {money(a.initialBalance)} • {a.movesCount} mouvement(s)</p>
+        <p className="text-[11px] text-blue-200 mt-0.5">Début de période {money(a.openingBalance)} • {a.movesCount} mouvement(s)</p>
       </div>
       <div className="p-3 space-y-2">
         <div className="grid grid-cols-3 gap-2">
@@ -149,6 +149,12 @@ export default function TreasuryView({ report: r }: { report: TreasuryReport }) 
           </div>
           <p className="text-4xl font-black tabular-nums mt-2 text-[#FFB800]">{money(r.caisseBalance)}</p>
           <p className="text-[11px] text-blue-200 mt-1">Espèces — dépôts, retraits et virements</p>
+          {/* Le solde est celui d'aujourd'hui ; la ligne ci-dessous rattache ce
+              chiffre à la période choisie, sinon rien ne bougeait à l'écran
+              quand on changeait les dates. */}
+          <p className="text-[11px] text-blue-200 mt-1 tabular-nums">
+            Début de période {money(r.caisseOpening)} · +{money(r.caisseIn)} · −{money(r.caisseOut)}
+          </p>
         </div>
         <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #065f46, #047857)' }}>
           <div className="flex items-center gap-2 text-emerald-100">
@@ -156,6 +162,9 @@ export default function TreasuryView({ report: r }: { report: TreasuryReport }) 
           </div>
           <p className="text-4xl font-black tabular-nums mt-2">{money(r.bankTotal)}</p>
           <p className="text-[11px] text-emerald-100 mt-1">{r.counts.accounts} compte(s) bancaire(s)</p>
+          <p className="text-[11px] text-emerald-100 mt-1 tabular-nums">
+            Début de période {money(r.bankOpening)} · +{money(r.bankIn)} · −{money(r.bankOut)}
+          </p>
         </div>
         <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #4c1d95, #6d28d9)' }}>
           <div className="flex items-center gap-2 text-violet-200">

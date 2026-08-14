@@ -63,6 +63,13 @@ export interface WCBlock {
   sign: 1 | -1;
   /** Précision affichée sous le détail du bloc. */
   note?: string;
+  /**
+   * Ce que la PÉRIODE choisie a fait bouger dans ce bloc — présent pour la
+   * trésorerie, où « ouverture + entrées − sorties = total » se vérifie à l'œil.
+   * Sans lui, la carte affichait un solde qui ne réagissait à aucune date, et
+   * rien ne disait que c'était voulu.
+   */
+  flow?: { opening: number; in: number; out: number };
 }
 
 /** Résumé d'une activité — la ligne du tableau « Détail par activité ». */
@@ -129,8 +136,10 @@ export interface WorkingCapitalReport {
 /** Seules les lignes retenues comptent — les lignes informatives sont hors total. */
 const sum = (rows: WCRow[]) => rows.reduce((s, r) => (r.informational ? s : s + r.amount), 0);
 
-const block = (key: string, label: string, hint: string, rows: WCRow[], sign: 1 | -1, note?: string): WCBlock =>
-  ({ key, label, hint, rows, total: sum(rows), sign, note });
+const block = (
+  key: string, label: string, hint: string, rows: WCRow[], sign: 1 | -1,
+  note?: string, flow?: WCBlock['flow'],
+): WCBlock => ({ key, label, hint, rows, total: sum(rows), sign, note, flow });
 
 /**
  * Assemble le fonds de roulement à partir des rapports déjà calculés — jamais à
@@ -156,7 +165,10 @@ export function computeWorkingCapital(
     {
       id: 'caisse-generale',
       label: 'Caisse générale',
-      sub: 'Solde du grand livre — dépôts, retraits et virements',
+      // Le solde seul ne disait pas d'où il venait ni ce que la période avait
+      // changé. On déroule le calcul : ouverture + entrées − sorties = solde.
+      sub: `Ouverture ${fmt(treasury.caisseOpening)} · +${fmt(treasury.caisseIn)} encaissés `
+        + `· −${fmt(treasury.caisseOut)} décaissés sur la période`,
       amount: treasury.caisseBalance,
       partKey: 'systeme',
       partLabel: 'Finance',
@@ -184,9 +196,13 @@ export function computeWorkingCapital(
     label: a.name,
     sub: [
       a.accountNumber ? `N° ${a.accountNumber}` : null,
-      `Ouverture ${fmt(a.initialBalance)}`,
-      `${a.movesCount} mouvement(s)`,
-      a.credit || a.debit ? `+${fmt(a.credit)} / −${fmt(a.debit)} sur la période` : null,
+      // Le solde du compte AU DÉBUT de la période, pas seulement son solde
+      // d'ouverture d'origine : c'est lui qui explique le solde actuel.
+      `Début de période ${fmt(a.openingBalance)}`,
+      a.credit || a.debit
+        ? `+${fmt(a.credit)} / −${fmt(a.debit)} sur la période`
+        : 'aucun mouvement sur la période',
+      `${a.movesCount} mouvement(s) au total`,
     ].filter(Boolean).join(' · '),
     amount: a.balance,
     partKey: 'systeme',
@@ -245,10 +261,16 @@ export function computeWorkingCapital(
   ).sort((a, b) => b.amount - a.amount);
 
   const cash = block('cash', 'Caisse générale', 'Argent liquide — solde du grand livre', cashRows, 1,
-    'Seule la caisse générale est comptée. Les caisses des activités, en dessous, sont la position reconstituée '
+    `Sur la période : ${fmt(treasury.caisseOpening)} au départ, +${fmt(treasury.caisseIn)} encaissés, `
+    + `−${fmt(treasury.caisseOut)} décaissés, soit ${fmt(treasury.caisseBalance)} aujourd'hui. `
+    + 'Seule la caisse générale est comptée. Les caisses des activités, en dessous, sont la position reconstituée '
     + 'sur leurs propres documents : elles expliquent d\'où vient l\'argent, mais les additionner compterait deux '
-    + 'fois les recettes déjà versées au grand livre.');
-  const banks = block('banks', 'Comptes bancaires', 'Solde d\'ouverture + tous les mouvements enregistrés', bankRows, 1);
+    + 'fois les recettes déjà versées au grand livre.',
+    { opening: treasury.caisseOpening, in: treasury.caisseIn, out: treasury.caisseOut });
+  const banks = block('banks', 'Comptes bancaires', 'Solde d\'ouverture + tous les mouvements enregistrés', bankRows, 1,
+    `Sur la période : ${fmt(treasury.bankOpening)} au départ, +${fmt(treasury.bankIn)} reçus, `
+    + `−${fmt(treasury.bankOut)} sortis, soit ${fmt(treasury.bankTotal)} aujourd'hui sur ${treasury.accounts.length} compte(s).`,
+    { opening: treasury.bankOpening, in: treasury.bankIn, out: treasury.bankOut });
   const receivables = block('receivables', 'Créances clients', 'Ventes à crédit non encore encaissées', receivableRows, 1);
   const stockBlock = block('stock', 'Stock (carburant & marchandise)',
     'Litres en cuve et marchandise du catalogue, au prix d\'achat', stockRows, 1,
@@ -322,7 +344,9 @@ export function filterWorkingCapital(
   const keep = (rows: WCRow[]) => rows.filter(r => (r.partKey || 'systeme') === partKey);
   const rebuild = (b: WCBlock): WCBlock => {
     const rows = keep(b.rows);
-    return { ...b, rows, total: sum(rows) };
+    // Les flux de période décrivent les lignes du bloc : un bloc vidé par le
+    // filtre ne doit pas continuer à afficher les mouvements des lignes exclues.
+    return { ...b, rows, total: sum(rows), flow: rows.length ? b.flow : undefined };
   };
 
   const cash = rebuild(report.cash);

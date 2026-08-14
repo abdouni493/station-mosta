@@ -51,6 +51,12 @@ export interface TreasuryMovement {
 export interface TreasuryAccount {
   id: string; name: string; accountNumber?: string; notes?: string;
   initialBalance: number; balance: number;
+  /**
+   * Solde du compte la VEILLE du début de période — le point de départ dont
+   * `credit` et `debit` expliquent l'écart avec `balance`. Sans lui, la carte
+   * affichait un solde que rien à l'écran ne rattachait à la période choisie.
+   */
+  openingBalance: number;
   credit: number; debit: number; movesCount: number;
   /** Movements of this account over the period. */
   moves: { id: string; date: string; nature: string; label: string; counterpart: string; amount: number; reference?: string }[];
@@ -67,6 +73,14 @@ export interface TreasuryReport {
   caisseBalance: number;
   bankTotal: number;
   grandTotal: number;
+  /** Caisse générale à l'ouverture de la période, et ses flux sur la période. */
+  caisseOpening: number;
+  caisseIn: number;
+  caisseOut: number;
+  /** Total des comptes bancaires à l'ouverture de la période, et leurs flux. */
+  bankOpening: number;
+  bankIn: number;
+  bankOut: number;
   accounts: TreasuryAccount[];
   partBalances: TreasuryPartBalance[];
   movements: TreasuryMovement[];
@@ -99,7 +113,18 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   const accountings: any[] = app.brigadeAccountings || [];
 
   // ── Balances (always the whole history — a solde is not a period figure) ──
+  // Le solde reste le solde RÉEL, toutes dates confondues : ce qu'il y a dans la
+  // caisse aujourd'hui ne dépend pas de la fenêtre regardée. Ce qui manquait,
+  // c'est le lien avec la période — d'où l'ouverture et les flux ci-dessous, qui
+  // rendent l'écart lisible : ouverture + entrées − sorties = solde.
   const caisseBalance = ledgerNetFor(CAISSE_ID, txs);
+  /** Mouvements ANTÉRIEURS au début de la période (rien si aucune borne). */
+  const beforeFrom = (t: any) => !!from && new Date(t.date).getTime() < new Date(from).getTime();
+  const txsBefore = txs.filter(beforeFrom);
+  const txsInRange = txs.filter(t => within(t.date, from, to));
+  const caisseOpening = ledgerNetFor(CAISSE_ID, txsBefore);
+  const caisseIn = txsInRange.filter(t => t.accountTo === CAISSE_ID).reduce((s, t) => s + num(t.amount), 0);
+  const caisseOut = txsInRange.filter(t => t.accountFrom === CAISSE_ID).reduce((s, t) => s + num(t.amount), 0);
   const accName = (id?: string) => {
     if (!id) return 'Externe';
     if (id === CAISSE_ID) return 'Caisse générale';
@@ -113,6 +138,7 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
       id: a.id, name: a.name, accountNumber: a.accountNumber, notes: a.notes,
       initialBalance: num(a.initialBalance),
       balance: num(a.initialBalance) + ledgerNetFor(a.id, txs),
+      openingBalance: num(a.initialBalance) + ledgerNetFor(a.id, all.filter(beforeFrom)),
       credit: inRange.filter(t => t.accountTo === a.id).reduce((s, t) => s + num(t.amount), 0),
       debit: inRange.filter(t => t.accountFrom === a.id).reduce((s, t) => s + num(t.amount), 0),
       movesCount: all.length,
@@ -132,6 +158,9 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     };
   });
   const bankTotal = accounts.reduce((s, a) => s + a.balance, 0);
+  const bankOpening = accounts.reduce((s, a) => s + a.openingBalance, 0);
+  const bankIn = accounts.reduce((s, a) => s + a.credit, 0);
+  const bankOut = accounts.reduce((s, a) => s + a.debit, 0);
 
   // ── Consolidated journal ───────────────────────────────────────────────────
   const all: TreasuryMovement[] = [];
@@ -277,6 +306,8 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   return {
     from, to,
     caisseBalance, bankTotal, grandTotal: caisseBalance + bankTotal,
+    caisseOpening, caisseIn, caisseOut,
+    bankOpening, bankIn, bankOut,
     accounts, partBalances, movements,
     inflow, outflow, net: inflow - outflow,
     byNature, byPart,

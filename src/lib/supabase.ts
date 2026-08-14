@@ -760,16 +760,33 @@ export async function saveBizStore(
 }
 
 // ─── Generic DB helpers (real Supabase queries) ─────────────────────────────────
+//
+// ⚠ Ces quatre fonctions LÈVENT sur erreur — elles ne doivent JAMAIS l'avaler.
+// Elles se contentaient d'un `console.warn` : une écriture refusée (colonne
+// absente, contrainte, RLS, réseau) rendait alors la main comme si tout s'était
+// bien passé. `syncedDispatch` n'ayant rien à rattraper, l'écran gardait la
+// modification optimiste et la base, elle, n'avait rien reçu — d'où des données
+// « qui expirent » au rechargement suivant. En levant, l'erreur remonte à
+// `syncedDispatch`, qui affiche un message ET recharge la table concernée : ce
+// qui est à l'écran redevient ce qui est réellement enregistré.
+
+/** Erreur d'écriture Supabase, avec la table et le détail Postgres. */
+export class DbWriteError extends Error {
+  constructor(op: string, table: string, err: { message: string; details?: string | null; hint?: string | null; code?: string | null }) {
+    super(`[${op} ${table}] ${err.message}${err.details ? ` — ${err.details}` : ''}${err.hint ? ` (${err.hint})` : ''}`);
+    this.name = 'DbWriteError';
+  }
+}
 
 export async function dbInsert<T extends object>(tableName: string, row: T): Promise<T> {
   const { error } = await supabase.from(tableName).insert(row as any);
-  if (error) console.warn(`[dbInsert:${tableName}]`, error.message);
+  if (error) { console.error(`[dbInsert:${tableName}]`, error); throw new DbWriteError('insert', tableName, error); }
   return row;
 }
 
 export async function dbUpsert<T extends object>(tableName: string, row: T): Promise<T> {
   const { error } = await supabase.from(tableName).upsert(row as any);
-  if (error) console.warn(`[dbUpsert:${tableName}]`, error.message);
+  if (error) { console.error(`[dbUpsert:${tableName}]`, error); throw new DbWriteError('upsert', tableName, error); }
   return row;
 }
 
@@ -779,26 +796,44 @@ export async function dbUpdate<T extends object>(
   changes: Partial<T>
 ): Promise<Partial<T>> {
   const { error } = await supabase.from(tableName).update(changes as any).eq('id', id);
-  if (error) console.warn(`[dbUpdate:${tableName}]`, error.message);
+  if (error) { console.error(`[dbUpdate:${tableName}]`, error); throw new DbWriteError('update', tableName, error); }
   return changes;
 }
 
 export async function dbDelete(tableName: string, id: string) {
   const { error } = await supabase.from(tableName).delete().eq('id', id);
-  if (error) console.warn(`[dbDelete:${tableName}]`, error.message);
+  if (error) { console.error(`[dbDelete:${tableName}]`, error); throw new DbWriteError('delete', tableName, error); }
 }
 
+/**
+ * Lecture d'une table. Une lecture qui échoue LÈVE au lieu de rendre une liste
+ * vide : renvoyer `[]` faisait passer une panne réseau ou une règle RLS pour
+ * « il n'y a rien », l'écran se vidait, et l'utilisateur croyait ses données
+ * perdues. Un aller-retour de secours est tenté avant d'abandonner, pour qu'une
+ * coupure d'une seconde ne fasse pas remonter d'erreur inutilement.
+ */
 export async function dbSelect<T>(
   tableName: string,
   query?: Record<string, unknown>,
   limit?: number
 ): Promise<T[]> {
-  let q = supabase.from(tableName).select('*');
-  if (query) {
-    for (const [k, v] of Object.entries(query)) q = q.eq(k, v as any);
+  const run = async () => {
+    let q = supabase.from(tableName).select('*');
+    if (query) {
+      for (const [k, v] of Object.entries(query)) q = q.eq(k, v as any);
+    }
+    return q;
+  };
+  let { data, error } = await run();
+  if (error) {
+    console.warn(`[dbSelect:${tableName}] échec, nouvelle tentative —`, error.message);
+    await new Promise(r => setTimeout(r, 400));
+    ({ data, error } = await run());
   }
-  const { data, error } = await q;
-  if (error) { console.warn(`[dbSelect:${tableName}]`, error.message); return []; }
+  if (error) {
+    console.error(`[dbSelect:${tableName}]`, error);
+    throw new Error(`[select ${tableName}] ${error.message}`);
+  }
 
   // Sort newest-first by created_at when the column exists (matches prior behaviour).
   let rows = (data as any[]) || [];

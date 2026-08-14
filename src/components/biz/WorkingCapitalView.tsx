@@ -48,6 +48,17 @@ function StepCard({ block, onOpen }: { block: WCBlock; onOpen: () => void }) {
         <span className="text-[11px] font-bold uppercase tracking-wide">{block.label}</span>
       </div>
       <p className="text-2xl font-black tabular-nums mt-1.5">{negative ? '−' : ''}{money(block.total)}</p>
+      {/* Trésorerie : ce que la PÉRIODE a fait bouger, sous le solde. La carte
+          n'affichait qu'un total qui ne réagissait à aucune date choisie. */}
+      {block.flow && (
+        <p className="text-[11px] opacity-90 mt-1 tabular-nums">
+          Début de période {money(block.flow.opening)}
+          <span className="opacity-70"> · </span>
+          <span className="font-bold">+{money(block.flow.in)}</span>
+          <span className="opacity-70"> · </span>
+          <span className="font-bold">−{money(block.flow.out)}</span>
+        </p>
+      )}
       <p className="text-[11px] opacity-75 mt-0.5">
         {block.rows.filter(r => !r.informational).length} ligne(s) comptée(s) — voir le détail →
       </p>
@@ -100,7 +111,8 @@ function AccountCard({ account: a }: { account: TreasuryAccount; key?: React.Key
         <div className="min-w-0 flex-1">
           <p className="font-black text-slate-800 text-sm truncate">{a.name}</p>
           <p className="text-[11px] text-slate-400">
-            {a.accountNumber ? `N° ${a.accountNumber} · ` : ''}Ouverture {money(a.initialBalance)} · {a.movesCount} mouvement(s)
+            {a.accountNumber ? `N° ${a.accountNumber} · ` : ''}
+            Début de période {money(a.openingBalance)} · {a.movesCount} mouvement(s)
           </p>
         </div>
         <div className="text-right shrink-0">
@@ -122,8 +134,9 @@ function AccountCard({ account: a }: { account: TreasuryAccount; key?: React.Key
               <p className="font-black tabular-nums text-red-600 text-sm">−{money(a.debit)}</p>
             </div>
             <div className="rounded-xl bg-white p-2.5 border border-slate-100">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Solde d'ouverture</p>
-              <p className="font-black tabular-nums text-slate-600 text-sm">{money(a.initialBalance)}</p>
+              <p className="text-[10px] uppercase font-bold text-slate-400">Début de période</p>
+              <p className="font-black tabular-nums text-slate-600 text-sm">{money(a.openingBalance)}</p>
+              <p className="text-[10px] text-slate-400">Ouverture du compte {money(a.initialBalance)}</p>
             </div>
           </div>
           {a.moves.length === 0 ? (
