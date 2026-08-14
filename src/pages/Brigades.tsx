@@ -42,6 +42,7 @@ import { cn, newId } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
+import { toNum } from "../lib/brigadeCalc";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Skeleton from "../components/Skeleton";
@@ -235,9 +236,19 @@ const Brigades = () => {
   // an existing brigade, it must be that brigade's own recorded start references
   // (the live values already reflect this brigade's end), so the comparison &
   // sales recompute correctly.
-  const startTankLiters = (t: Tank) => editingBrigade ? (editingBrigade.startTankLevels?.[t.id]?.liters ?? t.current) : t.current;
-  const startTankDegrees = (t: Tank) => editingBrigade ? (editingBrigade.startTankLevels?.[t.id]?.degrees ?? t.degrees) : t.degrees;
-  const startNozzleIdx = (n: { id: string; lastIndex: number }) => editingBrigade ? (editingBrigade.startNozzleIndices?.[n.id] ?? n.lastIndex) : n.lastIndex;
+  const startTankLiters = (t: Tank) => toNum(editingBrigade ? (editingBrigade.startTankLevels?.[t.id]?.liters ?? t.current) : t.current);
+  const startTankDegrees = (t: Tank) => toNum(editingBrigade ? (editingBrigade.startTankLevels?.[t.id]?.degrees ?? t.degrees) : t.degrees);
+  const startNozzleIdx = (n: { id: string; lastIndex: number }) => toNum(editingBrigade ? (editingBrigade.startNozzleIndices?.[n.id] ?? n.lastIndex) : n.lastIndex);
+  /**
+   * Index de fin d'un pistolet tel que saisi. `parseFloat` rend `NaN` sur une
+   * frappe incomplète ("12,"), et `NaN` traverse `??` sans être arrêté : il
+   * contaminait alors les litres, le théorique et jusqu'à l'écart de caisse.
+   * Toute lecture de la saisie passe par ici.
+   */
+  const endNozzleIdx = (n: { id: string; lastIndex: number }) => {
+    const typed = wizEndNozzleIndices[n.id];
+    return Number.isFinite(typed) ? (typed as number) : startNozzleIdx(n);
+  };
 
   // ─── Wizard derived data ──────────────────────────────────────────────────
   // Brigade pompiste assignments built from the current wizard selections.
@@ -276,6 +287,9 @@ const Brigades = () => {
     if (end === undefined || end === null) return false;
     const noz = pumpNozzles.find(n => n.id === nozzleId);
     if (!noz) return false;
+    // Une saisie illisible ("12,") rend NaN : la signaler, plutôt que la laisser
+    // filer dans les totaux, où elle efface tout ce qu'elle touche.
+    if (!Number.isFinite(end)) return true;
     return end < startNozzleIdx(noz) - 0.001;
   };
   const hasStep5Errors = useMemo(() => {
@@ -305,7 +319,9 @@ const Brigades = () => {
       const cuveDecalage = startLiters - endLiters; // liters that left the tank per cuve measurement
       // A pistolet belongs to a cuve directly (the pompe no longer carries one).
       const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === tank.id);
-      const nozzleDecalage = tankNozzles.reduce((s, n) => s + ((wizEndNozzleIndices[n.id] ?? startNozzleIdx(n)) - startNozzleIdx(n)), 0);
+      // Litres débités : comme partout ailleurs, une saisie inversée compte pour
+      // zéro — un pistolet ne remplit pas la cuve.
+      const nozzleDecalage = tankNozzles.reduce((s, n) => s + Math.max(0, endNozzleIdx(n) - startNozzleIdx(n)), 0);
       const difference = hasCuveReading ? nozzleDecalage - cuveDecalage : 0;
       const price = settings.fuelPrices[tank.type] || 0;
       const amount = Math.abs(difference) * price;
@@ -337,7 +353,7 @@ const Brigades = () => {
     const tankThroughput: Record<string, number> = {};
     tanks.forEach(tank => {
       const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === tank.id);
-      tankThroughput[tank.id] = tankNozzles.reduce((s, n) => s + Math.max(0, (wizEndNozzleIndices[n.id] ?? startNozzleIdx(n)) - startNozzleIdx(n)), 0);
+      tankThroughput[tank.id] = tankNozzles.reduce((s, n) => s + Math.max(0, endNozzleIdx(n) - startNozzleIdx(n)), 0);
     });
     return presentAssignments.map(a => {
       const myPumpIds = pumpsOf(a.pompisteId);
@@ -352,7 +368,7 @@ const Brigades = () => {
         const tankId = nozzleTankId(n, pumps);
         const fuel = (tanks.find(t => t.id === tankId)?.type || 'DIESEL') as Tank['type'];
         const price = settings.fuelPrices[fuel] || 0;
-        let nLiters = Math.max(0, (wizEndNozzleIndices[n.id] ?? startNozzleIdx(n)) - startNozzleIdx(n));
+        let nLiters = Math.max(0, endNozzleIdx(n) - startNozzleIdx(n));
         // subtract proportional retour-cuve share for this nozzle's tank
         if (tankId && retourCuveByTank[tankId] && tankThroughput[tankId] > 0) {
           nLiters -= retourCuveByTank[tankId] * (nLiters / tankThroughput[tankId]);
@@ -419,7 +435,7 @@ const Brigades = () => {
 
       // 8-9. end references
       const endNozzleIndices: Record<string, number> = {};
-      pumpNozzles.forEach(n => { endNozzleIndices[n.id] = wizEndNozzleIndices[n.id] ?? startNozzleIdx(n); });
+      pumpNozzles.forEach(n => { endNozzleIndices[n.id] = endNozzleIdx(n); });
 
       // Litres réellement débités par les pistolets, cuve par cuve — c'est LA
       // seule chose qu'une brigade retire du stock.
@@ -569,17 +585,23 @@ const Brigades = () => {
         tankSummary: tanks.map(t => {
           const startL = startTankLevels[t.id]?.liters || 0;
           const endL = endTankLevelsObj[t.id]?.liters || 0;
-          const tankPumps = pumps.filter(p => p.tankId === t.id);
-          const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && tankPumps.some(p => p.id === n.pumpId));
-          const nozzleDiff = tankNozzles.reduce((s, n) => s + Math.max(0, (endNozzleIndices[n.id] || 0) - (startNozzleIndices[n.id] || 0)), 0);
+          // Un pistolet appartient à SA cuve. Passer par `pump.tankId` — qui n'est
+          // qu'un miroir du PREMIER pistolet de la pompe — rattachait à la mauvaise
+          // cuve tous les pistolets d'une pompe qui en sert plusieurs.
+          const tankNozzles = pumpNozzles.filter(n => n.status === 'Actif' && nozzleTankId(n, pumps) === t.id);
+          const nozzleDiff = tankNozzles.reduce((s, n) => s + Math.max(0, toNum(endNozzleIndices[n.id]) - toNum(startNozzleIndices[n.id])), 0);
+          // Sans jauge de fin relevée, il n'y a rien à comparer : l'écart vaut 0.
+          const measured = endTankLevelsObj[t.id]?.measured !== false;
           const cuveDiff = startL - endL;
-          const ecart = nozzleDiff - cuveDiff;
+          const ecart = measured ? nozzleDiff - cuveDiff : 0;
           const price = settings.fuelPrices[t.type] || 0;
           return {
             tankId: t.id,
             name: t.name,
+            fuelType: t.type,
             start: startTankLevels[t.id],
             end: endTankLevelsObj[t.id],
+            measured,
             diff: cuveDiff,
             nozzleDiff,
             ecart,
@@ -588,17 +610,27 @@ const Brigades = () => {
         }),
         nozzleSummary: pumpNozzles.filter(n => n.status === 'Actif').map(n => {
           const pump = pumps.find(p => p.id === n.pumpId);
-          const startIdx = startNozzleIndices[n.id] || 0;
-          const endIdx = endNozzleIndices[n.id] || startIdx;
+          // Le prix suit le carburant de la cuve DU PISTOLET, jamais celui de la
+          // pompe : deux pistolets d'une même pompe peuvent servir deux carburants.
+          const tank = tanks.find(t => t.id === nozzleTankId(n, pumps));
+          const startIdx = toNum(startNozzleIndices[n.id]);
+          const endIdx = toNum(endNozzleIndices[n.id], startIdx);
           const liters = Math.max(0, endIdx - startIdx);
-          const price = settings.fuelPrices[pump?.type || 'DIESEL'] || 0;
+          const price = tank ? (settings.fuelPrices[tank.type] || 0) : 0;
           return {
             nozzleId: n.id,
+            nozzleName: n.name,
+            pumpId: pump?.id,
+            pumpName: pump?.name,
+            tankId: tank?.id,
+            tankName: tank?.name,
+            fuelType: tank?.type,
             start: startIdx,
             end: endIdx,
             startIdx,
             endIdx,
             liters,
+            price,
             revenue: liters * price,
           };
         }),
@@ -709,10 +741,14 @@ const Brigades = () => {
         pumpNozzles, pumps);
       if (tankDeltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: tankDeltas });
 
-      // 12. Update each nozzle lastIndex to end value
+      // 12. L'index de fin devient le dernier index du pistolet : c'est lui qui
+      //     servira d'index de DÉBUT à la brigade suivante. Une valeur non
+      //     numérique ne doit jamais y arriver, sans quoi la brigade suivante
+      //     partirait d'un index invalide et sa différence serait fausse.
       pumpNozzles.forEach(n => {
-        if (wizEndNozzleIndices[n.id] !== undefined && wizEndNozzleIndices[n.id] !== n.lastIndex) {
-          dispatch({ type: 'UPDATE_NOZZLE', payload: { ...n, lastIndex: wizEndNozzleIndices[n.id] } });
+        const end = endNozzleIndices[n.id];
+        if (Number.isFinite(end) && end !== n.lastIndex) {
+          dispatch({ type: 'UPDATE_NOZZLE', payload: { ...n, lastIndex: end } });
         }
       });
 

@@ -9,6 +9,9 @@ import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, StationSettings,
   Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType
 } from "../store/AppContext";
+import {
+  brigadeActiveNozzles, brigadeNozzleRows, brigadeTankRows, brigadePompisteGroups, justifiedByPompiste,
+} from "../lib/brigadeCalc";
 
 interface Justification {
   id: string;
@@ -117,69 +120,85 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Client "${newClientForm.name}" créé et sélectionné` } });
   };
 
-  // ── Derived: active nozzles ──────────────────────────────────────────────────
-  const activeNozzles = useMemo(() => {
-    if (brigade.activeNozzleIds && brigade.activeNozzleIds.length > 0)
-      return pumpNozzles.filter(n => brigade.activeNozzleIds!.includes(n.id));
-    const brigadeTrackIds = (brigade.pompisteAssignments || []).filter(a => a.present).map(a => a.trackId);
-    const displayPumps = brigadeTrackIds.length > 0 ? pumps.filter(p => brigadeTrackIds.includes(p.trackId)) : pumps;
-    return pumpNozzles.filter(n => displayPumps.some(p => p.id === n.pumpId));
-  }, [brigade, pumps, pumpNozzles]);
+  // ── Calcul partagé (`lib/brigadeCalc`) ───────────────────────────────────────
+  // Chaque pistolet est valorisé au carburant de SA cuve, et le regroupement se
+  // fait par pompiste : les pistes n'existent plus, et s'y fier vidait à la fois
+  // le détail par pistolet et la répartition des décalages.
+  const calcCtx = useMemo(
+    () => ({ pumps, tanks, pumpNozzles, pompistes, settings }),
+    [pumps, tanks, pumpNozzles, pompistes, settings]);
 
-  // ── Per-nozzle computed data (respects corrections) ─────────────────────────
-  const nozzleData = useMemo(() => activeNozzles.map(nozzle => {
-    const pump = pumps.find(p => p.id === nozzle.pumpId);
-    const tank = tanks.find(t => t.id === pump?.tankId);
-    const startIdx = brigade.startNozzleIndices?.[nozzle.id] ?? (brigade.startIndices?.[nozzle.pumpId] || 0);
-    const ver = nozzleVer[nozzle.id];
-    const endIdx = ver?.corrected && ver.correctedValue !== undefined
-      ? ver.correctedValue
-      : brigade.endNozzleIndices?.[nozzle.id] ?? (brigade.endIndices?.[nozzle.pumpId] || startIdx);
-    const liters = Math.max(0, endIdx - startIdx);
-    const price = settings.fuelPrices[pump?.type || 'SUPER'] || 0;
-    return { nozzle, pump, tank, startIdx, endIdx, liters, price, revenue: liters * price };
-  }), [activeNozzles, brigade, pumps, tanks, settings, nozzleVer]);
+  const activeNozzles = useMemo(
+    () => brigadeActiveNozzles(brigade, calcCtx), [brigade, calcCtx]);
 
-  // ── Tank comparison (respects corrections) ───────────────────────────────────
-  const tankComparison = useMemo(() => tanks
-    .filter(t => brigade.startTankLevels?.[t.id] !== undefined)
-    .map(t => {
-      const startL = brigade.startTankLevels![t.id]?.liters || 0;
-      const ver = cuveVer[t.id];
-      const endL = ver?.corrected && ver.correctedValue !== undefined
-        ? ver.correctedValue
-        : brigade.endTankLevels?.[t.id]?.liters || 0;
-      const diff = startL - endL;
-      const nozzlesOnTank = nozzleData.filter(d => d.tank?.id === t.id);
-      const nozzleTotal = nozzlesOnTank.reduce((s, d) => s + d.liters, 0);
-      const ecart = diff - nozzleTotal;
-      const price = settings.fuelPrices[t.type] || 0;
-      return { tank: t, startL, endL, diff, nozzleTotal, ecart, ecartMoney: ecart * price };
-    }), [tanks, brigade, nozzleData, settings, cuveVer]);
+  // Les corrections d'index saisies ici rejouent le MÊME calcul, sans en écrire
+  // une seconde version qui finirait par diverger.
+  const endOverrides = useMemo(() => {
+    const o: Record<string, number | undefined> = {};
+    (Object.entries(nozzleVer) as [string, VerEntry][]).forEach(([nozzleId, ver]) => {
+      if (ver?.corrected && ver.correctedValue !== undefined) o[nozzleId] = ver.correctedValue;
+    });
+    return o;
+  }, [nozzleVer]);
 
-  // ── Décalage per-pompiste ────────────────────────────────────────────────────
+  const nozzleData = useMemo(
+    () => brigadeNozzleRows(brigade, calcCtx, endOverrides).map(r => ({ ...r, revenue: r.amount })),
+    [brigade, calcCtx, endOverrides]);
+
+  // ── Comparaison cuves (les corrections de jauge sont prises en compte) ───────
+  const tankComparison = useMemo(() => {
+    const base = brigadeTankRows(brigade, calcCtx, nozzleData);
+    return base.map(row => {
+      const ver = cuveVer[row.tank.id];
+      if (!ver?.corrected || ver.correctedValue === undefined) {
+        return { ...row, nozzleTotal: row.nozzleDiff, ecart: row.difference, ecartMoney: row.amount };
+      }
+      // Jauge corrigée : le niveau de fin est celui saisi ici, et il vaut relevé.
+      const endL = ver.correctedValue;
+      const cuveDiff = row.startL - endL;
+      const difference = row.nozzleDiff - cuveDiff;
+      const price = settings.fuelPrices[row.tank.type] || 0;
+      return {
+        ...row, endL, measured: true, cuveDiff, difference,
+        nozzleTotal: row.nozzleDiff,
+        ecart: difference,
+        amount: Math.abs(difference) * price,
+        ecartMoney: Math.abs(difference) * price,
+      };
+    });
+  }, [brigade, calcCtx, nozzleData, cuveVer, settings]);
+
+  // ── Regroupement par pompiste ────────────────────────────────────────────────
+  const justifTotals = useMemo(() => justifiedByPompiste(
+    justifications.map(j => ({ pompisteId: (j as any).pompisteId, amount: j.amount }))), [justifications]);
+  const pompisteGroups = useMemo(
+    () => brigadePompisteGroups(brigade, calcCtx, nozzleData, justifTotals),
+    [brigade, calcCtx, nozzleData, justifTotals]);
+
+  // ── Décalage par pompiste ────────────────────────────────────────────────────
+  // L'écart d'une cuve se répartit entre les pompistes AU PRORATA des litres que
+  // chacun a débités sur cette cuve : sans cela, un pompiste absorbait la
+  // totalité d'un écart produit par plusieurs.
   type DecalageEntry = { pompiste: Pompiste | undefined; track: Track | undefined; liters: number; money: number };
   const decalageByPompiste = useMemo((): Record<string, DecalageEntry> => {
     const result: Record<string, DecalageEntry> = {};
-    tankComparison.forEach(({ tank, ecart }) => {
-      if (Math.abs(ecart) < 0.01) return;
-      const money = ecart * (settings.fuelPrices[tank.type] || 0);
-      // find pompiste(s) on pumps connected to this tank
-      const tanksNozzles = nozzleData.filter(d => d.tank?.id === tank.id);
-      const trackIds = [...new Set(tanksNozzles.map(d => d.pump?.trackId).filter(Boolean) as string[])];
-      trackIds.forEach(trackId => {
-        const assignment = (brigade.pompisteAssignments || []).find(a => a.trackId === trackId && a.present);
-        const pid = assignment?.pompisteId;
-        if (!pid) return;
-        const pompiste = pompistes.find(p => p.id === pid);
-        const track = tracks.find(t => t.id === trackId);
-        if (!result[pid]) result[pid] = { pompiste, track, liters: 0, money: 0 };
-        result[pid].liters += ecart;
-        result[pid].money += money;
+    tankComparison.forEach(({ tank, ecart, measured }) => {
+      if (!measured || Math.abs(ecart) < 0.01) return;
+      const price = settings.fuelPrices[tank.type] || 0;
+      const shares = pompisteGroups
+        .map(g => ({ g, liters: g.nozzles.filter(r => r.tank?.id === tank.id).reduce((s, r) => s + r.liters, 0) }))
+        .filter(x => x.liters > 0);
+      const totalOnTank = shares.reduce((s, x) => s + x.liters, 0);
+      if (totalOnTank <= 0) return;
+      shares.forEach(({ g, liters }) => {
+        const part = ecart * (liters / totalOnTank);
+        if (!result[g.pompisteId]) result[g.pompisteId] = { pompiste: g.pompiste, track: undefined, liters: 0, money: 0 };
+        result[g.pompisteId].liters += part;
+        result[g.pompisteId].money += part * price;
       });
     });
     return result;
-  }, [tankComparison, nozzleData, brigade, pompistes, tracks, settings]);
+  }, [tankComparison, pompisteGroups, settings]);
 
   const totalRevenue = nozzleData.reduce((s, d) => s + d.revenue, 0);
   const justifiedTotal = justifications.reduce((s, j) => s + j.amount, 0);
@@ -624,32 +643,28 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                   <p className="text-[11px] text-blue-300 mt-2">{nozzleData.reduce((s, d) => s + d.liters, 0).toFixed(2)} L vendus</p>
                 </div>
 
-                {/* ─── Detailed breakdown: Piste → Pompes → Pistolets ─── */}
+                {/* ─── Detailed breakdown: Pompiste → Pompes → Pistolets ─── */}
                 <div className="space-y-3">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Détail par Piste / Pompe / Pistolet</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Détail par Pompiste / Pompe / Pistolet</p>
 
-                  {(brigade.pompisteAssignments || []).filter(a => a.present).map(assignment => {
-                    const pompiste = pompistes.find(p => p.id === assignment.pompisteId);
-                    const track = tracks.find(t => t.id === assignment.trackId);
-                    const trackPumps = pumps.filter(p => p.trackId === assignment.trackId);
-                    const pompisteTotalLiters = trackPumps.flatMap(pump =>
-                      nozzleData.filter(d => d.pump?.id === pump.id)
-                    ).reduce((s, d) => s + d.liters, 0);
-                    const pompisteRevenue = trackPumps.flatMap(pump =>
-                      nozzleData.filter(d => d.pump?.id === pump.id)
-                    ).reduce((s, d) => s + d.revenue, 0);
-                    const decalage = decalageByPompiste[assignment.pompisteId];
+                  {pompisteGroups.filter(g => g.present || g.totalLiters > 0).map(group => {
+                    const pompiste = group.pompiste;
+                    const pompisteTotalLiters = group.totalLiters;
+                    const pompisteRevenue = group.totalAmount;
+                    const decalage = decalageByPompiste[group.pompisteId];
 
                     return (
-                      <div key={assignment.pompisteId} className="rounded-2xl border-2 border-blue-200 overflow-hidden">
-                        {/* Piste Header / Pompiste summary */}
-                        <div className="px-5 py-3 bg-gradient-to-r from-blue-900 to-blue-800 flex items-center gap-3">
+                      <div key={group.pompisteId} className={cn("rounded-2xl border-2 overflow-hidden", group.unassigned ? "border-amber-300" : "border-blue-200")}>
+                        {/* Pompiste summary */}
+                        <div className={cn("px-5 py-3 flex items-center gap-3", group.unassigned ? "bg-gradient-to-r from-amber-700 to-amber-600" : "bg-gradient-to-r from-blue-900 to-blue-800")}>
                           <div className="w-9 h-9 bg-yellow-400 text-blue-900 rounded-xl flex items-center justify-center font-black text-sm shrink-0">
-                            {pompiste?.name[0] || '?'}
+                            {group.name[0] || '?'}
                           </div>
                           <div className="flex-1">
-                            <p className="font-black text-white text-sm">{pompiste?.name || '—'}</p>
-                            <p className="text-[10px] text-blue-300">{track?.name || '—'}</p>
+                            <p className="font-black text-white text-sm">{group.name}</p>
+                            <p className="text-[10px] text-blue-300">
+                              {group.pumps.map(p => p.pump?.name || p.pump?.number || '—').join(', ') || 'aucune pompe'}
+                            </p>
                           </div>
                           <div className="text-right">
                             <p className="font-black text-yellow-400 text-lg">{pompisteRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</p>
@@ -657,20 +672,37 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                           </div>
                         </div>
 
+                        {/* Ventilation par carburant — un pompiste sert souvent
+                            plusieurs carburants, chacun à son propre prix. */}
+                        {group.byFuel.length > 0 && (
+                          <div className="px-4 py-2 bg-blue-50/60 border-b border-blue-100 flex flex-wrap gap-2">
+                            {group.byFuel.map(f => (
+                              <span key={f.fuelType} className={cn("px-2.5 py-1 rounded-lg text-[10px] font-black border",
+                                f.fuelType === 'INCONNU' ? "bg-red-50 border-red-200 text-red-700" : "bg-white border-blue-200 text-blue-900")}>
+                                {f.fuelType === 'INCONNU' ? 'CUVE NON DÉFINIE' : f.fuelType}
+                                <span className="font-bold text-slate-500"> · {f.liters.toFixed(2)} L × {f.price.toFixed(2)} = </span>
+                                <span className="text-green-700">{f.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         {/* Per-Pompe breakdown */}
                         <div className="p-4 space-y-3 bg-slate-50">
-                          {trackPumps.map(pump => {
-                            const pumpNozzles = nozzleData.filter(d => d.pump?.id === pump.id);
-                            const pumpLiters = pumpNozzles.reduce((s, d) => s + d.liters, 0);
-                            const pumpRevenue = pumpNozzles.reduce((s, d) => s + d.revenue, 0);
+                          {group.pumps.map(({ pump, nozzles: pumpNozzles, totalLiters: pumpLiters, totalAmount: pumpRevenue, byFuel: pumpFuels }) => {
                             if (pumpNozzles.length === 0) return null;
                             return (
-                              <div key={pump.id} className="rounded-xl bg-white border border-slate-200 overflow-hidden">
+                              <div key={pump?.id || 'sans-pompe'} className="rounded-xl bg-white border border-slate-200 overflow-hidden">
                                 {/* Pump header */}
                                 <div className="px-4 py-2 bg-slate-100 flex items-center justify-between border-b border-slate-200">
                                   <div className="flex items-center gap-2">
-                                    <span className="text-[10px] font-black text-slate-500 uppercase">🔧 {pump.name}</span>
-                                    <span className="text-[9px] px-2 py-0.5 bg-slate-200 rounded-full text-slate-600 font-bold">{pump.type}</span>
+                                    <span className="text-[10px] font-black text-slate-500 uppercase">🔧 {pump?.name || 'Pompe supprimée'}</span>
+                                    {/* Les carburants réellement servis, et non le
+                                        type de la pompe qui ne reflète que son
+                                        premier pistolet. */}
+                                    {pumpFuels.map(f => (
+                                      <span key={f.fuelType} className="text-[9px] px-2 py-0.5 bg-slate-200 rounded-full text-slate-600 font-bold">{f.fuelType}</span>
+                                    ))}
                                   </div>
                                   <div className="text-right">
                                     <span className="font-black text-slate-700 text-sm">{pumpRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</span>
@@ -683,9 +715,11 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                                   <thead>
                                     <tr className="bg-slate-50">
                                       <th className="px-3 py-1.5 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Pistolet</th>
+                                      <th className="px-3 py-1.5 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest">Carburant</th>
                                       <th className="px-3 py-1.5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Idx Début</th>
                                       <th className="px-3 py-1.5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Idx Fin</th>
-                                      <th className="px-3 py-1.5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Litres</th>
+                                      <th className="px-3 py-1.5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Différence (L)</th>
+                                      <th className="px-3 py-1.5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Prix/L</th>
                                       <th className="px-3 py-1.5 text-right text-[9px] font-black text-slate-400 uppercase tracking-widest">Montant</th>
                                     </tr>
                                   </thead>
@@ -693,17 +727,27 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                                     {pumpNozzles.map(d => (
                                       <tr key={d.nozzle.id}>
                                         <td className="px-3 py-2 font-bold text-slate-700">⚡ {d.nozzle.name}</td>
+                                        <td className="px-3 py-2">
+                                          <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black", d.missingFuelType ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-800")}>
+                                            {d.fuelType || 'CUVE NON DÉFINIE'}
+                                          </span>
+                                        </td>
                                         <td className="px-3 py-2 text-right tabular-nums text-slate-500 text-xs">{d.startIdx.toLocaleString('fr-FR', { minimumFractionDigits: 2 })}</td>
                                         <td className="px-3 py-2 text-right tabular-nums text-slate-500 text-xs">{d.endIdx.toLocaleString('fr-FR', { minimumFractionDigits: 2 })}</td>
-                                        <td className="px-3 py-2 text-right font-black text-blue-700">{d.liters.toFixed(2)} L</td>
+                                        <td className={cn("px-3 py-2 text-right font-black", d.inverted ? "text-red-600" : "text-blue-700")}>
+                                          {d.liters.toFixed(2)} L
+                                          {d.inverted && <span className="block text-[9px] font-bold">index de fin &lt; début</span>}
+                                        </td>
+                                        <td className="px-3 py-2 text-right tabular-nums text-slate-500 text-xs">{d.price.toFixed(2)}</td>
                                         <td className="px-3 py-2 text-right font-black text-green-700">{d.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</td>
                                       </tr>
                                     ))}
                                   </tbody>
                                   <tfoot>
                                     <tr className="bg-slate-100 font-black">
-                                      <td colSpan={3} className="px-3 py-2 text-[10px] uppercase text-slate-500">Total Pompe {pump.name}</td>
+                                      <td colSpan={4} className="px-3 py-2 text-[10px] uppercase text-slate-500">Total Pompe {pump?.name || ''}</td>
                                       <td className="px-3 py-2 text-right text-blue-800">{pumpLiters.toFixed(2)} L</td>
+                                      <td />
                                       <td className="px-3 py-2 text-right text-green-800">{pumpRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</td>
                                     </tr>
                                   </tfoot>
@@ -712,9 +756,9 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                             );
                           })}
 
-                          {/* Piste total + décalage */}
+                          {/* Total pompiste + décalage */}
                           <div className="flex items-center justify-between px-4 py-3 bg-blue-50 rounded-xl border border-blue-200">
-                            <span className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Total Piste {track?.name}</span>
+                            <span className="text-[10px] font-black text-blue-900 uppercase tracking-widest">Total {group.name}</span>
                             <div className="text-right">
                               <p className="font-black text-blue-900">{pompisteRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</p>
                               <p className="text-[10px] text-blue-500">{pompisteTotalLiters.toFixed(2)} L</p>

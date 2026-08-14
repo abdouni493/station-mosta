@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission } from "../store/AppContext";
 import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
+import { brigadeNozzleRows, brigadePompisteGroups, justifiedByPompiste } from "../lib/brigadeCalc";
 import Skeleton from "../components/Skeleton";
 
 /* ─── Brand palette (mirrors the Sidebar) ─── */
@@ -179,63 +180,46 @@ const DailyReport = () => {
       const chef = brigadeChefs.find(c => c.id === b.chefId);
       const accounting = brigadeAccountings?.find(a => a.brigadeId === b.id);
 
-      // Determine active nozzles for this brigade (mirrors BrigadeAccountingModal)
-      const activeNozzles = (() => {
-        if (b.activeNozzleIds && b.activeNozzleIds.length > 0)
-          return pumpNozzles.filter(n => b.activeNozzleIds!.includes(n.id));
-        const brigadeTrackIds = (b.pompisteAssignments || []).filter(a => a.present).map(a => a.trackId);
-        const displayPumps = brigadeTrackIds.length > 0
-          ? pumps.filter(p => brigadeTrackIds.includes(p.trackId))
-          : pumps.filter(p => Object.keys(b.startIndices || {}).includes(p.id));
-        return pumpNozzles.filter(n => displayPumps.some(p => p.id === n.pumpId));
-      })();
+      // Le calcul est celui de `lib/brigadeCalc`, partagé avec la fiche de
+      // brigade et la comptabilité : prix pris sur la cuve DE CHAQUE PISTOLET,
+      // et regroupement par pompiste — les pistes n'existent plus, s'y fier
+      // laissait ce rapport sans aucun détail.
+      const calcCtx = { pumps, tanks, pumpNozzles, pompistes, settings };
+      const rows = brigadeNozzleRows(b, calcCtx);
+      const groups = brigadePompisteGroups(
+        b, calcCtx, rows, justifiedByPompiste(accounting?.justifications));
 
       // Per-nozzle data with indexes and amounts
-      const nozzleDetail = activeNozzles.map(nozzle => {
-        const pump = pumps.find(p => p.id === nozzle.pumpId);
-        const tank = tanks.find(t => t.id === pump?.tankId);
-        const track = tracks.find(t => t.id === pump?.trackId);
-        const assignment = (b.pompisteAssignments || []).find(a => a.trackId === pump?.trackId && a.present);
-        const pompiste = pompistes.find(p => p.id === assignment?.pompisteId);
-        const startIdx = b.startNozzleIndices?.[nozzle.id] ?? (b.startIndices?.[nozzle.pumpId] || 0);
-        const endIdx = b.endNozzleIndices?.[nozzle.id] ?? (b.endIndices?.[nozzle.pumpId] || startIdx);
-        const liters = Math.max(0, endIdx - startIdx);
-        const price = settings.fuelPrices[pump?.type as any] || 0;
-        return {
-          nozzleId: nozzle.id, nozzleName: nozzle.name,
-          pumpId: pump?.id, pumpName: pump?.name, pumpType: pump?.type,
-          tankName: tank?.name,
-          trackId: track?.id, trackName: track?.name,
-          pompisteName: pompiste?.name,
-          startIdx, endIdx, liters, price, amount: liters * price,
-        };
-      });
+      const nozzleDetail = rows.map(r => ({
+        nozzleId: r.nozzle.id, nozzleName: r.nozzle.name,
+        pumpId: r.pump?.id, pumpName: r.pump?.name,
+        pumpType: r.fuelType,
+        fuelType: r.fuelType, missingFuelType: r.missingFuelType,
+        tankName: r.tank?.name,
+        pompisteName: groups.find(g => g.nozzles.some(n => n.nozzle.id === r.nozzle.id))?.name,
+        startIdx: r.startIdx, endIdx: r.endIdx,
+        liters: r.liters, inverted: r.inverted,
+        price: r.price, amount: r.amount,
+      }));
 
-      const totalLiters = nozzleDetail.reduce((s, d) => s + d.liters, 0);
-      const totalRevenue = nozzleDetail.reduce((s, d) => s + d.amount, 0);
+      const totalLiters = rows.reduce((s, r) => s + r.liters, 0);
+      const totalRevenue = rows.reduce((s, r) => s + r.amount, 0);
 
-      // Per-piste summary
-      const pisteDetail = (b.pompisteAssignments || []).filter(a => a.present).map(assignment => {
-        const pompiste = pompistes.find(p => p.id === assignment.pompisteId);
-        const track = tracks.find(t => t.id === assignment.trackId);
-        const trackPumps = pumps.filter(p => p.trackId === assignment.trackId);
-        const pisteNozzles = nozzleDetail.filter(d => trackPumps.some(p => p.id === d.pumpId));
-        return {
-          pompisteName: pompiste?.name || '—',
-          trackName: track?.name || '—',
-          liters: pisteNozzles.reduce((s, d) => s + d.liters, 0),
-          revenue: pisteNozzles.reduce((s, d) => s + d.amount, 0),
-          pumps: trackPumps.map(pump => {
-            const pumpNozzlesForPump = nozzleDetail.filter(d => d.pumpId === pump.id);
-            return {
-              pumpName: pump.name, pumpType: pump.type,
-              liters: pumpNozzlesForPump.reduce((s, d) => s + d.liters, 0),
-              revenue: pumpNozzlesForPump.reduce((s, d) => s + d.amount, 0),
-              nozzles: pumpNozzlesForPump,
-            };
-          }).filter(p => p.nozzles.length > 0),
-        };
-      });
+      // Per-pompiste summary (le champ garde son nom pour l'affichage existant)
+      const pisteDetail = groups.map(g => ({
+        pompisteName: g.name,
+        trackName: g.pumps.map(p => p.pump?.name || p.pump?.number || '—').join(', ') || '—',
+        liters: g.totalLiters,
+        revenue: g.totalAmount,
+        byFuel: g.byFuel,
+        pumps: g.pumps.map(p => ({
+          pumpName: p.pump?.name || 'Pompe supprimée',
+          pumpType: p.byFuel.map(f => f.fuelType).join(' + ') || '—',
+          liters: p.totalLiters,
+          revenue: p.totalAmount,
+          nozzles: p.nozzles.map(r => nozzleDetail.find(d => d.nozzleId === r.nozzle.id)!),
+        })).filter(p => p.nozzles.length > 0),
+      }));
 
       return {
         id: b.id, date: b.date, shift: b.shift, chefName: chef?.name ?? '—',
@@ -977,21 +961,33 @@ const DailyReport = () => {
                     </div>
                   </div>
 
-                  {/* Per-Piste → Pompe → Pistolet detail */}
+                  {/* Per-Pompiste → Pompe → Pistolet detail */}
                   <div className="p-4 space-y-3 bg-slate-50">
                     {(b.pisteDetail || []).map((piste: any, pi: number) => (
                       <div key={pi} className="rounded-xl overflow-hidden border-2 border-blue-200 bg-white">
-                        {/* Piste header */}
+                        {/* Pompiste header */}
                         <div className="px-4 py-2.5 bg-blue-900 flex items-center justify-between">
                           <div>
-                            <p className="font-black text-white text-sm">{piste.trackName}</p>
-                            <p className="text-[10px] text-blue-300">Pompiste: {piste.pompisteName}</p>
+                            <p className="font-black text-white text-sm">Pompiste: {piste.pompisteName}</p>
+                            <p className="text-[10px] text-blue-300">Pompes: {piste.trackName}</p>
                           </div>
                           <div className="text-right">
                             <p className="font-black text-yellow-400">{piste.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</p>
                             <p className="text-[10px] text-blue-300">{piste.liters.toFixed(2)} L</p>
                           </div>
                         </div>
+                        {/* Ventilation par carburant */}
+                        {(piste.byFuel || []).length > 0 && (
+                          <div className="px-4 py-2 bg-blue-50/60 border-b border-blue-100 flex flex-wrap gap-2">
+                            {piste.byFuel.map((f: any) => (
+                              <span key={f.fuelType} className="px-2.5 py-1 rounded-lg text-[10px] font-black border bg-white border-blue-200 text-blue-900">
+                                {f.fuelType}
+                                <span className="font-bold text-slate-500"> · {f.liters.toFixed(2)} L × {f.price.toFixed(2)} = </span>
+                                <span className="text-green-700">{f.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
                         {/* Per pump */}
                         {(piste.pumps || []).map((pump: any, pumpi: number) => (
                           <div key={pumpi} className="border-t border-blue-100">
@@ -1003,7 +999,7 @@ const DailyReport = () => {
                               <table className="w-full text-xs">
                                 <thead>
                                   <tr className="bg-slate-100">
-                                    {['Pistolet', 'Idx Début', 'Idx Fin', 'Litres', 'Prix/L', 'Montant'].map(h => (
+                                    {['Pistolet', 'Carburant', 'Idx Début', 'Idx Fin', 'Différence (L)', 'Prix/L', 'Montant'].map(h => (
                                       <th key={h} className="px-3 py-1.5 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest border border-slate-200">{h}</th>
                                     ))}
                                   </tr>
@@ -1012,15 +1008,23 @@ const DailyReport = () => {
                                   {(pump.nozzles || []).map((nozzle: any, ni: number) => (
                                     <tr key={ni} className="border-b border-slate-100">
                                       <td className="px-3 py-2 font-bold border border-slate-200">⚡ {nozzle.nozzleName}</td>
+                                      <td className="px-3 py-2 border border-slate-200">
+                                        <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black", nozzle.missingFuelType ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-800")}>
+                                          {nozzle.fuelType || 'CUVE NON DÉFINIE'}
+                                        </span>
+                                      </td>
                                       <td className="px-3 py-2 tabular-nums text-slate-500 border border-slate-200">{nozzle.startIdx.toLocaleString('fr-FR', { minimumFractionDigits: 2 })}</td>
                                       <td className="px-3 py-2 tabular-nums text-slate-500 border border-slate-200">{nozzle.endIdx.toLocaleString('fr-FR', { minimumFractionDigits: 2 })}</td>
-                                      <td className="px-3 py-2 font-black text-blue-700 border border-slate-200">{nozzle.liters.toFixed(2)} L</td>
+                                      <td className={cn("px-3 py-2 font-black border border-slate-200", nozzle.inverted ? "text-red-600" : "text-blue-700")}>
+                                        {nozzle.liters.toFixed(2)} L
+                                        {nozzle.inverted && <span className="block text-[9px] font-bold">index de fin &lt; début</span>}
+                                      </td>
                                       <td className="px-3 py-2 text-slate-500 border border-slate-200">{nozzle.price.toFixed(2)}</td>
                                       <td className="px-3 py-2 font-black text-green-700 border border-slate-200">{nozzle.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</td>
                                     </tr>
                                   ))}
                                   <tr className="bg-blue-50 font-black">
-                                    <td colSpan={3} className="px-3 py-1.5 text-[9px] uppercase text-blue-800 border border-slate-200">Total {pump.pumpName}</td>
+                                    <td colSpan={4} className="px-3 py-1.5 text-[9px] uppercase text-blue-800 border border-slate-200">Total {pump.pumpName}</td>
                                     <td className="px-3 py-1.5 text-blue-800 border border-slate-200">{pump.liters.toFixed(2)} L</td>
                                     <td className="border border-slate-200" />
                                     <td className="px-3 py-1.5 text-blue-800 border border-slate-200">{pump.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</td>
@@ -1030,9 +1034,9 @@ const DailyReport = () => {
                             </div>
                           </div>
                         ))}
-                        {/* Piste total */}
+                        {/* Total pompiste */}
                         <div className="px-4 py-2 bg-blue-50 flex justify-between border-t-2 border-blue-200">
-                          <span className="font-black text-blue-900 text-[11px] uppercase">Total Piste {piste.trackName}</span>
+                          <span className="font-black text-blue-900 text-[11px] uppercase">Total {piste.pompisteName}</span>
                           <span className="font-black text-blue-900">{piste.liters.toFixed(2)} L — {piste.revenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</span>
                         </div>
                       </div>

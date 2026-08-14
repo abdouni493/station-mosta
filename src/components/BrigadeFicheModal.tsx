@@ -6,6 +6,9 @@ import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
 import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, Track, ShopSale, StationSettings, BrigadeAccounting
 } from "../store/AppContext";
+import {
+  brigadeNozzleRows, brigadePompisteGroups, brigadeTankRows, brigadeTotals, justifiedByPompiste,
+} from "../lib/brigadeCalc";
 
 interface Props {
   brigade: Brigade;
@@ -33,91 +36,37 @@ const BrigadeFicheModal: React.FC<Props> = ({
   const ficheRef = useRef<HTMLDivElement>(null);
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
 
-  const activeNozzles = useMemo(() => {
-    if (brigade.activeNozzleIds && brigade.activeNozzleIds.length > 0)
-      return pumpNozzles.filter(n => brigade.activeNozzleIds!.includes(n.id));
-    const brigadeTrackIds = (brigade.pompisteAssignments || []).filter(a => a.present).map(a => a.trackId);
-    const displayPumps = brigadeTrackIds.length > 0 ? pumps.filter(p => brigadeTrackIds.includes(p.trackId)) : pumps.filter(p => Object.keys(brigade.startIndices || {}).includes(p.id));
-    return pumpNozzles.filter(n => displayPumps.some(p => p.id === n.pumpId));
-  }, [brigade, pumps, pumpNozzles]);
+  // Tout le calcul de la fiche vient de `lib/brigadeCalc` : chaque pistolet est
+  // valorisé au carburant de SA cuve, et le regroupement se fait par pompiste —
+  // les pistes n'existent plus, s'y fier rendait la fiche entièrement vide.
+  const ctx = useMemo(
+    () => ({ pumps, tanks, pumpNozzles, pompistes, settings }),
+    [pumps, tanks, pumpNozzles, pompistes, settings]);
 
-  const nozzleRows = useMemo(() => activeNozzles.map(nozzle => {
-    const pump = pumps.find(p => p.id === nozzle.pumpId);
-    const track = tracks.find(t => t.id === pump?.trackId);
-    const startIdx = brigade.startNozzleIndices?.[nozzle.id] ?? (brigade.startIndices?.[nozzle.pumpId] || 0);
-    const endIdx = brigade.endNozzleIndices?.[nozzle.id] ?? (brigade.endIndices?.[nozzle.pumpId] || startIdx);
-    const liters = Math.max(0, endIdx - startIdx);
-    const price = settings.fuelPrices[pump?.type || 'SUPER'] || 0;
-    return { nozzle, pump, track, startIdx, endIdx, liters, price, amount: liters * price };
-  }), [activeNozzles, brigade, pumps, tracks, settings]);
+  const nozzleRows = useMemo(() => brigadeNozzleRows(brigade, ctx), [brigade, ctx]);
 
-  const tankRows = useMemo(() => tanks
-    .filter(t => brigade.startTankLevels?.[t.id])
-    .map(t => ({
-      tank: t,
-      startDeg: brigade.startTankLevels![t.id]?.degrees || 0,
-      startL: brigade.startTankLevels![t.id]?.liters || 0,
-      endDeg: brigade.endTankLevels?.[t.id]?.degrees || 0,
-      endL: brigade.endTankLevels?.[t.id]?.liters || 0,
-    })), [tanks, brigade]);
-
-  // Justifications grouped by pompiste
+  // Justifications regroupées par pompiste (montants + lignes à détailler)
   const justifByPompiste = useMemo(() => {
-    const m: Record<string, BrigadeAccounting['justifications']> = {} as any;
+    const m: Record<string, NonNullable<BrigadeAccounting['justifications']>> = {};
     (accounting?.justifications || []).forEach(j => {
-      const pid = j.pompisteId || '_';
+      const pid = j.pompisteId || '_unassigned';
       (m[pid] = m[pid] || []).push(j);
     });
     return m;
   }, [accounting]);
+  const justifTotals = useMemo(
+    () => justifiedByPompiste(accounting?.justifications), [accounting]);
 
-  // Detailed breakdown: Piste → Pompe → Pistolet
-  const pumpBreakdown = useMemo(() => {
-    const trackList = [...new Set(nozzleRows.map(d => d.track?.id).filter(Boolean))];
-    return trackList.map(trackId => {
-      const track = tracks.find(t => t.id === trackId);
-      const assignment = brigade.pompisteAssignments?.find(a => a.trackId === trackId && a.present);
-      const pompiste = assignment ? pompistes.find(p => p.id === assignment.pompisteId) : undefined;
-      const trackPumps = pumps.filter(p => p.trackId === trackId);
-      const pData = pompiste ? brigade.pompisteData?.[pompiste.id] : undefined;
-      const justifs = (pompiste && justifByPompiste[pompiste.id]) || [];
-      return {
-        track, pompiste, pData, justifs,
-        pumps: trackPumps.map(pump => {
-          const nozzles = nozzleRows.filter(d => d.pump?.id === pump.id);
-          return { pump, nozzles, totalLiters: nozzles.reduce((s, d) => s + d.liters, 0), totalAmount: nozzles.reduce((s, d) => s + d.amount, 0) };
-        }),
-        totalLiters: nozzleRows.filter(d => trackPumps.some(p => p.id === d.pump?.id)).reduce((s, d) => s + d.liters, 0),
-        totalAmount: nozzleRows.filter(d => trackPumps.some(p => p.id === d.pump?.id)).reduce((s, d) => s + d.amount, 0),
-      };
-    });
-  }, [nozzleRows, tracks, pumps, pompistes, brigade, justifByPompiste]);
+  // Détail Pompiste → Pompe → Pistolet, avec la ventilation par carburant.
+  const pumpBreakdown = useMemo(
+    () => brigadePompisteGroups(brigade, ctx, nozzleRows, justifTotals),
+    [brigade, ctx, nozzleRows, justifTotals]);
 
-  // Décalage alerts (recomputed per tank: nozzleDiff vs cuveDiff)
-  const decalageAlerts = useMemo(() => {
-    const posSeuil = settings.decalagePositifSeuil ?? 0;
-    const negSeuil = settings.decalageNegatifSeuil ?? 0;
-    const venteDirecteActif = settings.decalagePositifActif !== false;
-    const retourCuveActif = settings.decalageNegatifActif !== false;
-    return tankRows.map(({ tank, startL, endL }) => {
-      const cuveDiff = startL - endL;
-      const tankPumps = pumps.filter(p => p.tankId === tank.id);
-      const nozzleDiff = nozzleRows.filter(d => tankPumps.some(p => p.id === d.pump?.id)).reduce((s, d) => s + d.liters, 0);
-      const difference = nozzleDiff - cuveDiff;
-      const price = settings.fuelPrices[tank.type] || 0;
-      let type: 'CORRECT' | 'RETOUR_CUVE' | 'VENTE_DIRECTE' = 'CORRECT';
-      if (difference > 0 && retourCuveActif && difference >= (negSeuil || 0.000001)) type = 'RETOUR_CUVE';
-      else if (difference < 0 && venteDirecteActif && Math.abs(difference) >= (posSeuil || 0.000001)) type = 'VENTE_DIRECTE';
-      return { tank, cuveDiff, nozzleDiff, difference, amount: Math.abs(difference) * price, type };
-    });
-  }, [tankRows, pumps, nozzleRows, settings]);
+  const tankRows = useMemo(
+    () => brigadeTankRows(brigade, ctx, nozzleRows), [brigade, ctx, nozzleRows]);
 
-  // Financial totals
-  const totalLiters = nozzleRows.reduce((s, d) => s + d.liters, 0);
-  const totalTheoretical = pumpBreakdown.reduce((s, b) => s + (b.pData?.theoretical ?? b.totalAmount), 0);
-  const totalCash = pumpBreakdown.reduce((s, b) => s + (b.pData?.totalCollected ?? 0), 0);
-  const totalJustif = (accounting?.justifications || []).reduce((s, j) => s + (j.amount || 0), 0);
-  const netBalance = totalTheoretical - totalCash - totalJustif;
+  const totals = useMemo(
+    () => brigadeTotals(nozzleRows, pumpBreakdown), [nozzleRows, pumpBreakdown]);
 
   const [pdfBusy, setPdfBusy] = React.useState(false);
 
@@ -179,9 +128,13 @@ const BrigadeFicheModal: React.FC<Props> = ({
         <section>
           <FicheHeader num="1" label="Pompistes Présents" />
           <div className="flex flex-wrap gap-2">
-            {pumpBreakdown.map((b, i) => (
-              <span key={i} className="px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg text-xs font-black text-blue-900">
-                {b.pompiste?.name || '—'} <span className="text-blue-400 font-bold">· {b.track?.name || '—'}</span>
+            {pumpBreakdown.map(b => (
+              <span key={b.pompisteId} className={`px-3 py-1.5 rounded-lg text-xs font-black ${b.unassigned ? 'bg-amber-50 border border-amber-300 text-amber-800' : b.present ? 'bg-blue-50 border border-blue-200 text-blue-900' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+                {b.name}
+                <span className={`font-bold ${b.unassigned ? 'text-amber-500' : 'text-blue-400'}`}>
+                  {' · '}{b.pumps.map(p => p.pump?.name || p.pump?.number || '—').join(', ') || 'aucune pompe'}
+                </span>
+                {!b.present && <span className="ml-1 text-red-500">(absent)</span>}
               </span>
             ))}
           </div>
@@ -197,13 +150,19 @@ const BrigadeFicheModal: React.FC<Props> = ({
               {['Cuve', 'Type', 'Début (°/L)', 'Fin (°/L)', 'Consommé (L)'].map(h => <Th key={h} dark>{h}</Th>)}
             </tr></thead>
             <tbody>
-              {tankRows.map(({ tank, startDeg, startL, endDeg, endL }) => (
+              {tankRows.map(({ tank, startDeg, startL, endDeg, endL, cuveDiff, measured }) => (
                 <tr key={tank.id} className="border-b border-slate-200">
                   <Td><strong>{tank.name}</strong></Td>
                   <Td><span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-[10px] font-black">{tank.type}</span></Td>
                   <Td className="tabular-nums">{startDeg}° · {fmt(startL)}</Td>
-                  <Td className="tabular-nums">{endDeg}° · {fmt(endL)}</Td>
-                  <Td><strong className="text-blue-700">{fmt(startL - endL)}</strong></Td>
+                  <Td className="tabular-nums">
+                    {measured
+                      ? <>{endDeg}° · {fmt(endL)}</>
+                      : <span className="text-slate-400 italic">jauge non relevée</span>}
+                  </Td>
+                  {/* Sans jauge de fin, le « consommé » ne serait qu'un reflet des
+                      pistolets : on ne l'affiche pas comme une mesure de cuve. */}
+                  <Td><strong className="text-blue-700">{measured ? fmt(cuveDiff) : '—'}</strong></Td>
                 </tr>
               ))}
             </tbody>
@@ -211,20 +170,22 @@ const BrigadeFicheModal: React.FC<Props> = ({
         </section>
       )}
 
-      {/* SECTION 3: Piste → Pompe → Pistolet + comptabilité pompiste */}
+      {/* SECTION 3: Pompiste → Pompe → Pistolet + comptabilité pompiste */}
       {pumpBreakdown.length > 0 && (
         <section>
-          <FicheHeader num="3" label="Détail par Piste / Pompe / Pistolet" />
-          {pumpBreakdown.map(({ track, pompiste, pData, justifs, pumps: pumpList, totalLiters: tL, totalAmount }) => {
-            const cash = pData?.totalCollected ?? 0;
-            const theo = pData?.theoretical ?? totalAmount;
-            const ecart = theo - cash - (justifs || []).reduce((s, j) => s + (j.amount || 0), 0);
+          <FicheHeader num="3" label="Détail par Pompiste / Pompe / Pistolet" />
+          {pumpBreakdown.map(({ pompisteId, name, present, unassigned, pumps: pumpList, byFuel, totalLiters: tL, totalAmount, theoretical: theo, collected: cash, ecart }) => {
+            const justifs = justifByPompiste[pompisteId] || [];
             return (
-              <div key={track?.id} className="mb-4 rounded-xl overflow-hidden border-2 border-blue-200">
-                <div className="px-4 py-3 bg-gradient-to-r from-blue-900 to-blue-800 flex items-center justify-between">
+              <div key={pompisteId} className={`mb-4 rounded-xl overflow-hidden border-2 ${unassigned ? 'border-amber-300' : 'border-blue-200'}`}>
+                <div className={`px-4 py-3 flex items-center justify-between ${unassigned ? 'bg-gradient-to-r from-amber-700 to-amber-600' : 'bg-gradient-to-r from-blue-900 to-blue-800'}`}>
                   <div>
-                    <p className="font-black text-white text-sm">Piste: {track?.name || '—'}</p>
-                    <p className="text-[10px] text-blue-300">Pompiste: {pompiste?.name || '—'}</p>
+                    <p className="font-black text-white text-sm">
+                      Pompiste: {name}{!present && <span className="ml-2 text-red-200">(absent)</span>}
+                    </p>
+                    <p className="text-[10px] text-blue-300">
+                      Pompes: {pumpList.map(p => p.pump?.name || p.pump?.number || '—').join(', ') || '—'}
+                    </p>
                   </div>
                   <div className="text-right">
                     <p className="font-black text-yellow-400">{fmt(totalAmount)} DA</p>
@@ -232,16 +193,37 @@ const BrigadeFicheModal: React.FC<Props> = ({
                   </div>
                 </div>
 
-                {pumpList.map(({ pump, nozzles, totalLiters: pumpL, totalAmount: pumpA }) => (
+                {/* Ventilation par carburant : un pompiste tient souvent des
+                    pistolets de plusieurs carburants, chacun à son prix. */}
+                {byFuel.length > 0 && (
+                  <div className="px-4 py-2 bg-blue-50/60 border-t border-blue-100 flex flex-wrap gap-2">
+                    {byFuel.map(f => (
+                      <span key={f.fuelType} className={`px-2.5 py-1 rounded-lg text-[10px] font-black border ${f.fuelType === 'INCONNU' ? 'bg-red-50 border-red-200 text-red-700' : 'bg-white border-blue-200 text-blue-900'}`}>
+                        {f.fuelType === 'INCONNU' ? 'CARBURANT INCONNU' : f.fuelType}
+                        <span className="font-bold text-slate-500">
+                          {' '}· {f.liters.toFixed(2)} L × {f.price.toFixed(2)} ={' '}
+                        </span>
+                        <span className="text-green-700">{fmt(f.amount)} DA</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {pumpList.map(({ pump, nozzles, totalLiters: pumpL, totalAmount: pumpA, byFuel: pumpFuels }) => (
                   nozzles.length > 0 && (
-                    <div key={pump.id} className="border-t border-blue-100">
+                    <div key={pump?.id || 'sans-pompe'} className="border-t border-blue-100">
                       <div className="px-4 py-2 bg-slate-50 flex items-center justify-between border-b border-slate-200">
-                        <span className="text-[10px] font-black text-slate-600 uppercase">🔧 {pump.name} ({pump.type})</span>
+                        <span className="text-[10px] font-black text-slate-600 uppercase">
+                          🔧 {pump?.name || 'Pompe supprimée'}
+                          {/* Le type de la pompe n'est qu'un miroir de son premier
+                              pistolet : on liste les carburants réellement servis. */}
+                          {' '}({pumpFuels.map(f => f.fuelType).join(' + ') || '—'})
+                        </span>
                         <span className="text-[10px] font-black text-slate-600">{pumpL.toFixed(2)} L — {fmt(pumpA)} DA</span>
                       </div>
                       <table className="w-full text-xs">
                         <thead><tr className="bg-slate-100">
-                          {['Pistolet', 'Idx Début', 'Idx Fin', 'Litres', 'Prix/L', 'Montant'].map(h => (
+                          {['Pistolet', 'Carburant', 'Idx Début', 'Idx Fin', 'Différence (L)', 'Prix/L', 'Montant'].map(h => (
                             <th key={h} className="px-3 py-1.5 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest border border-slate-200">{h}</th>
                           ))}
                         </tr></thead>
@@ -249,14 +231,34 @@ const BrigadeFicheModal: React.FC<Props> = ({
                           {nozzles.map(d => (
                             <tr key={d.nozzle.id} className="border-b border-slate-100">
                               <td className="px-3 py-2 font-bold border border-slate-200">⚡ {d.nozzle.name}</td>
+                              <td className="px-3 py-2 border border-slate-200">
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${d.missingFuelType ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-800'}`}>
+                                  {d.fuelType || 'CUVE NON DÉFINIE'}
+                                </span>
+                                <span className="block text-[9px] text-slate-400 mt-0.5">{d.tank?.name || '—'}</span>
+                              </td>
                               <td className="px-3 py-2 tabular-nums text-slate-500 border border-slate-200">{fmt(d.startIdx)}</td>
                               <td className="px-3 py-2 tabular-nums text-slate-500 border border-slate-200">{fmt(d.endIdx)}</td>
-                              <td className="px-3 py-2 font-black text-blue-700 border border-slate-200">{d.liters.toFixed(2)} L</td>
+                              {/* Fin − début, la différence affichée telle qu'elle
+                                  est calculée ; une saisie inversée est signalée
+                                  au lieu d'être ramenée à 0 en silence. */}
+                              <td className={`px-3 py-2 font-black border border-slate-200 ${d.inverted ? 'text-red-600' : 'text-blue-700'}`}>
+                                {fmt(d.endIdx)} − {fmt(d.startIdx)} = {d.liters.toFixed(2)} L
+                                {d.inverted && <span className="block text-[9px] font-bold">index de fin inférieur au début</span>}
+                              </td>
                               <td className="px-3 py-2 text-slate-500 border border-slate-200">{d.price.toFixed(2)}</td>
                               <td className="px-3 py-2 font-black text-green-700 border border-slate-200">{fmt(d.amount)} DA</td>
                             </tr>
                           ))}
                         </tbody>
+                        <tfoot>
+                          <tr className="bg-slate-50 border-t-2 border-slate-200">
+                            <td colSpan={4} className="px-3 py-1.5 text-[9px] font-black uppercase text-slate-500 border border-slate-200">Total {pump?.name || ''}</td>
+                            <td className="px-3 py-1.5 font-black text-blue-800 border border-slate-200">{pumpL.toFixed(2)} L</td>
+                            <td className="border border-slate-200" />
+                            <td className="px-3 py-1.5 font-black text-green-800 border border-slate-200">{fmt(pumpA)} DA</td>
+                          </tr>
+                        </tfoot>
                       </table>
                     </div>
                   )
@@ -266,12 +268,12 @@ const BrigadeFicheModal: React.FC<Props> = ({
                 <div className="px-4 py-3 bg-white border-t border-blue-100 grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
                   <div><p className="text-[9px] text-slate-400 font-black uppercase">Théorique</p><p className="font-black text-blue-900">{fmt(theo)} DA</p></div>
                   <div><p className="text-[9px] text-slate-400 font-black uppercase">Espèces reçues</p><p className="font-black text-green-700">{fmt(cash)} DA</p></div>
-                  <div><p className="text-[9px] text-slate-400 font-black uppercase">Justifié</p><p className="font-black text-slate-700">{fmt((justifs || []).reduce((s, j) => s + (j.amount || 0), 0))} DA</p></div>
+                  <div><p className="text-[9px] text-slate-400 font-black uppercase">Justifié</p><p className="font-black text-slate-700">{fmt(justifs.reduce((s, j) => s + (j.amount || 0), 0))} DA</p></div>
                   <div><p className="text-[9px] text-slate-400 font-black uppercase">Écart</p><p className={`font-black ${Math.abs(ecart) < 0.01 ? 'text-green-600' : 'text-red-600'}`}>{fmt(ecart)} DA</p></div>
                 </div>
 
                 {/* Justifications */}
-                {justifs && justifs.length > 0 && (
+                {justifs.length > 0 && (
                   <div className="px-4 pb-3 bg-white">
                     <p className="text-[9px] font-black text-slate-400 uppercase mb-1">Justifications</p>
                     <table className="w-full text-[11px]">
@@ -297,8 +299,8 @@ const BrigadeFicheModal: React.FC<Props> = ({
         </section>
       )}
 
-      {/* SECTION 4: Alertes Décalage */}
-      {decalageAlerts.length > 0 && (
+      {/* SECTION 4: Alertes Décalage — écart = Δ pistolets − Δ cuve */}
+      {tankRows.length > 0 && (
         <section>
           <FicheHeader num="4" label="Alertes Décalage" />
           <table className="w-full text-sm border-collapse">
@@ -306,15 +308,19 @@ const BrigadeFicheModal: React.FC<Props> = ({
               {['Cuve', 'Δ Cuve (L)', 'Δ Pistolets (L)', 'Écart (L)', 'Montant', 'Statut'].map(h => <Th key={h} dark>{h}</Th>)}
             </tr></thead>
             <tbody>
-              {decalageAlerts.map(a => (
+              {tankRows.map(a => (
                 <tr key={a.tank.id} className="border-b border-slate-200">
                   <Td><strong>{a.tank.name}</strong></Td>
-                  <Td className="tabular-nums">{a.cuveDiff.toFixed(2)}</Td>
+                  <Td className="tabular-nums">{a.measured ? a.cuveDiff.toFixed(2) : '—'}</Td>
                   <Td className="tabular-nums">{a.nozzleDiff.toFixed(2)}</Td>
-                  <Td className="tabular-nums"><strong>{a.difference.toFixed(2)}</strong></Td>
-                  <Td className="tabular-nums">{fmt(a.amount)} DA</Td>
+                  <Td className="tabular-nums">{a.measured ? <strong>{a.difference.toFixed(2)}</strong> : '—'}</Td>
+                  <Td className="tabular-nums">{a.measured ? `${fmt(a.amount)} DA` : '—'}</Td>
                   <Td>
-                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${a.type === 'CORRECT' ? 'bg-green-100 text-green-700' : a.type === 'RETOUR_CUVE' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>{a.type}</span>
+                    {a.measured ? (
+                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${a.type === 'CORRECT' ? 'bg-green-100 text-green-700' : a.type === 'RETOUR_CUVE' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>{a.type}</span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-slate-100 text-slate-500">NON RELEVÉE</span>
+                    )}
                   </Td>
                 </tr>
               ))}
@@ -326,13 +332,42 @@ const BrigadeFicheModal: React.FC<Props> = ({
       {/* SECTION 5: Récapitulatif Financier */}
       <section>
         <FicheHeader num="5" label="Récapitulatif Financier" />
+
+        {/* Litres et montant par carburant, tous pistolets confondus */}
+        {totals.byFuel.length > 0 && (
+          <table className="w-full text-sm border-collapse mb-4">
+            <thead><tr className="bg-blue-900 text-white">
+              {['Carburant', 'Pistolets', 'Litres', 'Prix/L', 'Montant'].map(h => <Th key={h} dark>{h}</Th>)}
+            </tr></thead>
+            <tbody>
+              {totals.byFuel.map(f => (
+                <tr key={f.fuelType} className="border-b border-slate-200">
+                  <Td><strong className={f.fuelType === 'INCONNU' ? 'text-red-600' : ''}>{f.fuelType === 'INCONNU' ? 'Cuve non définie' : f.fuelType}</strong></Td>
+                  <Td className="tabular-nums">{f.nozzleCount}</Td>
+                  <Td className="tabular-nums"><strong className="text-blue-700">{f.liters.toFixed(2)} L</strong></Td>
+                  <Td className="tabular-nums">{f.price.toFixed(2)}</Td>
+                  <Td className="tabular-nums"><strong className="text-green-700">{fmt(f.amount)} DA</strong></Td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot><tr className="bg-slate-100 border-t-2 border-slate-300">
+              <Td><strong className="uppercase text-[10px] tracking-widest text-slate-500">Total</strong></Td>
+              <Td />
+              <Td className="tabular-nums"><strong className="text-blue-800">{totals.liters.toFixed(2)} L</strong></Td>
+              <Td />
+              <Td className="tabular-nums"><strong className="text-green-800">{fmt(totals.computedAmount)} DA</strong></Td>
+            </tr></tfoot>
+          </table>
+        )}
+
         <div className="grid grid-cols-2 gap-4">
           {[
-            { label: 'Total Litres Vendus', value: `${totalLiters.toFixed(2)} L` },
-            { label: 'Total Théorique', value: `${fmt(totalTheoretical)} DA` },
-            { label: 'Total Espèces Collectées', value: `${fmt(totalCash)} DA` },
-            { label: 'Total Justifications', value: `${fmt(totalJustif)} DA` },
-            { label: 'SOLDE NET', value: `${fmt(netBalance)} DA`, bold: true },
+            { label: 'Total Litres Vendus', value: `${totals.liters.toFixed(2)} L` },
+            { label: 'Montant Index (calculé)', value: `${fmt(totals.computedAmount)} DA` },
+            { label: 'Total Théorique', value: `${fmt(totals.theoretical)} DA` },
+            { label: 'Total Espèces Collectées', value: `${fmt(totals.collected)} DA` },
+            { label: 'Total Justifications', value: `${fmt(totals.justified)} DA` },
+            { label: 'SOLDE NET', value: `${fmt(totals.netBalance)} DA`, bold: true },
           ].map((row: any, i) => (
             <div key={i} className={`flex justify-between px-4 py-3 rounded-xl border ${row.bold ? 'bg-blue-900 text-white font-black border-blue-900' : 'bg-slate-50 border-slate-200'}`}>
               <span className="text-sm">{row.label}</span>
