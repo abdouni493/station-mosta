@@ -18,7 +18,7 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { computeCarburantSales, computeCarburantCash, derivedPumpStats } from './carburantSales';
-import { computeCarburantReport } from './bizReporting';
+import { computeCarburantReport, moduleCaisseBalance, moduleCaisseMovements } from './bizReporting';
 
 let passed = 0, failed = 0;
 const check = (label: string, actual: unknown, expected: unknown) => {
@@ -98,6 +98,17 @@ const app = {
   treasuryTransactions: [
     // 10 000 DA de la caisse Carburant versés en banque.
     { id: 'T5', date: '2026-08-25', kind: 'TRANSFER', amount: 10_000, accountFrom: 'CAISSE_CARBURANT', accountTo: 'B1', part: 'carburant' },
+    // Un dépôt saisi dans la Caisse Générale, imputé au CARBURANT.
+    { id: 'T6', date: '2026-08-26', kind: 'DEPOSIT', amount: 40_000, accountTo: 'CAISSE', part: 'carburant' },
+    // Un retrait imputé au Carburant.
+    { id: 'T7', date: '2026-08-27', kind: 'WITHDRAW', amount: 6_000, accountFrom: 'CAISSE', part: 'carburant' },
+    // Un dépôt imputé à la CAFÉTÉRIA : il ne doit rien faire au Carburant.
+    { id: 'T8', date: '2026-08-27', kind: 'DEPOSIT', amount: 9_000, accountTo: 'CAISSE', part: 'cafeteria' },
+    // Un dépôt « Finance » : il reste dans la caisse générale, sans activité.
+    { id: 'T9', date: '2026-08-27', kind: 'DEPOSIT', amount: 7_000, accountTo: 'CAISSE', part: 'systeme' },
+    // Argent déplacé du coffre Carburant vers la caisse générale, toujours
+    // imputé au Carburant : l'activité n'a rien gagné ni perdu.
+    { id: 'T10', date: '2026-08-28', kind: 'TRANSFER', amount: 5_000, accountFrom: 'CAISSE_CARBURANT', accountTo: 'CAISSE', part: 'carburant' },
   ],
   pompisteDecalage: [],
 };
@@ -129,15 +140,27 @@ check('Pompe 2 — 500 L', perPump.P2?.liters, 500);
 
 console.log('\nLa caisse ne compte que les ESPÈCES');
 const cash = computeCarburantCash(app);
-// 50 000 encaissés + 3 000 réglés en espèces par le client
-// − 30 000 d'achat en espèces − 5 000 de dépense en espèces − 10 000 virés.
-check('solde de la caisse Carburant', cash.balance, 8_000);
+// 50 000 encaissés + 3 000 réglés en espèces par le client + 40 000 déposés
+// − 30 000 d'achat en espèces − 5 000 de dépense en espèces
+// − 10 000 virés en banque − 6 000 retirés.
+check('solde de la caisse Carburant', cash.balance, 42_000);
 check('espèces des brigades', cash.brigadeCash, 50_000);
 check('règlements clients en espèces (le chèque est exclu)', cash.clientCash, 3_000);
 check("l'achat réglé par chèque ne vide pas le tiroir", cash.purchasesCash, 30_000);
 check('la dépense payée en banque non plus', cash.expensesCash, 5_000);
-check('le virement vide bien la caisse', cash.transfers, -10_000);
 check('entrées − sorties = solde', cash.inflow - cash.outflow, cash.balance);
+
+console.log("\nUn dépôt imputé à une activité entre bien dans SA caisse");
+check('le dépôt Carburant est compté', cash.deposits, 40_000);
+check('le retrait Carburant est compté', cash.withdrawals, 6_000);
+check('le virement en banque vide la caisse', cash.transfers, -10_000);
+check('le dépôt Cafétéria ne touche pas le Carburant',
+  cash.lines.some(l => l.id === 'T8'), false);
+check('le dépôt Finance non plus',
+  cash.lines.some(l => l.id === 'T9'), false);
+check("déplacer l'argent du coffre vers la caisse générale ne change rien",
+  cash.lines.some(l => l.id === 'T10'), false);
+check('chaque ligne se relit', cash.lines.reduce((s, l) => s + l.amount, 0), cash.balance);
 
 console.log('\nLe rapport Carburant part des mêmes chiffres');
 const r = computeCarburantReport(app, FROM, TO);
@@ -152,6 +175,28 @@ check('une vente listée par brigade', r.counts.sales, 1);
 check('le stock compte les CUVES (10 000×40 + 4 000×44)', r.stockValue, 576_000);
 check('le solde se relit ligne à ligne',
   r.caisseMovements.reduce((s, m) => s + m.amount, 0), r.caisseBalance);
+
+console.log('\nLes parties commerciales suivent la même règle');
+/** Une cafétéria qui a vendu 2 000 DA et acheté 500 DA de marchandise. */
+const cafeteria: any = {
+  caisse: [{ id: 'C1', type: 'deposit', amount: 1_000, date: '2026-08-05' }],
+  sales: [{ id: 'S1', ref: 'V-1', date: '2026-08-06', clientName: 'Comptoir', total: 2_000, paid: 2_000, rest: 0, items: [] }],
+  reparations: [],
+  purchases: [{ id: 'P1', ref: 'A-1', date: '2026-08-07', supplierName: 'Superette', total: 500, paid: 500, rest: 0, items: [] }],
+  expenses: [],
+  workers: [],
+  products: [], clients: [], suppliers: [], destructions: [], productions: [], comptoir: [], fiches: [],
+};
+// 1 000 déposés + 2 000 encaissés − 500 d'achat = 2 500, puis les 9 000 du
+// dépôt imputé à la Cafétéria depuis la Caisse Générale.
+check('sans le grand livre : documents seuls',
+  moduleCaisseBalance(cafeteria, 'cafeteria', []), 2_500);
+check('le dépôt imputé à la Cafétéria entre dans sa caisse',
+  moduleCaisseBalance(cafeteria, 'cafeteria', app.treasuryTransactions), 11_500);
+check("le dépôt Carburant n'entre pas dans la Cafétéria",
+  moduleCaisseMovements(cafeteria, 'cafeteria', app.treasuryTransactions).some(m => m.id === 'T6'), false);
+check('le Lavage, lui, ne reçoit rien',
+  moduleCaisseBalance({ ...cafeteria, caisse: [], sales: [], purchases: [] } as any, 'lavage', app.treasuryTransactions), 0);
 
 console.log(`\n${passed} vérification(s) passée(s), ${failed} échec(s).`);
 if (failed > 0) process.exit(1);

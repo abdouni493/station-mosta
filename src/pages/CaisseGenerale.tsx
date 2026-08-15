@@ -31,6 +31,7 @@ import {
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey } from '../lib/bizConfig';
 import { carburantCashBalance } from '../lib/carburantSales';
+import { moduleCaisseBalance } from '../lib/bizReporting';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
   Table, money, formatDate, PeriodFilter, Period, inPeriod,
@@ -93,21 +94,16 @@ export default function CaisseGenerale() {
   const totalBank = accounts.reduce((s, a) => s + a.balance, 0);
 
   /**
-   * Cash position of one business part: its own documents PLUS every virement
-   * the ledger recorded on that caisse (money sent to a bank leaves it).
+   * Position de caisse d'une partie commerciale — le MÊME calcul que son
+   * rapport (`lib/bizReporting`) : ses propres documents plus les opérations
+   * manuelles du grand livre qui lui sont imputées. Ce dernier terme manquait
+   * ici comme là-bas : un dépôt saisi ci-dessous avec « Cafétéria » en partie
+   * concernée n'arrivait dans aucune caisse.
    */
   const partBalance = (key: ModuleKey) => {
     const m = biz[key];
     if (!m) return 0;
-    const deposits = m.caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0);
-    const withdrawals = m.caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0);
-    const salesPaid = m.sales.reduce((s, x) => s + x.paid, 0);
-    const repPaid = m.reparations.reduce((s, r) => s + r.paid, 0);
-    const purchasesPaid = m.purchases.reduce((s, x) => s + x.paid, 0);
-    const exp = m.expenses.reduce((s, x) => s + x.amount, 0);
-    const salaries = m.workers.reduce((s, w) => s + w.payments.reduce((a, p) => a + p.amount, 0), 0);
-    return deposits + salesPaid + repPaid - withdrawals - purchasesPaid - exp - salaries
-      + ledgerNetFor(CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID], treasuryTransactions);
+    return moduleCaisseBalance(m, key, treasuryTransactions);
   };
 
   /**
@@ -482,8 +478,13 @@ function CashTxModal({
           <Field label="Montant (DA)" required><Input type="number" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
           <Field label="Date"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
         </div>
+        {/* Ce choix n'est plus un simple classement : il décide à QUELLE caisse
+            d'activité le montant est imputé. Le libellé promettait un rangement
+            dans le journal, et l'argent n'arrivait effectivement nulle part. */}
         <Field label="Partie concernée"
-          hint="Classement du mouvement dans le journal — l'argent entre ou sort de la caisse générale.">
+          hint={part === 'systeme'
+            ? "L'argent entre ou sort de la caisse générale, sans être imputé à une activité."
+            : `L'argent entre ou sort de la caisse générale ET compte dans la caisse ${PART_META[part].label}.`}>
           <Select value={part} onChange={e => setPart(e.target.value as TreasuryPart)}>
             {(Object.keys(PART_META) as TreasuryPart[]).map(p => <option key={p} value={p}>{PART_META[p].label}</option>)}
           </Select>

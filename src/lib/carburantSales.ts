@@ -32,7 +32,7 @@
  * un découvert qui n'existait pas.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { CAISSE_PART_ID, isCashAccount, ledgerNetFor, nozzleTankId } from '../store/AppContext';
+import { isCashAccount, nozzleTankId, partCashLedgerLines } from '../store/AppContext';
 import { within } from './period';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -408,7 +408,11 @@ export interface CarburantCash {
   clientCash: number;
   purchasesCash: number;
   expensesCash: number;
-  /** Virements au départ / à l'arrivée du coffre Carburant. */
+  /** Dépôts saisis dans la Caisse Générale et imputés au Carburant. */
+  deposits: number;
+  /** Retraits imputés au Carburant. */
+  withdrawals: number;
+  /** Virements au départ / à l'arrivée des tiroirs du Carburant. */
   transfers: number;
   lines: CarburantCashLine[];
 }
@@ -512,15 +516,19 @@ export function computeCarburantCash(app: any): CarburantCash {
     });
   }
 
-  // 5. Virements propres au coffre Carburant (versements en banque, apports).
-  for (const t of txs) {
-    const to = t.accountTo === CAISSE_PART_ID.carburant;
-    const fromCoffre = t.accountFrom === CAISSE_PART_ID.carburant;
-    if (to === fromCoffre) continue;   // ni l'un ni l'autre, ou les deux : sans effet
+  // 5. Opérations manuelles imputées au Carburant : dépôts, retraits, virements.
+  //    On ne regardait que le coffre `CAISSE_CARBURANT` — un dépôt saisi dans la
+  //    Caisse Générale avec « Carburant » en partie concernée n'entrait donc
+  //    NULLE PART, et la caisse de l'activité restait bloquée sur les seules
+  //    espèces des brigades.
+  for (const { tx: t, amount } of partCashLedgerLines('carburant', txs)) {
     lines.push({
-      id: t.id, date: t.date, nature: 'Virement',
-      label: t.description || 'Virement de caisse',
-      amount: to ? num(t.amount) : -num(t.amount),
+      id: t.id, date: t.date,
+      nature: t.kind === 'DEPOSIT' ? 'Dépôt' : t.kind === 'WITHDRAW' ? 'Retrait' : 'Virement',
+      label: t.description
+        || (t.kind === 'DEPOSIT' ? 'Dépôt de caisse'
+          : t.kind === 'WITHDRAW' ? 'Retrait de caisse' : 'Virement de caisse'),
+      amount,
       reference: t.chequeNumber || t.bordereauNumber,
     });
   }
@@ -538,7 +546,9 @@ export function computeCarburantCash(app: any): CarburantCash {
     clientCash: totalOf('Règlement client'),
     purchasesCash: -totalOf('Achat'),
     expensesCash: -totalOf('Dépense'),
-    transfers: ledgerNetFor(CAISSE_PART_ID.carburant, txs),
+    deposits: totalOf('Dépôt'),
+    withdrawals: -totalOf('Retrait'),
+    transfers: totalOf('Virement'),
     lines,
   };
 }

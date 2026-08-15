@@ -11,7 +11,7 @@
 import { ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale } from './bizConfig';
 import { unpaidSupplierInvoices, purchasePaid, purchaseRest } from './supplierDebt';
 import { computeCarburantSales, computeCarburantCash, FuelBrigadeSale } from './carburantSales';
-import { CAISSE_PART_ID, ledgerNetFor } from '../store/AppContext';
+import { partCashLedgerLines } from '../store/AppContext';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -159,10 +159,72 @@ export interface PartReport {
 }
 
 /** Résume une liste de mouvements de caisse en ses deux flux. */
-const flowOf = (rows: CaisseMovementRow[]) => ({
+export const caisseFlowOf = (rows: CaisseMovementRow[]) => ({
   in: rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0),
   out: rows.filter(r => r.amount < 0).reduce((s, r) => s - r.amount, 0),
 });
+const flowOf = caisseFlowOf;
+
+/**
+ * Le tiroir d'une partie commerciale, mouvement par mouvement — la SEULE
+ * définition, partagée par le rapport de la partie et l'écran Caisse Générale.
+ *
+ * Ses propres documents (dépôts et retraits de caisse, ventes encaissées,
+ * interventions payées, achats réglés, dépenses, salaires) PLUS les opérations
+ * manuelles du grand livre qui lui sont imputées. Ce dernier terme manquait :
+ * un dépôt saisi dans la Caisse Générale avec « Cafétéria » en partie concernée
+ * n'arrivait nulle part, et le classement choisi par l'utilisateur ne servait
+ * qu'à colorer une ligne de journal.
+ */
+export function moduleCaisseMovements(
+  st: ModuleState, key: ModuleKey, txs: any[] = [],
+): CaisseMovementRow[] {
+  return [
+    ...st.caisse.map(c => ({
+      id: `csh-${c.id}`, date: c.date,
+      nature: c.type === 'deposit' ? 'Dépôt' : 'Retrait',
+      label: c.description || (c.type === 'deposit' ? 'Dépôt de caisse' : 'Retrait de caisse'),
+      amount: c.type === 'deposit' ? num(c.amount) : -num(c.amount),
+    })),
+    // L'argent rendu au client sur un retour est bien sorti du tiroir : c'est
+    // `netCashOfSale` qui le sait, pas le montant facturé.
+    ...st.sales.filter(x => netCashOfSale(x) !== 0).map(x => ({
+      id: `sale-${x.id}`, date: x.date, nature: 'Vente',
+      label: `Vente ${x.ref} — ${x.clientName}`, amount: netCashOfSale(x),
+    })),
+    ...(st.reparations || []).filter(r => num(r.paid) > 0).map(r => ({
+      id: `rep-${r.id}`, date: r.date, nature: 'Vente',
+      label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
+      amount: num(r.paid),
+    })),
+    ...st.purchases.filter(x => num(x.paid) > 0).map(x => ({
+      id: `pur-${x.id}`, date: x.date, nature: 'Achat',
+      label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
+    })),
+    ...st.expenses.map(e => ({
+      id: `exp-${e.id}`, date: e.date, nature: 'Dépense',
+      label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -num(e.amount),
+    })),
+    ...st.workers.flatMap(w => (w.payments || []).map(p => ({
+      id: `pay-${p.id}`, date: p.date, nature: 'Salaire',
+      label: `Salaire ${w.name} — ${p.period}`, amount: -num(p.amount),
+    }))),
+    ...partCashLedgerLines(key as any, (txs || []) as any).map(({ tx: t, amount }) => ({
+      id: t.id, date: t.date,
+      nature: t.kind === 'DEPOSIT' ? 'Dépôt' : t.kind === 'WITHDRAW' ? 'Retrait' : 'Virement',
+      label: t.description
+        || (t.kind === 'DEPOSIT' ? 'Dépôt de caisse'
+          : t.kind === 'WITHDRAW' ? 'Retrait de caisse' : 'Virement de caisse'),
+      amount,
+      reference: t.chequeNumber || t.bordereauNumber,
+    })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
+/** Le solde du tiroir d'une partie commerciale — la somme de ses mouvements. */
+export function moduleCaisseBalance(st: ModuleState, key: ModuleKey, txs: any[] = []): number {
+  return moduleCaisseMovements(st, key, txs).reduce((s, m) => s + m.amount, 0);
+}
 
 // ─── Coût de revient d'une ligne vendue ──────────────────────────────────────
 /** Ce qu'une ligne vendue peut être : d'où vient réellement la marchandise. */
@@ -445,50 +507,9 @@ export function computeModuleReport(
   const stockValue = st.products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0);
 
   // ── Le solde de caisse, ligne par ligne ───────────────────────────────────
-  // Mêmes termes que l'écran Caisse Générale, dans le même ordre : dépôts,
-  // encaissements, retraits, achats réglés, dépenses, salaires, puis les
-  // virements du coffre de la partie. Les lignes sont le calcul lui-même, ce qui
-  // rend un solde négatif lisible au lieu d'être subi.
-  const caisseMovements: CaisseMovementRow[] = [
-    ...st.caisse.map(c => ({
-      id: `csh-${c.id}`, date: c.date,
-      nature: c.type === 'deposit' ? 'Dépôt' : 'Retrait',
-      label: c.description || (c.type === 'deposit' ? 'Dépôt de caisse' : 'Retrait de caisse'),
-      amount: c.type === 'deposit' ? num(c.amount) : -num(c.amount),
-    })),
-    // L'argent rendu au client sur un retour est bien sorti du tiroir : c'est
-    // `netCashOfSale` qui le sait, pas le montant facturé.
-    ...st.sales.filter(x => netCashOfSale(x) !== 0).map(x => ({
-      id: `sale-${x.id}`, date: x.date, nature: 'Vente',
-      label: `Vente ${x.ref} — ${x.clientName}`, amount: netCashOfSale(x),
-    })),
-    ...(st.reparations || []).filter(r => num(r.paid) > 0).map(r => ({
-      id: `rep-${r.id}`, date: r.date, nature: 'Vente',
-      label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
-      amount: num(r.paid),
-    })),
-    ...st.purchases.filter(x => num(x.paid) > 0).map(x => ({
-      id: `pur-${x.id}`, date: x.date, nature: 'Achat',
-      label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
-    })),
-    ...st.expenses.map(e => ({
-      id: `exp-${e.id}`, date: e.date, nature: 'Dépense',
-      label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -num(e.amount),
-    })),
-    ...st.workers.flatMap(w => (w.payments || []).map(p => ({
-      id: `pay-${p.id}`, date: p.date, nature: 'Salaire',
-      label: `Salaire ${w.name} — ${p.period}`, amount: -num(p.amount),
-    }))),
-    ...(txs || [])
-      .filter((t: any) => (t.accountTo === CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID])
-        !== (t.accountFrom === CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID]))
-      .map((t: any) => ({
-        id: t.id, date: t.date, nature: 'Virement',
-        label: t.description || 'Virement de caisse',
-        amount: t.accountTo === CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID] ? num(t.amount) : -num(t.amount),
-        reference: t.chequeNumber || t.bordereauNumber,
-      })),
-  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Le calcul vit dans `moduleCaisseMovements`, que l'écran Caisse Générale
+  // appelle aussi : les deux écrans ne peuvent donc plus annoncer deux soldes.
+  const caisseMovements = moduleCaisseMovements(st, key, txs);
   const caisseBalance = caisseMovements.reduce((s, m) => s + m.amount, 0);
   const netGain = grossMargin - expensesTotal - salariesPaid - destroyedValue - lossValue;
 

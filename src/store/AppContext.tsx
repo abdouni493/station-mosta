@@ -645,6 +645,47 @@ export function ledgerNetFor(accountId: string, txs: TreasuryTransaction[]): num
   return net;
 }
 
+/**
+ * Effet d'UNE ligne du grand livre sur la caisse d'UNE activité.
+ *
+ * La caisse d'une activité, c'est l'argent liquide qu'elle détient — QUEL QUE
+ * SOIT le tiroir où il se trouve : son propre coffre (`CAISSE_CARBURANT`…) ou la
+ * caisse générale, quand le mouvement lui est imputé. Un dépôt saisi dans la
+ * Caisse Générale avec « Carburant » en partie concernée entre bien dans la
+ * caisse Carburant : il n'était compté nulle part, la partie qui le portait
+ * n'étant lue que sur son coffre.
+ *
+ * Les deux bouts sont examinés séparément, ce qui donne la bonne réponse même
+ * quand les deux appartiennent à l'activité : un virement de son coffre vers la
+ * caisse générale ne fait que déplacer son argent, et vaut donc zéro pour elle.
+ */
+export function partCashEffect(part: TreasuryPart, t: TreasuryTransaction): number {
+  const coffer = (CAISSE_PART_ID as Record<string, string>)[part];
+  /** Ce bout du mouvement est-il un tiroir de CETTE activité ? */
+  const mine = (id?: string) => !!id && (id === coffer || (id === CAISSE_ID && t.part === part));
+  return (mine(t.accountTo) ? t.amount : 0) - (mine(t.accountFrom) ? t.amount : 0);
+}
+
+/**
+ * Les opérations MANUELLES du grand livre qui touchent la caisse d'une activité
+ * — dépôts, retraits, virements, ajustements.
+ *
+ * Les lignes nées d'un document (`refType`) sont écartées : achats, dépenses,
+ * brigades et règlements clients sont déjà comptés depuis leur document. Sans
+ * ce filtre, chaque encaissement de brigade compterait deux fois.
+ */
+export function partCashLedgerLines(
+  part: TreasuryPart, txs: TreasuryTransaction[],
+): { tx: TreasuryTransaction; amount: number }[] {
+  const out: { tx: TreasuryTransaction; amount: number }[] = [];
+  for (const t of txs) {
+    if (t.refType) continue;
+    const amount = partCashEffect(part, t);
+    if (amount) out.push({ tx: t, amount });
+  }
+  return out;
+}
+
 /** Live solde of a bank account: its opening balance plus every movement. */
 export function bankBalanceOf(
   account: Pick<BankAccount, 'id' | 'initialBalance'>,
