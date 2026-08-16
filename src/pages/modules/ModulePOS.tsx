@@ -14,6 +14,10 @@
  *  • Accès rapide : l'utilisateur épingle les produits qui se vendent le plus et
  *    choisit leur ordre ; ils ouvrent la grille du comptoir.
  *  • Remise : en pourcentage ou en montant fixe, activée à la demande.
+ *  • AFFICHEUR CLIENT — option du poste : le second petit écran d'un tout-en-un
+ *    montre au client, en très gros chiffres, le total du panier au fur et à
+ *    mesure qu'on y ajoute des produits, puis la monnaie à rendre une fois la
+ *    vente encaissée (voir `components/biz/CustomerDisplay`).
  *  • Vente au détail : un produit « au détail » demande la quantité dans son
  *    unité (10 L sur un bidon de 50 L) et le stock est décrémenté d'autant.
  *  • Vente rapide de fiches techniques : une fiche marquée « vente directe »
@@ -33,7 +37,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ShoppingBag, Search, Plus, Minus, X, User, UserPlus, Percent, Check, Package,
   PlayCircle, StopCircle, Lock, Beaker, Layers, Wallet, AlertTriangle, Printer,
-  Star, ArrowUp, ArrowDown, ListOrdered, Zap, Users,
+  Star, ArrowUp, ArrowDown, ListOrdered, Zap, Users, Monitor, MonitorOff,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -46,6 +50,7 @@ import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import { useBizSessions } from '@/src/hooks/useBizSessions';
 import { PageHeader, Badge, Select, Field, Input, Textarea, Modal, money, formatDate } from '@/src/components/biz/Kit';
+import { useCustomerDisplay, CustomerDisplayState } from '@/src/components/biz/CustomerDisplay';
 import { ContactModal, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
 
 type LineKind = 'comptoir' | 'product' | 'fiche';
@@ -126,6 +131,11 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const [showClose, setShowClose] = useState(false);
   const [showOrganize, setShowOrganize] = useState(false);
   const [askPrint, setAskPrint] = useState<BizSale | null>(null);
+  // Afficheur client — la fenêtre posée sur le second écran du poste.
+  const [showDisplay, setShowDisplay] = useState(false);
+  // Le ticket qui vient d'être encaissé : l'afficheur montre le remerciement et
+  // la monnaie à rendre jusqu'au premier article du panier suivant.
+  const [lastReceipt, setLastReceipt] = useState<CustomerDisplayState['receipt']>(null);
 
   // ── Sellable catalogue ────────────────────────────────────────────────────
   const source = useMemo<Source[]>(() => {
@@ -233,11 +243,38 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const paid = paidStr === '' ? total : Number(paidStr);
   const rest = Math.max(0, total - paid);
 
+  // ── Afficheur client ──────────────────────────────────────────────────────
+  // Ce que le client lit sur le second écran. Il suit le panier ligne à ligne :
+  // dès qu'un produit y entre, le total change sous ses yeux.
+  const displayData = useMemo<CustomerDisplayState>(() => ({
+    title: stationFromSettings(settings).name || 'Station',
+    subtitle: cfg.label,
+    lines: cart.map(l => ({
+      id: l.id, name: l.name, qty: l.qty, unitPrice: l.unitPrice,
+      // L'unité n'est montrée que sur une vente au détail : « 2,5 L × 250,00 DA »
+      // se lit, « 3 unité × 120,00 DA » n'apprend rien.
+      unit: l.detailUnit,
+      total: l.qty * l.unitPrice,
+    })),
+    subtotal, discount: discountAmount, total,
+    receipt: lastReceipt,
+  }), [settings, cfg.label, cart, subtotal, discountAmount, total, lastReceipt]);
+
+  useCustomerDisplay(showDisplay, displayData, reason => {
+    setShowDisplay(false);
+    if (reason === 'blocked') {
+      toast.error("Afficheur bloqué — autorisez les fenêtres pop-up pour ce site, puis réessayez");
+    }
+  });
+
   // ── Cart ──────────────────────────────────────────────────────────────────
   // Aucune ligne n'est plafonnée par le stock : produit du catalogue, production
   // du comptoir ou fiche technique, tout se vend à découvert. `max` ne sert plus
   // qu'à CHIFFRER ce découvert pour le signaler au caissier.
   const pushLine = (s: Source, qty: number) => {
+    // Le client suivant est arrivé : l'afficheur quitte le remerciement de la
+    // vente précédente et repart sur le panier en cours.
+    setLastReceipt(null);
     setCart(prev => {
       const found = prev.find(l => l.id === s.id);
       if (found) return prev.map(l => l.id === s.id ? { ...l, qty: l.qty + qty } : l);
@@ -343,6 +380,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     toast.success((discountAmount > 0
       ? `Vente enregistrée — remise de ${money(discountAmount)} accordée`
       : 'Vente enregistrée') + shortNote);
+    // L'afficheur passe au remerciement : le client y lit ce qu'il a payé et la
+    // monnaie qu'on lui doit, au lieu d'un panier redevenu vide.
+    setLastReceipt({ total, paid, change: Math.max(0, paid - total) });
     setCart([]); setDiscountMode('none'); setDiscountStr(''); setPaidStr(''); setClientId(''); setPassage(true);
     setAskPrint(sale);
   };
@@ -378,21 +418,35 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   return (
     <div className="space-y-4 animate-fade-in">
       <PageHeader icon={ShoppingBag} title="Point de vente" subtitle={`${cfg.label} — caisse & encaissement`}
-        actions={mySession ? (
-          <div className="flex items-center gap-2">
-            <div className="hidden sm:block text-right">
-              <p className="text-[10px] uppercase font-bold text-slate-400">Ma session</p>
-              <p className="text-sm font-black text-[#002d87]">{mySession.workerName}</p>
-            </div>
-            <button className="btn-secondary" onClick={() => setShowClose(true)}>
-              <StopCircle className="w-4 h-4" /> Clôturer ma session
-            </button>
-          </div>
-        ) : (
-          <button className="btn-primary" onClick={() => setShowOpen(true)}>
-            <PlayCircle className="w-4 h-4" /> Ouvrir ma session
+        actions={<div className="flex items-center gap-2 flex-wrap">
+          {/* Afficheur client — la fenêtre à poser sur le petit second écran du
+              poste tout-en-un. Elle ne peut s'ouvrir que sur un clic : le
+              navigateur refuse une fenêtre que la page ouvrirait toute seule. */}
+          <button
+            onClick={() => setShowDisplay(v => !v)}
+            className={showDisplay ? 'btn-primary' : 'btn-secondary'}
+            title={showDisplay
+              ? "Éteindre l'afficheur client"
+              : "Ouvrir l'afficheur client — à glisser sur le second écran du poste"}>
+            {showDisplay ? <MonitorOff className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
+            <span className="hidden sm:inline">Afficheur client</span>
           </button>
-        )} />
+          {mySession ? (
+            <>
+              <div className="hidden sm:block text-right">
+                <p className="text-[10px] uppercase font-bold text-slate-400">Ma session</p>
+                <p className="text-sm font-black text-[#002d87]">{mySession.workerName}</p>
+              </div>
+              <button className="btn-secondary" onClick={() => setShowClose(true)}>
+                <StopCircle className="w-4 h-4" /> Clôturer ma session
+              </button>
+            </>
+          ) : (
+            <button className="btn-primary" onClick={() => setShowOpen(true)}>
+              <PlayCircle className="w-4 h-4" /> Ouvrir ma session
+            </button>
+          )}
+        </div>} />
 
       {/* Session gate — l'employé ouvre SA session ; celle d'un collègue restée
           ouverte ne le concerne pas et ne l'empêche pas de travailler. */}
