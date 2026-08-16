@@ -1509,18 +1509,20 @@ const Brigades = () => {
         {showEditModal && editingBrigade && (
           <div className="modal-shell z-[60] italic text-left">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowEditModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl rounded-[2.5rem] relative z-10 overflow-hidden flex flex-col h-auto shadow-2xl border border-blue-200 max-h-[var(--modal-max-h)]">
+            {/* Même géométrie que l'assistant : plus large sur un écran de PC,
+                sans jamais déborder sur un téléphone. */}
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl xl:max-w-5xl rounded-2xl sm:rounded-[2rem] relative z-10 overflow-hidden flex flex-col h-auto shadow-2xl border border-blue-200 max-h-[var(--modal-max-h)]">
               {/* Header - Blue gradient matching create modal */}
-              <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white p-6 flex justify-between items-center">
-                <div>
-                  <h3 className="font-black text-sm uppercase tracking-widest">✏️ Modifier Brigade</h3>
-                  <p className="text-[11px] text-blue-200 font-bold mt-1">Mise à jour des informations</p>
+              <div className="bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white px-4 py-3.5 sm:px-6 sm:py-5 flex justify-between items-center gap-3 shrink-0">
+                <div className="min-w-0">
+                  <h3 className="font-black text-[11px] sm:text-sm uppercase tracking-widest truncate">✏️ Modifier Brigade</h3>
+                  <p className="hidden sm:block text-[11px] text-blue-200 font-bold mt-1">Mise à jour des informations</p>
                 </div>
-                <button onClick={() => { setShowEditModal(false); setEditingBrigade(null); }} className="hover:bg-blue-700/50 p-2 rounded-lg transition-all"><X className="w-6 h-6" /></button>
+                <button onClick={() => { setShowEditModal(false); setEditingBrigade(null); }} className="hover:bg-blue-700/50 p-2 rounded-lg transition-all shrink-0"><X className="w-5 h-5 sm:w-6 sm:h-6" /></button>
               </div>
 
               {/* Content */}
-              <div className="p-8 space-y-6 overflow-y-auto custom-scrollbar flex-1">
+              <div className="p-4 sm:p-6 lg:p-8 space-y-5 sm:space-y-6 overflow-y-auto custom-scrollbar flex-1">
                 {/* Step 1: Chef & Shift Selection */}
                 <div className="space-y-4">
                   {/* Chef Selection */}
@@ -1575,7 +1577,7 @@ const Brigades = () => {
                   </div>
 
                   {/* Horaires */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                     <div className="space-y-2 p-4 bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl border-2 border-green-200">
                       <label className="text-[10px] font-black text-green-700 uppercase tracking-widest pl-1">🕐 Heure de Début</label>
                       <input 
@@ -1600,11 +1602,11 @@ const Brigades = () => {
                 {/* Pompistes Selection */}
                 {chefId && (
                   <div className="space-y-4 pt-4 border-t border-slate-200">
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
                       <label className="text-[10px] font-black text-blue-900 uppercase tracking-widest">👥 Pompistes de {brigadeChefs.find(c => c.id === chefId)?.name}</label>
-                      <span className="text-xs font-black text-white bg-gradient-to-r from-blue-900 to-blue-800 px-3 py-1 rounded-full">{selectedPompisteIds.length} sélectionné(s)</span>
+                      <span className="text-xs font-black text-white bg-gradient-to-r from-blue-900 to-blue-800 px-3 py-1 rounded-full shrink-0">{selectedPompisteIds.length} sélectionné(s)</span>
                     </div>
-                    <div className="space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
                       {(() => {
                         const chef = brigadeChefs.find(c => c.id === chefId);
                         const chefPompisteIds = chef?.pompisteIds || [];
@@ -1612,7 +1614,7 @@ const Brigades = () => {
                         
                         if (chefPompistes.length === 0) {
                           return (
-                            <div className="p-4 text-center bg-slate-50 rounded-xl border-2 border-dashed border-slate-300">
+                            <div className="sm:col-span-2 xl:col-span-3 p-4 text-center bg-slate-50 rounded-xl border-2 border-dashed border-slate-300">
                               <p className="text-sm text-slate-400 italic">Aucun pompiste assigné</p>
                             </div>
                           );
@@ -1651,7 +1653,7 @@ const Brigades = () => {
               </div>
 
               {/* Footer */}
-              <div className="p-6 bg-gradient-to-r from-slate-50 to-blue-50 border-t border-slate-200 flex gap-3">
+              <div className="px-4 sm:px-6 py-3 sm:py-4 bg-gradient-to-r from-slate-50 to-blue-50 border-t border-slate-200 flex gap-2 sm:gap-3 shrink-0">
                 <button
                   onClick={() => { setShowEditModal(false); setEditingBrigade(null); }}
                   className="flex-[1] py-3 px-4 bg-white text-slate-700 rounded-xl font-black text-xs uppercase hover:bg-slate-100 transition-all border-2 border-slate-200 hover:border-slate-300"
@@ -1722,23 +1724,44 @@ const Brigades = () => {
           return (
             <div className="modal-shell z-[60]">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-5xl rounded-[2rem] relative z-10 overflow-hidden flex flex-col h-[var(--modal-max-h)] shadow-2xl border border-slate-100">
+              {/* L'assistant occupe toute la hauteur utile et s'élargit avec
+                  l'écran : les six étapes n'ont plus à tenir dans une colonne
+                  étroite sur un poste de bureau, et rien ne déborde sur mobile. */}
+              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-5xl xl:max-w-7xl rounded-2xl sm:rounded-[2rem] relative z-10 overflow-hidden flex flex-col h-[var(--modal-max-h)] shadow-2xl border border-slate-100">
                 {/* Header — same navy/yellow identity as every other modal */}
-                <div className="p-6 text-white flex justify-between items-center shrink-0 border-b-2 border-[#FFB800]/55"
+                <div className="px-4 py-3.5 sm:px-6 sm:py-5 text-white flex justify-between items-center gap-3 shrink-0 border-b-2 border-[#FFB800]/55"
                   style={{ background: 'linear-gradient(120deg, #001233 0%, #001f5c 45%, #003087 100%)' }}>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                     <div className="modal-title-icon"><Users className="w-4 h-4" /></div>
-                    <div>
-                      <h3 className="font-black text-sm uppercase tracking-widest">{editingBrigade ? 'Modifier Brigade' : 'Nouvelle Brigade'}</h3>
-                      <p className="text-[11px] text-blue-200 font-bold mt-0.5">{editingBrigade ? `Édition de la brigade ${editingBrigade.id.slice(0, 8)}` : "Création complète d'une brigade clôturée"}</p>
+                    <div className="min-w-0">
+                      <h3 className="font-black text-[11px] sm:text-sm uppercase tracking-widest truncate">{editingBrigade ? 'Modifier Brigade' : 'Nouvelle Brigade'}</h3>
+                      <p className="hidden sm:block text-[11px] text-blue-200 font-bold mt-0.5 truncate">{editingBrigade ? `Édition de la brigade ${editingBrigade.id.slice(0, 8)}` : "Création complète d'une brigade clôturée"}</p>
                     </div>
                   </div>
-                  <button onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="modal-close"><X className="w-5 h-5" /></button>
+                  <button onClick={() => { setShowModal(false); setEditingBrigade(null); }} className="modal-close shrink-0"><X className="w-5 h-5" /></button>
                 </div>
 
-                {/* Progress Bar */}
-                <div className="px-8 pt-6 pb-4 border-b border-slate-100 shrink-0">
-                  <div className="flex items-center justify-between">
+                {/* Progress Bar — sur mobile, six pastilles et six libellés ne
+                    tenaient pas : l'étape en cours s'y annonce en toutes lettres
+                    au-dessus d'une barre de progression. */}
+                <div className="px-4 sm:px-8 pt-3 sm:pt-6 pb-3 sm:pb-4 border-b border-slate-100 shrink-0">
+                  <div className="sm:hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[11px] font-black uppercase tracking-widest text-[#002d87] flex items-center gap-1.5">
+                        {React.createElement(STEPS[step - 1]?.icon || Users, { className: 'w-3.5 h-3.5' })}
+                        {STEPS[step - 1]?.label}
+                      </p>
+                      <span className="text-[10px] font-black text-slate-400">Étape {step} / {STEPS.length}</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <motion.div
+                        initial={false}
+                        animate={{ width: `${(step / STEPS.length) * 100}%` }}
+                        className="h-full rounded-full bg-gradient-to-r from-[#FFB800] to-[#e6a000]"
+                      />
+                    </div>
+                  </div>
+                  <div className="hidden sm:flex items-center justify-between">
                     {STEPS.map((s, idx) => {
                       const Icon = s.icon;
                       const isActive = step === s.num;
@@ -1772,7 +1795,7 @@ const Brigades = () => {
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 custom-scrollbar">
 
                   {/* STEP 1: Pompistes de la brigade */}
                   {step === 1 && (
@@ -1792,7 +1815,7 @@ const Brigades = () => {
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                         {pompistes.filter(p => p.status === 'Actif').map(p => {
                           const on = wizPompisteIds.includes(p.id);
                           return (
@@ -1969,7 +1992,7 @@ const Brigades = () => {
                       {/* Section A — Tanks */}
                       <div className="space-y-3">
                         <h4 className="text-[10px] font-black text-[#002d87] uppercase tracking-widest">Niveaux de départ des cuves</h4>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
                         {tanks.map(t => {
                           const startLit = startTankLiters(t);
                           const pct = t.capacity > 0 ? Math.min(100, (startLit / t.capacity) * 100) : 0;
@@ -2022,7 +2045,7 @@ const Brigades = () => {
                                   <p className="text-[9px] text-slate-400 truncate">{cuves || 'aucune cuve'}</p>
                                 </div>
                               </div>
-                              <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <div className="p-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
                                 {nozzles.map(n => (
                                   <div key={n.id} className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-100">
                                     <div className="flex items-center gap-2 min-w-0">
@@ -2227,7 +2250,7 @@ const Brigades = () => {
                                         {filled}/{list.length} renseigné(s)
                                       </span>
                                     </div>
-                                    <div className="p-4 space-y-3">{list.map(renderNozzle)}</div>
+                                    <div className="p-3 sm:p-4 grid grid-cols-1 xl:grid-cols-2 gap-3">{list.map(renderNozzle)}</div>
                                   </div>
                                 );
                               })}
@@ -2286,6 +2309,12 @@ const Brigades = () => {
                           const versedTotal = myVersements.reduce((sum, v) => sum + (v.amount || 0), 0);
                           const cash = (pompistePayments[s.pompisteId] ?? 0) + versedTotal;
                           const justifs = pompisteJustifications[s.pompisteId] || [];
+                          // La dernière justification ajoutée s'affiche EN HAUT :
+                          // en enfilant TAG, TPE puis crédit client, la ligne qui
+                          // vient d'apparaître finissait sous toutes les autres, et
+                          // il fallait dérouler pour saisir son montant. L'ordre
+                          // enregistré, lui, ne change pas.
+                          const justifsNewestFirst = [...justifs].reverse();
                           const justifTotal = justifs.reduce((sum, j) => sum + (j.amount || 0), 0);
                           const ecartRestant = s.theoretical - cash - justifTotal;
                           const addVersement = () => setVersements(prev => ({
@@ -2309,16 +2338,16 @@ const Brigades = () => {
                           const addJustif = (j: any) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: [...(prev[s.pompisteId] || []), j] }));
                           const removeJustif = (jid: string) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: (prev[s.pompisteId] || []).filter(x => x.id !== jid) }));
                           return (
-                            <div key={s.pompisteId} className="p-4 rounded-2xl border-2 border-slate-200 bg-white space-y-3">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-8 h-8 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center font-black text-xs">{s.name[0]}</div>
-                                  <p className="text-sm font-black text-slate-800">{s.name}</p>
+                            <div key={s.pompisteId} className="p-3 sm:p-4 rounded-2xl border-2 border-slate-200 bg-white space-y-3">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="w-8 h-8 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center font-black text-xs shrink-0">{s.name[0]}</div>
+                                  <p className="text-sm font-black text-slate-800 truncate">{s.name}</p>
                                 </div>
                                 <p className="text-[10px] font-black text-blue-700">Théorique: {s.theoretical.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               </div>
 
-                              <div className="grid grid-cols-3 gap-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                 <div>
                                   <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Espèces remises (optionnel)</label>
                                   <input type="number" placeholder="Vide = brigade en attente"
@@ -2358,21 +2387,24 @@ const Brigades = () => {
                                 ) : (
                                   <div className="space-y-2">
                                     {myVersements.map(v => (
-                                      <div key={v.id} className="grid grid-cols-12 gap-2 items-center">
+                                      // Quatre champs sur une ligne de 12 colonnes devenaient
+                                      // illisibles sur un téléphone : ils passent à la ligne
+                                      // d'eux-mêmes tant que la place manque.
+                                      <div key={v.id} className="flex flex-wrap items-center gap-2">
                                         <input type="number" placeholder="Montant"
-                                          className="col-span-3 input-field h-9 font-black text-right"
+                                          className="input-field h-9 font-black text-right w-28 shrink-0"
                                           value={v.amount || ''}
                                           onChange={e => setVersement(v.id, { amount: parseFloat(e.target.value) || 0 })} />
                                         <input type="datetime-local"
-                                          className="col-span-4 input-field h-9 font-bold text-xs"
+                                          className="input-field h-9 font-bold text-xs flex-1 min-w-[10rem]"
                                           value={v.at}
                                           onChange={e => setVersement(v.id, { at: e.target.value })} />
                                         <input placeholder="Note (optionnel)"
-                                          className="col-span-4 input-field h-9 text-xs"
+                                          className="input-field h-9 text-xs flex-1 min-w-[8rem]"
                                           value={v.notes || ''}
                                           onChange={e => setVersement(v.id, { notes: e.target.value })} />
-                                        <button onClick={() => rmVersement(v.id)}
-                                          className="col-span-1 h-9 rounded-lg text-red-500 hover:bg-red-50 flex items-center justify-center">
+                                        <button onClick={() => rmVersement(v.id)} title="Retirer ce versement"
+                                          className="h-9 w-9 shrink-0 rounded-lg text-red-500 hover:bg-red-50 flex items-center justify-center">
                                           <X className="w-4 h-4" />
                                         </button>
                                       </div>
@@ -2464,18 +2496,31 @@ const Brigades = () => {
                                 );
                               })()}
 
-                              {/* Justification list */}
+                              {/* Justification list — de la plus récente à la plus ancienne */}
                               {justifs.length > 0 && (
                                 <div className="space-y-2">
-                                  {justifs.map(j => {
+                                  <div className="flex items-center justify-between px-0.5">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                                      Justifications ({justifs.length})
+                                    </p>
+                                    <p className="text-[9px] font-bold text-slate-400 uppercase">La plus récente en premier</p>
+                                  </div>
+                                  {justifsNewestFirst.map((j, jIdx) => {
                                     const patch = (changes: Partial<typeof j>) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: (prev[s.pompisteId] || []).map(x => x.id === j.id ? { ...x, ...changes } : x) }));
+                                    const isNewest = jIdx === 0;
                                     return (
-                                    <div key={j.id} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-2">
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 uppercase">
-                                          {j.type === 'CLIENT_CREDIT' ? 'CRÉDIT CLIENT' : j.type === 'CLIENT_AVANCE' ? 'AVANCE CLIENT' : j.type}
-                                        </span>
-                                        <button onClick={() => removeJustif(j.id)} className="text-red-400 hover:text-red-600"><X className="w-3.5 h-3.5" /></button>
+                                    <div key={j.id} className={cn("p-3 rounded-xl border space-y-2 transition-all",
+                                      isNewest ? "bg-[#fff8e6] border-[#FFB800]/60 shadow-sm" : "bg-slate-50 border-slate-100")}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 uppercase shrink-0">
+                                            {j.type === 'CLIENT_CREDIT' ? 'CRÉDIT CLIENT' : j.type === 'CLIENT_AVANCE' ? 'AVANCE CLIENT' : j.type}
+                                          </span>
+                                          {isNewest && (
+                                            <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-[#001f5c] text-[#FFB800] uppercase shrink-0">Nouveau</span>
+                                          )}
+                                        </div>
+                                        <button onClick={() => removeJustif(j.id)} className="text-red-400 hover:text-red-600 shrink-0"><X className="w-3.5 h-3.5" /></button>
                                       </div>
 
                                       {/* Client name (credit/avance) */}
@@ -2540,13 +2585,14 @@ const Brigades = () => {
                   )}
                 </div>
 
-                {/* Footer — the app's own primary/outline buttons */}
-                <div className="px-6 py-4 bg-gradient-to-b from-slate-50/85 to-slate-50 border-t border-slate-200 flex items-center gap-3 shrink-0">
-                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-auto hidden sm:block">
+                {/* Footer — the app's own primary/outline buttons. Les boutons
+                    passent pleine largeur sur mobile plutôt que de se tasser. */}
+                <div className="px-4 sm:px-6 py-3 sm:py-4 bg-gradient-to-b from-slate-50/85 to-slate-50 border-t border-slate-200 flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-auto hidden lg:block">
                     Étape {step} / {STEPS.length} — {STEPS[step - 1]?.label}
                   </span>
                   {step > 1 && (
-                    <button onClick={() => setStep(s => s - 1)} disabled={isSubmitting} className="btn-outline">
+                    <button onClick={() => setStep(s => s - 1)} disabled={isSubmitting} className="btn-outline flex-1 sm:flex-none justify-center">
                       Retour
                     </button>
                   )}
@@ -2566,7 +2612,7 @@ const Brigades = () => {
                         setStep(s => s + 1);
                       }}
                       disabled={isSubmitting || !canGoNext}
-                      className="btn-primary min-w-[13rem] text-[11px]"
+                      className="btn-primary flex-1 sm:flex-none sm:min-w-[13rem] justify-center text-[11px]"
                     >
                       {isSubmitting ? (<><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>) : (<>Suivant <ArrowRight className="w-4 h-4" /></>)}
                     </button>
@@ -2576,7 +2622,7 @@ const Brigades = () => {
                       <button
                         onClick={() => handleStartBrigade('En attente')}
                         disabled={isSubmitting || !canGoNext}
-                        className="px-4 py-2.5 rounded-xl border-2 border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-950 font-black text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all shadow-sm disabled:opacity-50"
+                        className="px-4 py-2.5 rounded-xl border-2 border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-950 font-black text-[11px] uppercase tracking-wider flex flex-1 sm:flex-none items-center justify-center gap-2 transition-all shadow-sm disabled:opacity-50"
                       >
                         {isSubmitting ? (
                           <LoaderCircle className="w-4 h-4 animate-spin" />
@@ -2592,7 +2638,7 @@ const Brigades = () => {
                       <button
                         onClick={() => handleStartBrigade('Clôturée')}
                         disabled={isSubmitting || !canGoNext}
-                        className="btn-primary min-w-[13rem] text-[11px] flex items-center justify-center gap-2"
+                        className="btn-primary flex-1 sm:flex-none sm:min-w-[13rem] text-[11px] flex items-center justify-center gap-2"
                       >
                         {isSubmitting ? (
                           <><LoaderCircle className="w-4 h-4 animate-spin" />Traitement...</>

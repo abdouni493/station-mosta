@@ -15,11 +15,11 @@
  * so the general report can never disagree with them.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { BizState, ModuleKey, MODULES, netCashOfSale } from './bizConfig';
+import { BizState, ModuleKey, MODULES, netCashOfSale, bizExpensePaidInCash } from './bizConfig';
 import { within } from './period';
 import { computeCarburantCash } from './carburantSales';
 import { moduleCaisseBalance } from './bizReporting';
-import { expensePartOf } from '../store/AppContext';
+import { expensePartOf, cashEffectOf, treasuryEffectOf } from '../store/AppContext';
 
 export const CAISSE_ID = 'CAISSE';
 
@@ -74,8 +74,15 @@ export interface TreasuryMovement {
   part: TreasuryPartKey;
   partLabel: string;
   label: string;
-  /** Signed from the station's point of view: > 0 = encaissement. */
+  /**
+   * Effet sur les ESPÈCES de la station : > 0 = encaissement. Vaut 0 quand tout
+   * s'est joué en banque — un règlement par virement ne vide aucun tiroir.
+   */
   amount: number;
+  /** Montant de l'opération, toujours positif : ce qui a bougé, où que ce soit. */
+  gross: number;
+  /** L'argent a bougé sur un compte bancaire, pas dans un tiroir. */
+  bank: boolean;
   accounts?: string;
   reference?: string;
   /** True for ledger lines (editable in Caisse Générale), false for documents. */
@@ -178,8 +185,10 @@ export interface TreasuryReport {
   accounts: TreasuryAccount[];
   partBalances: TreasuryPartBalance[];
   movements: TreasuryMovement[];
-  /** Period flows on the consolidated journal. */
+  /** Period flows on the consolidated journal — ESPÈCES uniquement. */
   inflow: number; outflow: number; net: number;
+  /** Ce qui a bougé en BANQUE sur la période, sans jamais passer par un tiroir. */
+  bankMoves: number;
   byNature: { nature: string; count: number; inflow: number; outflow: number; net: number }[];
   byPart: { part: TreasuryPartKey; label: string; inflow: number; outflow: number; net: number }[];
   counts: { accounts: number; movements: number; ledgerLines: number };
@@ -326,23 +335,26 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
 
   // ── Consolidated journal ───────────────────────────────────────────────────
   const all: TreasuryMovement[] = [];
-  const push = (m: Omit<TreasuryMovement, 'partLabel'>) =>
-    all.push({ ...m, partLabel: TREASURY_PART_LABEL[m.part] });
+  const push = (m: Omit<TreasuryMovement, 'partLabel' | 'gross' | 'bank'> & { gross?: number; bank?: boolean }) =>
+    all.push({
+      gross: Math.abs(m.amount), bank: false,
+      ...m, partLabel: TREASURY_PART_LABEL[m.part],
+    });
 
   // 1. Treasury ledger — the only rows that move the caisses of the station.
+  //    Le signe vient des DEUX COMPTES de la ligne, jamais de sa nature : un
+  //    achat, une dépense ou un salaire réglé par VIREMENT BANCAIRE a débité la
+  //    banque et n'a jamais vidé un tiroir. Le compter en décaissement d'espèces
+  //    sortait le même montant deux fois du rapport (même règle que l'écran
+  //    Caisse Générale, qui ne peut donc pas annoncer d'autres totaux).
   for (const t of txs) {
     const nature = TX_LABEL[t.kind] || t.kind;
-    let amount = num(t.amount);
-    if (t.kind === 'WITHDRAW') amount = -amount;
-    // Un virement est signé du point de vue des CAISSES : décaissement quand
-    // l'argent quitte l'une d'elles, encaissement quand il y arrive, neutre
-    // entre deux comptes bancaires. Ne regarder que la caisse générale faisait
-    // compter pour zéro les virements des caisses d'activité.
-    else if (t.kind === 'TRANSFER') amount = isCashAccount(t.accountFrom) ? -amount : (isCashAccount(t.accountTo) ? amount : 0);
-    else if (['PURCHASE', 'EXPENSE', 'SALARY'].includes(t.kind)) amount = -amount;
+    const amount = cashEffectOf(t);
     push({
       id: t.id, date: t.date, nature, part: (t.part || 'systeme') as TreasuryPartKey,
       label: t.description || nature, amount, isLedger: true,
+      gross: Math.abs(amount || treasuryEffectOf(t) || num(t.amount)),
+      bank: amount === 0,
       accounts: [t.accountFrom && accName(t.accountFrom), t.accountTo && accName(t.accountTo)].filter(Boolean).join(' → ') || undefined,
       reference: refOf(t),
     });
@@ -366,12 +378,16 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   }
   for (const e of expenses) {
     if (ledgered.has(`expense:${e.id}`)) continue;
+    // Payée depuis un compte bancaire, elle n'a rien pris à la caisse.
+    const paidInCash = !e.accountId || isCashAccount(e.accountId);
     push({
       // La dépense appartient à l'activité qui la supporte, pas au Carburant
       // par défaut : c'est ce classement qui décide de quelle caisse elle sort.
       id: `exp-${e.id}`, date: e.date, nature: 'Dépense',
       part: expensePartOf(e) as TreasuryPartKey, isLedger: false,
-      label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(), amount: -num(e.amount),
+      label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(),
+      amount: paidInCash ? -num(e.amount) : 0,
+      gross: Math.abs(num(e.amount)), bank: !paidInCash,
     });
   }
   for (const a of accountings) {
@@ -410,10 +426,15 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     }));
     // Une dépense de partie réglée par la BANQUE a écrit sa propre ligne au
     // grand livre : la repousser ici comptait le même argent deux fois.
-    (m.expenses || []).filter(e => !ledgered.has(`biz_expense:${e.id}`)).forEach(e => push({
-      id: `${key}-exp-${e.id}`, date: e.date, nature: 'Dépense', part, isLedger: false,
-      label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -num(e.amount),
-    }));
+    (m.expenses || []).filter(e => !ledgered.has(`biz_expense:${e.id}`)).forEach(e => {
+      const paidInCash = bizExpensePaidInCash(e);
+      push({
+        id: `${key}-exp-${e.id}`, date: e.date, nature: 'Dépense', part, isLedger: false,
+        label: `${e.name}${e.description ? ` — ${e.description}` : ''}`,
+        amount: paidInCash ? -num(e.amount) : 0,
+        gross: Math.abs(num(e.amount)), bank: !paidInCash,
+      });
+    });
     (m.caisse || []).forEach(c => push({
       id: `${key}-csh-${c.id}`, date: c.date, part, isLedger: false,
       nature: c.type === 'deposit' ? 'Dépôt' : 'Retrait',
@@ -482,6 +503,9 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
 
   const inflow = movements.filter(m => m.amount > 0).reduce((s, m) => s + m.amount, 0);
   const outflow = movements.filter(m => m.amount < 0).reduce((s, m) => s - m.amount, 0);
+  // Ce qui a bougé sans passer par un tiroir : achats, dépenses et salaires
+  // réglés depuis un compte bancaire, encaissements TPE, virements internes.
+  const bankMoves = movements.filter(m => m.bank).reduce((s, m) => s + m.gross, 0);
 
   return {
     from, to,
@@ -489,7 +513,7 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     caisseOpening, caisseIn, caisseOut, caisseDetail,
     bankOpening, bankIn, bankOut,
     accounts, partBalances, movements,
-    inflow, outflow, net: inflow - outflow,
+    inflow, outflow, net: inflow - outflow, bankMoves,
     byNature, byPart,
     counts: {
       accounts: accounts.length,

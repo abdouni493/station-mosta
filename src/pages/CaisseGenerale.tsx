@@ -26,11 +26,11 @@ import { newId } from '@/src/lib/utils';
 import {
   useAppState, useAppDispatch, useModulePermission,
   TreasuryTransaction, TreasuryPart, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
-  accountLabelOf, isCashAccount, ledgerNetFor, bankBalanceOf, caisseBalanceOf,
-  cashAccountOfPart, expensePartOf,
+  accountLabelOf, isCashAccount, bankBalanceOf, caisseBalanceOf,
+  cashAccountOfPart, expensePartOf, cashEffectOf, treasuryEffectOf,
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
-import { MODULES, ModuleKey } from '../lib/bizConfig';
+import { MODULES, ModuleKey, bizExpensePaidInCash } from '../lib/bizConfig';
 import { carburantCashBalance } from '../lib/carburantSales';
 import { moduleCaisseBalance } from '../lib/bizReporting';
 import {
@@ -48,12 +48,24 @@ interface Movement {
   label: string;
   nature: string;
   part: TreasuryPart;
-  /** Signed against the station's money: > 0 = encaissement. */
+  /**
+   * Effet sur les ESPÈCES de la station : > 0 = argent entré dans un tiroir.
+   * Vaut 0 quand l'opération s'est jouée entièrement en banque — un règlement
+   * par virement bancaire ne vide aucune caisse.
+   */
   amount: number;
+  /** Montant de l'opération, toujours positif : ce qui a bougé, où que ce soit. */
+  gross: number;
+  /** L'argent a bougé sur un compte bancaire, pas dans un tiroir. */
+  bank: boolean;
   /** Ledger lines can be edited/deleted; document lines are read-only here. */
   tx?: TreasuryTransaction;
   account?: string;
 }
+
+/** Un mouvement d'espèces pur — montant signé, rien en banque. */
+const cashRow = (m: Omit<Movement, 'gross' | 'bank'>): Movement =>
+  ({ ...m, gross: Math.abs(m.amount), bank: false });
 
 const PART_META: Record<TreasuryPart, { label: string; icon: React.ElementType; tone: string }> = {
   carburant: { label: 'Carburant', icon: Fuel, tone: '#003087' },
@@ -130,15 +142,13 @@ export default function CaisseGenerale() {
     const accName = (id?: string) => (id ? accountLabelOf(id, accounts, '') || undefined : undefined);
 
     // 1. Treasury ledger — the only rows that move the caisses of the station.
+    //    Le signe vient des DEUX COMPTES de la ligne, jamais de sa nature : un
+    //    achat ou une dépense réglé par virement bancaire a débité la banque, et
+    //    n'a jamais vidé un tiroir. Le compter ici comme une sortie d'espèces
+    //    faisait payer le même montant deux fois à l'écran.
     for (const t of treasuryTransactions) {
       const nature = TX_LABEL[t.kind] || t.kind;
-      // A transfer is signed from the cash boxes' point of view: it is a
-      // décaissement when the money leaves one of them, an encaissement when it
-      // arrives, and neutral between two bank accounts.
-      let amount = t.amount;
-      if (t.kind === 'WITHDRAW') amount = -t.amount;
-      else if (t.kind === 'TRANSFER') amount = isCashAccount(t.accountFrom) ? -t.amount : (isCashAccount(t.accountTo) ? t.amount : 0);
-      else if (['PURCHASE', 'EXPENSE', 'SALARY'].includes(t.kind)) amount = -t.amount;
+      const amount = cashEffectOf(t);
       out.push({
         id: t.id,
         date: t.date,
@@ -146,6 +156,8 @@ export default function CaisseGenerale() {
         nature,
         part: t.part,
         amount,
+        gross: Math.abs(amount || treasuryEffectOf(t) || t.amount),
+        bank: amount === 0,
         tx: t,
         account: [accName(t.accountFrom), accName(t.accountTo)].filter(Boolean).join(' → ') || undefined,
       });
@@ -158,20 +170,26 @@ export default function CaisseGenerale() {
     for (const p of purchases) {
       if (ledgered.has(`purchase:${p.id}`)) continue;
       const supplier = state.suppliers.find(s => s.id === p.supplierId);
-      out.push({
+      // Un achat d'avant les règlements détaillés est réputé payé en espèces —
+      // même convention que la caisse Carburant (`lib/carburantSales`).
+      out.push(cashRow({
         id: `pur-${p.id}`, date: p.date, nature: 'Achat', part: 'carburant',
         label: `Achat carburant ${p.invoiceNumber ? `n° ${p.invoiceNumber}` : ''} — ${supplier?.name || 'Fournisseur'}`,
         amount: -(p.amountPaid || 0),
-      });
+      }));
     }
     for (const e of expenses) {
       if (ledgered.has(`expense:${e.id}`)) continue;
+      // Payée depuis un compte bancaire, elle n'a rien pris à la caisse.
+      const paidInCash = !e.accountId || isCashAccount(e.accountId);
+      const amount = -(e.amount || 0);
       out.push({
         // La dépense est imputée à l'activité qui la paie : c'est elle qui la
         // porte dans son rapport et dont la caisse se vide.
         id: `exp-${e.id}`, date: e.date, nature: 'Dépense', part: expensePartOf(e),
         label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(),
-        amount: -(e.amount || 0),
+        amount: paidInCash ? amount : 0,
+        gross: Math.abs(amount), bank: !paidInCash,
         account: accName(e.accountId || cashAccountOfPart(expensePartOf(e))),
       });
     }
@@ -181,11 +199,11 @@ export default function CaisseGenerale() {
       // encaissements de la période. Même règle que pour les achats et dépenses.
       if (ledgered.has(`brigade:${a.brigadeId}`)) continue;
       const br = brigades.find(b => b.id === a.brigadeId);
-      out.push({
+      out.push(cashRow({
         id: `bri-${a.id}`, date: br?.date || new Date().toISOString(), nature: 'Brigade', part: 'carburant',
         label: `Encaissement brigade ${br ? `${br.shift} du ${formatDate(br.date)}` : ''}`.trim(),
         amount: a.cashReceived || 0,
-      });
+      }));
     }
 
     // 3. Business parts (Cafétéria / Lavage) — sales, interventions, purchases…
@@ -193,35 +211,42 @@ export default function CaisseGenerale() {
       const m = biz[key];
       if (!m) return;
       const part = key as TreasuryPart;
-      m.sales.forEach(s => out.push({
+      m.sales.forEach(s => out.push(cashRow({
         id: `${key}-sale-${s.id}`, date: s.date, nature: 'Vente', part,
         label: `Vente ${s.ref} — ${s.clientName}`, amount: s.paid,
-      }));
-      m.reparations.filter(r => r.paid > 0).forEach(r => out.push({
+      })));
+      m.reparations.filter(r => r.paid > 0).forEach(r => out.push(cashRow({
         id: `${key}-rep-${r.id}`, date: r.date, nature: 'Vente', part,
         label: `${r.kind === 'lavage' ? 'Lavage' : 'Réparation'} ${r.ref} — ${r.clientName}`, amount: r.paid,
-      }));
-      m.purchases.forEach(p => out.push({
+      })));
+      m.purchases.forEach(p => out.push(cashRow({
         id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part,
         label: `Achat ${p.ref} — ${p.supplierName}`, amount: -p.paid,
-      }));
+      })));
       // Une dépense de partie réglée par la BANQUE a écrit sa propre ligne au
       // grand livre : la repousser ici compterait le même argent deux fois.
-      m.expenses.filter(e => !ledgered.has(`biz_expense:${e.id}`)).forEach(e => out.push({
-        id: `${key}-exp-${e.id}`, date: e.date, nature: 'Dépense', part,
-        label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -e.amount,
-        account: CASH_ACCOUNT_LABEL[cashAccountOfPart(part)],
-      }));
-      m.caisse.forEach(c => out.push({
+      m.expenses.filter(e => !ledgered.has(`biz_expense:${e.id}`)).forEach(e => {
+        const paidInCash = bizExpensePaidInCash(e);
+        return out.push({
+          id: `${key}-exp-${e.id}`, date: e.date, nature: 'Dépense', part,
+          label: `${e.name}${e.description ? ` — ${e.description}` : ''}`,
+          amount: paidInCash ? -e.amount : 0,
+          gross: Math.abs(e.amount), bank: !paidInCash,
+          account: paidInCash
+            ? CASH_ACCOUNT_LABEL[cashAccountOfPart(part)]
+            : accName(e.accountId) || CASH_ACCOUNT_LABEL[cashAccountOfPart(part)],
+        });
+      });
+      m.caisse.forEach(c => out.push(cashRow({
         id: `${key}-csh-${c.id}`, date: c.date,
         nature: c.type === 'deposit' ? 'Dépôt' : 'Retrait', part,
         label: c.description || (c.type === 'deposit' ? 'Dépôt de caisse' : 'Retrait de caisse'),
         amount: c.type === 'deposit' ? c.amount : -c.amount,
-      }));
-      m.workers.forEach(w => w.payments.forEach(pay => out.push({
+      })));
+      m.workers.forEach(w => w.payments.forEach(pay => out.push(cashRow({
         id: `${key}-pay-${pay.id}`, date: pay.date, nature: 'Salaire', part,
         label: `Salaire ${w.name} — ${pay.period}`, amount: -pay.amount,
-      })));
+      }))));
     });
 
     return out.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -247,12 +272,18 @@ export default function CaisseGenerale() {
    * dire ce que chacune avait payé.
    */
   const partSpending = useMemo(() => {
-    const out: Record<string, { expenses: number; count: number; in: number; out: number }> = {};
-    for (const p of Object.keys(PART_META)) out[p] = { expenses: 0, count: 0, in: 0, out: 0 };
+    const blank = () => ({ expenses: 0, count: 0, in: 0, out: 0, bank: 0 });
+    const out: Record<string, ReturnType<typeof blank>> = {};
+    for (const p of Object.keys(PART_META)) out[p] = blank();
     for (const m of inRange) {
-      const e = out[m.part] || (out[m.part] = { expenses: 0, count: 0, in: 0, out: 0 });
-      if (m.amount >= 0) e.in += m.amount; else e.out += -m.amount;
-      if (m.nature === 'Dépense') { e.expenses += Math.abs(m.amount); e.count += 1; }
+      const e = out[m.part] || (out[m.part] = blank());
+      // `in` / `out` ne comptent que les ESPÈCES : ce sont elles, et elles
+      // seules, qui expliquent le solde du tiroir affiché juste au-dessus.
+      if (m.amount > 0) e.in += m.amount; else if (m.amount < 0) e.out += -m.amount;
+      if (m.bank) e.bank += m.gross;
+      // Une dépense reste une dépense de l'activité, réglée en espèces ou par
+      // la banque : c'est ce qu'elle a coûté, pas ce qui est sorti du tiroir.
+      if (m.nature === 'Dépense') { e.expenses += m.gross; e.count += 1; }
     }
     return out;
   }, [inRange]);
@@ -260,7 +291,10 @@ export default function CaisseGenerale() {
   const flow = useMemo(() => {
     const inTotal = filtered.filter(m => m.amount > 0).reduce((s, m) => s + m.amount, 0);
     const outTotal = filtered.filter(m => m.amount < 0).reduce((s, m) => s - m.amount, 0);
-    return { inTotal, outTotal, net: inTotal - outTotal };
+    // Ce qui a bougé sans passer par un tiroir : virements, achats et dépenses
+    // réglés depuis un compte bancaire, encaissements TPE.
+    const bankTotal = filtered.filter(m => m.bank).reduce((s, m) => s + m.gross, 0);
+    return { inTotal, outTotal, net: inTotal - outTotal, bankTotal };
   }, [filtered]);
 
   const del = () => {
@@ -333,11 +367,16 @@ export default function CaisseGenerale() {
               </div>
               <p className={`text-2xl font-black tabular-nums mt-2 ${val >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(val)}</p>
               <p className="text-[11px] text-slate-400 mt-1 tabular-nums">
-                +{money(spent.in)} · −{money(spent.out)} sur la période
+                +{money(spent.in)} · −{money(spent.out)} en espèces sur la période
               </p>
               <p className="text-[11px] font-bold text-red-500 mt-0.5 tabular-nums">
                 Dépenses : {money(spent.expenses)} ({spent.count})
               </p>
+              {spent.bank > 0 && (
+                <p className="text-[11px] font-bold text-cyan-600 mt-0.5 tabular-nums">
+                  Dont {money(spent.bank)} réglés par la banque
+                </p>
+              )}
             </button>
           );
         })}
@@ -359,11 +398,13 @@ export default function CaisseGenerale() {
         </div>
       </div>
 
-      {/* Flow */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard icon={TrendingUp} label="Encaissements" value={`+${money(flow.inTotal)}`} tone="green" />
-        <StatCard icon={TrendingDown} label="Décaissements" value={`−${money(flow.outTotal)}`} tone="red" />
-        <StatCard icon={Layers} label="Flux net" value={money(flow.net)} tone={flow.net >= 0 ? 'blue' : 'red'} />
+      {/* Flow — les trois premiers chiffres ne parlent que d'ESPÈCES, comme les
+          soldes ci-dessus ; le quatrième dit ce qui a bougé en banque. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard icon={TrendingUp} label="Encaissements espèces" value={`+${money(flow.inTotal)}`} tone="green" />
+        <StatCard icon={TrendingDown} label="Décaissements espèces" value={`−${money(flow.outTotal)}`} tone="red" />
+        <StatCard icon={Layers} label="Flux net espèces" value={money(flow.net)} tone={flow.net >= 0 ? 'blue' : 'red'} />
+        <StatCard icon={Landmark} label="Réglé par la banque" value={money(flow.bankTotal)} tone="amber" />
       </div>
 
       {/* Journal */}
@@ -396,8 +437,17 @@ export default function CaisseGenerale() {
                   <td className="table-cell"><Badge tone="neutral">{PART_META[m.part].label}</Badge></td>
                   <td className="table-cell max-w-[280px]">{m.label || '—'}</td>
                   <td className="table-cell text-[11px] text-slate-400">{m.account || '—'}</td>
-                  <td className={`table-cell text-right tabular-nums font-bold ${m.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    {m.amount >= 0 ? '+' : '−'}{money(Math.abs(m.amount))}
+                  {/* Une opération réglée en banque garde son montant, mais il
+                      n'est pas signé : aucun tiroir ne s'est ouvert. */}
+                  <td className={`table-cell text-right tabular-nums font-bold ${m.bank ? 'text-slate-500' : m.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {m.bank ? (
+                      <span className="inline-flex items-center gap-1.5 justify-end">
+                        {money(m.gross)}
+                        <span className="px-1.5 py-0.5 rounded-md bg-cyan-50 text-cyan-700 text-[9px] font-black uppercase tracking-wide">Banque</span>
+                      </span>
+                    ) : (
+                      <>{m.amount >= 0 ? '+' : '−'}{money(Math.abs(m.amount))}</>
+                    )}
                   </td>
                   <td className="table-cell text-right">
                     {m.tx && (m.tx.kind === 'DEPOSIT' || m.tx.kind === 'WITHDRAW' || m.tx.kind === 'TRANSFER') ? (

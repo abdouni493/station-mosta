@@ -457,12 +457,17 @@ export default function GeneralReports() {
     }));
 
     // ── Journal consolidé de la période — chaque opération de la station ──
+    // Une opération réglée en banque garde son montant, mais elle n'est ni un
+    // encaissement ni un décaissement d'espèces : aucun tiroir ne s'est ouvert.
     const fluxRows: DetailRow[] = treasury.movements.map(m => ({
       id: `flux-${m.id}`, date: m.date,
       label: `${m.partLabel} — ${m.label}`,
       sub: [m.nature, m.accounts, m.reference].filter(Boolean).join(' · '),
-      badge: { text: m.amount >= 0 ? 'Encaissement' : 'Décaissement', tone: m.amount >= 0 ? 'success' : 'danger' },
-      amount: m.amount, amountTone: m.amount >= 0 ? 'green' : 'red',
+      badge: m.bank
+        ? { text: 'Banque', tone: 'info' as const }
+        : { text: m.amount >= 0 ? 'Encaissement' : 'Décaissement', tone: m.amount >= 0 ? 'success' as const : 'danger' as const },
+      amount: m.bank ? m.gross : m.amount,
+      amountTone: m.bank ? 'slate' : m.amount >= 0 ? 'green' : 'red',
     }));
 
     // ── Employés — le dossier de chacun, toutes activités confondues ──
@@ -648,7 +653,7 @@ export default function GeneralReports() {
       supplierDebt: { title: 'Dettes fournisseurs', icon: Truck, subtitle: 'Encours fournisseurs (toutes dates)', rows: supplierDebtRows, total: global.supplierDebtTotal, totalLabel: 'Total encours' },
       alerts:       { title: 'Alertes', icon: AlertTriangle, subtitle: 'Stock bas et péremptions', rows: alertRows, total: alertRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Valeur concernée', note: 'Alertes calculées — non supprimables.' },
       banks:        { title: 'Comptes bancaires', icon: Landmark, subtitle: 'Solde de chaque compte et ce que la période y a fait', rows: bankRows, total: treasury.bankTotal, totalLabel: 'Total en banque', note: `Sur la période : ${money(treasury.bankOpening)} au départ, +${money(treasury.bankIn)} reçus, −${money(treasury.bankOut)} sortis. Le solde d'un compte est son solde d'ouverture plus TOUS ses mouvements, quelle que soit la période affichée. Ouvrez « Caisse & Banques » pour l'historique complet d'un compte.` },
-      flux:         { title: 'Journal de la période', icon: Layers, subtitle: 'Chaque opération de la station, toutes activités confondues', rows: fluxRows, total: treasury.net, totalLabel: 'Flux net', note: `+${money(treasury.inflow)} encaissés, −${money(treasury.outflow)} décaissés sur ${treasury.counts.movements} opération(s), dont ${treasury.counts.ledgerLines} issues du grand livre. Un document qui a déjà écrit sa ligne au grand livre (achat réglé, dépense payée, brigade clôturée) n'est compté qu'une fois.` },
+      flux:         { title: 'Journal de la période', icon: Layers, subtitle: 'Chaque opération de la station, toutes activités confondues', rows: fluxRows, total: treasury.net, totalLabel: 'Flux net', note: `+${money(treasury.inflow)} encaissés et −${money(treasury.outflow)} décaissés EN ESPÈCES sur ${treasury.counts.movements} opération(s), dont ${treasury.counts.ledgerLines} issues du grand livre. ${money(treasury.bankMoves)} ont bougé en banque sans passer par un tiroir (virements, achats et dépenses réglés par la banque, TPE). Un document qui a déjà écrit sa ligne au grand livre (achat réglé, dépense payée, brigade clôturée) n'est compté qu'une fois.` },
       workers:      { title: 'Employés de la station', icon: UsersRound, subtitle: 'Tous les employés, toutes activités confondues', rows: workerRows, total: workforce.totals.dueNow, totalLabel: 'Reste à régler', note: `${workforce.totals.workers} employé(s), dont ${workforce.totals.withAccount} avec un compte actif. Le montant de chaque ligne est ce qu'il reste à lui verser aujourd'hui. Ouvrez « Employés & Personnel » pour le dossier complet de chacun.` },
       salaries:     { title: 'Salaires versés', icon: Banknote, subtitle: 'Chaque paiement de la période', rows: salaryRows, total: workforce.totals.salariesPaid, totalLabel: 'Total versé', note: `${money(workforce.totals.acomptes)} d'acomptes ont par ailleurs été avancés sur la période. Les salaires se corrigent depuis la fiche de l'employé concerné.` },
       brigades:     { title: 'Brigades — les ventes de carburant', icon: Fuel, subtitle: 'Chaque brigade, ses litres et ce qui est rentré', rows: brigadeRows, total: reports.carburant.fuelBrigades.reduce((s, b) => s + b.revenue, 0), totalLabel: "Chiffre d'affaires", note: `${reports.carburant.fuelLiters.toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L vendus. Le chiffre d'affaires du carburant vient des BRIGADES : les pistolets donnent les litres, la comptabilité de clôture dit ce qui est rentré en espèces, par TPE, en bons clients, et ce qui manque. Corrigez une brigade depuis l'écran Brigades.` },

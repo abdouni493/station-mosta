@@ -681,6 +681,55 @@ export function ledgerNetFor(accountId: string, txs: TreasuryTransaction[]): num
 }
 
 /**
+ * Le sens NATUREL d'une écriture, quand elle ne dit pas de quel compte elle part
+ * ou dans lequel elle arrive (lignes anciennes, saisies sans compte).
+ */
+const OUTGOING_TX_KINDS = ['WITHDRAW', 'PURCHASE', 'EXPENSE', 'SALARY'];
+const INCOMING_TX_KINDS = ['DEPOSIT', 'SALE', 'BRIGADE', 'ADJUST'];
+
+/**
+ * Effet d'une ligne du grand livre sur les ESPÈCES de la station — tous tiroirs
+ * confondus (caisse générale ET coffres des activités).
+ *
+ * C'est le seul signe qui vaille pour un journal de caisse : seuls les deux
+ * comptes de la ligne disent où l'argent a bougé. Le signer sur sa NATURE —
+ * « un achat, une dépense, un salaire, donc de l'argent qui sort de la caisse »
+ * — comptait comme un décaissement d'espèces tout ce qui était réglé par
+ * VIREMENT BANCAIRE : le compte bancaire était bien débité, et la Caisse
+ * Générale retirait le même montant une seconde fois d'un tiroir qui ne l'avait
+ * jamais contenu. Un encaissement TPE, lui, arrive en banque et gonflait les
+ * entrées de la caisse pour la même raison.
+ *
+ * Un mouvement qui se joue entièrement en banque vaut donc zéro : l'argent a
+ * bougé, les espèces non. D'un tiroir vers un autre, il est lu depuis le tiroir
+ * SOURCE — c'est celui-là que la ligne porte (`tx.part`), et c'est bien de
+ * là que l'argent est parti.
+ */
+export function cashEffectOf(
+  t: Pick<TreasuryTransaction, 'kind' | 'amount' | 'accountFrom' | 'accountTo'>,
+): number {
+  const amount = Number(t.amount) || 0;
+  if (!amount) return 0;
+  const cashIn = t.accountTo ? isCashAccount(t.accountTo) : INCOMING_TX_KINDS.includes(t.kind);
+  const cashOut = t.accountFrom ? isCashAccount(t.accountFrom) : OUTGOING_TX_KINDS.includes(t.kind);
+  if (cashIn && cashOut) return -amount;
+  return (cashIn ? amount : 0) - (cashOut ? amount : 0);
+}
+
+/**
+ * Montant de l'opération signé du point de vue de la TRÉSORERIE (espèces ET
+ * banque) : ce qu'elle a réellement fait bouger, même quand aucun tiroir n'a été
+ * ouvert. Un virement interne vaut zéro — l'argent n'a fait que changer de place.
+ */
+export function treasuryEffectOf(
+  t: Pick<TreasuryTransaction, 'kind' | 'amount' | 'accountFrom' | 'accountTo'>,
+): number {
+  const amount = Number(t.amount) || 0;
+  if (!amount || t.kind === 'TRANSFER') return 0;
+  return OUTGOING_TX_KINDS.includes(t.kind) ? -amount : amount;
+}
+
+/**
  * Effet d'UNE ligne du grand livre sur la caisse d'UNE activité.
  *
  * La caisse d'une activité, c'est l'argent liquide qu'elle détient — QUEL QUE
