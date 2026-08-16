@@ -131,15 +131,24 @@ export function DebtTable({ rows, tone }: { rows: PartReport['clientDebts']; ton
   );
 }
 
+/**
+ * Les charges de la partie. La colonne « Payé depuis » dit ce que le total ne
+ * disait pas : la dépense a-t-elle vidé le TIROIR de l'activité, ou est-elle
+ * partie d'un compte bancaire ? C'est la différence entre un solde de caisse
+ * qui baisse et un solde de caisse qui ne bouge pas.
+ */
 export function ExpenseTable({ rows }: { rows: PartReport['expenses'] }) {
   if (!rows.length) return <Empty />;
   const toneOf = (k: string) => k === 'Salaire' ? 'badge-info' : k === 'Acompte' ? 'badge-warning' : k === 'Absence' ? 'badge-danger' : 'badge-neutral';
   return (
-    <Table head={<><th className="table-head">Type</th><th className="table-head">Nom / Description</th><th className="table-head">Date</th><th className="table-head text-right">Montant</th></>}>
+    <Table head={<><th className="table-head">Type</th><th className="table-head">Nom / Description</th><th className="table-head">Payé depuis</th><th className="table-head">Date</th><th className="table-head text-right">Montant</th></>}>
       {rows.map(e => (
-        <tr key={e.id}>
+        <tr key={`${e.kind}-${e.id}`}>
           <td className="table-cell"><span className={cn('badge', toneOf(e.kind))}>{e.kind}</span></td>
           <td className="table-cell"><span className="font-bold">{e.label}</span>{e.description ? <span className="text-slate-400"> — {e.description}</span> : null}</td>
+          <td className="table-cell text-slate-500">
+            {e.kind !== 'Dépense' ? '—' : e.paidInCash === false ? 'Banque' : 'Caisse de la partie'}
+          </td>
           <td className="table-cell whitespace-nowrap">{fmtDate(e.date)}</td>
           <td className="table-cell tabular-nums text-right font-bold text-red-600">{money(e.amount)}</td>
         </tr>

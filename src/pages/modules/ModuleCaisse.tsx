@@ -6,9 +6,10 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale, netCashOfSale } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale, netCashOfSale, bizExpensePaidInCash } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
-import { useBizPermission } from '@/src/store/AppContext';
+import { useBizPermission, useAppState } from '@/src/store/AppContext';
+import { moduleCaisseMovements, caisseFlowOf, appExpensesOfPart } from '@/src/lib/bizReporting';
 import { useBizSessions } from '@/src/hooks/useBizSessions';
 import { CloseSessionModal } from './ModulePOS';
 import {
@@ -21,6 +22,7 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'caisse');
+  const app = useAppState();
   const { caisse, sales, purchases, expenses, workers, products, comptoir, destructions } = biz.state;
 
   const [tab, setTab] = useState<'tresorerie' | 'sessions'>('tresorerie');
@@ -37,6 +39,18 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   // détruisent de la MARCHANDISE. Leur coût est donc suivi à part et retranché du
   // résultat de la période, pas du solde d'espèces — la valeur du stock a déjà
   // baissé d'autant.
+  /**
+   * Les mouvements du tiroir — la SEULE définition, celle que lisent aussi le
+   * rapport de la partie et l'écran Caisse Générale. Le calcul qui vivait ici
+   * ignorait les interventions payées, les virements du grand livre et les
+   * dépenses de la station imputées à cette partie, et retranchait en revanche
+   * les dépenses réglées par la BANQUE — de l'argent jamais sorti du tiroir.
+   * Trois écrans annonçaient donc trois soldes.
+   */
+  const movements = useMemo(
+    () => (biz.state ? moduleCaisseMovements(biz.state, moduleKey, app.treasuryTransactions, app.expenses) : []),
+    [biz.state, moduleKey, app.treasuryTransactions, app.expenses]);
+
   const totals = useMemo(() => {
     const deposits = caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0);
     const withdrawals = caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0);
@@ -46,28 +60,33 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
     // déjà rendu au client.
     const salesPaid = sales.reduce((s, x) => s + netCashOfSale(x), 0);
     const purchasesPaid = purchases.reduce((s, x) => s + x.paid, 0);
-    const exp = expenses.reduce((s, x) => s + x.amount, 0);
+    // Les dépenses de la partie : les siennes ET celles que la station lui a
+    // imputées. Seules celles réglées en espèces ont vidé le tiroir.
+    const appExp = appExpensesOfPart(moduleKey, app.expenses);
+    const exp = expenses.reduce((s, x) => s + x.amount, 0)
+      + appExp.reduce((s: number, x: any) => s + (Number(x.amount) || 0), 0);
+    const expCash = expenses.filter(bizExpensePaidInCash).reduce((s, x) => s + x.amount, 0)
+      + appExp.filter((x: any) => !x.accountId || String(x.accountId).startsWith('CAISSE'))
+        .reduce((s: number, x: any) => s + (Number(x.amount) || 0), 0);
     const salaries = workers.reduce((s, w) => s + w.payments.reduce((a, p) => a + p.amount, 0), 0);
-    const balance = deposits + salesPaid - withdrawals - purchasesPaid - exp - salaries;
+    const balance = movements.reduce((s, m) => s + m.amount, 0);
+    const allFlow = caisseFlowOf(movements);
     const stockValue = products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0);
     const comptoirValue = comptoir.reduce((s, c) => s + c.qty * c.unitPrice, 0);
     const destroyed = (destructions || []).filter(d => !d.recovered).reduce((s, d) => s + d.value, 0);
     return {
-      deposits, withdrawals, salesPaid, purchasesPaid, exp, salaries, balance,
+      deposits, withdrawals, salesPaid, purchasesPaid, exp, expCash, salaries, balance,
+      cashIn: allFlow.in, cashOut: allFlow.out,
       stockValue, comptoirValue, destroyed, tresorerie: balance + stockValue + comptoirValue,
     };
-  }, [caisse, sales, purchases, expenses, workers, products, comptoir, destructions]);
+  }, [caisse, sales, purchases, expenses, workers, products, comptoir, destructions, movements, moduleKey, app.expenses]);
 
-  // ── Period flows ──
+  // ── Period flows — lus sur les MÊMES mouvements que le solde ──
   const flow = useMemo(() => {
-    const inTx = caisse.filter(c => c.type === 'deposit' && inPeriod(c.date, period, from, to)).reduce((s, c) => s + c.amount, 0);
-    const salesIn = sales.filter(s => inPeriod(s.date, period, from, to)).reduce((s, x) => s + netCashOfSale(x), 0);
-    const outTx = caisse.filter(c => c.type === 'withdraw' && inPeriod(c.date, period, from, to)).reduce((s, c) => s + c.amount, 0);
-    const purchOut = purchases.filter(p => inPeriod(p.date, period, from, to)).reduce((s, x) => s + x.paid, 0);
-    const expOut = expenses.filter(e => inPeriod(e.date, period, from, to)).reduce((s, x) => s + x.amount, 0);
-    const inTotal = inTx + salesIn; const outTotal = outTx + purchOut + expOut;
-    return { inTotal, outTotal, net: inTotal - outTotal };
-  }, [caisse, sales, purchases, expenses, period, from, to]);
+    const rows = movements.filter(m => inPeriod(m.date, period, from, to));
+    const f = caisseFlowOf(rows);
+    return { inTotal: f.in, outTotal: f.out, net: f.in - f.out };
+  }, [movements, period, from, to]);
 
   // ── Destructions de la période (pertes de marchandise) ─────────────────────
   const destructionsInPeriod = useMemo(
@@ -115,9 +134,15 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
           <div className="flex items-center gap-2 text-blue-200"><Wallet className="w-5 h-5" /><span className="text-sm font-bold uppercase tracking-wide">Solde de caisse</span></div>
           <p className="text-4xl font-black tabular-nums mt-2 text-[#FFB800]">{money(totals.balance)}</p>
           <div className="grid grid-cols-2 gap-3 mt-4">
-            <div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase text-blue-200 font-bold">Encaissements</p><p className="font-black tabular-nums text-emerald-300">{money(totals.deposits + totals.salesPaid)}</p></div>
-            <div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase text-blue-200 font-bold">Décaissements</p><p className="font-black tabular-nums text-red-300">{money(totals.withdrawals + totals.purchasesPaid + totals.exp + totals.salaries)}</p></div>
+            {/* Entrées et sorties lues sur les mouvements du tiroir : une dépense
+                réglée par la banque n'y figure pas — elle n'en est jamais sortie. */}
+            <div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase text-blue-200 font-bold">Encaissements</p><p className="font-black tabular-nums text-emerald-300">{money(totals.cashIn)}</p></div>
+            <div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase text-blue-200 font-bold">Décaissements</p><p className="font-black tabular-nums text-red-300">{money(totals.cashOut)}</p></div>
           </div>
+          <p className="text-[11px] text-blue-200 mt-3">
+            Les dépenses réglées <strong>en espèces</strong> sortent de cette caisse — la caisse générale n'est
+            jamais débitée à sa place.
+          </p>
         </div>
         <div className="rounded-2xl p-6 text-white relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #065f46, #047857)' }}>
           <div className="flex items-center gap-2 text-emerald-100"><PiggyBank className="w-5 h-5" /><span className="text-sm font-bold uppercase tracking-wide">Trésorerie globale</span></div>
@@ -155,7 +180,8 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard icon={TrendingUp} label="Ventes encaissées" value={money(totals.salesPaid)} tone="green" />
         <StatCard icon={ShoppingCart} label="Achats payés" value={money(totals.purchasesPaid)} tone="purple" />
-        <StatCard icon={CreditCard} label="Dépenses" value={money(totals.exp)} tone="red" />
+        <StatCard icon={CreditCard} label="Dépenses" value={money(totals.exp)} tone="red"
+          sub={`dont ${money(totals.expCash)} en espèces`} />
         <StatCard icon={Banknote} label="Salaires versés" value={money(totals.salaries)} tone="amber" />
         <StatCard icon={Flame} label="Destructions" value={money(totals.destroyed)} tone="red" sub="marchandise perdue" />
       </div>
@@ -231,6 +257,42 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Le solde, mouvement par mouvement — ventes encaissées, achats réglés,
+          dépenses en espèces, salaires et virements. C'est la lecture complète
+          du chiffre affiché en tête : un solde qu'on ne peut pas relire n'est
+          pas un solde, c'est une affirmation. */}
+      <div className="card-glass overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+          <h3 className="font-black text-[#002d87] flex items-center gap-2">
+            <Wallet className="w-5 h-5" /> Détail du solde de caisse
+          </h3>
+          <span className={`font-black tabular-nums ${flow.net >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+            {money(flow.net)} sur la période
+          </span>
+        </div>
+        {(() => {
+          const rows = movements.filter(m => inPeriod(m.date, period, from, to));
+          if (rows.length === 0) return <p className="text-center text-slate-400 text-sm py-8">Aucun mouvement sur la période</p>;
+          return (
+            <Table head={<>
+              <th className="table-head">Date</th><th className="table-head">Nature</th>
+              <th className="table-head">Description</th><th className="table-head text-right">Montant</th>
+            </>}>
+              {rows.slice(0, 200).map(m => (
+                <tr key={m.id}>
+                  <td className="table-cell whitespace-nowrap">{formatDate(m.date)}</td>
+                  <td className="table-cell"><Badge tone="neutral">{m.nature}</Badge></td>
+                  <td className="table-cell text-slate-600">{m.label}</td>
+                  <td className={`table-cell text-right tabular-nums font-bold ${m.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {m.amount >= 0 ? '+' : '−'}{money(Math.abs(m.amount))}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          );
+        })()}
       </div>
 
       </>}

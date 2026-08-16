@@ -26,7 +26,7 @@ type Tab = 'rapport' | 'produits' | 'analyses';
 export default function ModuleReports({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
-  const { settings, treasuryTransactions } = useAppState();
+  const { settings, treasuryTransactions, expenses } = useAppState();
   const st = biz.state;
   const ficheRef = useRef<HTMLDivElement>(null);
 
@@ -39,15 +39,17 @@ export default function ModuleReports({ moduleKey }: { moduleKey: ModuleKey }) {
   const [grain, setGrain] = useState<Granularity | undefined>(undefined);
 
   // Le grand livre entre dans le calcul : la caisse de la partie doit compter les
-  // virements partis de son coffre, comme le fait l'écran Caisse Générale.
+  // virements partis de son coffre, comme le fait l'écran Caisse Générale. Les
+  // dépenses de la station imputées à cette partie sont ses charges — payées en
+  // espèces, elles sortent de SA caisse.
   const report = useMemo(
-    () => computeModuleReport(st, moduleKey, range.from, range.to, treasuryTransactions),
-    [st, moduleKey, range, treasuryTransactions]);
+    () => computeModuleReport(st, moduleKey, range.from, range.to, treasuryTransactions, expenses),
+    [st, moduleKey, range, treasuryTransactions, expenses]);
   // Les analyses servent AUSSI l'onglet « Bénéfices par produit » : c'est la même
   // table de produits, donc le même gain — les deux écrans ne peuvent pas diverger.
   const analytics = useMemo(
-    () => computeModuleAnalytics(st, moduleKey, range.from, range.to, grain),
-    [st, moduleKey, range, grain]);
+    () => computeModuleAnalytics(st, moduleKey, range.from, range.to, grain, expenses),
+    [st, moduleKey, range, grain, expenses]);
 
   const generate = () => setRange({ from, to });
 

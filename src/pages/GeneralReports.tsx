@@ -12,6 +12,7 @@ import { ModuleKey, MODULES, BizLineItem, isReversedSale, formatQty } from '@/sr
 import { applyRestock, describeRestock, restockPlan } from '@/src/lib/bizRestock';
 import { useBizAll, useBiz } from '@/src/store/BizContext';
 import { useAppState, useAppDispatch, CAISSE_ID } from '@/src/store/AppContext';
+import { removeBizExpenseLedger } from '@/src/lib/bizExpenseLedger';
 import { money, formatDate, Modal, Badge, Confirm, Table } from '@/src/components/biz/Kit';
 import { computeModuleReport, computeCarburantReport, consolidate, within, PartReport, GlobalReport } from '@/src/lib/bizReporting';
 import { computeWorkforce, WorkforceReport } from '@/src/lib/workforceReporting';
@@ -126,9 +127,11 @@ export default function GeneralReports() {
   const reports: Record<'carburant' | 'cafeteria' | 'lavage', PartReport> = useMemo(() => ({
     carburant: computeCarburantReport(app, range.from, range.to),
     // Le grand livre est passé aux parties commerciales : sans lui, leur caisse
-    // ignorait les virements partis de leur coffre vers la banque.
-    cafeteria: computeModuleReport(biz.cafeteria, 'cafeteria', range.from, range.to, app.treasuryTransactions),
-    lavage: computeModuleReport(biz.lavage, 'lavage', range.from, range.to, app.treasuryTransactions),
+    // ignorait les virements partis de leur coffre vers la banque. Les dépenses
+    // de la station, elles, sont réparties selon l'activité qui les supporte —
+    // sans quoi une dépense de la Cafétéria pesait sur le Carburant.
+    cafeteria: computeModuleReport(biz.cafeteria, 'cafeteria', range.from, range.to, app.treasuryTransactions, app.expenses),
+    lavage: computeModuleReport(biz.lavage, 'lavage', range.from, range.to, app.treasuryTransactions, app.expenses),
   }), [biz, app, range]);
 
   const global: GlobalReport = useMemo(
@@ -169,8 +172,8 @@ export default function GeneralReports() {
     const g = grain || pickGranularity(range.from, range.to);
     const parts = [
       computeCarburantAnalytics(app, range.from, range.to, g),
-      computeModuleAnalytics(biz.cafeteria, 'cafeteria', range.from, range.to, g),
-      computeModuleAnalytics(biz.lavage, 'lavage', range.from, range.to, g),
+      computeModuleAnalytics(biz.cafeteria, 'cafeteria', range.from, range.to, g, app.expenses),
+      computeModuleAnalytics(biz.lavage, 'lavage', range.from, range.to, g, app.expenses),
     ];
     return { parts, global: consolidateAnalytics(parts, range.from, range.to, g) };
   }, [app, biz, range, grain]);
@@ -252,6 +255,21 @@ export default function GeneralReports() {
   // derived rows (bénéfice net, alertes) are shown read-only.
   const cardDetails = useMemo<Record<CardKey, CardDetail>>(() => {
     const bizOf = (k: 'cafeteria' | 'lavage') => (k === 'cafeteria' ? cafeteriaBiz : lavageBiz);
+    /**
+     * Supprimer une dépense emporte la ligne de trésorerie qu'elle avait
+     * écrite : sans elle, le compte débité resterait amputé d'un argent que
+     * plus aucune dépense ne justifie.
+     */
+    const deleteAppExpense = (id: string) => {
+      (app.treasuryTransactions || [])
+        .filter((t: any) => t.refType === 'expense' && t.refId === id)
+        .forEach((t: any) => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
+      dispatch({ type: 'DELETE_EXPENSE', payload: id });
+    };
+    const deleteBizExpense = (k: 'cafeteria' | 'lavage', id: string) => {
+      removeBizExpenseLedger(dispatch, app.treasuryTransactions, id);
+      bizOf(k).remove('expenses', id);
+    };
     const stateOf = (k: 'cafeteria' | 'lavage') => (k === 'cafeteria' ? biz.cafeteria : biz.lavage);
     const clientName = (id?: string) => app.clients?.find((c: any) => c.id === id)?.name;
     const byDateDesc = (a: DetailRow, b: DetailRow) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime();
@@ -328,16 +346,36 @@ export default function GeneralReports() {
     returnRows.sort(byDateDesc);
 
     // ── Dépenses + salaires — dépenses supprimables, salaires en lecture seule ──
+    // Chaque activité porte SES dépenses : celles saisies chez elle, et celles
+    // que l'écran « Dépenses » de la station lui a imputées. Les deux ne se
+    // suppriment pas au même endroit (`origin`), et confondre les deux chemins
+    // laissait la ligne revenir au rechargement suivant.
     const expenseRows: DetailRow[] = [];
-    reports.carburant.expenses.forEach(e => expenseRows.push({
-      id: `carb-${e.id}`, date: e.date, label: `💸 ${e.label}`, sub: e.description, amount: e.amount, amountTone: 'red',
-      onDelete: () => dispatch({ type: 'DELETE_EXPENSE', payload: e.id }),
-      confirmMessage: `Supprimer la dépense « ${e.label} » (${money(e.amount)}) ?`,
+    /** Badge « comment c'est payé » — le tiroir de l'activité, ou la banque. */
+    const payBadge = (e: { paidInCash?: boolean }): DetailRow['badge'] =>
+      e.paidInCash === false ? { text: 'Banque', tone: 'info' } : { text: 'Espèces', tone: 'neutral' };
+    reports.carburant.expenses.forEach(e => {
+      if (e.kind !== 'Dépense') return;
+      expenseRows.push({
+        id: `carb-${e.id}`, date: e.date, label: `⛽ ${e.label}`, sub: e.description, amount: e.amount, amountTone: 'red',
+        badge: payBadge(e),
+        onDelete: () => deleteAppExpense(e.id),
+        confirmMessage: `Supprimer la dépense « ${e.label} » (${money(e.amount)}) ?`,
+      });
+    });
+    reports.carburant.expenses.filter(e => e.kind !== 'Dépense').forEach(e => expenseRows.push({
+      id: `carb-${e.kind}-${e.id}`, date: e.date, label: `⛽ ${e.kind} — ${e.label}`, sub: e.description,
+      amount: e.amount, amountTone: 'amber', badge: { text: e.kind, tone: 'info' },
     }));
     (['cafeteria', 'lavage'] as const).forEach(k => reports[k].expenses.forEach(e => {
       if (e.kind === 'Dépense') expenseRows.push({
         id: `${k}-${e.id}`, date: e.date, label: `${reports[k].emoji} ${e.label}`, sub: e.description, amount: e.amount, amountTone: 'red',
-        onDelete: () => bizOf(k).remove('expenses', e.id),
+        badge: payBadge(e),
+        // Une dépense de la station imputée à cette partie se supprime dans la
+        // station ; celle saisie dans la partie, dans son blob.
+        onDelete: e.origin === 'app'
+          ? () => deleteAppExpense(e.id)
+          : () => deleteBizExpense(k, e.id),
         confirmMessage: `Supprimer la dépense « ${e.label} » (${money(e.amount)}) ?`,
       });
       else if (e.kind === 'Salaire') expenseRows.push({
@@ -950,6 +988,75 @@ function ResultBand({ salesTotal, cogs, grossMargin, chargesTotal, destroyedValu
   );
 }
 
+/**
+ * Les dépenses de la période, activité par activité — avec, pour chacune, ce
+ * qui est sorti de son tiroir en espèces, ce qui est parti d'un compte
+ * bancaire, et ce qu'il reste dans sa caisse.
+ *
+ * C'est la lecture directe de la règle : une dépense payée en espèces sort de
+ * la caisse de l'activité qui la supporte, jamais de la caisse générale.
+ */
+function PartExpensesBand({ parts, treasury: tr, onOpenCard, onSelect }: {
+  parts: PartReport[];
+  treasury: TreasuryReport;
+  onOpenCard: (k: CardKey) => void;
+  onSelect: (k: ActiveKey) => void;
+}) {
+  const rows = parts.map(p => {
+    const own = p.expenses.filter(e => e.kind === 'Dépense');
+    const cash = own.filter(e => e.paidInCash !== false).reduce((s, e) => s + e.amount, 0);
+    const bank = own.reduce((s, e) => s + e.amount, 0) - cash;
+    const caisse = tr.partBalances.find(b => b.key === p.key)?.balance ?? p.caisseBalance;
+    return { ...p, count: own.length, cash, bank, caisse };
+  });
+  const total = rows.reduce((s, r) => s + r.expensesTotal, 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="font-black text-[#002d87] flex items-center gap-2">
+          <CreditCard className="w-5 h-5 text-[#FFB800]" /> Dépenses par activité
+        </h3>
+        <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => onOpenCard('expenses')}>
+          Chaque dépense →
+        </button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {rows.map(r => (
+          <button key={r.key} onClick={() => onSelect(r.key as ActiveKey)}
+            className="rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition-all hover:border-[#003087]/40 hover:-translate-y-0.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-black uppercase tracking-wide text-slate-500">{r.emoji} {r.label}</span>
+              <span className="text-[10px] text-slate-400">{r.count} dépense(s)</span>
+            </div>
+            <p className="text-2xl font-black tabular-nums text-red-600 mt-1">{money(r.expensesTotal)}</p>
+            <div className="grid grid-cols-2 gap-2 mt-3">
+              <div className="rounded-xl bg-slate-50 p-2">
+                <p className="text-[10px] uppercase font-bold text-slate-400">Espèces (sa caisse)</p>
+                <p className="font-black tabular-nums text-sm text-slate-700">{money(r.cash)}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2">
+                <p className="text-[10px] uppercase font-bold text-slate-400">Banque</p>
+                <p className="font-black tabular-nums text-sm text-slate-700">{money(r.bank)}</p>
+              </div>
+            </div>
+            <p className={cn('text-[11px] font-black tabular-nums mt-2', r.caisse >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+              Caisse {r.label} : {money(r.caisse)}
+            </p>
+            {r.salariesPaid > 0 && (
+              <p className="text-[11px] text-amber-600 tabular-nums">+ {money(r.salariesPaid)} de salaires versés</p>
+            )}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-slate-400 italic">
+        Total des dépenses de la période : {money(total)}. Une dépense payée en espèces sort de la caisse de
+        l'activité qui la supporte ; réglée par la banque, elle est débitée du compte choisi.
+      </p>
+    </div>
+  );
+}
+
 function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital: wc, stock: sv, inventaires: invs, inventaireLossTotal, onSelect, onOpenPurchases, onOpenCard, onOpenCaisse }: {
   global: GlobalReport;
   workforce: ReturnType<typeof computeWorkforce>;
@@ -1010,6 +1117,11 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
             onClick={() => onOpenCard('returns')} cta="Voir le détail" />
         )}
       </div>
+
+      {/* Qui paie quoi — chaque activité avec SES dépenses et le tiroir qui les
+          a payées. La question n'avait jusqu'ici aucune réponse à l'écran : les
+          dépenses étaient un total unique, sans activité derrière. */}
+      <PartExpensesBand parts={g.parts} treasury={tr} onOpenCard={onOpenCard} onSelect={onSelect} />
 
       {/* Ce que la station possède vraiment : le fonds de roulement, la valeur du
           stock aux deux prix, et l'accès direct au calcul de la zakât. */}
@@ -1128,7 +1240,11 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
               <thead><tr>
                 <th className="table-head">Activité</th><th className="table-head text-right">Ventes</th><th className="table-head text-right">Achats</th>
                 <th className="table-head text-right">Coût marchand.</th>
-                <th className="table-head text-right">Dépenses</th><th className="table-head text-right">Marge brute</th>
+                {/* Dépenses et salaires séparés : les deux étaient additionnés
+                    dans une seule colonne, impossible d'y lire ce que l'activité
+                    avait réellement dépensé. */}
+                <th className="table-head text-right">Dépenses</th><th className="table-head text-right">Salaires</th>
+                <th className="table-head text-right">Marge brute</th>
                 <th className="table-head text-right">Dettes clients</th><th className="table-head text-right">Gain net</th><th className="table-head" />
               </tr></thead>
               <tbody>
@@ -1138,7 +1254,8 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
                     <td className="table-cell tabular-nums text-right text-emerald-600">{money(p.salesTotal)}</td>
                     <td className="table-cell tabular-nums text-right">{money(p.purchasesTotal)}</td>
                     <td className="table-cell tabular-nums text-right text-amber-700">{money(p.cogs)}</td>
-                    <td className="table-cell tabular-nums text-right text-red-600">{money(p.expensesTotal + p.salariesPaid)}</td>
+                    <td className="table-cell tabular-nums text-right text-red-600">{money(p.expensesTotal)}</td>
+                    <td className="table-cell tabular-nums text-right text-amber-600">{money(p.salariesPaid)}</td>
                     <td className="table-cell tabular-nums text-right text-blue-700">{money(p.grossMargin)}</td>
                     <td className="table-cell tabular-nums text-right text-amber-600">{money(p.clientDebtTotal)}</td>
                     <td className={cn('table-cell tabular-nums text-right font-black', p.netGain >= 0 ? 'text-emerald-600' : 'text-red-600')}>{money(p.netGain)}</td>
@@ -1150,7 +1267,8 @@ function GlobalOverview({ global: g, workforce: wf, treasury: tr, workingCapital
                   <td className="table-cell tabular-nums text-right font-black text-emerald-600">{money(g.salesTotal)}</td>
                   <td className="table-cell tabular-nums text-right font-black">{money(g.purchasesTotal)}</td>
                   <td className="table-cell tabular-nums text-right font-black text-amber-700">{money(g.cogs)}</td>
-                  <td className="table-cell tabular-nums text-right font-black text-red-600">{money(chargesTotal)}</td>
+                  <td className="table-cell tabular-nums text-right font-black text-red-600">{money(g.expensesTotal)}</td>
+                  <td className="table-cell tabular-nums text-right font-black text-amber-600">{money(g.salariesPaid)}</td>
                   <td className="table-cell tabular-nums text-right font-black text-blue-700">{money(g.grossMargin)}</td>
                   <td className="table-cell tabular-nums text-right font-black text-amber-600">{money(g.clientDebtTotal)}</td>
                   <td className={cn('table-cell tabular-nums text-right font-black', g.netGain >= 0 ? 'text-emerald-600' : 'text-red-600')}>{money(g.netGain)}</td>

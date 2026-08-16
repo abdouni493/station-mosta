@@ -17,7 +17,7 @@ import { newId } from '@/src/lib/utils';
 import {
   useAppState, useAppDispatch, useModulePermission,
   BankAccount, TreasuryTransaction, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
-  accountLabelOf, bankBalanceOf, caisseBalanceOf,
+  accountLabelOf, bankBalanceOf, caisseBalanceOf, partOfCashAccount,
 } from '../store/AppContext';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
@@ -259,7 +259,10 @@ function TransferModal({
       description: description.trim() || `Virement ${from.name} → ${targetLabel}`,
       accountFrom: from.id,
       accountTo: target,
-      part: 'systeme',
+      // Un virement vers le coffre d'une activité APPARTIENT à cette activité :
+      // le classer « Finance » le faisait disparaître de son journal, alors que
+      // l'argent, lui, arrivait bien chez elle.
+      part: partOfCashAccount(target) || 'systeme',
       createdBy,
       createdAt: new Date().toISOString(),
     });

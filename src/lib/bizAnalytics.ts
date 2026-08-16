@@ -20,9 +20,10 @@
 import {
   ModuleState, ModuleKey, MODULES, isReversedSale, prestationsOf,
 } from './bizConfig';
-import { makeCostResolver } from './bizReporting';
+import { makeCostResolver, appExpensesOfPart } from './bizReporting';
 import { within } from './period';
 import { computeCarburantSales } from './carburantSales';
+import { expensePartOf } from '../store/AppContext';
 
 // ─── Découpage du temps ──────────────────────────────────────────────────────
 export type Granularity = 'day' | 'week' | 'month';
@@ -314,6 +315,8 @@ function finalize(
 // ─── Analyse d'une partie commerciale (Cafétéria / Lavage) ───────────────────
 export function computeModuleAnalytics(
   st: ModuleState, key: ModuleKey, from: string, to: string, granularity?: Granularity,
+  /** Dépenses de la station imputées à cette partie — ce sont ses charges. */
+  appExpenses: any[] = [],
 ): PartAnalytics {
   const cfg = MODULES[key];
   const g = granularity || pickGranularity(from, to);
@@ -389,6 +392,9 @@ export function computeModuleAnalytics(
     .forEach(p => bump(p.date, { purchases: p.total || 0 }));
   st.expenses.filter(e => within(e.date, from, to))
     .forEach(e => bump(e.date, { expenses: e.amount || 0 }));
+  // Les dépenses de la station imputées à cette partie sont les siennes.
+  appExpensesOfPart(key, appExpenses).filter((e: any) => within(e.date, from, to))
+    .forEach((e: any) => bump(e.date, { expenses: Number(e.amount) || 0 }));
   st.workers.forEach(w => (w.payments || [])
     .filter(pay => within(pay.date, from, to))
     .forEach(pay => bump(pay.date, { expenses: pay.amount || 0 })));
@@ -533,7 +539,10 @@ export function computeCarburantAnalytics(
 
   (app?.purchases || []).filter((p: any) => within(p.date, from, to))
     .forEach((p: any) => bump(p.date, { purchases: p.total || 0 }));
-  (app?.expenses || []).filter((e: any) => within(e.date, from, to))
+  // Les dépenses du CARBURANT seulement : celles imputées à la Cafétéria ou au
+  // Lavage pèsent sur LEUR courbe, pas sur celle du carburant.
+  (app?.expenses || [])
+    .filter((e: any) => expensePartOf(e) === 'carburant' && within(e.date, from, to))
     .forEach((e: any) => bump(e.date, { expenses: e.amount || 0 }));
 
   const points = buckets.map(b => {

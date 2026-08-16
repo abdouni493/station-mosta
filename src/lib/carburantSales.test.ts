@@ -18,7 +18,9 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { computeCarburantSales, computeCarburantCash, derivedPumpStats } from './carburantSales';
-import { computeCarburantReport, moduleCaisseBalance, moduleCaisseMovements } from './bizReporting';
+import {
+  computeCarburantReport, computeModuleReport, moduleCaisseBalance, moduleCaisseMovements,
+} from './bizReporting';
 
 let passed = 0, failed = 0;
 const check = (label: string, actual: unknown, expected: unknown) => {
@@ -79,10 +81,16 @@ const app = {
       { id: 'PY2', date: '2026-08-12', amount: 70_000, mode: 'CHEQUE', accountId: 'B1' },
     ],
   }],
-  // Une dépense en espèces, une autre payée par la banque.
+  // Les dépenses de la station : chacune imputée à l'activité qui la supporte.
+  //   E1 — Carburant, en espèces  → sort de la caisse Carburant
+  //   E2 — Carburant, par banque  → ne touche aucune caisse
+  //   E3 — Cafétéria, en espèces  → sort de la caisse Cafétéria, PAS du Carburant
+  //   E4 — Finance, en espèces    → sort de la caisse générale seule
   expenses: [
-    { id: 'E1', date: '2026-08-15', amount: 5_000, category: 'Entretien', accountId: 'CAISSE' },
-    { id: 'E2', date: '2026-08-16', amount: 8_000, category: 'Loyer', accountId: 'B1' },
+    { id: 'E1', date: '2026-08-15', amount: 5_000, category: 'Entretien', accountId: 'CAISSE_CARBURANT', part: 'carburant' },
+    { id: 'E2', date: '2026-08-16', amount: 8_000, category: 'Loyer', accountId: 'B1', part: 'carburant' },
+    { id: 'E3', date: '2026-08-17', amount: 1_500, category: 'Gaz', accountId: 'CAISSE_CAFETERIA', part: 'cafeteria' },
+    { id: 'E4', date: '2026-08-18', amount: 2_000, category: 'Frais bancaires', accountId: 'CAISSE', part: 'systeme' },
   ],
   clients: [{
     id: 'CL1', name: 'Transport SARL', debt: 6_000,
@@ -150,6 +158,14 @@ check("l'achat réglé par chèque ne vide pas le tiroir", cash.purchasesCash, 3
 check('la dépense payée en banque non plus', cash.expensesCash, 5_000);
 check('entrées − sorties = solde', cash.inflow - cash.outflow, cash.balance);
 
+console.log("\nChaque activité paie ses dépenses avec SON argent");
+check("la dépense de la Cafétéria ne vide pas la caisse Carburant",
+  cash.lines.some(l => l.id === 'exp-E3'), false);
+check("celle de la Finance non plus",
+  cash.lines.some(l => l.id === 'exp-E4'), false);
+check('seule la dépense Carburant en espèces y figure',
+  cash.lines.filter(l => l.nature === 'Dépense').map(l => l.id), ['exp-E1']);
+
 console.log("\nUn dépôt imputé à une activité entre bien dans SA caisse");
 check('le dépôt Carburant est compté', cash.deposits, 40_000);
 check('le retrait Carburant est compté', cash.withdrawals, 6_000);
@@ -197,6 +213,33 @@ check("le dépôt Carburant n'entre pas dans la Cafétéria",
   moduleCaisseMovements(cafeteria, 'cafeteria', app.treasuryTransactions).some(m => m.id === 'T6'), false);
 check('le Lavage, lui, ne reçoit rien',
   moduleCaisseBalance({ ...cafeteria, caisse: [], sales: [], purchases: [] } as any, 'lavage', app.treasuryTransactions), 0);
+
+console.log('\nLa dépense de la station imputée à une partie sort de SA caisse');
+// Les 11 500 précédents, moins les 1 500 de la dépense E3 imputée à la Cafétéria.
+check('E3 vide la caisse Cafétéria',
+  moduleCaisseBalance(cafeteria, 'cafeteria', app.treasuryTransactions, app.expenses), 10_000);
+check("les dépenses des autres activités ne l'atteignent pas",
+  moduleCaisseMovements(cafeteria, 'cafeteria', app.treasuryTransactions, app.expenses)
+    .filter(m => m.nature === 'Dépense').map(m => m.id), ['app-exp-E3']);
+check('et elle pèse dans le rapport de la Cafétéria',
+  computeModuleReport(cafeteria, 'cafeteria', FROM, TO, app.treasuryTransactions, app.expenses).expensesTotal,
+  1_500);
+check("le rapport Carburant ne la compte pas", r.expensesTotal, 13_000);
+
+console.log("\nUne dépense de partie réglée par la banque ne vide pas le tiroir");
+/** Même cafétéria, avec deux dépenses à elle : une en espèces, une en banque. */
+const cafeteriaExp: any = {
+  ...cafeteria,
+  expenses: [
+    { id: 'BX1', name: 'Café en grains', amount: 800, date: '2026-08-08', accountId: 'CAISSE_CAFETERIA' },
+    { id: 'BX2', name: 'Assurance', amount: 3_000, date: '2026-08-09', accountId: 'B1' },
+  ],
+};
+check('seule la dépense en espèces sort de la caisse',
+  moduleCaisseBalance(cafeteriaExp, 'cafeteria', app.treasuryTransactions, app.expenses), 10_000 - 800);
+check('les deux comptent dans le rapport de la partie',
+  computeModuleReport(cafeteriaExp, 'cafeteria', FROM, TO, app.treasuryTransactions, app.expenses).expensesTotal,
+  800 + 3_000 + 1_500);
 
 console.log(`\n${passed} vérification(s) passée(s), ${failed} échec(s).`);
 if (failed > 0) process.exit(1);

@@ -8,10 +8,13 @@
  * printable "Fiche Journalière"-style sheet render from a single source of truth.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale } from './bizConfig';
+import {
+  ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale,
+  bizExpensePaidInCash,
+} from './bizConfig';
 import { unpaidSupplierInvoices, purchasePaid, purchaseRest } from './supplierDebt';
 import { computeCarburantSales, computeCarburantCash, FuelBrigadeSale } from './carburantSales';
-import { partCashLedgerLines } from '../store/AppContext';
+import { partCashLedgerLines, expensePartOf, isCashAccount } from '../store/AppContext';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -32,7 +35,20 @@ export interface PurchaseRow {
 }
 export interface ProductGain { name: string; qty: number; unit?: string; revenue: number; cost: number; gain: number; }
 export interface DebtRow { id: string; ref: string; name: string; date: string; total: number; paid: number; rest: number; }
-export interface ExpenseRow { id: string; kind: 'Dépense' | 'Salaire' | 'Acompte' | 'Absence'; label: string; description?: string; amount: number; date: string; }
+export interface ExpenseRow {
+  id: string; kind: 'Dépense' | 'Salaire' | 'Acompte' | 'Absence';
+  label: string; description?: string; amount: number; date: string;
+  /**
+   * Où la dépense est enregistrée : `module` = dans la partie elle-même,
+   * `app` = dans l'écran Dépenses de la station, imputée à cette partie. Les
+   * deux se suppriment par des chemins différents — sans ce repère, le rapport
+   * général essayait de retirer une dépense de la station d'un blob de partie,
+   * et la ligne revenait à chaque rechargement.
+   */
+  origin?: 'module' | 'app';
+  /** `true` quand la dépense a vidé le tiroir de la partie (paiement en espèces). */
+  paidInCash?: boolean;
+}
 export interface StockAlertRow { id: string; name: string; category?: string; currentQty: number; minQty: number; deficit: number; unit?: string; value: number; }
 /** Une référence en stock et ce qu'elle vaut — le détail de « Valeur du stock ». */
 export interface StockLineRow { id: string; name: string; category?: string; qty: number; unit?: string; buyPrice: number; value: number; }
@@ -166,6 +182,15 @@ export const caisseFlowOf = (rows: CaisseMovementRow[]) => ({
 const flowOf = caisseFlowOf;
 
 /**
+ * Les dépenses de la STATION (écran « Dépenses ») imputées à une partie
+ * commerciale. Une dépense n'appartient plus au seul Carburant : celle qui est
+ * imputée à la Cafétéria pèse dans SON rapport et, si elle est payée en
+ * espèces, sort de SA caisse.
+ */
+export const appExpensesOfPart = (key: ModuleKey | string, appExpenses: any[] = []): any[] =>
+  (appExpenses || []).filter(e => expensePartOf(e) === key);
+
+/**
  * Le tiroir d'une partie commerciale, mouvement par mouvement — la SEULE
  * définition, partagée par le rapport de la partie et l'écran Caisse Générale.
  *
@@ -175,9 +200,14 @@ const flowOf = caisseFlowOf;
  * un dépôt saisi dans la Caisse Générale avec « Cafétéria » en partie concernée
  * n'arrivait nulle part, et le classement choisi par l'utilisateur ne servait
  * qu'à colorer une ligne de journal.
+ *
+ * `appExpenses` — les dépenses de la station : celles qui sont imputées à cette
+ * partie et payées en espèces sortent de CE tiroir, plus de la caisse générale.
+ * Une dépense réglée par la banque, elle, ne touche aucune caisse : elle est
+ * écartée des deux côtés (partie comme station).
  */
 export function moduleCaisseMovements(
-  st: ModuleState, key: ModuleKey, txs: any[] = [],
+  st: ModuleState, key: ModuleKey, txs: any[] = [], appExpenses: any[] = [],
 ): CaisseMovementRow[] {
   return [
     ...st.caisse.map(c => ({
@@ -201,10 +231,21 @@ export function moduleCaisseMovements(
       id: `pur-${x.id}`, date: x.date, nature: 'Achat',
       label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
     })),
-    ...st.expenses.map(e => ({
+    // Seules les dépenses réglées EN ESPÈCES vident le tiroir : une dépense
+    // payée par virement est sortie du compte bancaire, pas de la caisse.
+    ...st.expenses.filter(bizExpensePaidInCash).map(e => ({
       id: `exp-${e.id}`, date: e.date, nature: 'Dépense',
       label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -num(e.amount),
     })),
+    // Dépenses de la station imputées à cette partie et payées en espèces.
+    ...appExpensesOfPart(key, appExpenses)
+      .filter(e => isCashAccount(e.accountId) || !e.accountId)
+      .map(e => ({
+        id: `app-exp-${e.id}`, date: e.date, nature: 'Dépense',
+        label: `${e.category || 'Dépense'}${e.description ? ` — ${e.description}` : ''}`,
+        amount: -num(e.amount),
+        reference: e.chequeNumber || e.bordereauNumber,
+      })),
     ...st.workers.flatMap(w => (w.payments || []).map(p => ({
       id: `pay-${p.id}`, date: p.date, nature: 'Salaire',
       label: `Salaire ${w.name} — ${p.period}`, amount: -num(p.amount),
@@ -222,8 +263,10 @@ export function moduleCaisseMovements(
 }
 
 /** Le solde du tiroir d'une partie commerciale — la somme de ses mouvements. */
-export function moduleCaisseBalance(st: ModuleState, key: ModuleKey, txs: any[] = []): number {
-  return moduleCaisseMovements(st, key, txs).reduce((s, m) => s + m.amount, 0);
+export function moduleCaisseBalance(
+  st: ModuleState, key: ModuleKey, txs: any[] = [], appExpenses: any[] = [],
+): number {
+  return moduleCaisseMovements(st, key, txs, appExpenses).reduce((s, m) => s + m.amount, 0);
 }
 
 // ─── Coût de revient d'une ligne vendue ──────────────────────────────────────
@@ -302,10 +345,16 @@ export function makeCostResolver(st: ModuleState) {
  * `txs` — le grand livre de la station. Sans lui, la caisse d'une partie
  * ignorait les VIREMENTS partis de son coffre : elle restait pleine d'un argent
  * déjà versé en banque, et contredisait l'écran Caisse Générale, qui les compte.
- * Le paramètre est facultatif pour ne casser aucun appelant existant.
+ *
+ * `appExpenses` — les dépenses saisies dans l'écran « Dépenses » de la station.
+ * Celles qui sont imputées à CETTE partie sont ses charges : sans elles, une
+ * dépense de la Cafétéria payée depuis l'écran général pesait sur le Carburant.
+ *
+ * Les deux paramètres sont facultatifs pour ne casser aucun appelant existant.
  */
 export function computeModuleReport(
   st: ModuleState, key: ModuleKey, from: string, to: string, txs: any[] = [],
+  appExpenses: any[] = [],
 ): PartReport {
   const cfg = MODULES[key];
   const { unitOf, costOfItem } = makeCostResolver(st);
@@ -321,6 +370,9 @@ export function computeModuleReport(
   const repsInRange = (st.reparations || []).filter(r => within(r.date, from, to));
   const purchasesInRange = st.purchases.filter(p => within(p.date, from, to));
   const expensesInRange = st.expenses.filter(e => within(e.date, from, to));
+  // Les dépenses de la station imputées à cette partie : elles sont à elle.
+  const appExpensesInRange = appExpensesOfPart(key, appExpenses)
+    .filter(e => within(e.date, from, to));
   const productionsInRange = (st.productions || []).filter(p => within(p.date, from, to));
   const destructionsInRange = (st.destructions || []).filter(d => within(d.date, from, to) && !d.recovered);
 
@@ -410,7 +462,18 @@ export function computeModuleReport(
     .sort((a, b) => b.rest - a.rest);
 
   // ── Expenses (+ salaries + acomptes + absences within period) ──
-  const expenseRows: ExpenseRow[] = expensesInRange.map(e => ({ id: e.id, kind: 'Dépense', label: e.category || e.name, description: e.description || e.name, amount: e.amount, date: e.date }));
+  const expenseRows: ExpenseRow[] = [
+    ...expensesInRange.map(e => ({
+      id: e.id, kind: 'Dépense' as const, label: e.category || e.name,
+      description: e.description || e.name, amount: e.amount, date: e.date,
+      origin: 'module' as const, paidInCash: bizExpensePaidInCash(e),
+    })),
+    ...appExpensesInRange.map((e: any) => ({
+      id: e.id, kind: 'Dépense' as const, label: e.category || 'Dépense',
+      description: e.description, amount: num(e.amount), date: e.date,
+      origin: 'app' as const, paidInCash: !e.accountId || isCashAccount(e.accountId),
+    })),
+  ];
   const salaryRows: ExpenseRow[] = st.workers.flatMap(w => w.payments.filter(p => within(p.date, from, to))
     .map(p => ({ id: `${w.id}-${p.id}`, kind: 'Salaire' as const, label: `${w.name}`, description: `Salaire ${p.period}`, amount: p.amount, date: p.date })));
   const acompteRows: ExpenseRow[] = st.workers.flatMap(w => w.acomptes.filter(a => within(a.date, from, to))
@@ -418,7 +481,8 @@ export function computeModuleReport(
   const expenses: ExpenseRow[] = [...expenseRows, ...salaryRows, ...acompteRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   const expByCat: Record<string, number> = {};
-  expensesInRange.forEach(e => { const k = e.category || 'Autre'; expByCat[k] = (expByCat[k] || 0) + e.amount; });
+  expensesInRange.forEach(e => { const k = e.category || 'Autre'; expByCat[k] = (expByCat[k] || 0) + num(e.amount); });
+  appExpensesInRange.forEach((e: any) => { const k = e.category || 'Autre'; expByCat[k] = (expByCat[k] || 0) + num(e.amount); });
   const expensesByCategory = Object.entries(expByCat).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
 
   // ── Alerts ──
@@ -495,7 +559,8 @@ export function computeModuleReport(
   const purchasesPaid = purchasesInRange.reduce((s, x) => s + x.paid, 0);
   const cogs = salesByProduct.reduce((s, x) => s + x.cost, 0);
   const grossMargin = salesTotal - cogs;
-  const expensesTotal = expensesInRange.reduce((s, x) => s + x.amount, 0);
+  const expensesTotal = expensesInRange.reduce((s, x) => s + num(x.amount), 0)
+    + appExpensesInRange.reduce((s: number, x: any) => s + num(x.amount), 0);
   const salariesPaid = salaryRows.reduce((s, x) => s + x.amount, 0);
   const acomptesPeriod = acompteRows.reduce((s, x) => s + x.amount, 0);
   const productionValue = productionsInRange.reduce((s, x) => s + x.totalValue, 0);
@@ -509,7 +574,7 @@ export function computeModuleReport(
   // ── Le solde de caisse, ligne par ligne ───────────────────────────────────
   // Le calcul vit dans `moduleCaisseMovements`, que l'écran Caisse Générale
   // appelle aussi : les deux écrans ne peuvent donc plus annoncer deux soldes.
-  const caisseMovements = moduleCaisseMovements(st, key, txs);
+  const caisseMovements = moduleCaisseMovements(st, key, txs, appExpenses);
   const caisseBalance = caisseMovements.reduce((s, m) => s + m.amount, 0);
   const netGain = grossMargin - expensesTotal - salariesPaid - destroyedValue - lossValue;
 
@@ -560,7 +625,11 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
   const shopSales: any[] = (app.shopSales || []).filter((s: any) => within(s.date, from, to));
   const purchasesAll: any[] = app.purchases || [];
   const purchasesInRange = purchasesAll.filter((p: any) => within(p.date, from, to));
-  const expensesInRange: any[] = (app.expenses || []).filter((e: any) => within(e.date, from, to));
+  // Les dépenses du CARBURANT — pas celles de la station entière. Une dépense
+  // imputée à la Cafétéria ou au Lavage pèse dans SON rapport : la compter ici
+  // aussi la facturait deux fois et faisait plonger le gain du carburant.
+  const expensesInRange: any[] = (app.expenses || [])
+    .filter((e: any) => expensePartOf(e) === 'carburant' && within(e.date, from, to));
 
   const prodById = new Map(products.map(p => [p.id, p]));
 
@@ -678,7 +747,11 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     }))));
 
   const expenses: ExpenseRow[] = [
-    ...expensesInRange.map((e: any) => ({ id: e.id, kind: 'Dépense' as const, label: e.category || 'Dépense', description: e.description, amount: e.amount, date: e.date })),
+    ...expensesInRange.map((e: any) => ({
+      id: e.id, kind: 'Dépense' as const, label: e.category || 'Dépense',
+      description: e.description, amount: num(e.amount), date: e.date,
+      origin: 'app' as const, paidInCash: !e.accountId || isCashAccount(e.accountId),
+    })),
     ...salaryRows, ...acompteRows,
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const expByCat: Record<string, number> = {};

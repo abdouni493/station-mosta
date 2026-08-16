@@ -32,7 +32,7 @@
  * un découvert qui n'existait pas.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { isCashAccount, nozzleTankId, partCashLedgerLines } from '../store/AppContext';
+import { expensePartOf, isCashAccount, nozzleTankId, partCashLedgerLines } from '../store/AppContext';
 import { within } from './period';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -503,8 +503,12 @@ export function computeCarburantCash(app: any): CarburantCash {
     });
   }
 
-  // 4. Dépenses réglées en espèces.
+  // 4. Dépenses du CARBURANT réglées en espèces.
+  //    Une dépense imputée à la Cafétéria ou au Lavage sort de LEUR caisse :
+  //    la retrancher ici vidait le tiroir du carburant d'un argent qu'il
+  //    n'avait jamais sorti.
   for (const e of expenses) {
+    if (expensePartOf(e) !== 'carburant') continue;
     if (!paidInCash(e.accountId)) continue;
     const amount = num(e.amount);
     if (!amount) continue;

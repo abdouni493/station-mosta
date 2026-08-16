@@ -50,29 +50,66 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn, newId } from "@/src/lib/utils";
 import {
   useAppState, useAppDispatch, useModulePermission,
-  TreasuryTransaction, CAISSE_ID, bankBalanceOf, caisseBalanceOf,
+  TreasuryTransaction, TreasuryPart, CAISSE_ID, CASH_ACCOUNT_LABEL,
+  bankBalanceOf, caisseBalanceOf, cashAccountOfPart, expensePartOf, isCashAccount,
 } from "@/src/store/AppContext";
+import { useBizAll } from "@/src/store/BizContext";
+import { carburantCashBalance } from "@/src/lib/carburantSales";
+import { moduleCaisseBalance } from "@/src/lib/bizReporting";
 import { toast } from "react-hot-toast";
 
 /** Instrument used to pay — independent of the account the money leaves. */
 const PAYMENT_MODES = ["Espèces", "Virement", "Chèque", "TPE", "Prélèvement"] as const;
 
+/**
+ * Les activités auxquelles une dépense peut être imputée. Le choix n'est pas
+ * un classement : il décide de QUELLE caisse sortent les espèces.
+ */
+const PARTS: { key: TreasuryPart; label: string; short: string; tone: string }[] = [
+  { key: 'carburant', label: 'Carburant', short: '⛽ Carburant', tone: '#003087' },
+  { key: 'cafeteria', label: 'Cafétéria', short: '☕ Cafétéria', tone: '#b45309' },
+  { key: 'lavage', label: 'Lavage & Réparation', short: '💧 Lavage', tone: '#0e7490' },
+  { key: 'systeme', label: 'Finance (caisse générale)', short: '🏛️ Finance', tone: '#4c1d95' },
+];
+const PART_LABEL: Record<string, string> = Object.fromEntries(PARTS.map(p => [p.key, p.label]));
+
 const Expenses = () => {
   const { t } = useTranslation();
-  const { expenses, settings, bankAccounts, treasuryTransactions, currentUserName } = useAppState();
+  const state = useAppState();
+  const { expenses, settings, bankAccounts, treasuryTransactions, currentUserName } = state;
   const perm = useModulePermission('Dépenses');
   const dispatch = useAppDispatch();
+  const biz = useBizAll();
 
   // Live soldes so the payment-method list shows what each account really holds.
   const accounts = useMemo(
     () => bankAccounts.map(a => ({ ...a, balance: bankBalanceOf(a, treasuryTransactions) })),
     [bankAccounts, treasuryTransactions],
   );
-  const caisseBalance = useMemo(() => caisseBalanceOf(treasuryTransactions), [treasuryTransactions]);
+
+  /**
+   * Ce que chaque caisse contient RÉELLEMENT — le même calcul que l'écran
+   * Caisse Générale, pour que la dépense soit saisie en connaissance de cause :
+   * l'utilisateur voit le tiroir qu'il s'apprête à vider.
+   */
+  const partCash = useMemo<Record<string, number>>(() => {
+    // Une partie non encore chargée n'a pas de caisse : mieux vaut 0 qu'un écran
+    // blanc, la saisie de la dépense n'en dépend pas.
+    const ofModule = (key: 'cafeteria' | 'lavage') =>
+      biz?.[key] ? moduleCaisseBalance(biz[key], key, treasuryTransactions, expenses) : 0;
+    return {
+      carburant: carburantCashBalance(state),
+      cafeteria: ofModule('cafeteria'),
+      lavage: ofModule('lavage'),
+      systeme: caisseBalanceOf(treasuryTransactions),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, biz, treasuryTransactions, expenses]);
 
   /** Label of the account an expense was paid from. */
   const accountLabel = (id?: string) =>
-    !id || id === CAISSE_ID ? 'Caisse générale' : (bankAccounts.find(a => a.id === id)?.name || 'Compte supprimé');
+    !id ? 'Caisse générale'
+      : (CASH_ACCOUNT_LABEL[id] || bankAccounts.find(a => a.id === id)?.name || 'Compte supprimé');
 
   const [showModal, setShowModal] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState<any>(null);
@@ -86,6 +123,7 @@ const Expenses = () => {
   // Filter State
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [partFilter, setPartFilter] = useState<"all" | TreasuryPart>("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [minAmount, setMinAmount] = useState("");
@@ -101,7 +139,10 @@ const Expenses = () => {
     paymentMode: "Espèces",
     chequeNumber: "",
     bordereauNumber: "",
-    accountId: CAISSE_ID,
+    // Par défaut, la dépense est portée par le Carburant et payée avec SES
+    // espèces — jamais avec celles de la caisse générale.
+    part: "carburant" as TreasuryPart,
+    accountId: cashAccountOfPart("carburant"),
     paidBy: "Caisse",
     recipient: "",
     status: "Validé",
@@ -109,22 +150,46 @@ const Expenses = () => {
   });
   const [formData, setFormData] = useState<any>(emptyForm);
 
-  const filteredExpenses = useMemo(() => {
+  /**
+   * Les dépenses de la période SANS le filtre de partie : c'est sur elles que
+   * se lit la bande « qui a dépensé quoi ». La filtrer par partie aurait mis
+   * toutes les autres activités à zéro dès qu'on en sélectionne une.
+   */
+  const scopedExpenses = useMemo(() => {
     return expenses.filter(e => {
-      const matchesSearch = e.description.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch = (e.description || '').toLowerCase().includes(searchQuery.toLowerCase());
       const matchesCategory = categoryFilter === "all" || e.category === categoryFilter;
       const matchesDateFrom = !dateFrom || new Date(e.date) >= new Date(dateFrom);
       const matchesDateTo = !dateTo || new Date(e.date) <= new Date(dateTo);
       const matchesMin = !minAmount || e.amount >= parseFloat(minAmount);
       const matchesMax = !maxAmount || e.amount <= parseFloat(maxAmount);
-      
+
       return matchesSearch && matchesCategory && matchesDateFrom && matchesDateTo && matchesMin && matchesMax;
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [expenses, searchQuery, categoryFilter, dateFrom, dateTo, minAmount, maxAmount]);
 
+  const filteredExpenses = useMemo(
+    () => (partFilter === "all" ? scopedExpenses : scopedExpenses.filter(e => expensePartOf(e) === partFilter)),
+    [scopedExpenses, partFilter]);
+
   const totalFiltered = useMemo(() => {
     return filteredExpenses.reduce((acc, e) => acc + e.amount, 0);
   }, [filteredExpenses]);
+
+  /**
+   * Ce que chaque activité a dépensé sur la période filtrée, et ce qu'elle a
+   * réellement sorti de sa caisse. Le total seul ne disait pas qui payait.
+   */
+  const byPart = useMemo(() => PARTS.map(p => {
+    const rows = scopedExpenses.filter(e => expensePartOf(e) === p.key);
+    return {
+      ...p,
+      count: rows.length,
+      total: rows.reduce((s, e) => s + (e.amount || 0), 0),
+      cash: rows.filter(e => !e.accountId || isCashAccount(e.accountId)).reduce((s, e) => s + (e.amount || 0), 0),
+      balance: partCash[p.key] || 0,
+    };
+  }), [scopedExpenses, partCash]);
 
   const pieData = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -237,13 +302,20 @@ const Expenses = () => {
     }
 
     const amount = parseFloat(formData.amount);
-    const accountId = formData.accountId || CAISSE_ID;
+    const part: TreasuryPart = formData.part || 'carburant';
+    // Payée en espèces, la dépense sort de la caisse de SON activité : la
+    // caisse générale n'est débitée que pour une dépense de la Finance.
+    const accountId = isCashAccount(formData.accountId) || !formData.accountId
+      ? cashAccountOfPart(part)
+      : formData.accountId;
+    const paidCash = isCashAccount(accountId);
     const id = selectedExpense?.id || newId();
     const payload = {
         ...formData,
         amount,
         accountId,
-        paymentMode: formData.paymentMode || (accountId === CAISSE_ID ? "Espèces" : "Virement"),
+        part,
+        paymentMode: formData.paymentMode || (paidCash ? "Espèces" : "Virement"),
         id
     };
 
@@ -268,7 +340,9 @@ const Expenses = () => {
         description: `Dépense ${formData.category} — ${formData.description}`
           + (formData.recipient ? ` (${formData.recipient})` : ''),
         accountFrom: accountId,
-        part: 'systeme',
+        // La ligne appartient à l'activité qui paie : c'est ce qui fait sortir
+        // l'argent de SA caisse, et non plus de la caisse générale.
+        part,
         refType: 'expense', refId: id,
         chequeNumber: formData.chequeNumber || undefined,
         bordereauNumber: formData.bordereauNumber || undefined,
@@ -364,8 +438,12 @@ const Expenses = () => {
                 <span class="value">${expense.paymentMode || expense.mode}</span>
               </div>
               <div class="row">
+                <span class="label">Partie concernée:</span>
+                <span class="value">${PART_LABEL[expensePartOf(expense)] || 'Carburant'}</span>
+              </div>
+              <div class="row">
                 <span class="label">Compte débité:</span>
-                <span class="value">${accountLabel(expense.accountId)}</span>
+                <span class="value">${accountLabel(expense.accountId || cashAccountOfPart(expensePartOf(expense)))}</span>
               </div>
               ${expense.chequeNumber ? `<div class="row"><span class="label">N° Chèque:</span><span class="value">${expense.chequeNumber}</span></div>` : ''}
               ${expense.bordereauNumber ? `<div class="row"><span class="label">N° Bordereau:</span><span class="value">${expense.bordereauNumber}</span></div>` : ''}
@@ -394,11 +472,16 @@ const Expenses = () => {
 
   const handleEdit = (expense: any) => {
     setSelectedExpense(expense);
-    // Expenses saved before the bank accounts existed were paid in cash.
+    // Expenses saved before the bank accounts existed were paid in cash, and
+    // those saved before the parts existed were carried by the Carburant.
+    const part = expensePartOf(expense);
     setFormData({
       ...emptyForm(),
       ...expense,
-      accountId: expense.accountId || CAISSE_ID,
+      part,
+      accountId: expense.accountId && !isCashAccount(expense.accountId)
+        ? expense.accountId
+        : cashAccountOfPart(part),
       bordereauNumber: expense.bordereauNumber || "",
       chequeNumber: expense.chequeNumber || "",
     });
@@ -461,6 +544,31 @@ const Expenses = () => {
                </div>
             </div>
 
+            {/* Ce que chaque activité a dépensé, et ce qui reste dans sa caisse.
+                Une dépense en espèces sort du tiroir de SON activité : cette
+                bande est la lecture directe de cette règle. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {byPart.map(p => (
+                <button
+                  key={p.key}
+                  onClick={() => setPartFilter(partFilter === p.key ? 'all' : p.key)}
+                  className={cn(
+                    "bg-white p-5 rounded-[2rem] border text-left transition-all shadow-sm",
+                    partFilter === p.key ? "border-blue-900 ring-2 ring-blue-900/10" : "border-slate-100 hover:border-blue-200",
+                  )}
+                >
+                  <p className="text-[9px] font-black uppercase tracking-widest italic" style={{ color: p.tone }}>{p.short}</p>
+                  <p className="text-xl font-black text-blue-900 italic tracking-tighter mt-1">{p.total.toLocaleString('fr-FR')} DA</p>
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                    {p.count} dépense(s) · {p.cash.toLocaleString('fr-FR')} DA en espèces
+                  </p>
+                  <p className={cn("text-[10px] font-black tabular-nums mt-1", p.balance >= 0 ? "text-emerald-600" : "text-red-600")}>
+                    Caisse : {p.balance.toLocaleString('fr-FR')} DA
+                  </p>
+                </button>
+              ))}
+            </div>
+
             {/* Filters */}
             <div className="p-6 border border-slate-100 rounded-3xl flex flex-wrap items-center justify-between gap-6 bg-white shadow-sm italic">
               <div className="flex items-center gap-4 flex-1 min-w-[300px]">
@@ -481,6 +589,14 @@ const Expenses = () => {
                 >
                   <option value="all">Toutes les catégories</option>
                   {settings.expenseCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select
+                  value={partFilter}
+                  onChange={(e) => setPartFilter(e.target.value as any)}
+                  className="input-field h-14 w-44 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner px-6 text-blue-900 italic"
+                >
+                  <option value="all">Toutes les parties</option>
+                  {PARTS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
                 </select>
               </div>
 
@@ -519,10 +635,13 @@ const Expenses = () => {
                     {/* Top Gradient Border */}
                     <div className="h-2 absolute top-0 left-0 right-0 rounded-t-3xl bg-gradient-to-r from-blue-900 via-blue-800 to-yellow-400" />
                     
-                    {/* Category Badge */}
-                    <div className="absolute top-4 left-4">
+                    {/* Category + part badges — qui a payé se lit sur la carte */}
+                    <div className="absolute top-4 left-4 flex items-center gap-1.5">
                       <span className="text-[8px] font-black uppercase px-2.5 py-1 rounded-full italic shadow-sm leading-none border inline-block bg-blue-50 text-blue-700 border-blue-100">
                         {expense.category}
+                      </span>
+                      <span className="text-[8px] font-black uppercase px-2.5 py-1 rounded-full italic shadow-sm leading-none border inline-block bg-slate-50 text-slate-600 border-slate-200">
+                        {PARTS.find(p => p.key === expensePartOf(expense))?.short || 'Carburant'}
                       </span>
                     </div>
 
@@ -596,10 +715,12 @@ const Expenses = () => {
                         <span>{expense.paymentMode || expense.mode}</span>
                       </div>
                       <div className="flex items-center gap-2.5">
-                        {(expense.accountId && expense.accountId !== "CAISSE")
-                          ? <Landmark className="w-3.5 h-3.5 text-slate-400" />
-                          : <Banknote className="w-3.5 h-3.5 text-slate-400" />}
-                        <span className="truncate">{accountLabel(expense.accountId)}</span>
+                        {isCashAccount(expense.accountId) || !expense.accountId
+                          ? <Banknote className="w-3.5 h-3.5 text-slate-400" />
+                          : <Landmark className="w-3.5 h-3.5 text-slate-400" />}
+                        <span className="truncate">
+                          {accountLabel(expense.accountId || cashAccountOfPart(expensePartOf(expense)))}
+                        </span>
                       </div>
                       {expense.recipient && (
                         <div className="flex items-center gap-2.5">
@@ -845,27 +966,69 @@ const Expenses = () => {
                           onChange={e => setFormData({ ...formData, amount: e.target.value })}
                         />
                      </div>
-                     {/* Payment method — the caisse or one of the bank accounts.
-                         The chosen account is debited and the dépense appears in
-                         its historique. */}
+                     {/* Partie concernée — ce choix décide de QUELLE caisse
+                         sortent les espèces : celle de l'activité qui paie. */}
+                     <div className="space-y-1.5">
+                        <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Partie concernée (qui paie)</label>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {PARTS.map(p => {
+                            const on = (formData.part || 'carburant') === p.key;
+                            return (
+                              <button
+                                key={p.key}
+                                type="button"
+                                onClick={() => setFormData({
+                                  ...formData,
+                                  part: p.key,
+                                  // Un paiement en espèces suit l'activité choisie ;
+                                  // un paiement bancaire garde son compte.
+                                  accountId: isCashAccount(formData.accountId) || !formData.accountId
+                                    ? cashAccountOfPart(p.key)
+                                    : formData.accountId,
+                                })}
+                                className={cn(
+                                  "rounded-xl p-2.5 text-left border transition-all",
+                                  on ? "border-blue-900 bg-blue-50 ring-2 ring-blue-900/10" : "border-slate-200 bg-white hover:border-slate-300",
+                                )}
+                              >
+                                <p className={cn("text-[10px] font-black leading-tight", on ? "text-blue-900" : "text-slate-500")}>{p.short}</p>
+                                <p className={cn("text-[10px] font-black tabular-nums mt-0.5", (partCash[p.key] || 0) >= 0 ? "text-emerald-600" : "text-red-600")}>
+                                  {(partCash[p.key] || 0).toLocaleString('fr-FR')} DA
+                                </p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-[9px] font-bold text-slate-400 pl-1">
+                          La dépense pèse dans le rapport de cette activité, et ses espèces sortent de SA caisse.
+                        </p>
+                     </div>
+
+                     {/* Payment method — the caisse of the chosen part or one of
+                         the bank accounts. The chosen account is debited and the
+                         dépense appears in its historique. */}
                      <div className="space-y-1.5">
                         <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Mode de paiement / Compte débité</label>
                         <select
                          className="w-full h-10 px-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-blue-900 focus:bg-white italic transition-all text-slate-800"
-                         value={formData.accountId || CAISSE_ID}
+                         value={isCashAccount(formData.accountId) || !formData.accountId
+                           ? cashAccountOfPart(formData.part || 'carburant')
+                           : formData.accountId}
                          onChange={e => {
                            const accountId = e.target.value;
                            setFormData({
                              ...formData,
                              accountId,
-                             // Espèces only makes sense for the cash box.
-                             paymentMode: accountId === CAISSE_ID
+                             // Espèces only makes sense for a cash box.
+                             paymentMode: isCashAccount(accountId)
                                ? "Espèces"
                                : (formData.paymentMode && formData.paymentMode !== "Espèces" ? formData.paymentMode : "Virement"),
                            });
                          }}
                         >
-                           <option value={CAISSE_ID}>Espèces — Caisse générale ({caisseBalance.toLocaleString('fr-FR')} DA)</option>
+                           <option value={cashAccountOfPart(formData.part || 'carburant')}>
+                             Espèces — {accountLabel(cashAccountOfPart(formData.part || 'carburant'))} ({(partCash[formData.part || 'carburant'] || 0).toLocaleString('fr-FR')} DA)
+                           </option>
                            {accounts.length > 0 && (
                              <optgroup label="Comptes bancaires">
                                {accounts.map(a => (
@@ -906,7 +1069,7 @@ const Expenses = () => {
                         </div>
                      </div>
 
-                     {((formData.accountId || CAISSE_ID) !== CAISSE_ID
+                     {(!isCashAccount(formData.accountId || cashAccountOfPart(formData.part))
                        || ["Chèque", "Virement", "Prélèvement"].includes(formData.paymentMode)) && (
                        <div className="grid grid-cols-2 gap-4">
                          <div className="space-y-1.5">
@@ -928,26 +1091,39 @@ const Expenses = () => {
                        </div>
                      )}
 
-                     {/* Effect on the debited account */}
-                     <div className="rounded-2xl bg-slate-50 border border-slate-150 p-4 flex items-center justify-between gap-3">
-                       <div className="min-w-0">
-                         <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Compte débité</p>
-                         <p className="text-xs font-black text-blue-900 truncate">{accountLabel(formData.accountId)}</p>
-                       </div>
-                       <div className="text-right shrink-0">
-                         <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Solde après</p>
-                         <p className="text-xs font-black text-blue-900 tabular-nums">
-                           {(
-                             ((formData.accountId || CAISSE_ID) === CAISSE_ID
-                               ? caisseBalance
-                               : (accounts.find(a => a.id === formData.accountId)?.balance || 0))
-                             - (parseFloat(formData.amount) || 0)
-                             + (selectedExpense && (selectedExpense.accountId || CAISSE_ID) === (formData.accountId || CAISSE_ID)
-                               ? (selectedExpense.amount || 0) : 0)
-                           ).toLocaleString('fr-FR')} DA
-                         </p>
-                       </div>
-                     </div>
+                     {/* Effect on the debited account — le tiroir qui va se vider */}
+                     {(() => {
+                       const account = isCashAccount(formData.accountId) || !formData.accountId
+                         ? cashAccountOfPart(formData.part || 'carburant')
+                         : formData.accountId;
+                       const before = isCashAccount(account)
+                         ? (partCash[formData.part || 'carburant'] || 0)
+                         : (accounts.find(a => a.id === account)?.balance || 0);
+                       // Modifier une dépense déjà enregistrée : son ancien montant
+                       // revient dans le compte avant d'en ressortir.
+                       const givenBack = selectedExpense
+                         && (selectedExpense.accountId || cashAccountOfPart(expensePartOf(selectedExpense))) === account
+                         ? (selectedExpense.amount || 0) : 0;
+                       const after = before - (parseFloat(formData.amount) || 0) + givenBack;
+                       return (
+                         <div className="rounded-2xl bg-slate-50 border border-slate-150 p-4 flex items-center justify-between gap-3">
+                           <div className="min-w-0">
+                             <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Compte débité</p>
+                             <p className="text-xs font-black text-blue-900 truncate">{accountLabel(account)}</p>
+                             <p className="text-[9px] font-bold text-slate-400 truncate">Imputée à {PART_LABEL[formData.part || 'carburant']}</p>
+                           </div>
+                           <div className="text-right shrink-0">
+                             <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Solde après</p>
+                             <p className={cn("text-xs font-black tabular-nums", after < 0 ? "text-red-600" : "text-blue-900")}>
+                               {after.toLocaleString('fr-FR')} DA
+                             </p>
+                             {after < 0 && (
+                               <p className="text-[9px] font-bold text-red-500">Ce compte passera à découvert.</p>
+                             )}
+                           </div>
+                         </div>
+                       );
+                     })()}
                      <div className="space-y-1.5">
                         <label className="text-[9px] font-bold text-slate-500 uppercase tracking-wider pl-1">Reçu de (Bénéficiaire/Prestataire)</label>
                         <input 

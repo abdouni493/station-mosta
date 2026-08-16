@@ -27,6 +27,7 @@ import {
   useAppState, useAppDispatch, useModulePermission,
   TreasuryTransaction, TreasuryPart, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
   accountLabelOf, isCashAccount, ledgerNetFor, bankBalanceOf, caisseBalanceOf,
+  cashAccountOfPart, expensePartOf,
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey } from '../lib/bizConfig';
@@ -103,7 +104,9 @@ export default function CaisseGenerale() {
   const partBalance = (key: ModuleKey) => {
     const m = biz[key];
     if (!m) return 0;
-    return moduleCaisseBalance(m, key, treasuryTransactions);
+    // `expenses` : les dépenses de la station imputées à cette partie sortent de
+    // SA caisse quand elles sont payées en espèces.
+    return moduleCaisseBalance(m, key, treasuryTransactions, expenses);
   };
 
   /**
@@ -119,7 +122,7 @@ export default function CaisseGenerale() {
     cafeteria: partBalance('cafeteria'),
     lavage: partBalance('lavage'),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [carburantBalance, biz, treasuryTransactions]);
+  }), [carburantBalance, biz, treasuryTransactions, expenses]);
 
   // ── Consolidated journal ───────────────────────────────────────────────────
   const movements = useMemo<Movement[]>(() => {
@@ -164,9 +167,12 @@ export default function CaisseGenerale() {
     for (const e of expenses) {
       if (ledgered.has(`expense:${e.id}`)) continue;
       out.push({
-        id: `exp-${e.id}`, date: e.date, nature: 'Dépense', part: 'carburant',
+        // La dépense est imputée à l'activité qui la paie : c'est elle qui la
+        // porte dans son rapport et dont la caisse se vide.
+        id: `exp-${e.id}`, date: e.date, nature: 'Dépense', part: expensePartOf(e),
         label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(),
         amount: -(e.amount || 0),
+        account: accName(e.accountId || cashAccountOfPart(expensePartOf(e))),
       });
     }
     for (const a of brigadeAccountings) {
@@ -199,9 +205,12 @@ export default function CaisseGenerale() {
         id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part,
         label: `Achat ${p.ref} — ${p.supplierName}`, amount: -p.paid,
       }));
-      m.expenses.forEach(e => out.push({
+      // Une dépense de partie réglée par la BANQUE a écrit sa propre ligne au
+      // grand livre : la repousser ici compterait le même argent deux fois.
+      m.expenses.filter(e => !ledgered.has(`biz_expense:${e.id}`)).forEach(e => out.push({
         id: `${key}-exp-${e.id}`, date: e.date, nature: 'Dépense', part,
         label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -e.amount,
+        account: CASH_ACCOUNT_LABEL[cashAccountOfPart(part)],
       }));
       m.caisse.forEach(c => out.push({
         id: `${key}-csh-${c.id}`, date: c.date,
@@ -222,11 +231,31 @@ export default function CaisseGenerale() {
     () => Array.from(new Set(movements.map(m => m.nature))).sort(),
     [movements]);
 
-  const filtered = useMemo(() => movements.filter(m =>
-    inPeriod(m.date, period, from, to) &&
+  /** Tout ce qui a bougé sur la période, avant les filtres d'affichage. */
+  const inRange = useMemo(
+    () => movements.filter(m => inPeriod(m.date, period, from, to)),
+    [movements, period, from, to]);
+
+  const filtered = useMemo(() => inRange.filter(m =>
     (partFilter === 'all' || m.part === partFilter) &&
     (natureFilter === 'all' || m.nature === natureFilter)
-  ), [movements, period, from, to, partFilter, natureFilter]);
+  ), [inRange, partFilter, natureFilter]);
+
+  /**
+   * Ce que chaque activité a dépensé sur la période — la question à laquelle
+   * cet écran ne répondait pas : il affichait un solde par caisse sans jamais
+   * dire ce que chacune avait payé.
+   */
+  const partSpending = useMemo(() => {
+    const out: Record<string, { expenses: number; count: number; in: number; out: number }> = {};
+    for (const p of Object.keys(PART_META)) out[p] = { expenses: 0, count: 0, in: 0, out: 0 };
+    for (const m of inRange) {
+      const e = out[m.part] || (out[m.part] = { expenses: 0, count: 0, in: 0, out: 0 });
+      if (m.amount >= 0) e.in += m.amount; else e.out += -m.amount;
+      if (m.nature === 'Dépense') { e.expenses += Math.abs(m.amount); e.count += 1; }
+    }
+    return out;
+  }, [inRange]);
 
   const flow = useMemo(() => {
     const inTotal = filtered.filter(m => m.amount > 0).reduce((s, m) => s + m.amount, 0);
@@ -261,7 +290,10 @@ export default function CaisseGenerale() {
             <span className="text-sm font-bold uppercase tracking-wide">Solde caisse générale</span>
           </div>
           <p className="text-4xl font-black tabular-nums mt-2 text-[#FFB800]">{money(caisse)}</p>
-          <p className="text-[11px] text-blue-200 mt-1">Espèces disponibles — dépôts, retraits et virements</p>
+          <p className="text-[11px] text-blue-200 mt-1">
+            Espèces disponibles — dépôts, retraits et virements. Les dépenses d'une activité sortent de
+            la caisse de CETTE activité, jamais d'ici (sauf celles imputées à la Finance).
+          </p>
         </div>
         <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #065f46, #047857)' }}>
           <div className="flex items-center gap-2 text-emerald-100">
@@ -282,19 +314,30 @@ export default function CaisseGenerale() {
         </div>
       </div>
 
-      {/* Caisse of each part */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {(['carburant', 'cafeteria', 'lavage'] as const).map(key => {
+      {/* Caisse of each part — avec ce que l'activité a dépensé sur la période.
+          Chaque activité paie ses dépenses en espèces avec SON argent : la
+          caisse générale n'est plus débitée à sa place. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {(['carburant', 'cafeteria', 'lavage', 'systeme'] as const).map(key => {
           const meta = PART_META[key]; const Icon = meta.icon;
-          const val = partBalances[key];
+          const val = key === 'systeme' ? caisse : partBalances[key];
+          const spent = partSpending[key] || { expenses: 0, count: 0, in: 0, out: 0 };
           return (
             <button key={key} onClick={() => setPartFilter(partFilter === key ? 'all' : key)}
               className={`card-glass p-5 text-left transition-all ${partFilter === key ? 'ring-2 ring-[#003087]' : ''}`}>
               <div className="flex items-center gap-2" style={{ color: meta.tone }}>
                 <Icon className="w-5 h-5" />
-                <span className="text-xs font-bold uppercase">Caisse {meta.label}</span>
+                <span className="text-xs font-bold uppercase">
+                  {key === 'systeme' ? 'Caisse générale' : `Caisse ${meta.label}`}
+                </span>
               </div>
               <p className={`text-2xl font-black tabular-nums mt-2 ${val >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(val)}</p>
+              <p className="text-[11px] text-slate-400 mt-1 tabular-nums">
+                +{money(spent.in)} · −{money(spent.out)} sur la période
+              </p>
+              <p className="text-[11px] font-bold text-red-500 mt-0.5 tabular-nums">
+                Dépenses : {money(spent.expenses)} ({spent.count})
+              </p>
             </button>
           );
         })}

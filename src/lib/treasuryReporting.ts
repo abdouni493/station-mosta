@@ -18,6 +18,8 @@
 import { BizState, ModuleKey, MODULES, netCashOfSale } from './bizConfig';
 import { within } from './period';
 import { computeCarburantCash } from './carburantSales';
+import { moduleCaisseBalance } from './bizReporting';
+import { expensePartOf } from '../store/AppContext';
 
 export const CAISSE_ID = 'CAISSE';
 
@@ -56,6 +58,8 @@ export const TX_LABEL: Record<string, string> = {
 export const ORIGIN_LABEL: Record<string, string> = {
   purchase: 'Achat carburant', expense: 'Dépense', brigade: 'Brigade',
   client_payment: 'Règlement client',
+  /** Dépense d'une partie (Cafétéria / Lavage) réglée par un compte bancaire. */
+  biz_expense: 'Dépense de partie',
 };
 
 export const TREASURY_PART_LABEL: Record<TreasuryPartKey, string> = {
@@ -363,7 +367,10 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   for (const e of expenses) {
     if (ledgered.has(`expense:${e.id}`)) continue;
     push({
-      id: `exp-${e.id}`, date: e.date, nature: 'Dépense', part: 'carburant', isLedger: false,
+      // La dépense appartient à l'activité qui la supporte, pas au Carburant
+      // par défaut : c'est ce classement qui décide de quelle caisse elle sort.
+      id: `exp-${e.id}`, date: e.date, nature: 'Dépense',
+      part: expensePartOf(e) as TreasuryPartKey, isLedger: false,
       label: `${e.category || 'Dépense'} — ${e.description || ''}`.trim(), amount: -num(e.amount),
     });
   }
@@ -401,7 +408,9 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
       id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part, isLedger: false,
       label: `Achat ${p.ref} — ${p.supplierName}`, amount: -num(p.paid),
     }));
-    (m.expenses || []).forEach(e => push({
+    // Une dépense de partie réglée par la BANQUE a écrit sa propre ligne au
+    // grand livre : la repousser ici comptait le même argent deux fois.
+    (m.expenses || []).filter(e => !ledgered.has(`biz_expense:${e.id}`)).forEach(e => push({
       id: `${key}-exp-${e.id}`, date: e.date, nature: 'Dépense', part, isLedger: false,
       label: `${e.name}${e.description ? ` — ${e.description}` : ''}`, amount: -num(e.amount),
     }));
@@ -422,22 +431,16 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // ── Cash position of each part (all dates — it is a solde) ────────────────
-  // La position d'une activité, ce sont ses propres documents PLUS tout ce que
-  // le grand livre a enregistré sur SON coffre : un virement vers la banque a
-  // bien vidé cette caisse-là. Sans ce terme, le rapport annonçait une caisse
-  // encore pleine d'un argent déjà parti — et contredisait la Caisse Générale.
+  // Le calcul vit dans `bizReporting.moduleCaisseBalance`, que l'écran Caisse
+  // Générale et le rapport de la partie appellent aussi. La copie qui vivait
+  // ici retranchait TOUTES les dépenses de la partie — y compris celles réglées
+  // par virement, qui n'ont jamais vidé le tiroir — et additionnait en plus le
+  // grand livre du coffre en entier, ce qui comptait une deuxième fois chaque
+  // dépense en espèces. Trois écrans, trois soldes différents.
   const partBalance = (key: ModuleKey): number => {
     const m = biz[key];
     if (!m) return 0;
-    const dep = (m.caisse || []).filter(c => c.type === 'deposit').reduce((s, c) => s + num(c.amount), 0);
-    const wit = (m.caisse || []).filter(c => c.type === 'withdraw').reduce((s, c) => s + num(c.amount), 0);
-    const salesPaid = (m.sales || []).reduce((s, x) => s + netCashOfSale(x), 0);
-    const repPaid = (m.reparations || []).reduce((s, r) => s + num(r.paid), 0);
-    const purPaid = (m.purchases || []).reduce((s, x) => s + num(x.paid), 0);
-    const exp = (m.expenses || []).reduce((s, x) => s + num(x.amount), 0);
-    const sal = (m.workers || []).reduce((s, w) => s + (w.payments || []).reduce((a, p) => a + num(p.amount), 0), 0);
-    return dep + salesPaid + repPaid - wit - purPaid - exp - sal
-      + ledgerNetFor(CAISSE_PART_ID[key as keyof typeof CAISSE_PART_ID], txs);
+    return moduleCaisseBalance(m, key, txs, expenses);
   };
   // La caisse Carburant a UNE seule définition, partagée avec l'écran Caisse
   // Générale et le rapport Carburant (`lib/carburantSales`). Le calcul fait ici

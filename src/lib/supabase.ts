@@ -827,6 +827,39 @@ export async function dbUpdate<T extends object>(
   return changes;
 }
 
+/**
+ * La base ne connaît-elle pas encore la colonne `part` des dépenses ?
+ * PostgREST répond « Could not find the 'part' column … in the schema cache »
+ * (PGRST204) et Postgres « column "part" of relation "expenses" does not
+ * exist » (42703) : les deux disent la même chose.
+ */
+const isMissingPartColumn = (err: unknown): boolean => {
+  const msg = String((err as any)?.message || '');
+  return /'?\bpart\b'?/.test(msg) && /(column|schema cache)/i.test(msg);
+};
+
+/**
+ * Écrit une dépense, et retente SANS son imputation quand la colonne `part`
+ * n'existe pas encore. Voir `db.addExpense`.
+ */
+async function writeExpense<T>(
+  write: () => Promise<T>,
+  row: object,
+  retryWithout: (rest: object) => Promise<T>,
+): Promise<T> {
+  try {
+    return await write();
+  } catch (err) {
+    if (!isMissingPartColumn(err)) throw err;
+    const { part, ...rest } = row as any;
+    console.warn(
+      '[expenses] La colonne `part` est absente : appliquez la migration '
+      + '2026-08-16_expense_part_and_part_cash.sql. La dépense est enregistrée '
+      + 'sans son imputation à une activité.');
+    return retryWithout(rest);
+  }
+}
+
 export async function dbDelete(tableName: string, id: string) {
   const { error } = await supabase.from(tableName).delete().eq('id', id);
   if (error) { console.error(`[dbDelete:${tableName}]`, error); throw new DbWriteError('delete', tableName, error); }
@@ -1090,9 +1123,16 @@ export const db = {
   deleteTreasuryTransaction: (id: string) => dbDelete('treasury_transactions', id),
 
   // Expenses
+  //
+  // `part` — l'activité qui supporte la dépense — arrive avec la migration
+  // `2026-08-16_expense_part_and_part_cash.sql`. Tant qu'elle n'est pas passée,
+  // Postgres refuse l'écriture ENTIÈRE à cause de cette seule colonne inconnue,
+  // et la dépense serait purement perdue. On réessaie donc une fois sans elle,
+  // en le disant dans la console : la dépense est enregistrée, seule son
+  // imputation attend la migration. Toute autre erreur remonte comme avant.
   getExpenses:   () => dbSelect('expenses'),
-  addExpense:    (e: object) => dbInsert('expenses', e),
-  updateExpense: (id: string, e: object) => dbUpdate('expenses', id, e),
+  addExpense:    (e: object) => writeExpense(() => dbInsert('expenses', e), e, rest => dbInsert('expenses', rest)),
+  updateExpense: (id: string, e: object) => writeExpense(() => dbUpdate('expenses', id, e), e, rest => dbUpdate('expenses', id, rest)),
   deleteExpense: (id: string) => dbDelete('expenses', id),
 
   // Inventories

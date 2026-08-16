@@ -367,7 +367,24 @@ export interface BizExpense {
   amount: number;
   date: string;
   category?: string;
+  /**
+   * Le compte d'où l'argent est SORTI :
+   *   • vide ou le coffre de la partie (`CAISSE_CAFETERIA`, `CAISSE_LAVAGE`) →
+   *     payée en espèces, elle vide la caisse de CETTE partie ;
+   *   • un `BankAccount.id` → payée par la banque : la caisse de la partie n'a
+   *     pas bougé, c'est le compte bancaire qui est débité (une ligne
+   *     `treasury_transactions` le porte, cf. `refType: 'biz_expense'`).
+   */
+  accountId?: string;
+  /** Instrument de paiement — indépendant du compte débité. */
+  paymentMode?: string;
+  /** N° de chèque / bordereau quand la dépense sort d'un compte bancaire. */
+  chequeNumber?: string;
 }
+
+/** `true` quand une dépense de partie a réellement vidé le tiroir. */
+export const bizExpensePaidInCash = (e: Pick<BizExpense, 'accountId'>): boolean =>
+  !e.accountId || e.accountId.startsWith('CAISSE');
 
 export interface BizCaisseTx {
   id: string;
