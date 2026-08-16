@@ -2,10 +2,14 @@
  * ─── Caisse Générale (Finance) ──────────────────────────────────────────────────
  * Single place where the money of the whole station is read and moved.
  *
- *  • Solde de la caisse générale — the authoritative cash box, computed from the
- *    treasury ledger only (dépôts, retraits, virements, encaissements brigades…).
+ *  • Solde de la caisse générale — les ESPÈCES de la station : la somme des
+ *    caisses Carburant, Cafétéria et Lavage. Rien de ce qui dort en banque n'y
+ *    entre, pour que ce chiffre réponde à « qu'y a-t-il dans les tiroirs ? ».
+ *  • Trésorerie totale — toutes les caisses (Finance comprise) PLUS les comptes
+ *    bancaires : le seul chiffre qui réunit tout l'argent de la station.
  *  • Caisse de chaque partie — Carburant, Cafétéria and Lavage & Réparation, each
- *    computed from its own documents.
+ *    computed from its own documents ; la quatrième carte est celle de la
+ *    Finance, c.-à-d. la part du tiroir commun qui n'appartient à aucune activité.
  *  • Journal des opérations — every movement of the station in one list: achats,
  *    ventes, virements, dépôts, retraits, dépenses, encaissements de brigade.
  *  • Actions — dépôt / retrait (montant, description, date) and virement: the
@@ -100,11 +104,32 @@ export default function CaisseGenerale() {
   const [toDelete, setToDelete] = useState<TreasuryTransaction | null>(null);
 
   // ── Balances ───────────────────────────────────────────────────────────────
+  /** Ce que contient PHYSIQUEMENT le tiroir commun, tous propriétaires confondus. */
   const caisse = useMemo(() => caisseBalanceOf(treasuryTransactions), [treasuryTransactions]);
   const accounts = useMemo(
     () => bankAccounts.map(a => ({ ...a, balance: bankBalanceOf(a, treasuryTransactions) })),
     [bankAccounts, treasuryTransactions]);
   const totalBank = accounts.reduce((s, a) => s + a.balance, 0);
+
+  /**
+   * L'argent du tiroir commun qui n'appartient à AUCUNE activité — la caisse de
+   * la Finance elle-même.
+   *
+   * `caisseBalanceOf` compte tout ce qui entre et sort de la caisse générale, y
+   * compris l'argent qu'une activité y a déposé ou viré. Or cet argent-là est
+   * DÉJÀ dans la caisse de l'activité : `partCashEffect` lit le tiroir commun dès
+   * que la ligne lui est imputée. L'additionner tel quel aux trois activités
+   * comptait donc deux fois le même billet dans le total de la station. Ne
+   * restent ici que les lignes que la Finance porte en propre.
+   */
+  const financeCash = useMemo(() => treasuryTransactions.reduce((s, t) => {
+    if ((t.part || 'systeme') !== 'systeme') return s;
+    const amount = Number(t.amount) || 0;
+    let net = 0;
+    if (t.accountTo === CAISSE_ID) net += amount;
+    if (t.accountFrom === CAISSE_ID) net -= amount;
+    return s + net;
+  }, 0), [treasuryTransactions]);
 
   /**
    * Position de caisse d'une partie commerciale — le MÊME calcul que son
@@ -135,6 +160,18 @@ export default function CaisseGenerale() {
     lavage: partBalance('lavage'),
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [carburantBalance, biz, treasuryTransactions, expenses]);
+
+  /**
+   * Le solde de la caisse générale = les ESPÈCES des trois activités réunies
+   * (Carburant + Cafétéria + Lavage). Rien de ce qui dort en banque n'entre
+   * ici : ce chiffre répond à « combien y a-t-il dans les tiroirs ? ».
+   */
+  const caissesActivites =
+    partBalances.carburant + partBalances.cafeteria + partBalances.lavage;
+  /** Toutes les caisses de la station, le tiroir de la Finance compris. */
+  const caissesTotal = caissesActivites + financeCash;
+  /** Toute la trésorerie : les caisses ET les comptes bancaires. */
+  const grandTotal = caissesTotal + totalBank;
 
   // ── Consolidated journal ───────────────────────────────────────────────────
   const movements = useMemo<Movement[]>(() => {
@@ -316,19 +353,35 @@ export default function CaisseGenerale() {
           </button>
         </div> : undefined} />
 
-      {/* Hero */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Hero — trois lectures de l'argent de la station, dans cet ordre :
+          ce qu'il y a dans les TIROIRS, ce qui dort en BANQUE, et le TOUT.
+          Le solde de la caisse générale ne mélange plus les deux : il ne répond
+          qu'à « combien d'espèces la station détient-elle ? ». */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #001f5c, #003087)' }}>
           <div className="flex items-center gap-2 text-blue-200">
             <PiggyBank className="w-5 h-5" />
             <span className="text-sm font-bold uppercase tracking-wide">Solde caisse générale</span>
           </div>
-          <p className="text-4xl font-black tabular-nums mt-2 text-[#FFB800]">{money(caisse)}</p>
-          <p className="text-[11px] text-blue-200 mt-1">
-            Espèces disponibles — dépôts, retraits et virements. Les dépenses d'une activité sortent de
-            la caisse de CETTE activité, jamais d'ici (sauf celles imputées à la Finance).
+          <p className={`text-4xl font-black tabular-nums mt-2 ${caissesActivites >= 0 ? 'text-[#FFB800]' : 'text-red-300'}`}>
+            {money(caissesActivites)}
           </p>
+          <p className="text-[11px] text-blue-200 mt-1">
+            Somme des caisses Carburant, Cafétéria et Lavage — <strong>espèces uniquement</strong>.
+            L'argent placé en banque n'entre pas dans ce solde.
+          </p>
+          <div className="grid grid-cols-3 gap-2 mt-4">
+            {(['carburant', 'cafeteria', 'lavage'] as const).map(k => (
+              <div key={k} className="rounded-xl bg-white/10 px-2.5 py-2">
+                <p className="text-[10px] uppercase text-blue-200 font-bold truncate">{PART_META[k].label}</p>
+                <p className={`font-black tabular-nums text-sm ${partBalances[k] >= 0 ? '' : 'text-red-300'}`}>
+                  {money(partBalances[k])}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
+
         <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #065f46, #047857)' }}>
           <div className="flex items-center gap-2 text-emerald-100">
             <Landmark className="w-5 h-5" />
@@ -346,24 +399,59 @@ export default function CaisseGenerale() {
               ))}
           </div>
         </div>
+
+        {/* Le seul chiffre qui réunit tout : toutes les caisses ET la banque.
+            Le tiroir de la Finance y est compté à part des trois activités,
+            sinon l'argent qu'une activité a déposé dans la caisse générale
+            serait compté deux fois (voir `financeCash`). */}
+        <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #3b0764, #6d28d9)' }}>
+          <div className="flex items-center gap-2 text-purple-200">
+            <Wallet className="w-5 h-5" />
+            <span className="text-sm font-bold uppercase tracking-wide">Trésorerie totale</span>
+          </div>
+          <p className={`text-4xl font-black tabular-nums mt-2 ${grandTotal >= 0 ? 'text-white' : 'text-red-300'}`}>
+            {money(grandTotal)}
+          </p>
+          <p className="text-[11px] text-purple-200 mt-1">
+            Tout l'argent de la station : les caisses <strong>et</strong> les comptes bancaires.
+          </p>
+          <div className="mt-4 space-y-1.5">
+            <div className="flex items-center justify-between rounded-xl bg-white/10 px-3 py-2">
+              <span className="text-[11px] uppercase font-bold text-purple-200">Toutes les caisses</span>
+              <span className="font-black tabular-nums text-sm">{money(caissesTotal)}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-white/10 px-3 py-2">
+              <span className="text-[11px] uppercase font-bold text-purple-200">Comptes bancaires</span>
+              <span className="font-black tabular-nums text-sm">{money(totalBank)}</span>
+            </div>
+            <p className="text-[10px] text-purple-300 tabular-nums pl-1">
+              Caisses = {money(caissesActivites)} (activités) + {money(financeCash)} (Finance)
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Caisse of each part — avec ce que l'activité a dépensé sur la période.
           Chaque activité paie ses dépenses en espèces avec SON argent : la
-          caisse générale n'est plus débitée à sa place. */}
+          caisse générale n'est plus débitée à sa place.
+
+          La quatrième carte est celle de la FINANCE, pas le tiroir commun : elle
+          ne montre que l'argent qui n'appartient à aucune activité. Elle portait
+          jusqu'ici le solde entier du tiroir — donc aussi l'argent des trois
+          autres cartes, qui se retrouvait compté deux fois dès qu'on les
+          additionnait. Les quatre cartes font maintenant exactement le total
+          « Toutes les caisses » affiché en haut. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {(['carburant', 'cafeteria', 'lavage', 'systeme'] as const).map(key => {
           const meta = PART_META[key]; const Icon = meta.icon;
-          const val = key === 'systeme' ? caisse : partBalances[key];
+          const val = key === 'systeme' ? financeCash : partBalances[key];
           const spent = partSpending[key] || { expenses: 0, count: 0, in: 0, out: 0 };
           return (
             <button key={key} onClick={() => setPartFilter(partFilter === key ? 'all' : key)}
               className={`card-glass p-5 text-left transition-all ${partFilter === key ? 'ring-2 ring-[#003087]' : ''}`}>
               <div className="flex items-center gap-2" style={{ color: meta.tone }}>
                 <Icon className="w-5 h-5" />
-                <span className="text-xs font-bold uppercase">
-                  {key === 'systeme' ? 'Caisse générale' : `Caisse ${meta.label}`}
-                </span>
+                <span className="text-xs font-bold uppercase">Caisse {meta.label}</span>
               </div>
               <p className={`text-2xl font-black tabular-nums mt-2 ${val >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(val)}</p>
               <p className="text-[11px] text-slate-400 mt-1 tabular-nums">
@@ -375,6 +463,13 @@ export default function CaisseGenerale() {
               {spent.bank > 0 && (
                 <p className="text-[11px] font-bold text-cyan-600 mt-0.5 tabular-nums">
                   Dont {money(spent.bank)} réglés par la banque
+                </p>
+              )}
+              {/* Ce que le tiroir commun contient réellement — l'argent des
+                  activités qui y a été déposé y dort aussi. */}
+              {key === 'systeme' && Math.abs(caisse - financeCash) >= 0.01 && (
+                <p className="text-[11px] text-slate-400 mt-0.5 tabular-nums">
+                  Tiroir commun : {money(caisse)} (dont l'argent des activités déposé ici)
                 </p>
               )}
             </button>
@@ -490,7 +585,10 @@ export default function CaisseGenerale() {
       {transferring && (
         <CaisseTransferModal
           accounts={accounts}
-          caisseBalance={caisse}
+          // Le solde PROPRE de la Finance, pas le contenu du tiroir commun :
+          // l'argent qu'une activité y a déposé reste le sien, et c'est SA caisse
+          // qu'il faut choisir en source pour l'envoyer en banque.
+          caisseBalance={financeCash}
           partBalances={partBalances}
           createdBy={currentUserName}
           onClose={() => setTransferring(false)}
