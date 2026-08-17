@@ -768,7 +768,15 @@ const Brigades = () => {
           const client = clients.find(c => c.id === j.clientId);
           if (!client) return;
           if (j.type === 'CLIENT_AVANCE') {
-            dispatch({ type: 'UPDATE_CLIENT', payload: { ...client, advanceBalance: Math.max(0, (client.advanceBalance || 0) - j.amount) } });
+            // Les deux colonnes de l'avance descendent ensemble : la recharge
+            // crédite `balance` côté Clients, la consommation ne touchait que
+            // `advanceBalance`, et le client gardait à l'écran une avance qu'il
+            // avait déjà dépensée.
+            const left = Math.max(0, (client.advanceBalance ?? client.balance ?? 0) - j.amount);
+            dispatch({
+              type: 'UPDATE_CLIENT',
+              payload: { ...client, advanceBalance: left, balance: Math.max(0, (client.balance || 0) - j.amount) },
+            });
           } else if (j.type === 'CLIENT_CREDIT') {
             dispatch({ type: 'UPDATE_CLIENT', payload: { ...client, debt: (client.debt || 0) + j.amount } });
           }

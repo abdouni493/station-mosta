@@ -45,18 +45,37 @@ import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import { printPaymentReceipt, stationFromSettings } from "./modules/_shared";
+import { clientLedger, advanceAvailable, advanceColumnsDisagree, ClientEntry } from "../lib/clientLedger";
 
 /** Receipt number of a debt payment, derived from its transaction id. */
 const receiptRef = (txId: string) => `REG-${txId.slice(0, 8).toUpperCase()}`;
 
 const PAYMENT_MODE_LABEL: Record<string, string> = {
   ESPECES: "Espèces", CHEQUE: "Chèque", VIREMENT: "Virement", TPE: "Carte / TPE",
+  CREDIT: "À crédit", AVANCE: "Sur avance", CASH: "Espèces", BON: "Bon",
 };
+
+/** Comment chaque nature d'opération se présente dans le journal du client. */
+const ENTRY_META: Record<string, { label: string; tone: string }> = {
+  bon: { label: "Bon carburant", tone: "bg-amber-50 text-amber-700 border-amber-100" },
+  magasin: { label: "Magasin", tone: "bg-blue-50 text-blue-700 border-blue-100" },
+  vente: { label: "Vente", tone: "bg-slate-50 text-slate-700 border-slate-100" },
+  reglement: { label: "Règlement", tone: "bg-emerald-50 text-emerald-700 border-emerald-100" },
+  recharge: { label: "Recharge", tone: "bg-purple-50 text-purple-700 border-purple-100" },
+};
+
+const HISTORY_FILTERS: { id: string; label: string }[] = [
+  { id: "Tous", label: "Tous" },
+  { id: "Consommations", label: "Consos" },
+  { id: "Règlements", label: "Règlements" },
+  { id: "Avance", label: "Avance" },
+];
 
 const Clients = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { clients, fuelSales, shopSales, settings, currentUserName, bankAccounts, treasuryTransactions } = useAppState();
+  const state = useAppState();
+  const { clients, settings, currentUserName, bankAccounts, treasuryTransactions } = state;
   const perm = useModulePermission('Clients');
   const dispatch = useAppDispatch();
 
@@ -109,6 +128,11 @@ const Clients = () => {
   const [rechargeForm, setRechargeForm] = useState({
     amount: 0,
     date: new Date().toISOString().split("T")[0],
+    // Une recharge est de l'argent que le client REMET : elle doit dire par quel
+    // moyen, sinon on ne sait pas dans quel compte le déposer.
+    mode: "ESPECES",
+    bankAccountId: "",
+    chequeNumber: "",
     notes: "",
     receiptPhoto: ""
   });
@@ -164,10 +188,15 @@ const Clients = () => {
         dispatch({ type: 'UPDATE_CLIENT', payload: { ...selectedClient, ...clientForm } as Client });
         dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: "Client mis à jour" } });
       } else {
+        const opening = clientForm.paymentMode === "ADVANCE" ? (clientForm.balance || 0) : 0;
         const newClient: Client = {
           ...clientForm as Client,
           id: newId(),
-          balance: clientForm.paymentMode === "ADVANCE" ? (clientForm.balance || 0) : 0,
+          // Les deux colonnes de l'avance partent de la MÊME valeur : sinon un
+          // client naissait avec un solde d'ouverture que la consommation des
+          // bons ne pouvait pas entamer.
+          balance: opening,
+          advanceBalance: opening,
           debt: clientForm.paymentMode === "CREDIT" ? (clientForm.debt || 0) : 0,
           transactionHistory: []
         };
@@ -202,25 +231,69 @@ const Clients = () => {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Montant invalide" } });
       return;
     }
+    // Payée autrement qu'en espèces, la recharge atterrit sur un compte
+    // bancaire : sans compte choisi, l'argent n'irait nulle part.
+    const rechargeAccount = rechargeForm.mode === 'ESPECES'
+      ? CAISSE_ID
+      : rechargeForm.bankAccountId;
+    if (!rechargeAccount) {
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Choisissez le compte bancaire qui reçoit la recharge" } });
+      return;
+    }
 
     const payment = {
       id: newId(),
       date: rechargeForm.date,
       type: "RECHARGE" as const,
       amount: rechargeForm.amount,
+      mode: rechargeForm.mode,
+      receiptNumber: rechargeForm.chequeNumber || undefined,
       receiptPhoto: rechargeForm.receiptPhoto,
       notes: rechargeForm.notes,
     };
 
     dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment } });
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Avance rechargée: +${rechargeForm.amount.toLocaleString()} DA` } });
+
+    // ── La recharge entre dans la trésorerie ────────────────────────────────
+    // Le client vient de remettre de l'argent : il doit arriver quelque part.
+    // Aucune ligne n'était écrite — la station encaissait une avance sans que
+    // la moindre caisse ne bouge, et le tiroir était plus plein que le solde
+    // affiché. Même route qu'un règlement de dette.
+    const rechargeTx: TreasuryTransaction = {
+      id: newId(),
+      date: new Date(rechargeForm.date).toISOString(),
+      kind: 'SALE',
+      amount: rechargeForm.amount,
+      description: [
+        `Recharge avance client — ${selectedClient.name}`,
+        PAYMENT_MODE_LABEL[rechargeForm.mode] || rechargeForm.mode,
+      ].filter(Boolean).join(' · '),
+      accountTo: rechargeAccount,
+      part: 'carburant',
+      refType: 'client_payment',
+      refId: payment.id,
+      chequeNumber: rechargeForm.mode === 'CHEQUE' ? (rechargeForm.chequeNumber || undefined) : undefined,
+      createdBy: currentUserName,
+      createdAt: new Date().toISOString(),
+    };
+    dispatch({ type: 'ADD_TREASURY_TX', payload: rechargeTx });
+
+    const destinationLabel = rechargeForm.mode === 'ESPECES'
+      ? 'la caisse'
+      : (liveBankAccounts.find(a => a.id === rechargeAccount)?.name || 'le compte choisi');
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Avance rechargée sur ${destinationLabel} : +${rechargeForm.amount.toLocaleString()} DA` } });
     setShowRecharge(false);
     setSelectedClient({
       ...selectedClient,
       balance: selectedClient.balance + rechargeForm.amount,
+      advanceBalance: (selectedClient.advanceBalance ?? selectedClient.balance) + rechargeForm.amount,
       transactionHistory: [...(selectedClient.transactionHistory || []), payment],
     });
-    setRechargeForm({ amount: 0, date: new Date().toISOString().split("T")[0], notes: "", receiptPhoto: "" });
+    setRechargeForm({
+      amount: 0, date: new Date().toISOString().split("T")[0],
+      mode: "ESPECES", bankAccountId: liveBankAccounts[0]?.id || "", chequeNumber: "",
+      notes: "", receiptPhoto: "",
+    });
   };
 
   /**
@@ -280,8 +353,19 @@ const Clients = () => {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Choisissez le compte bancaire du TPE" } });
       return;
     }
+    // Un chèque ou un virement atterrit sur un compte : sans compte choisi,
+    // AUCUNE ligne de trésorerie n'était écrite. La dette disparaissait et
+    // l'argent avec — ni la caisse ni la banque ne le voyaient jamais arriver.
+    if ((paymentForm.mode === "CHEQUE" || paymentForm.mode === "VIREMENT") && !paymentForm.bankAccountId) {
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Choisissez le compte bancaire qui reçoit le règlement" } });
+      return;
+    }
 
-    const invoiceRef = selectedSale ? `Facture #${selectedSale.id.substring(0, 8).toUpperCase()}` : '';
+    // L'opération d'origine, citée sur le reçu quand le règlement a été lancé
+    // depuis une ligne du journal du client.
+    const invoiceRef = selectedSale
+      ? (selectedSale.label || `Facture #${String(selectedSale.id || '').substring(0, 8).toUpperCase()}`)
+      : '';
     const tpeRef = tpeAccount ? `TPE ${tpeAccount.name}` : '';
     const payment = {
       id: newId(),
@@ -415,14 +499,30 @@ const Clients = () => {
     setSelectedClient(updatedClient);
   };
 
-  const clientPurchases = useMemo(() => {
-    if (!selectedClient) return [];
-    const fuel = (fuelSales || []).filter(s => s.clientId === selectedClient.id).map(s => ({ ...s, category: "Carburant", description: "Consommation Carburant" }));
-    const shop = (shopSales || []).filter(s => s.paymentMode === selectedClient.id).map(s => ({ ...s, category: "Magasin", description: "Achats Divers Magasin" }));
-    return [...fuel, ...shop].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [selectedClient, fuelSales, shopSales]);
+  /**
+   * TOUT ce qui touche le compte du client, reconstruit sur ses pièces
+   * (`lib/clientLedger`) : bons carburant pris sur les brigades, factures
+   * magasin, règlements et recharges d'avance.
+   *
+   * L'écran lisait auparavant `fuelSales` — une table que plus rien n'alimente —
+   * et filtrait les ventes magasin sur `paymentMode === client.id`, une
+   * comparaison qui ne pouvait jamais être vraie. D'où un historique vide pour
+   * tous les clients, quelle que soit leur activité.
+   */
+  const ledger = useMemo(
+    () => clientLedger(state, selectedClient?.id || ''),
+    [state, selectedClient?.id]);
 
-  /** Règlements de dette du client, du plus récent au plus ancien. */
+  /** Ce que le client a CONSOMMÉ — bons, factures magasin, ventes anciennes. */
+  const clientPurchases = useMemo(
+    () => ledger.entries.filter(e => e.kind === 'bon' || e.kind === 'magasin' || e.kind === 'vente'),
+    [ledger]);
+
+  /**
+   * Règlements et recharges dans leur forme d'origine (les lignes de
+   * `client_transactions`) : l'impression d'un reçu a besoin de l'identifiant
+   * réel de la transaction, pas de celui du journal.
+   */
   const clientPayments = useMemo(() => {
     if (!selectedClient) return [];
     return (selectedClient.transactionHistory || [])
@@ -431,9 +531,34 @@ const Clients = () => {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [selectedClient]);
 
-  const totalPaid = useMemo(
-    () => clientPayments.reduce((sum, tx) => sum + (tx.amount || 0), 0),
-    [clientPayments]);
+  /** Tout ce qui a fait bouger l'avance : les dépôts ET les bons pris dessus. */
+  const advanceMovements = useMemo(
+    () => ledger.entries.filter((e: ClientEntry) => e.advanceEffect !== 0),
+    [ledger]);
+
+  const totalPaid = ledger.paid;
+
+  /** Les opérations réellement affichées dans le journal, filtres appliqués. */
+  const visibleEntries = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    return ledger.entries.filter((e: ClientEntry) => {
+      if (historyFilter === "Consommations" && !['bon', 'magasin', 'vente'].includes(e.kind)) return false;
+      if (historyFilter === "Règlements" && e.kind !== 'reglement') return false;
+      if (historyFilter === "Avance" && e.advanceEffect === 0) return false;
+      if (!q) return true;
+      return [e.label, e.notes, e.reference, e.mode, e.fuelType]
+        .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+    });
+  }, [ledger, historyFilter, historySearch]);
+
+  /** L'avance encore disponible — la même règle que la liste des clients. */
+  const advanceLeft = advanceAvailable(selectedClient);
+  /**
+   * Les clients enregistrés avant que les deux colonnes de l'avance ne soient
+   * synchronisées en gardent deux valeurs différentes. On le DIT au lieu de
+   * choisir en silence : c'est une reprise à faire, pas un calcul à deviner.
+   */
+  const advanceGap = advanceColumnsDisagree(selectedClient);
 
   // Filtering Logic
   const filteredClients = useMemo(() => {
@@ -695,7 +820,7 @@ const Clients = () => {
                   <div className="pt-2 mt-auto border-t border-slate-100 grid grid-cols-3 gap-2">
                     <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
                       <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Avance</p>
-                      <p className="text-[10px] font-black text-green-700 italic truncate">{c.balance.toLocaleString()} DA</p>
+                      <p className="text-[10px] font-black text-green-700 italic truncate">{advanceAvailable(c).toLocaleString()} DA</p>
                     </div>
                     <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
                       <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Crédit</p>
@@ -791,7 +916,7 @@ const Clients = () => {
                         </div>
                       </td>
                       <td className="px-8 py-5 text-right font-black text-green-600 text-base italic">
-                        {c.balance.toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
+                        {advanceAvailable(c).toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
                       </td>
                       <td className="px-8 py-5 text-right">
                         <div className="flex flex-col items-end gap-1">
@@ -1199,121 +1324,179 @@ const Clients = () => {
                         <div className="absolute top-0 right-0 p-12 bg-white/5 rounded-full blur-2xl -mr-6 -mt-6" />
                         <div className="relative z-10 space-y-2">
                           <p className="text-[9px] font-black uppercase tracking-[0.25em] text-blue-300">Achats Cumulés</p>
-                          <p className="text-3xl font-black italic tracking-tighter leading-none">{clientPurchases.reduce((sum, s) => sum + (s.total || 0), 0).toLocaleString()} <span className="text-xs font-bold text-yellow-400">DA</span></p>
+                          <p className="text-3xl font-black italic tracking-tighter leading-none">{ledger.charged.toLocaleString()} <span className="text-xs font-bold text-yellow-400">DA</span></p>
+                          <p className="text-[9px] font-bold text-blue-300">
+                            {ledger.counts.bons} bon(s) carburant · {ledger.counts.magasin} facture(s) magasin
+                          </p>
                         </div>
                       </div>
-                      <div className={cn("p-8 rounded-[2rem] shadow-xl relative overflow-hidden border", 
+                      <div className={cn("p-8 rounded-[2rem] shadow-xl relative overflow-hidden border",
                         selectedClient.debt > 0 ? "bg-red-500 text-white border-red-400 shadow-red-200" : "bg-slate-50 text-slate-700 border-slate-200")}>
                         <div className="relative z-10 space-y-2">
                           <p className="text-[9px] font-black uppercase tracking-[0.25em] opacity-80">Dette En-cours</p>
                           <p className="text-3xl font-black italic tracking-tighter leading-none">{selectedClient.debt.toLocaleString()} <span className="text-xs font-bold">DA</span></p>
+                          {/* Ce que les PIÈCES disent de la dette : bons à crédit
+                              moins règlements. Un écart avec l'encours ci-dessus
+                              vient d'un solde d'ouverture ou d'une reprise à la
+                              main — mieux vaut le voir que le deviner. */}
+                          <p className="text-[9px] font-bold opacity-80">
+                            {ledger.chargedOnCredit.toLocaleString()} à crédit − {ledger.paid.toLocaleString()} réglés
+                            = {ledger.debtFromDocuments.toLocaleString()} DA d'après les pièces
+                          </p>
                         </div>
                       </div>
                       <div className="p-8 bg-emerald-700 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-12 bg-white/5 rounded-full blur-2xl -mr-6 -mt-6" />
                         <div className="relative z-10 space-y-2">
                           <p className="text-[9px] font-black uppercase tracking-[0.25em] text-emerald-200">Solde Avance</p>
-                          <p className="text-3xl font-black italic tracking-tighter leading-none">{selectedClient.balance.toLocaleString()} <span className="text-xs font-bold text-yellow-400">DA</span></p>
+                          <p className="text-3xl font-black italic tracking-tighter leading-none">{advanceLeft.toLocaleString()} <span className="text-xs font-bold text-yellow-400">DA</span></p>
+                          <p className="text-[9px] font-bold text-emerald-200">
+                            {ledger.recharged.toLocaleString()} rechargés − {ledger.chargedOnAdvance.toLocaleString()} consommés
+                          </p>
                         </div>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* HISTORIQUE FACTURES TAB */}
+                {/* HISTORIQUE — TOUTES les opérations du client, dans l'ordre.
+                    Bons carburant pris sur les brigades, factures magasin,
+                    règlements de dette et recharges d'avance : la même liste que
+                    celle qui calcule les soldes du Résumé. */}
                 {activeTab === "historique" && (
                   <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
                     <div className="flex flex-col md:flex-row gap-4 items-center justify-between border-b pb-4">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900">Journal des Factures & Consommations</h4>
-                      
+                      <div>
+                        <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900">Journal complet du compte client</h4>
+                        <p className="text-[9px] font-bold text-slate-400 mt-1">
+                          {ledger.entries.length} opération(s) — {ledger.counts.bons} bon(s) carburant ·
+                          {" "}{ledger.counts.magasin} magasin · {ledger.counts.reglements} règlement(s) ·
+                          {" "}{ledger.counts.recharges} recharge(s)
+                        </p>
+                      </div>
+
                       <div className="flex gap-4 items-center w-full md:w-auto">
                         <div className="relative flex-1 md:w-64">
                           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
-                          <input type="text" placeholder="Filtrer par N°..." value={historySearch} onChange={e => setHistorySearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-none rounded-xl text-[9px] font-black uppercase tracking-widest outline-none text-blue-900" />
+                          <input type="text" placeholder="Filtrer..." value={historySearch} onChange={e => setHistorySearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-none rounded-xl text-[9px] font-black uppercase tracking-widest outline-none text-blue-900" />
                         </div>
                         <div className="flex bg-slate-100 rounded-xl p-1 shrink-0">
-                          {["Tous", "Payé", "Dette"].map(f => (
-                            <button key={f} onClick={() => setHistoryFilter(f)} className={cn("px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all", historyFilter === f ? "bg-white text-blue-900 shadow-sm" : "text-slate-400 hover:text-slate-600")}>{f}</button>
+                          {HISTORY_FILTERS.map(f => (
+                            <button key={f.id} onClick={() => setHistoryFilter(f.id)} className={cn("px-3.5 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all whitespace-nowrap", historyFilter === f.id ? "bg-white text-blue-900 shadow-sm" : "text-slate-400 hover:text-slate-600")}>{f.label}</button>
                           ))}
                         </div>
                       </div>
                     </div>
 
-                    {clientPurchases.length > 0 ? (
+                    {visibleEntries.length > 0 ? (
                       <div className="overflow-hidden border border-slate-100 rounded-2xl shadow-sm">
                         <table className="w-full text-left border-collapse text-xs font-bold">
                           <thead className="bg-slate-50 text-blue-900 uppercase text-[9px] tracking-wider border-b border-slate-100">
                             <tr>
                               <th className="px-6 py-4">Date</th>
-                              <th className="px-6 py-4">Réf Facture</th>
-                              <th className="px-6 py-4">Catégorie</th>
-                              <th className="px-6 py-4 text-right">Montant Total</th>
-                              <th className="px-6 py-4 text-right">Payé</th>
-                              <th className="px-6 py-4 text-right">Reste</th>
-                              <th className="px-6 py-4 text-center">Statut</th>
+                              <th className="px-6 py-4">Opération</th>
+                              <th className="px-6 py-4">Détail</th>
+                              <th className="px-6 py-4 text-right">Débit</th>
+                              <th className="px-6 py-4 text-right">Crédit</th>
+                              <th className="px-6 py-4 text-right">Effet dette</th>
+                              <th className="px-6 py-4 text-right">Effet avance</th>
                               <th className="px-6 py-4 text-center">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {clientPurchases.filter(sale => {
-                              if (historySearch && !sale.id.toLowerCase().includes(historySearch.toLowerCase())) return false;
-                              const remaining = (sale.total || 0) - (sale.paidAmount || 0);
-                              if (historyFilter === "Payé" && remaining > 0) return false;
-                              if (historyFilter === "Dette" && remaining <= 0) return false;
-                              return true;
-                            }).map(sale => {
-                              const remaining = (sale.total || 0) - (sale.paidAmount || 0);
+                            {visibleEntries.map(e => {
+                              const meta = ENTRY_META[e.kind];
                               return (
-                                <tr key={sale.id} className="hover:bg-slate-50 transition-colors">
-                                  <td className="px-6 py-4 text-slate-500">{new Date(sale.date).toLocaleDateString()}</td>
-                                  <td className="px-6 py-4 text-blue-900 font-black">#{sale.id.substring(0, 8).toUpperCase()}</td>
+                                <tr key={e.id} className="hover:bg-slate-50 transition-colors">
+                                  <td className="px-6 py-4 text-slate-500 whitespace-nowrap">
+                                    {e.date ? new Date(e.date).toLocaleDateString() : "—"}
+                                  </td>
                                   <td className="px-6 py-4">
-                                    <span className={cn("px-2.5 py-0.5 rounded text-[8px] font-black uppercase inline-block border", 
-                                      sale.category === "Carburant" ? "bg-amber-50 text-amber-700 border-amber-100" : "bg-blue-50 text-blue-700 border-blue-100")}>
-                                      {sale.category}
+                                    <span className={cn("px-2.5 py-0.5 rounded text-[8px] font-black uppercase inline-block border", meta.tone)}>
+                                      {meta.label}
                                     </span>
                                   </td>
-                                  <td className="px-6 py-4 text-right text-slate-700">{(sale.total || 0).toLocaleString()} DA</td>
-                                  <td className="px-6 py-4 text-right text-emerald-600">{(sale.paidAmount || 0).toLocaleString()} DA</td>
-                                  <td className="px-6 py-4 text-right text-red-600 font-black">{remaining.toLocaleString()} DA</td>
-                                  <td className="px-6 py-4 text-center">
-                                    <span className={cn("px-2.5 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tighter inline-block border", 
-                                      remaining > 0 ? "bg-red-50 text-red-700 border-red-100" : "bg-emerald-50 text-emerald-700 border-emerald-100")}>
-                                      {remaining > 0 ? "En Attente" : "Payée"}
-                                    </span>
+                                  <td className="px-6 py-4 text-slate-600 max-w-[320px]">
+                                    <span className="block truncate" title={e.label}>{e.label}</span>
+                                    {(e.mode || e.reference || e.notes) && (
+                                      <span className="block text-[9px] text-slate-400 font-bold truncate">
+                                        {[PAYMENT_MODE_LABEL[e.mode || ''] || e.mode, e.reference, e.notes].filter(Boolean).join(' · ')}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 text-right text-slate-700 whitespace-nowrap">
+                                    {e.charged > 0 ? `${e.charged.toLocaleString()} DA` : "—"}
+                                  </td>
+                                  <td className="px-6 py-4 text-right text-emerald-600 whitespace-nowrap">
+                                    {e.paid > 0 ? `${e.paid.toLocaleString()} DA` : "—"}
+                                  </td>
+                                  <td className={cn("px-6 py-4 text-right font-black whitespace-nowrap",
+                                    e.debtEffect > 0 ? "text-red-600" : e.debtEffect < 0 ? "text-emerald-600" : "text-slate-300")}>
+                                    {e.debtEffect === 0 ? "—" : `${e.debtEffect > 0 ? "+" : "−"}${Math.abs(e.debtEffect).toLocaleString()} DA`}
+                                  </td>
+                                  <td className={cn("px-6 py-4 text-right font-black whitespace-nowrap",
+                                    e.advanceEffect > 0 ? "text-emerald-600" : e.advanceEffect < 0 ? "text-amber-600" : "text-slate-300")}>
+                                    {e.advanceEffect === 0 ? "—" : `${e.advanceEffect > 0 ? "+" : "−"}${Math.abs(e.advanceEffect).toLocaleString()} DA`}
                                   </td>
                                   <td className="px-6 py-4 text-center">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <button className="p-2 hover:bg-slate-100 rounded-lg text-slate-300 hover:text-slate-600 border border-transparent hover:border-slate-200 transition-all"><Printer className="w-3.5 h-3.5" /></button>
-                                      {remaining > 0 && selectedClient.debt > 0 && perm.modifier && (
-                                        <button
-                                          onClick={() => {
-                                            setSelectedSale(sale);
-                                            // Jamais plus que l'encours réel du client.
-                                            setPaymentForm({
-                                              amount: Math.min(remaining, selectedClient.debt),
-                                              date: new Date().toISOString().split("T")[0],
-                                              mode: "ESPECES", chequeNumber: "", notes: "",
-                                            });
-                                            setShowPayment(true);
-                                          }}
-                                          className="px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 rounded-lg text-[8px] font-black uppercase transition-all flex items-center gap-1"
-                                        >
-                                          Régler <DollarSign className="w-3 h-3" />
-                                        </button>
-                                      )}
-                                    </div>
+                                    {e.kind === 'reglement' ? (
+                                      <button
+                                        onClick={() => {
+                                          const tx = (selectedClient.transactionHistory || []).find(t => `pay-${t.id}` === e.id);
+                                          if (tx) printReceipt(selectedClient, tx);
+                                        }}
+                                        title="Imprimer le reçu"
+                                        className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-700 border border-transparent hover:border-blue-100 transition-all"
+                                      >
+                                        <Printer className="w-3.5 h-3.5" />
+                                      </button>
+                                    ) : e.debtEffect > 0 && selectedClient.debt > 0 && perm.modifier ? (
+                                      <button
+                                        onClick={() => {
+                                          setSelectedSale({ id: e.id, label: e.label });
+                                          // Jamais plus que l'encours réel du client.
+                                          setPaymentForm({
+                                            amount: Math.min(e.debtEffect, selectedClient.debt),
+                                            date: new Date().toISOString().split("T")[0],
+                                            mode: "ESPECES", chequeNumber: "",
+                                            bankAccountId: liveBankAccounts[0]?.id || "", notes: "",
+                                          });
+                                          setShowPayment(true);
+                                        }}
+                                        className="px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 rounded-lg text-[8px] font-black uppercase transition-all inline-flex items-center gap-1"
+                                      >
+                                        Régler <DollarSign className="w-3 h-3" />
+                                      </button>
+                                    ) : (
+                                      <span className="text-[9px] text-slate-300 font-bold">—</span>
+                                    )}
                                   </td>
                                 </tr>
                               );
                             })}
                           </tbody>
+                          <tfoot className="bg-slate-50 text-blue-900 border-t border-slate-100">
+                            <tr>
+                              <td className="px-6 py-4 text-[9px] font-black uppercase tracking-widest" colSpan={3}>
+                                Total des opérations affichées
+                              </td>
+                              <td className="px-6 py-4 text-right">{visibleEntries.reduce((s, e) => s + e.charged, 0).toLocaleString()} DA</td>
+                              <td className="px-6 py-4 text-right text-emerald-700">{visibleEntries.reduce((s, e) => s + e.paid, 0).toLocaleString()} DA</td>
+                              <td className="px-6 py-4 text-right">{visibleEntries.reduce((s, e) => s + e.debtEffect, 0).toLocaleString()} DA</td>
+                              <td className="px-6 py-4 text-right">{visibleEntries.reduce((s, e) => s + e.advanceEffect, 0).toLocaleString()} DA</td>
+                              <td />
+                            </tr>
+                          </tfoot>
                         </table>
                       </div>
                     ) : (
                       <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
                         <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                        <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucune vente ou facture enregistrée pour ce client</p>
+                        <p className="text-slate-400 text-xs uppercase font-black tracking-widest">
+                          {ledger.entries.length === 0
+                            ? "Aucune opération enregistrée pour ce client"
+                            : "Aucune opération ne correspond à ce filtre"}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1419,9 +1602,19 @@ const Clients = () => {
                       <div className="absolute top-0 right-0 p-24 bg-white/5 rounded-full blur-3xl -mr-12 -mt-12 group-hover:scale-150 transition-transform duration-700" />
                       <div className="relative z-10 space-y-1.5">
                         <p className="text-[9px] font-black uppercase tracking-[0.3em] text-green-200">Avance Actuelle Disponible</p>
-                        <p className="text-5xl font-black italic tracking-tighter leading-none">{selectedClient.balance.toLocaleString()} <span className="text-xl font-bold text-yellow-400">DA</span></p>
+                        <p className="text-5xl font-black italic tracking-tighter leading-none">{advanceLeft.toLocaleString()} <span className="text-xl font-bold text-yellow-400">DA</span></p>
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-green-200 pt-1">
+                          {ledger.recharged.toLocaleString()} DA rechargés — {ledger.chargedOnAdvance.toLocaleString()} DA consommés en bons
+                        </p>
+                        {Math.abs(advanceGap) >= 1 && (
+                          <p className="text-[9px] font-bold text-yellow-300 pt-1 not-italic normal-case tracking-normal max-w-md leading-relaxed">
+                            Reprise à vérifier : ce client a été enregistré du temps où l'avance vivait dans
+                            deux compteurs séparés, qui diffèrent encore de {Math.abs(advanceGap).toLocaleString()} DA.
+                            Rechargez ou corrigez la fiche pour les recaler.
+                          </p>
+                        )}
                       </div>
-                      <button 
+                      <button
                         onClick={() => setShowRecharge(true)}
                         className="relative z-10 mt-6 sm:mt-0 px-8 py-4 bg-white text-green-700 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md flex items-center gap-2 italic"
                       >
@@ -1429,30 +1622,45 @@ const Clients = () => {
                       </button>
                     </div>
 
+                    {/* Recharges ET consommations : un solde d'avance ne se lit
+                        pas sur les seuls dépôts. Cet écran ne montrait que les
+                        recharges, si bien qu'une avance entièrement consommée
+                        continuait d'afficher une pile de dépôts sans contrepartie. */}
                     <div className="space-y-4">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">Historique des Recharges d'Avance</h4>
-                      
-                      {selectedClient.transactionHistory?.filter(t => t.type === "RECHARGE").length > 0 ? (
+                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">Mouvements du compte d'avance</h4>
+
+                      {advanceMovements.length > 0 ? (
                         <div className="space-y-2.5">
-                          {selectedClient.transactionHistory.filter(t => t.type === "RECHARGE").slice().reverse().map(flow => (
-                            <div key={flow.id} className="flex items-center justify-between p-5 bg-slate-50/50 rounded-2xl border border-slate-100 hover:bg-slate-50 transition-all group">
-                              <div className="flex items-center gap-4">
-                                <div className="w-11 h-11 rounded-xl flex items-center justify-center bg-green-50 text-green-700 border border-green-100 group-hover:scale-115 transition-transform">
-                                  <ArrowUpRight className="w-5 h-5" />
+                          {advanceMovements.map(flow => {
+                            const isIn = flow.advanceEffect > 0;
+                            return (
+                              <div key={flow.id} className="flex items-center justify-between p-5 bg-slate-50/50 rounded-2xl border border-slate-100 hover:bg-slate-50 transition-all group">
+                                <div className="flex items-center gap-4">
+                                  <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center border group-hover:scale-115 transition-transform",
+                                    isIn ? "bg-green-50 text-green-700 border-green-100" : "bg-amber-50 text-amber-700 border-amber-100")}>
+                                    {isIn ? <ArrowUpRight className="w-5 h-5" /> : <ArrowDownRight className="w-5 h-5" />}
+                                  </div>
+                                  <div>
+                                    <p className="text-xs font-black text-blue-900 uppercase">
+                                      {isIn ? "Dépôt d'avance" : flow.label}
+                                    </p>
+                                    <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest">
+                                      {flow.date ? new Date(flow.date).toLocaleDateString() : "—"}
+                                      {flow.notes ? ` · ${flow.notes}` : ""}
+                                    </p>
+                                  </div>
                                 </div>
-                                <div>
-                                  <p className="text-xs font-black text-blue-900 uppercase">Dépôt d'Avance Réussi</p>
-                                  <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest">{new Date(flow.date).toLocaleDateString()}</p>
-                                </div>
+                                <span className={cn("text-base font-black italic", isIn ? "text-green-600" : "text-amber-600")}>
+                                  {isIn ? "+" : "−"}{Math.abs(flow.advanceEffect).toLocaleString()} DA
+                                </span>
                               </div>
-                              <span className="text-base font-black italic text-green-600">+{flow.amount.toLocaleString()} DA</span>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
                           <Wallet className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                          <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucune recharge d'avance enregistrée</p>
+                          <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucun mouvement sur le compte d'avance</p>
                         </div>
                       )}
                     </div>
@@ -1505,15 +1713,15 @@ const Clients = () => {
                               onChange={(e) => setAppointmentForm({ ...appointmentForm, linkedSaleId: e.target.value })}
                               className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black h-13 shadow-inner bg-white"
                             >
-                              <option value="">Sélectionner une facture...</option>
-                              {clientPurchases.map(sale => {
-                                const remaining = (sale.total || 0) - (sale.paidAmount || 0);
-                                return (
-                                  <option key={sale.id} value={sale.id} disabled={remaining <= 0}>
-                                    Vente #{sale.id.substring(0,8).toUpperCase()} - {new Date(sale.date).toLocaleDateString()} ({remaining.toLocaleString()} DA restant)
-                                  </option>
-                                );
-                              })}
+                              <option value="">Sélectionner une opération...</option>
+                              {/* Seules les consommations qui ont laissé une
+                                  dette peuvent motiver un rendez-vous : un bon
+                                  pris sur l'avance est déjà payé. */}
+                              {clientPurchases.filter((e: ClientEntry) => e.debtEffect > 0).map((e: ClientEntry) => (
+                                <option key={e.id} value={e.id}>
+                                  {e.label} — {e.date ? new Date(e.date).toLocaleDateString() : "—"} ({e.debtEffect.toLocaleString()} DA)
+                                </option>
+                              ))}
                             </select>
                           </div>
                           <div className="space-y-2">
@@ -1634,12 +1842,57 @@ const Clients = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Mode de règlement</label>
-                    <select className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-[10px] h-13 shadow-inner">
+                    {/* Ce choix n'était relié à rien : la recharge était toujours
+                        enregistrée sans mode, et sans ligne de trésorerie. */}
+                    <select
+                      className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-[10px] h-13 shadow-inner"
+                      value={rechargeForm.mode}
+                      onChange={e => setRechargeForm({ ...rechargeForm, mode: e.target.value })}
+                    >
                       <option value="ESPECES">Espèces</option>
                       <option value="CHEQUE">Chèque</option>
                       <option value="VIREMENT">Virement</option>
+                      <option value="TPE">Carte / TPE</option>
                     </select>
                   </div>
+                </div>
+
+                {rechargeForm.mode !== 'ESPECES' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Compte crédité</label>
+                      <select
+                        className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-[10px] h-13 shadow-inner"
+                        value={rechargeForm.bankAccountId}
+                        onChange={e => setRechargeForm({ ...rechargeForm, bankAccountId: e.target.value })}
+                      >
+                        <option value="">— Sélectionner —</option>
+                        {liveBankAccounts.map(a => (
+                          <option key={a.id} value={a.id}>{a.name} — {a.balance.toLocaleString()} DA</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-black text-slate-400 uppercase ml-1">
+                        N° {rechargeForm.mode === 'CHEQUE' ? 'chèque' : 'référence'}
+                      </label>
+                      <input
+                        className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-xs h-13 shadow-inner"
+                        value={rechargeForm.chequeNumber}
+                        onChange={e => setRechargeForm({ ...rechargeForm, chequeNumber: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="rounded-2xl bg-slate-50 border border-slate-100 p-4 text-[10px] font-bold text-slate-500 leading-relaxed">
+                  L'argent remis par le client entre dans{" "}
+                  <span className="text-blue-900 font-black">
+                    {rechargeForm.mode === 'ESPECES'
+                      ? 'la caisse Carburant'
+                      : (liveBankAccounts.find(a => a.id === rechargeForm.bankAccountId)?.name || 'le compte bancaire à choisir')}
+                  </span>{" "}
+                  et son avance monte d'autant.
                 </div>
 
                 <div className="space-y-2">
@@ -1692,8 +1945,10 @@ const Clients = () => {
                   <div className="grid grid-cols-2 gap-y-2 text-xs font-bold text-slate-600">
                     {selectedSale && (
                       <>
-                        <span>Facture concernée</span>
-                        <span className="text-blue-900 font-black text-right">#{selectedSale.id.substring(0, 8).toUpperCase()}</span>
+                        <span>Opération concernée</span>
+                        <span className="text-blue-900 font-black text-right">
+                          {selectedSale.label || `#${String(selectedSale.id || '').substring(0, 8).toUpperCase()}`}
+                        </span>
                       </>
                     )}
                     <span>Dette actuelle</span>

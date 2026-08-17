@@ -1600,10 +1600,24 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, clients: state.clients.map(c => {
         if (c.id !== action.payload.clientId) return c;
         let updatedBalance = c.balance;
+        let updatedAdvance = c.advanceBalance ?? c.balance;
         let updatedDebt = c.debt;
         if (action.payload.payment.type === 'PAYMENT') updatedDebt = Math.max(0, c.debt - action.payload.payment.amount);
-        else if (action.payload.payment.type === 'RECHARGE') updatedBalance = c.balance + action.payload.payment.amount;
-        return { ...c, balance: updatedBalance, debt: updatedDebt, transactionHistory: [...(c.transactionHistory || []), action.payload.payment as any] };
+        else if (action.payload.payment.type === 'RECHARGE') {
+          // L'avance vivait dans DEUX colonnes qui ne se parlaient pas : la
+          // recharge créditait `balance`, la consommation d'un bon débitait
+          // `advanceBalance`. Un client pouvait donc afficher une avance pleine
+          // et un solde consommé en même temps. Les deux bougent ensemble.
+          updatedBalance = c.balance + action.payload.payment.amount;
+          updatedAdvance = updatedAdvance + action.payload.payment.amount;
+        }
+        return {
+          ...c,
+          balance: updatedBalance,
+          advanceBalance: updatedAdvance,
+          debt: updatedDebt,
+          transactionHistory: [...(c.transactionHistory || []), action.payload.payment as any],
+        };
       }) };
 
     case 'UPDATE_PRODUCT_STOCK':
@@ -1973,11 +1987,18 @@ async function applyClientPaymentToAccount(
 ): Promise<void> {
   if (payment.type === 'SALE') return;
   // maybeSingle() avoids a 406 if the client was concurrently deleted.
-  const { data } = await supabase.from('clients').select('balance, debt').eq('id', clientId).maybeSingle();
+  const { data } = await supabase.from('clients').select('balance, debt, advance_balance').eq('id', clientId).maybeSingle();
   if (!data) return;
+  // Une recharge crédite les DEUX colonnes de l'avance : `balance`, que cet
+  // écran a toujours alimentée, et `advance_balance`, la seule que la
+  // consommation d'un bon de brigade décrémente. Tant qu'une seule bougeait,
+  // les deux racontaient une histoire différente du même compte.
   const patch = payment.type === 'PAYMENT'
     ? { debt: Math.max(0, (+data.debt || 0) - payment.amount) }
-    : { balance: (+data.balance || 0) + payment.amount };
+    : {
+      balance: (+data.balance || 0) + payment.amount,
+      advance_balance: (+(data.advance_balance ?? data.balance) || 0) + payment.amount,
+    };
   await supabase.from('clients').update(patch).eq('id', clientId);
 }
 

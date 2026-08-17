@@ -328,7 +328,16 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       if (client.paymentMode === 'CREDIT') {
         dispatch({ type: 'UPDATE_CLIENT', payload: { ...client, debt: (client.debt || 0) + j.amount } });
       } else if (client.paymentMode === 'ADVANCE') {
-        dispatch({ type: 'UPDATE_CLIENT', payload: { ...client, advanceBalance: Math.max(0, (client.advanceBalance || 0) - j.amount) } });
+        // Les deux colonnes de l'avance descendent ensemble — `balance` est
+        // celle que la recharge crédite côté Clients.
+        dispatch({
+          type: 'UPDATE_CLIENT',
+          payload: {
+            ...client,
+            advanceBalance: Math.max(0, (client.advanceBalance ?? client.balance ?? 0) - j.amount),
+            balance: Math.max(0, (client.balance || 0) - j.amount),
+          },
+        });
       }
       dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: {
         clientId: client.id,

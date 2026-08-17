@@ -408,6 +408,8 @@ export interface CarburantCash {
   clientCash: number;
   purchasesCash: number;
   expensesCash: number;
+  /** Recharges d'avance déposées en espèces par les clients. */
+  rechargeCash: number;
   /** Salaires du personnel carburant réglés en espèces. */
   salariesCash: number;
   /** Acomptes remis en main propre au personnel carburant. */
@@ -472,21 +474,26 @@ export function computeCarburantCash(app: any): CarburantCash {
     });
   }
 
-  // 2. Règlements de dettes clients encaissés en ESPÈCES.
-  //    Un règlement par chèque, virement ou TPE atterrit en banque : il ne fait
-  //    pas monter la caisse.
+  // 2. Argent remis par les clients, encaissé en ESPÈCES : règlements de dette
+  //    ET recharges d'avance. Un règlement par chèque, virement ou TPE atterrit
+  //    en banque : il ne fait pas monter la caisse.
+  //
+  //    La RECHARGE manquait : le client déposait une avance, la station gardait
+  //    les billets, et aucune caisse ne bougeait — le tiroir était plus plein
+  //    que tout ce que l'application savait compter.
   for (const c of clients) {
     for (const t of (c.transactionHistory || [])) {
-      if (t.type !== 'PAYMENT') continue;
+      if (t.type !== 'PAYMENT' && t.type !== 'RECHARGE') continue;
       const mode = String(t.mode || 'ESPECES').toUpperCase();
       if (mode !== 'ESPECES' && mode !== 'CASH') continue;
       const amount = num(t.amount);
       if (!amount) continue;
+      const isRecharge = t.type === 'RECHARGE';
       lines.push({
         id: `cli-${t.id}`,
         date: t.date,
-        nature: 'Règlement client',
-        label: `Règlement dette — ${c.name}`,
+        nature: isRecharge ? 'Recharge client' : 'Règlement client',
+        label: isRecharge ? `Recharge avance — ${c.name}` : `Règlement dette — ${c.name}`,
         amount,
         reference: t.receiptNumber,
       });
@@ -603,6 +610,7 @@ export function computeCarburantCash(app: any): CarburantCash {
     outflow: lines.filter(l => l.amount < 0).reduce((s, l) => s - l.amount, 0),
     brigadeCash: totalOf('Brigade'),
     clientCash: totalOf('Règlement client'),
+    rechargeCash: totalOf('Recharge client'),
     purchasesCash: -totalOf('Achat'),
     expensesCash: -totalOf('Dépense'),
     salariesCash: -totalOf('Salaire'),

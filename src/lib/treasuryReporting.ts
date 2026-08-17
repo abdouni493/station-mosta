@@ -57,7 +57,7 @@ export const TX_LABEL: Record<string, string> = {
 /** Document qui a écrit la ligne — pour que le détail dise d'où vient l'argent. */
 export const ORIGIN_LABEL: Record<string, string> = {
   purchase: 'Achat carburant', expense: 'Dépense', brigade: 'Brigade',
-  client_payment: 'Règlement client',
+  client_payment: 'Règlement / recharge client',
   /** Dépense d'une partie (Cafétéria / Lavage) réglée par un compte bancaire. */
   biz_expense: 'Dépense de partie',
 };

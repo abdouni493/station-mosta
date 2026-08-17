@@ -112,7 +112,7 @@ const NATURE_ICON: Record<string, React.ElementType> = {
   'Dépôt': ArrowDownCircle, 'Retrait': ArrowUpCircle, 'Virement': ArrowLeftRight,
   'Achat': ShoppingCart, 'Vente': Receipt, 'Dépense': CreditCard,
   'Brigade': Target, 'TPE': CreditCard, 'Salaire': Wallet, 'Ajustement': Layers,
-  'Acompte': HandCoins, 'Règlement client': Receipt,
+  'Acompte': HandCoins, 'Règlement client': Receipt, 'Recharge client': Wallet,
 };
 
 export default function CaisseGenerale() {
@@ -348,20 +348,23 @@ export default function CaisseGenerale() {
       }
     }
 
-    // Règlements de dettes clients encaissés en espèces sans ligne au grand
-    // livre (saisies anciennes) — la caisse Carburant les compte, le journal
-    // les ignorait.
+    // Argent remis par les clients — règlements de dette ET recharges d'avance —
+    // encaissé en espèces sans ligne au grand livre (saisies anciennes). La
+    // caisse Carburant les compte, le journal les ignorait.
     for (const c of (state.clients || [])) {
       for (const t of (c.transactionHistory || [])) {
-        if (t.type !== 'PAYMENT') continue;
+        if (t.type !== 'PAYMENT' && t.type !== 'RECHARGE') continue;
         if (ledgered.has(`client_payment:${t.id}`)) continue;
         const mode = String(t.mode || 'ESPECES').toUpperCase();
         if (mode !== 'ESPECES' && mode !== 'CASH') continue;
         const amount = Number(t.amount) || 0;
         if (!amount) continue;
+        const isRecharge = t.type === 'RECHARGE';
         out.push(cashRow({
-          id: `cli-${t.id}`, date: t.date, nature: 'Règlement client', part: 'carburant',
-          label: `Règlement dette — ${c.name}`, amount,
+          id: `cli-${t.id}`, date: t.date, part: 'carburant',
+          nature: isRecharge ? 'Recharge client' : 'Règlement client',
+          label: isRecharge ? `Recharge avance — ${c.name}` : `Règlement dette — ${c.name}`,
+          amount,
         }));
       }
     }
