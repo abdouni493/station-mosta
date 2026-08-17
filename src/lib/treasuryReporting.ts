@@ -94,9 +94,33 @@ export interface TreasuryMovement {
   isLedger: boolean;
 }
 
+/**
+ * La part d'UN compte bancaire qui revient à UNE activité.
+ *
+ * Un compte est commun, comme le tiroir : c'est la ligne du grand livre qui dit
+ * de qui est le mouvement (`tx.part`). Ce qu'une activité a versé sur le compte
+ * lui reste ; ce qu'elle en a réglé le quitte. Le solde d'ouverture du compte,
+ * lui, n'a été provoqué par personne : il reste à la Finance.
+ *
+ * La somme des parts fait EXACTEMENT le solde du compte — aucun dinar n'est
+ * compté deux fois, aucun n'est perdu.
+ */
+export interface TreasuryAccountPart {
+  key: TreasuryPartKey;
+  label: string;
+  /** Part du solde qui revient à cette activité (négative si elle a plus réglé qu'elle n'a versé). */
+  balance: number;
+  /** Ce qu'elle a fait entrer / sortir du compte sur la période. */
+  credit: number; debit: number;
+  /** Mouvements de la période qui lui sont imputés. */
+  count: number;
+}
+
 export interface TreasuryAccount {
   id: string; name: string; accountNumber?: string; notes?: string;
   initialBalance: number; balance: number;
+  /** Le solde du compte, activité par activité — leur somme est `balance`. */
+  parts: TreasuryAccountPart[];
   /**
    * Solde du compte la VEILLE du début de période — le point de départ dont
    * `credit` et `debit` expliquent l'écart avec `balance`. Sans lui, la carte
@@ -311,10 +335,31 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   const accounts: TreasuryAccount[] = bankAccounts.map(a => {
     const all = txs.filter(t => t.accountFrom === a.id || t.accountTo === a.id);
     const inRange = all.filter(t => within(t.date, from, to));
+    // ── À QUI est l'argent qui dort sur ce compte ? ──────────────────────────
+    // Un compte bancaire est commun, comme le tiroir : l'écran ne savait donc
+    // le rattacher qu'à la Finance, et une activité regardée seule affichait
+    // 0,00 DA en banque alors qu'elle y avait versé ses recettes et réglé ses
+    // fournisseurs. Chaque ligne du grand livre porte pourtant l'activité qui
+    // l'a provoquée — c'est elle qui répartit le solde, sans en inventer un
+    // dinar : la somme des parts est exactement le solde du compte.
+    const parts: TreasuryAccountPart[] = (Object.keys(TREASURY_PART_LABEL) as TreasuryPartKey[])
+      .map(key => {
+        const own = all.filter(t => ((t.part || 'systeme') as TreasuryPartKey) === key);
+        const ownRange = own.filter(t => within(t.date, from, to));
+        return {
+          key, label: TREASURY_PART_LABEL[key],
+          // Le solde d'ouverture n'a été provoqué par personne : il est à la Finance.
+          balance: (key === 'systeme' ? num(a.initialBalance) : 0) + ledgerNetFor(a.id, own),
+          credit: ownRange.filter(t => t.accountTo === a.id).reduce((s, t) => s + num(t.amount), 0),
+          debit: ownRange.filter(t => t.accountFrom === a.id).reduce((s, t) => s + num(t.amount), 0),
+          count: ownRange.length,
+        };
+      });
     return {
       id: a.id, name: a.name, accountNumber: a.accountNumber, notes: a.notes,
       initialBalance: num(a.initialBalance),
       balance: num(a.initialBalance) + ledgerNetFor(a.id, txs),
+      parts,
       openingBalance: num(a.initialBalance) + ledgerNetFor(a.id, all.filter(beforeFrom)),
       credit: inRange.filter(t => t.accountTo === a.id).reduce((s, t) => s + num(t.amount), 0),
       debit: inRange.filter(t => t.accountFrom === a.id).reduce((s, t) => s + num(t.amount), 0),

@@ -10,6 +10,11 @@
  *     que les activités y ont déposé est déjà compté dans leur caisse. Le
  *     reprendre en entier gonflait le fonds de roulement (et l'assiette de la
  *     zakât, qui lit le même chiffre) de tout ce que les caisses portaient déjà ;
+ *   • un compte bancaire est COMMUN, comme le tiroir : rattaché en bloc à la
+ *     Finance, il affichait 0,00 DA de banque à une activité qui y versait
+ *     pourtant ses recettes et réglait ses fournisseurs. C'est `tx.part` qui dit
+ *     de qui est le mouvement, et la somme des parts doit rendre le solde du
+ *     compte, au dinar près ;
  *   • les flux affichés sous un solde sont ceux des lignes RETENUES : filtré sur
  *     une activité, le bloc reprenait les encaissements de toute la station ;
  *   • « hors période + entrées − sorties = solde » doit tomber juste quelles que
@@ -60,6 +65,11 @@ const app = {
     { id: 't1', date: '2026-08-05T18:00:00.000Z', kind: 'BRIGADE', amount: 5000, accountTo: CAISSE_ID, part: 'carburant', refType: 'brigade', refId: 'br1' },
     { id: 't2', date: '2026-08-06T10:00:00.000Z', kind: 'PURCHASE', amount: 8000, accountFrom: CAISSE_ID, part: 'carburant', refType: 'purchase', refId: 'p1' },
     { id: 't5', date: '2026-08-08T10:00:00.000Z', kind: 'TRANSFER', amount: 1000, accountFrom: CAISSE_PART_ID.carburant, accountTo: 'B1', part: 'carburant' },
+    // Un achat de carburant réglé PAR LA BANQUE : la station a payé pour le
+    // Carburant, sa part du compte en est diminuée d'autant.
+    { id: 't7', date: '2026-08-12T10:00:00.000Z', kind: 'PURCHASE', amount: 400, accountFrom: 'B1', part: 'carburant', refType: 'purchase', refId: 'p2' },
+    // La Cafétéria dépose une recette en banque : cette part-là est à elle.
+    { id: 't8', date: '2026-08-14T10:00:00.000Z', kind: 'DEPOSIT', amount: 700, accountTo: 'B1', part: 'cafeteria' },
     // APRÈS la période — dans le solde, hors des flux.
     { id: 't6', date: '2026-09-10T10:00:00.000Z', kind: 'WITHDRAW', amount: 300, accountFrom: CAISSE_ID, part: 'systeme' },
   ],
@@ -113,18 +123,33 @@ check('les 2000 d\'avant et les 300 d\'après sont hors période', finance?.flow
 check('aucun mouvement de la Finance dans la période', finance?.flow?.count, 0);
 
 // ─── Le filtre par activité ──────────────────────────────────────────────────
+console.log('\nUn compte bancaire est commun : chaque activité y a sa part');
+const b1 = treasury.accounts[0];
+check('solde du compte', b1.balance, 2300);
+check('part Carburant (1000 versés − 400 réglés)', b1.parts.find(p => p.key === 'carburant')?.balance, 600);
+check('part Cafétéria (700 déposés)', b1.parts.find(p => p.key === 'cafeteria')?.balance, 700);
+check('part Lavage', b1.parts.find(p => p.key === 'lavage')?.balance, 0);
+check('part Finance (le solde d\'ouverture)', b1.parts.find(p => p.key === 'systeme')?.balance, 1000);
+check('la somme des parts EST le solde du compte',
+  b1.parts.reduce((s, p) => s + p.balance, 0), b1.balance);
+check('le bloc banque rend le total en banque', r.bankTotal, treasury.bankTotal);
+check('une ligne par compte et par activité concernée', r.banks.rows.length, 3);
+
 console.log('\nFiltré sur une activité, l\'écran montre SA trésorerie');
 const carb = filterWorkingCapital(r, 'carburant');
 check('la caisse de l\'activité est comptée', carb.cashTotal, carburantCash);
-check('aucun compte bancaire ne lui est rattaché', carb.bankTotal, 0);
-check('sa trésorerie est celle de son tiroir', carb.treasuryTotal, carburantCash);
+check('sa part des comptes bancaires aussi', carb.bankTotal, 600);
+check('sa trésorerie est caisse + banque', carb.treasuryTotal, carburantCash + 600);
 check('une seule ligne de caisse', carb.cash.rows.length, 1);
 check('ses flux sont les siens', carb.cash.flow?.in, 5000);
 check('et pas ceux de la station', carb.cash.flow?.in === r.cash.flow?.in, false);
 check('le calcul se relit encore', reads(carb.cash), true);
+check('la banque aussi', reads(carb.banks), true);
+check('ses mouvements bancaires de la période', carb.banks.flow?.count, 2);
 
 const caf = filterWorkingCapital(r, 'cafeteria');
 check('caisse Cafétéria filtrée', caf.cashTotal, cafeteriaCash);
+check('sa part en banque', caf.bankTotal, 700);
 check('entrées de la Cafétéria sur la période', caf.cash.flow?.in, 4000);
 check('sorties de la Cafétéria sur la période', caf.cash.flow?.out, 1500);
 
@@ -133,11 +158,14 @@ check('caisse Lavage filtrée', lav.cashTotal, lavageCash);
 // Le dépôt est de juillet : rien dans la période, tout « hors période ».
 check('le solde du Lavage vient d\'avant la période', lav.cash.flow?.outside, 900);
 check('aucun mouvement dans la période', lav.cash.flow?.count, 0);
+check('le Lavage n\'a rien mis en banque', lav.bankTotal, 0);
+check('son bloc banque est vide, donc sans flux', lav.banks.flow, undefined);
 
 const fin = filterWorkingCapital(r, 'systeme');
 check('la Finance garde son tiroir', fin.cashTotal, 1700);
-check('et tous les comptes bancaires', fin.bankTotal, treasury.bankTotal);
-check('un bloc vide n\'affiche aucun flux', filterWorkingCapital(r, 'carburant').banks.flow, undefined);
+check('et sa part des comptes — le solde d\'ouverture', fin.bankTotal, 1000);
+check('les quatre parts refont le total en banque',
+  carb.bankTotal + caf.bankTotal + lav.bankTotal + fin.bankTotal, treasury.bankTotal);
 
 // ─── Le tableau par activité recompose l'écran ───────────────────────────────
 console.log('\nLe tableau par activité rend le total affiché');

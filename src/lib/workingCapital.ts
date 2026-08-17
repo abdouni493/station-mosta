@@ -305,34 +305,42 @@ export function computeWorkingCapital(
   const drawerCash = treasury.caisseBalance;
 
   // ── Comptes bancaires ─────────────────────────────────────────────────────
-  const bankRows: WCRow[] = treasury.accounts.map(a => {
-    // Le solde fait foi ; ce qui n'est pas dans la période en forme le reste —
-    // y compris un mouvement POSTÉRIEUR, que le seul « solde de début de
-    // période » ne savait pas expliquer.
-    const f: WCFlow = {
-      outside: a.balance - (a.credit - a.debit),
-      in: a.credit, out: a.debit, count: a.moves.length,
-    };
-    return {
-      id: `bank-${a.id}`,
-      label: a.name,
-      sub: [
-        a.accountNumber ? `N° ${a.accountNumber}` : null,
-        // Le solde du compte AU DÉBUT de la période, pas seulement son solde
-        // d'ouverture d'origine : c'est lui qui explique le solde actuel.
-        `Début de période ${fmt(a.openingBalance)}`,
-        a.credit || a.debit
-          ? `+${fmt(a.credit)} / −${fmt(a.debit)} sur la période`
-          : 'aucun mouvement sur la période',
-        `${a.movesCount} mouvement(s) au total`,
-      ].filter(Boolean).join(' · '),
-      amount: a.balance,
-      partKey: 'systeme',
-      partLabel: 'Banque',
-      emoji: '🏛️',
-      flow: f,
-    };
-  });
+  // Une ligne par COMPTE ET PAR ACTIVITÉ. Un compte est commun, comme le
+  // tiroir : le rattacher en bloc à la Finance faisait afficher 0,00 DA de
+  // banque à une activité qui y avait pourtant versé ses recettes et réglé ses
+  // fournisseurs. C'est la ligne du grand livre qui dit à qui est le mouvement
+  // (`tx.part`), et la somme des parts rend exactement le solde du compte —
+  // le solde d'ouverture, provoqué par personne, restant à la Finance.
+  const bankRows: WCRow[] = treasury.accounts.flatMap(a => a.parts
+    .filter(p => p.balance !== 0 || p.credit !== 0 || p.debit !== 0)
+    .map(p => {
+      // Le solde fait foi ; ce qui n'est pas dans la période en forme le reste —
+      // y compris un mouvement POSTÉRIEUR, que le seul « solde de début de
+      // période » ne savait pas expliquer.
+      const f: WCFlow = {
+        outside: p.balance - (p.credit - p.debit),
+        in: p.credit, out: p.debit, count: p.count,
+      };
+      return {
+        id: `bank-${a.id}-${p.key}`,
+        label: a.name,
+        sub: [
+          a.accountNumber ? `N° ${a.accountNumber}` : null,
+          p.key === 'systeme'
+            ? `Part Finance · solde d'ouverture ${fmt(a.initialBalance)} compris`
+            : `Part ${p.label} : ce qu'elle y a versé, moins ce qu'elle en a réglé`,
+          p.credit || p.debit
+            ? `+${fmt(p.credit)} / −${fmt(p.debit)} sur la période`
+            : 'aucun mouvement sur la période',
+          `Solde du compte ${fmt(a.balance)} · ${a.movesCount} mouvement(s) au total`,
+        ].filter(Boolean).join(' · '),
+        amount: p.balance,
+        partKey: p.key,
+        partLabel: p.key === 'systeme' ? 'Finance' : p.label,
+        emoji: '🏛️',
+        flow: f,
+      };
+    }));
 
   // ── Créances clients — chaque facture impayée, partie par partie ──────────
   const receivableRows: WCRow[] = parts.flatMap(p => p.clientDebts.map(d => ({
@@ -392,10 +400,13 @@ export function computeWorkingCapital(
     + 'livre sans activité pour la Finance. '
     + `Le tiroir commun, lui, contient ${fmt(drawerCash)} au grand livre : l'argent que les activités y ont déposé y `
     + 'dort aussi, et leurs caisses le portent déjà — le rajouter ici compterait deux fois les mêmes billets.');
-  const banks = block('banks', 'Comptes bancaires', 'Solde d\'ouverture + tous les mouvements enregistrés', bankRows, 1,
+  const banks = block('banks', 'Comptes bancaires', 'Le solde de chaque compte, activité par activité', bankRows, 1,
     `Sur la période : ${fmt(treasury.bankOpening)} au départ, +${fmt(treasury.bankIn)} reçus, `
     + `−${fmt(treasury.bankOut)} sortis, soit ${fmt(treasury.bankTotal)} aujourd'hui sur ${treasury.accounts.length} compte(s). `
-    + 'Un compte bancaire n\'appartient à aucune activité : il est rattaché à la Finance.');
+    + 'Un compte est COMMUN : c\'est la ligne du grand livre qui dit de quelle activité est le mouvement, et c\'est '
+    + 'elle qui répartit le solde. La part d\'une activité, c\'est ce qu\'elle a versé sur le compte moins ce qu\'elle '
+    + 'en a réglé — elle est donc négative quand la station a payé ses achats pour elle. Le solde d\'ouverture des '
+    + 'comptes, provoqué par personne, reste à la Finance. La somme des parts fait exactement le total en banque.');
   const receivables = block('receivables', 'Créances clients', 'Ventes à crédit non encore encaissées', receivableRows, 1);
   const stockBlock = block('stock', 'Stock (carburant & marchandise)',
     'Litres en cuve et marchandise du catalogue, au prix d\'achat', stockRows, 1,
@@ -417,38 +428,46 @@ export function computeWorkingCapital(
 
   const stockByPart = new Map((stock?.parts || []).map(p => [p.key, p.buyValue]));
 
+  /** Ce que chaque activité détient en banque, tous comptes confondus. */
+  const bankByPart = new Map<string, number>();
+  for (const a of treasury.accounts) {
+    for (const p of a.parts) bankByPart.set(p.key, (bankByPart.get(p.key) || 0) + p.balance);
+  }
+
   // Le tableau par activité lit la MÊME caisse que le bloc de trésorerie —
   // celle des mouvements de l'activité. Il passait par `treasury.partBalances`,
   // un second chemin vers le même chiffre : deux chemins, deux occasions de
   // diverger, et un total qui ne recomposait plus les cartes du haut.
   const partRows: WCPart[] = parts.map(p => {
     const partCash = p.caisseBalance;
+    const partBank = bankByPart.get(p.key) || 0;
     const rec = p.clientDebtTotal;
     const pay = p.supplierDebtTotal;
     const stk = stockByPart.get(p.key) ?? p.stockValue;
     return {
       key: p.key, label: p.label, emoji: p.emoji,
       cash: partCash,
-      // Aucune activité ne détient de compte : ils sont tous à la Finance.
-      bank: 0,
+      bank: partBank,
       receivables: rec,
       payables: pay,
       stockValue: stk,
-      net: partCash + rec - pay,
-      total: partCash + rec + stk - pay,
+      net: partCash + partBank + rec - pay,
+      total: partCash + partBank + rec + stk - pay,
     };
   });
 
-  // La Finance est une ligne du tableau comme les autres — avec son tiroir et
-  // ses comptes bancaires. Sans elle, le TOTAL du tableau ne rendait pas le
-  // fonds de roulement affiché en haut, et rien ne disait où passait l'écart.
+  // La Finance est une ligne du tableau comme les autres — avec sa part du
+  // tiroir et sa part des comptes. Sans elle, le TOTAL du tableau ne rendait
+  // pas le fonds de roulement affiché en haut, et rien ne disait où passait
+  // l'écart.
+  const financeBank = bankByPart.get('systeme') || 0;
   partRows.push({
     key: 'systeme', label: 'Finance', emoji: '🏦',
     cash: financeCash,
-    bank: banks.total,
+    bank: financeBank,
     receivables: 0, payables: 0, stockValue: 0,
-    net: financeCash + banks.total,
-    total: financeCash + banks.total,
+    net: financeCash + financeBank,
+    total: financeCash + financeBank,
   });
 
   return {
@@ -504,7 +523,12 @@ export function filterWorkingCapital(
     : 'La caisse de cette activité, lue sur SES mouvements — la même liste, et le même solde, que l\'écran Caisse '
       + 'Générale. Le tiroir de la Finance et les comptes bancaires n\'appartiennent à aucune activité : ils ne '
       + 'figurent que sur « Toutes les activités » et sur « Finance ».' };
-  const banks = rebuild(report.banks);
+  const banks = { ...rebuild(report.banks), note: partKey === 'systeme'
+    ? 'La part des comptes qui revient à la Finance — le solde d\'ouverture compris, puisqu\'aucune activité ne l\'a '
+      + 'provoqué. Le reste des soldes appartient aux activités, chacune sur sa propre ligne.'
+    : 'La part des comptes qui revient à cette activité : ce qu\'elle y a versé, moins ce qu\'elle en a réglé. Elle '
+      + 'est négative quand la station a payé ses achats depuis la banque sans qu\'elle y ait versé autant. Le solde '
+      + 'entier de chaque compte se lit sur « Toutes les activités ».' };
   const receivables = rebuild(report.receivables);
   const stockBlock = rebuild(report.stock);
   const payables = rebuild(report.payables);
@@ -514,7 +538,10 @@ export function filterWorkingCapital(
   const treasuryTotal = cashTotal + bankTotal;
   const stockValue = stockBlock.total;
   const financialWorkingCapital = treasuryTotal + receivables.total - payables.total;
-  const accounts = partKey === 'systeme' ? report.accounts : [];
+  // Le détail compte-par-compte montre des soldes ENTIERS : le laisser sous un
+  // filtre ferait cohabiter le solde total d'un compte avec la seule part de
+  // l'activité regardée. Filtré, c'est la liste des parts qui explique le total.
+  const accounts: TreasuryAccount[] = [];
   const parts = report.parts.filter(p => p.key === partKey);
 
   return {

@@ -11,10 +11,12 @@
  * en stock avec sa quantité et son prix d'achat.
  *
  * Un sélecteur d'activité en tête filtre TOUT l'écran (cartes, calcul, détails)
- * sur une seule partie : carburant, cafétéria, lavage ou finance. La caisse de
- * l'activité SUIT ce filtre — c'est sa trésorerie. Seuls les comptes bancaires
- * et le tiroir de la Finance restent hors des activités : ils n'appartiennent à
- * aucune d'elles.
+ * sur une seule partie : carburant, cafétéria, lavage ou finance. Sa caisse ET
+ * sa part des comptes bancaires suivent ce filtre — c'est sa trésorerie. Le
+ * tiroir et les comptes sont COMMUNS, mais chaque ligne du grand livre dit de
+ * quelle activité est le mouvement : ce sont ces lignes qui répartissent les
+ * soldes, sans en inventer ni en perdre un dinar. Seul le solde d'ouverture des
+ * comptes, provoqué par personne, reste à la Finance.
  *
  * Sous chaque solde, la période se relit en toutes lettres :
  *
@@ -155,6 +157,21 @@ function AccountCard({ account: a }: { account: TreasuryAccount; key?: React.Key
               <p className="text-[10px] text-slate-400">Ouverture du compte {money(a.initialBalance)}</p>
             </div>
           </div>
+          {/* À qui est l'argent de ce compte. Un compte est commun : sans cette
+              répartition, une activité regardée seule n'avait aucune banque. */}
+          {a.parts.some(p => p.balance !== 0) && (
+            <div className="rounded-xl bg-white p-2.5 border border-slate-100">
+              <p className="text-[10px] uppercase font-bold text-slate-400">Part de chaque activité</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                {a.parts.filter(p => p.balance !== 0).map(p => (
+                  <span key={p.key} className="text-[11px] tabular-nums">
+                    <b className="text-slate-600">{p.label}</b>{' '}
+                    <span className={p.balance >= 0 ? 'text-emerald-600 font-black' : 'text-red-600 font-black'}>{money(p.balance)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           {a.moves.length === 0 ? (
             <p className="text-xs text-slate-400 italic px-1">Aucun mouvement sur la période.</p>
           ) : (
@@ -393,25 +410,37 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
         </div>
       </div>
 
-      {/* ── Les comptes bancaires, déroulables ── */}
-      {(partKey === 'all' || partKey === 'systeme') && (
-        <div className="space-y-3">
-          <h3 className="font-black text-[#002d87] flex items-center gap-2">
-            <Landmark className="w-5 h-5 text-[#FFB800]" /> Comptes bancaires
-          </h3>
-          {r.accounts.length === 0 ? (
-            <div className="card-glass p-8 text-center text-sm text-slate-400">Aucun compte bancaire enregistré.</div>
-          ) : (
-            <div className="space-y-2">
-              {r.accounts.map(a => <AccountCard key={a.id} account={a} />)}
-              <div className="rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3 flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wide text-slate-400">Total en banque</span>
-                <span className="font-black tabular-nums text-[#002d87]">{money(r.bankTotal)}</span>
-              </div>
+      {/* ── Les comptes bancaires ── */}
+      {/* Sans filtre, chaque compte est déroulé en entier — solde, ouverture et
+          mouvements. Filtré, un solde entier n'aurait plus rien à voir avec le
+          total affiché : c'est la PART de l'activité, compte par compte, qui
+          explique alors le chiffre. */}
+      <div className="space-y-3">
+        <h3 className="font-black text-[#002d87] flex items-center gap-2">
+          <Landmark className="w-5 h-5 text-[#FFB800]" /> Comptes bancaires
+          {filtered && <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">part de {activeFilter?.label}</span>}
+        </h3>
+        {!filtered && r.accounts.length === 0 ? (
+          <div className="card-glass p-8 text-center text-sm text-slate-400">Aucun compte bancaire enregistré.</div>
+        ) : (
+          <div className="space-y-2">
+            {filtered
+              ? <RowList rows={r.banks.rows} />
+              : r.accounts.map((a: TreasuryAccount) => <AccountCard key={a.id} account={a} />)}
+            <div className="rounded-2xl bg-slate-50 border border-slate-200 px-4 py-3 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                {filtered ? `Total en banque — ${activeFilter?.label}` : 'Total en banque'}
+              </span>
+              <span className={cn('font-black tabular-nums', r.bankTotal >= 0 ? 'text-[#002d87]' : 'text-red-600')}>{money(r.bankTotal)}</span>
             </div>
-          )}
-        </div>
-      )}
+            {filtered && (
+              <p className="text-[11px] text-slate-400 italic">
+                {r.banks.note}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ── Détail d'un terme ── */}
       <Modal open={!!detail} onClose={() => setDetail(null)}
@@ -427,8 +456,10 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
         {detail && (
           <div className="space-y-3">
             {detail.note && <p className="text-[11px] text-slate-400 italic px-1">{detail.note}</p>}
-            {detail.key === 'banks'
-              ? <div className="space-y-2">{r.accounts.map(a => <AccountCard key={a.id} account={a} />)}</div>
+            {/* Le compte entier n'est déroulé que sans filtre : filtré, il
+                afficherait un solde qui n'est pas celui du bloc. */}
+            {detail.key === 'banks' && r.accounts.length
+              ? <div className="space-y-2">{r.accounts.map((a: TreasuryAccount) => <AccountCard key={a.id} account={a} />)}</div>
               : <RowList rows={detail.rows} negative={detail.sign === -1} />}
           </div>
         )}
