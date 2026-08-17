@@ -2,7 +2,7 @@
  * ─── Fonds de roulement ────────────────────────────────────────────────────────
  * Le calcul est montré comme il se lit :
  *
- *   Caisse + Banques + Créances clients + Stock (prix d'achat) − Dettes fournisseurs
+ *   Caisses + Banques + Créances clients + Stock (prix d'achat) − Dettes fournisseurs
  *
  * Chaque terme est une carte cliquable qui ouvre son détail ligne par ligne :
  * chaque compte bancaire (avec son solde d'ouverture et ses mouvements de la
@@ -11,7 +11,18 @@
  * en stock avec sa quantité et son prix d'achat.
  *
  * Un sélecteur d'activité en tête filtre TOUT l'écran (cartes, calcul, détails)
- * sur une seule partie : carburant, cafétéria, lavage ou finance.
+ * sur une seule partie : carburant, cafétéria, lavage ou finance. La caisse de
+ * l'activité SUIT ce filtre — c'est sa trésorerie. Seuls les comptes bancaires
+ * et le tiroir de la Finance restent hors des activités : ils n'appartiennent à
+ * aucune d'elles.
+ *
+ * Sous chaque solde, la période se relit en toutes lettres :
+ *
+ *      hors période + entrées − sorties = solde
+ *
+ * « Hors période » n'est pas une ouverture : c'est tout ce qui ne tombe pas
+ * dans la fenêtre, avant elle comme après. C'est ce qui rend l'égalité vraie
+ * quelles que soient les dates choisies.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { useMemo, useState } from 'react';
@@ -21,7 +32,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { money, formatDate, Modal, Table, Badge } from '@/src/components/biz/Kit';
-import { WorkingCapitalReport, WCBlock, WCRow, filterWorkingCapital } from '@/src/lib/workingCapital';
+import { WorkingCapitalReport, WCBlock, WCRow, WCPart, filterWorkingCapital } from '@/src/lib/workingCapital';
 import { TreasuryAccount } from '@/src/lib/treasuryReporting';
 
 const BLOCK_ICON: Record<string, React.ElementType> = {
@@ -47,12 +58,16 @@ function StepCard({ block, onOpen }: { block: WCBlock; onOpen: () => void }) {
         <Icon className="w-4 h-4" />
         <span className="text-[11px] font-bold uppercase tracking-wide">{block.label}</span>
       </div>
-      <p className="text-2xl font-black tabular-nums mt-1.5">{negative ? '−' : ''}{money(block.total)}</p>
-      {/* Trésorerie : ce que la PÉRIODE a fait bouger, sous le solde. La carte
-          n'affichait qu'un total qui ne réagissait à aucune date choisie. */}
+      {/* « −0,00 DA » n'est pas un montant : un bloc vide n'a pas de signe. */}
+      <p className="text-2xl font-black tabular-nums mt-1.5">
+        {negative && Math.abs(block.total) >= 0.005 ? '−' : ''}{money(block.total)}
+      </p>
+      {/* Trésorerie : ce que la PÉRIODE a fait bouger, sous le solde — les flux
+          des lignes RETENUES, et d'elles seules. La carte reprenait les flux de
+          toute la station sous le solde d'une seule activité, filtre appliqué. */}
       {block.flow && (
         <p className="text-[11px] opacity-90 mt-1 tabular-nums">
-          Début de période {money(block.flow.opening)}
+          Hors période {money(block.flow.outside)}
           <span className="opacity-70"> · </span>
           <span className="font-bold">+{money(block.flow.in)}</span>
           <span className="opacity-70"> · </span>
@@ -60,7 +75,8 @@ function StepCard({ block, onOpen }: { block: WCBlock; onOpen: () => void }) {
         </p>
       )}
       <p className="text-[11px] opacity-75 mt-0.5">
-        {block.rows.filter(r => !r.informational).length} ligne(s) comptée(s) — voir le détail →
+        {block.rows.filter(r => !r.informational).length} ligne(s) comptée(s)
+        {block.flow ? ` · ${block.flow.count} mouvement(s) sur la période` : ''} — voir le détail →
       </p>
     </button>
   );
@@ -91,7 +107,7 @@ function RowList({ rows, negative }: { rows: WCRow[]; negative?: boolean }) {
           <td className={cn('table-cell text-right tabular-nums font-black',
             r.informational ? 'text-slate-400'
               : negative ? 'text-red-600' : r.amount < 0 ? 'text-red-600' : 'text-emerald-600')}>
-            {!r.informational && negative ? '−' : ''}{money(r.amount)}
+            {!r.informational && negative && Math.abs(r.amount) >= 0.005 ? '−' : ''}{money(r.amount)}
           </td>
         </tr>
       ))}
@@ -173,12 +189,20 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
 
   // Le filtre recalcule TOUS les totaux depuis les lignes conservées : l'écran
   // ne peut jamais afficher un total qui ne correspond pas à son détail.
-  const r = useMemo(() => filterWorkingCapital(full, partKey), [full, partKey]);
+  //
+  // Le type est écrit à la main : `@types/react` n'étant pas installé, ce que
+  // rend un `useMemo` vaut `any`, et plus rien de ce qu'on en lit n'est
+  // vérifié. Sans cette annotation, une faute de frappe sur un total traverse
+  // la compilation pour n'apparaître qu'à l'écran.
+  const r: WorkingCapitalReport = useMemo(() => filterWorkingCapital(full, partKey), [full, partKey]);
 
-  const filters = useMemo(() => ([
+  // La Finance a son propre bouton : la reprendre depuis `parts`, où elle
+  // figure désormais comme ligne du tableau, en afficherait deux.
+  const filters: { key: string; label: string; emoji: string }[] = useMemo(() => ([
     { key: 'all', label: 'Toutes les activités', emoji: '🏢' },
     { key: 'systeme', label: 'Finance (caisse & banques)', emoji: '🏦' },
-    ...full.parts.map(p => ({ key: p.key, label: p.label, emoji: p.emoji })),
+    ...full.parts.filter((p: WCPart) => p.key !== 'systeme')
+      .map((p: WCPart) => ({ key: p.key, label: p.label, emoji: p.emoji })),
   ]), [full.parts]);
 
   const filtered = partKey !== 'all';
@@ -186,7 +210,7 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
   const positive = r.workingCapital >= 0;
 
   const steps: { label: string; value: number; sign: '' | '+' | '−' | '='; tone: string }[] = [
-    { label: 'Caisse générale', value: r.cashTotal, sign: '', tone: 'text-[#002d87]' },
+    { label: 'Caisses (espèces)', value: r.cashTotal, sign: '', tone: 'text-[#002d87]' },
     { label: 'Comptes bancaires', value: r.bankTotal, sign: '+', tone: 'text-emerald-700' },
     { label: 'Créances clients', value: r.receivablesTotal, sign: '+', tone: 'text-violet-700' },
     { label: "Stock (prix d'achat)", value: r.stockValue, sign: '+', tone: 'text-amber-700' },
@@ -214,7 +238,7 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
         {filtered && (
           <p className="text-[11px] text-slate-400 italic">
             Chaque montant ci-dessous ne compte que les lignes de « {activeFilter?.label} ».
-            {partKey !== 'systeme' && ' La caisse générale et les comptes bancaires ne sont pas rattachés à une activité : ils n\'apparaissent que sur « Toutes les activités » et « Finance ».'}
+            {partKey !== 'systeme' && ' La caisse de l\'activité la suit — c\'est sa trésorerie, au même solde que l\'écran Caisse Générale. Le tiroir de la Finance et les comptes bancaires, eux, ne sont rattachés à aucune activité : ils n\'apparaissent que sur « Toutes les activités » et « Finance ».'}
           </p>
         )}
       </div>
@@ -230,6 +254,14 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
           <p className="text-xs opacity-75 mt-1 leading-relaxed">
             Trésorerie ({money(r.treasuryTotal)}) + créances clients ({money(r.receivablesTotal)})
             + stock au prix d'achat ({money(r.stockValue)}) − dettes fournisseurs ({money(r.payablesTotal)}).
+          </p>
+          {/* D'où sort la trésorerie : les tiroirs d'un côté, la banque de
+              l'autre. Le chiffre était annoncé sans jamais être décomposé —
+              c'est pourtant là que se logeait l'erreur. */}
+          <p className="text-xs opacity-75 mt-1 tabular-nums">
+            Trésorerie = caisses {money(r.cashTotal)}
+            {!filtered && <> ({money(r.activitiesCash)} activités + {money(r.financeCash)} Finance)</>}
+            {' '}+ comptes bancaires {money(r.bankTotal)}.
           </p>
           <p className="text-xs opacity-75 mt-1">
             Dont {money(r.fuelStockValue)} de carburant en cuve et {money(r.goodsStockValue)} de marchandise.
@@ -285,19 +317,25 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
         <h3 className="font-black text-[#002d87] flex items-center gap-2">
           <Wallet className="w-5 h-5 text-[#FFB800]" /> Détail par activité
         </h3>
+        {/* Une ligne par tiroir — les trois activités ET la Finance, qui porte
+            le reste du tiroir commun et TOUS les comptes bancaires. Le total du
+            tableau est donc exactement le fonds de roulement affiché en haut :
+            il manquait la Finance, et l'écart n'était expliqué nulle part. */}
         <Table head={<>
           <th className="table-head">Activité</th>
-          <th className="table-head text-right">Caisse (indicatif)</th>
+          <th className="table-head text-right">Caisse (espèces)</th>
+          <th className="table-head text-right">Comptes bancaires</th>
           <th className="table-head text-right">Créances clients</th>
           <th className="table-head text-right">Stock (prix d'achat)</th>
           <th className="table-head text-right">Dettes fournisseurs</th>
           <th className="table-head text-right">Net financier</th>
           <th className="table-head text-right">Total de l'activité</th>
         </>}>
-          {r.parts.map(p => (
+          {r.parts.map((p: WCPart) => (
             <tr key={p.key} className="cursor-pointer hover:bg-slate-50" onClick={() => setPartKey(p.key)}>
               <td className="table-cell font-bold whitespace-nowrap">{p.emoji} {p.label}</td>
               <td className={cn('table-cell tabular-nums text-right', p.cash >= 0 ? 'text-[#002d87]' : 'text-red-600')}>{money(p.cash)}</td>
+              <td className="table-cell tabular-nums text-right text-emerald-700">{p.bank ? money(p.bank) : <span className="text-slate-300">—</span>}</td>
               <td className="table-cell tabular-nums text-right text-violet-700">{money(p.receivables)}</td>
               <td className="table-cell tabular-nums text-right text-amber-700">{money(p.stockValue)}</td>
               <td className="table-cell tabular-nums text-right text-red-600">{money(p.payables)}</td>
@@ -306,22 +344,25 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
             </tr>
           ))}
           <tr className="bg-blue-50/60">
-            <td className="table-cell font-black text-[#002d87]">TOTAL DES ACTIVITÉS</td>
-            <td className="table-cell tabular-nums text-right font-black text-slate-400">{money(r.parts.reduce((s, p) => s + p.cash, 0))}</td>
-            <td className="table-cell tabular-nums text-right font-black text-violet-700">{money(r.parts.reduce((s, p) => s + p.receivables, 0))}</td>
-            <td className="table-cell tabular-nums text-right font-black text-amber-700">{money(r.parts.reduce((s, p) => s + p.stockValue, 0))}</td>
-            <td className="table-cell tabular-nums text-right font-black text-red-600">{money(r.parts.reduce((s, p) => s + p.payables, 0))}</td>
-            <td className="table-cell tabular-nums text-right font-black">{money(r.parts.reduce((s, p) => s + p.net, 0))}</td>
-            <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(r.parts.reduce((s, p) => s + p.total, 0))}</td>
+            <td className="table-cell font-black text-[#002d87]">TOTAL — FONDS DE ROULEMENT</td>
+            <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(r.parts.reduce((s: number, p: WCPart) => s + p.cash, 0))}</td>
+            <td className="table-cell tabular-nums text-right font-black text-emerald-700">{money(r.parts.reduce((s: number, p: WCPart) => s + p.bank, 0))}</td>
+            <td className="table-cell tabular-nums text-right font-black text-violet-700">{money(r.parts.reduce((s: number, p: WCPart) => s + p.receivables, 0))}</td>
+            <td className="table-cell tabular-nums text-right font-black text-amber-700">{money(r.parts.reduce((s: number, p: WCPart) => s + p.stockValue, 0))}</td>
+            <td className="table-cell tabular-nums text-right font-black text-red-600">{money(r.parts.reduce((s: number, p: WCPart) => s + p.payables, 0))}</td>
+            <td className="table-cell tabular-nums text-right font-black">{money(r.parts.reduce((s: number, p: WCPart) => s + p.net, 0))}</td>
+            <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(r.parts.reduce((s: number, p: WCPart) => s + p.total, 0))}</td>
           </tr>
         </Table>
         <p className="text-[11px] text-slate-400 italic flex items-start gap-1.5">
           <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          Cliquez sur une ligne pour ne garder que cette activité. La colonne « Caisse » est la position reconstituée
-          sur les documents de chaque activité : elle dit d'où vient l'argent, mais elle n'entre pas dans le fonds de
-          roulement — la recette déjà versée au grand livre y serait comptée deux fois. Le calcul retient la caisse
-          générale ({money(r.cash.total)}), les comptes bancaires ({money(r.bankTotal)}) et le stock au prix d'achat
-          ({money(r.stockValue)}).
+          Cliquez sur une ligne pour ne garder que cette activité. La colonne « Caisse » est le tiroir de chacune, lu
+          sur ses propres mouvements — le même solde que l'écran Caisse Générale — et il entre bien dans le fonds de
+          roulement. La Finance est la part du tiroir commun qui n'appartient à aucune activité ; c'est elle aussi qui
+          porte les comptes bancaires ({money(r.bankTotal)}), lesquels ne sont rattachés à aucune activité. Le calcul
+          retient donc les caisses ({money(r.cashTotal)}), la banque ({money(r.bankTotal)}), les créances
+          ({money(r.receivablesTotal)}) et le stock au prix d'achat ({money(r.stockValue)}), moins les dettes
+          ({money(r.payablesTotal)}).
         </p>
       </div>
 

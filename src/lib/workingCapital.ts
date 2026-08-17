@@ -23,15 +23,52 @@
  * chaque client débiteur avec sa facture, chaque fournisseur avec la sienne,
  * chaque cuve et chaque référence en stock.
  *
- * Aucun calcul n'est réinventé ici : les soldes viennent de `treasuryReporting`,
- * les dettes des `PartReport` et le stock de `stockValuation` — les mêmes
- * chiffres que les écrans Caisse Générale, Comptes Bancaires, Clients,
- * Fournisseurs et Valeur du stock.
+ * ── La TRÉSORERIE, activité par activité ──────────────────────────────────────
+ * Les espèces de la station, ce sont les QUATRE TIROIRS de l'écran Caisse
+ * Générale : Carburant, Cafétéria, Lavage — chacun reconstitué sur ses propres
+ * documents — et la Finance, c.-à-d. la part du tiroir commun qui n'appartient à
+ * aucune activité. Leur somme est le « Toutes les caisses » de cet écran-là.
+ *
+ * Chacun de ces tiroirs est ici une ligne COMPTÉE, rattachée à son activité.
+ * L'écran ne retenait auparavant que le solde du tiroir commun au grand livre :
+ * il annonçait donc, sur « Toutes les activités », un argent que la station
+ * n'avait plus (les règlements en espèces passés par un document n'écrivent pas
+ * tous une ligne au grand livre), et, dès qu'on filtrait sur une activité, une
+ * trésorerie de ZÉRO — la seule ligne comptée appartenant à la Finance. Le
+ * carburant affichait ainsi 0,00 DA de caisse pendant que la Caisse Générale en
+ * montrait 1,9 million.
+ *
+ * Aucun calcul n'est réinventé ici : la caisse de chaque activité vient de ses
+ * propres mouvements (`PartReport.caisseMovements`, la liste même qu'affiche la
+ * Caisse Générale), les comptes bancaires et le tiroir de la Finance de
+ * `treasuryReporting`, les dettes des `PartReport` et le stock de
+ * `stockValuation` — les mêmes chiffres que les écrans Caisse Générale, Comptes
+ * Bancaires, Clients, Fournisseurs et Valeur du stock.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { PartReport } from './bizReporting';
 import { TreasuryReport, TreasuryAccount } from './treasuryReporting';
 import { StockValuation } from './stockValuation';
+import { within } from './period';
+
+/**
+ * Ce que la PÉRIODE lue a fait bouger dans une caisse ou sur un compte :
+ *
+ *     hors période + entrées − sorties = solde
+ *
+ * `outside` n'est pas un « solde d'ouverture » mais tout ce qui ne tombe pas
+ * dans la fenêtre — avant ELLE COMME APRÈS. C'est ce qui rend l'égalité VRAIE
+ * quoi qu'on choisisse comme dates : un versement postérieur à la période
+ * comptait dans le solde sans compter dans les flux, et l'écart passait pour
+ * une erreur de calcul.
+ */
+export interface WCFlow {
+  outside: number;
+  in: number;
+  out: number;
+  /** Nombre de mouvements tombant dans la période. */
+  count: number;
+}
 
 /** Une ligne détaillée d'un bloc (un compte, un client, un fournisseur…). */
 export interface WCRow {
@@ -45,9 +82,16 @@ export interface WCRow {
   partLabel?: string;
   emoji?: string;
   /**
-   * Ligne montrée mais NON additionnée : la position de caisse d'une activité,
-   * reconstituée depuis ses propres documents, recoupe déjà ce que le grand
-   * livre a enregistré. L'ajouter au total compterait le même argent deux fois.
+   * Ce que la période a fait bouger sur CETTE ligne — porté par la ligne, et
+   * non par le bloc, pour qu'un filtre par activité ne puisse plus afficher les
+   * flux des lignes qu'il vient d'exclure.
+   */
+  flow?: WCFlow;
+  /**
+   * Ligne montrée mais NON additionnée. Plus aucune ligne de trésorerie ne
+   * l'est — les caisses des activités sont comptées, comme sur l'écran Caisse
+   * Générale. Le drapeau reste pour les blocs qui voudraient éclairer un total
+   * sans y entrer.
    */
   informational?: boolean;
 }
@@ -64,12 +108,11 @@ export interface WCBlock {
   /** Précision affichée sous le détail du bloc. */
   note?: string;
   /**
-   * Ce que la PÉRIODE choisie a fait bouger dans ce bloc — présent pour la
-   * trésorerie, où « ouverture + entrées − sorties = total » se vérifie à l'œil.
-   * Sans lui, la carte affichait un solde qui ne réagissait à aucune date, et
-   * rien ne disait que c'était voulu.
+   * Ce que la PÉRIODE choisie a fait bouger dans ce bloc — la somme des flux de
+   * ses lignes RETENUES, pour que « hors période + entrées − sorties = total »
+   * se vérifie à l'œil, filtre appliqué ou non.
    */
-  flow?: { opening: number; in: number; out: number };
+  flow?: WCFlow;
 }
 
 /** Résumé d'une activité — la ligne du tableau « Détail par activité ». */
@@ -77,15 +120,22 @@ export interface WCPart {
   key: string;
   label: string;
   emoji: string;
-  /** Position de caisse reconstituée (indicative, hors total général). */
+  /** Le tiroir de l'activité, lu sur ses mouvements — COMPTÉ dans le total. */
   cash: number;
+  /**
+   * Comptes bancaires. Une activité n'en a pas : ils appartiennent à la
+   * Finance, qui les porte tous. Sans cette colonne, le total du tableau ne
+   * rendait pas le fonds de roulement affiché en haut de l'écran, et l'argent
+   * manquant n'était expliqué nulle part.
+   */
+  bank: number;
   receivables: number;
   payables: number;
   /** Marchandise / carburant de l'activité, au prix d'achat. */
   stockValue: number;
-  /** caisse + créances − dettes (sans le stock) — le net financier. */
+  /** caisse + banque + créances − dettes (sans le stock) — le net financier. */
   net: number;
-  /** caisse + créances + stock − dettes — TOTAL réel de l'activité. */
+  /** caisse + banque + créances + stock − dettes — TOTAL réel de l'activité. */
   total: number;
 }
 
@@ -93,7 +143,7 @@ export interface WorkingCapitalReport {
   from: string;
   to: string;
 
-  /** Caisse générale + caisses des parties. */
+  /** Les quatre tiroirs : Carburant, Cafétéria, Lavage et Finance. */
   cash: WCBlock;
   /** Comptes bancaires, un par ligne. */
   banks: WCBlock;
@@ -104,9 +154,20 @@ export interface WorkingCapitalReport {
   /** Encours fournisseurs (toutes dates) — de l'argent déjà dépensé. */
   payables: WCBlock;
 
+  /** Toutes les caisses de la station — les trois activités ET la Finance. */
   cashTotal: number;
+  /** Les seules caisses des activités (Carburant + Cafétéria + Lavage). */
+  activitiesCash: number;
+  /** Le tiroir commun, part qui n'appartient à aucune activité. */
+  financeCash: number;
+  /**
+   * Ce que contient PHYSIQUEMENT le tiroir commun au grand livre — l'argent
+   * déposé par les activités y dort aussi. Montré pour expliquer l'écart, jamais
+   * additionné : leurs caisses le portent déjà.
+   */
+  drawerCash: number;
   bankTotal: number;
-  /** Trésorerie immédiate : caisse(s) + banques. */
+  /** Trésorerie immédiate : caisses + banques. */
   treasuryTotal: number;
   receivablesTotal: number;
   payablesTotal: number;
@@ -136,10 +197,41 @@ export interface WorkingCapitalReport {
 /** Seules les lignes retenues comptent — les lignes informatives sont hors total. */
 const sum = (rows: WCRow[]) => rows.reduce((s, r) => (r.informational ? s : s + r.amount), 0);
 
+/**
+ * Les flux d'une liste de mouvements, relus SUR ELLE. Le solde est donné, il ne
+ * se discute pas : ce qui ne tombe pas dans la période en forme le reste, si
+ * bien que « hors période + entrées − sorties » retombe toujours dessus.
+ */
+const flowOf = (
+  lines: { date: string; amount: number }[], balance: number, from: string, to: string,
+): WCFlow => {
+  const period = lines.filter(l => within(l.date, from, to));
+  const inflow = period.reduce((s, l) => (l.amount > 0 ? s + l.amount : s), 0);
+  const outflow = period.reduce((s, l) => (l.amount < 0 ? s - l.amount : s), 0);
+  return { outside: balance - (inflow - outflow), in: inflow, out: outflow, count: period.length };
+};
+
+/**
+ * Les flux d'un bloc : ceux de ses lignes RETENUES, additionnés. Le bloc ne
+ * porte donc jamais un mouvement qu'il n'affiche pas — c'est ce qui faisait
+ * annoncer « +11 033 830 encaissés » à une carte filtrée sur le Carburant dont
+ * le solde affiché était zéro.
+ */
+const flowSum = (rows: WCRow[]): WCFlow | undefined => {
+  const counted = rows.filter(r => !r.informational && r.flow);
+  if (!counted.length) return undefined;
+  return counted.reduce<WCFlow>((a, r) => ({
+    outside: a.outside + (r.flow as WCFlow).outside,
+    in: a.in + (r.flow as WCFlow).in,
+    out: a.out + (r.flow as WCFlow).out,
+    count: a.count + (r.flow as WCFlow).count,
+  }), { outside: 0, in: 0, out: 0, count: 0 });
+};
+
 const block = (
   key: string, label: string, hint: string, rows: WCRow[], sign: 1 | -1,
-  note?: string, flow?: WCBlock['flow'],
-): WCBlock => ({ key, label, hint, rows, total: sum(rows), sign, note, flow });
+  note?: string,
+): WCBlock => ({ key, label, hint, rows, total: sum(rows), sign, note, flow: flowSum(rows) });
 
 /**
  * Assemble le fonds de roulement à partir des rapports déjà calculés — jamais à
@@ -154,69 +246,93 @@ export function computeWorkingCapital(
   const metaOf = (key: string) => partMeta.get(key) || { label: key, emoji: '•' };
 
   // ── Caisses ───────────────────────────────────────────────────────────────
-  // Le solde qui FAIT FOI est celui du grand livre : c'est lui que comptent la
-  // Caisse Générale et la section Caisse & Banques, et c'est donc lui qui entre
-  // ici. La position de caisse de chaque activité est reconstituée depuis ses
-  // propres documents (encaissements, achats payés, dépenses) : elle recoupe le
-  // grand livre dès qu'un versement y a été enregistré. Elle est affichée pour
-  // que le gérant sache d'où vient l'argent, mais JAMAIS additionnée — sinon la
-  // même recette serait comptée deux fois et cet écran contredirait les autres.
-  // Des mouvements POSTÉRIEURS à la période comptent dans le solde sans compter
-  // dans ses flux : sans les nommer, « ouverture + entrées − sorties » ne
-  // retombait pas sur le solde affiché et l'écart passait pour une erreur.
-  const caisseAfter = treasury.caisseDetail?.after || 0;
-  const afterNote = caisseAfter
-    ? ` · ${caisseAfter > 0 ? '+' : '−'}${fmt(Math.abs(caisseAfter))} après la période`
-    : '';
-
-  const cashRows: WCRow[] = [
-    {
-      id: 'caisse-generale',
-      label: 'Caisse générale',
+  // Une ligne par TIROIR, et chacune compte. Ce sont exactement les quatre
+  // cartes de l'écran Caisse Générale, tirées des mêmes listes de mouvements :
+  // les trois activités sur leurs propres documents (`caisseMovements`), la
+  // Finance sur les lignes du grand livre qui ne portent aucune activité.
+  //
+  // Ce que ce bloc portait avant : le seul solde du TIROIR COMMUN au grand
+  // livre. Deux dégâts, tous les deux visibles à l'écran. D'abord ce solde
+  // n'est pas ce que la station détient — les règlements en espèces passés par
+  // un document (achat, salaire) n'écrivent pas tous leur ligne au grand livre,
+  // et le tiroir commun reste donc gonflé de sorties qu'il ignore. Ensuite,
+  // cette unique ligne appartenant à la Finance, filtrer sur une activité ne
+  // gardait plus rien : le Carburant annonçait 0,00 DA de trésorerie pendant
+  // que la Caisse Générale lui comptait 1,9 million en tiroir.
+  const cashRows: WCRow[] = parts.map(p => {
+    const f = flowOf(p.caisseMovements || [], p.caisseBalance, treasury.from, treasury.to);
+    return {
+      id: `caisse-${p.key}`,
+      label: `Caisse ${p.label}`,
       // Le solde seul ne disait pas d'où il venait ni ce que la période avait
-      // changé. On déroule le calcul : ouverture + entrées − sorties = solde.
-      sub: `Ouverture ${fmt(treasury.caisseOpening)} · +${fmt(treasury.caisseIn)} encaissés `
-        + `· −${fmt(treasury.caisseOut)} décaissés sur la période${afterNote}`,
-      amount: treasury.caisseBalance,
-      partKey: 'systeme',
-      partLabel: 'Finance',
-      emoji: '🏦',
-    },
-    ...treasury.partBalances
-      // `systeme` est la somme caisse + banques : la reprendre ici la compterait
-      // une deuxième fois.
-      .filter(p => p.key !== 'systeme')
-      .map(p => ({
-        id: `caisse-${p.key}`,
-        label: `Caisse ${p.label}`,
-        sub: `Position reconstituée sur ses documents · encaissements ${fmt(p.inflow)} · décaissements ${fmt(p.outflow)} sur la période`,
-        amount: p.balance,
-        partKey: p.key,
-        partLabel: p.label,
-        emoji: metaOf(p.key).emoji,
-        informational: true,
-      })),
+      // changé. On déroule le calcul : hors période + entrées − sorties = solde.
+      sub: `Hors période ${fmt(f.outside)} · +${fmt(f.in)} encaissés · −${fmt(f.out)} décaissés `
+        + `· ${f.count} mouvement(s) sur la période`,
+      amount: p.caisseBalance,
+      partKey: p.key,
+      partLabel: p.label,
+      emoji: p.emoji || metaOf(p.key).emoji,
+      flow: f,
+    };
+  });
+
+  // La Finance ne tient aucun document : sa caisse, c'est la part du tiroir
+  // commun qui n'appartient à aucune activité — les lignes du grand livre sans
+  // partie. Le tiroir ENTIER contient en plus l'argent que les activités y ont
+  // déposé, déjà compté dans leur caisse à elles : le reprendre ici compterait
+  // deux fois les mêmes billets (c'est la règle de l'écran Caisse Générale).
+  const caisseLines = [
+    ...(treasury.caisseDetail?.openingLines || []),
+    ...(treasury.caisseDetail?.lines || []),
+    ...(treasury.caisseDetail?.afterLines || []),
   ];
+  const financeLines = caisseLines.filter(l => (l.part || 'systeme') === 'systeme');
+  const financeCash = financeLines.reduce((s, l) => s + l.amount, 0);
+  const financeFlow = flowOf(financeLines, financeCash, treasury.from, treasury.to);
+  cashRows.push({
+    id: 'caisse-finance',
+    label: 'Caisse Finance',
+    sub: `Hors période ${fmt(financeFlow.outside)} · +${fmt(financeFlow.in)} encaissés `
+      + `· −${fmt(financeFlow.out)} décaissés · ${financeFlow.count} mouvement(s) sur la période`,
+    amount: financeCash,
+    partKey: 'systeme',
+    partLabel: 'Finance',
+    emoji: '🏦',
+    flow: financeFlow,
+  });
+
+  const activitiesCash = parts.reduce((s, p) => s + p.caisseBalance, 0);
+  const drawerCash = treasury.caisseBalance;
 
   // ── Comptes bancaires ─────────────────────────────────────────────────────
-  const bankRows: WCRow[] = treasury.accounts.map(a => ({
-    id: `bank-${a.id}`,
-    label: a.name,
-    sub: [
-      a.accountNumber ? `N° ${a.accountNumber}` : null,
-      // Le solde du compte AU DÉBUT de la période, pas seulement son solde
-      // d'ouverture d'origine : c'est lui qui explique le solde actuel.
-      `Début de période ${fmt(a.openingBalance)}`,
-      a.credit || a.debit
-        ? `+${fmt(a.credit)} / −${fmt(a.debit)} sur la période`
-        : 'aucun mouvement sur la période',
-      `${a.movesCount} mouvement(s) au total`,
-    ].filter(Boolean).join(' · '),
-    amount: a.balance,
-    partKey: 'systeme',
-    partLabel: 'Banque',
-    emoji: '🏛️',
-  }));
+  const bankRows: WCRow[] = treasury.accounts.map(a => {
+    // Le solde fait foi ; ce qui n'est pas dans la période en forme le reste —
+    // y compris un mouvement POSTÉRIEUR, que le seul « solde de début de
+    // période » ne savait pas expliquer.
+    const f: WCFlow = {
+      outside: a.balance - (a.credit - a.debit),
+      in: a.credit, out: a.debit, count: a.moves.length,
+    };
+    return {
+      id: `bank-${a.id}`,
+      label: a.name,
+      sub: [
+        a.accountNumber ? `N° ${a.accountNumber}` : null,
+        // Le solde du compte AU DÉBUT de la période, pas seulement son solde
+        // d'ouverture d'origine : c'est lui qui explique le solde actuel.
+        `Début de période ${fmt(a.openingBalance)}`,
+        a.credit || a.debit
+          ? `+${fmt(a.credit)} / −${fmt(a.debit)} sur la période`
+          : 'aucun mouvement sur la période',
+        `${a.movesCount} mouvement(s) au total`,
+      ].filter(Boolean).join(' · '),
+      amount: a.balance,
+      partKey: 'systeme',
+      partLabel: 'Banque',
+      emoji: '🏛️',
+      flow: f,
+    };
+  });
 
   // ── Créances clients — chaque facture impayée, partie par partie ──────────
   const receivableRows: WCRow[] = parts.flatMap(p => p.clientDebts.map(d => ({
@@ -268,19 +384,18 @@ export function computeWorkingCapital(
     ),
   ).sort((a, b) => b.amount - a.amount);
 
-  const cash = block('cash', 'Caisse générale', 'Argent liquide — solde du grand livre', cashRows, 1,
-    `Sur la période : ${fmt(treasury.caisseOpening)} au départ, +${fmt(treasury.caisseIn)} encaissés, `
-    + `−${fmt(treasury.caisseOut)} décaissés`
-    + (caisseAfter ? `, puis ${fmt(caisseAfter)} de mouvements postérieurs` : '')
-    + `, soit ${fmt(treasury.caisseBalance)} aujourd'hui. `
-    + 'Seule la caisse générale est comptée. Les caisses des activités, en dessous, sont la position reconstituée '
-    + 'sur leurs propres documents : elles expliquent d\'où vient l\'argent, mais les additionner compterait deux '
-    + 'fois les recettes déjà versées au grand livre.',
-    { opening: treasury.caisseOpening, in: treasury.caisseIn, out: treasury.caisseOut });
+  const cash = block('cash', 'Caisses (espèces)',
+    'Les quatre tiroirs de la station — les mêmes soldes que l\'écran Caisse Générale', cashRows, 1,
+    `${fmt(activitiesCash)} dans les caisses des activités (Carburant, Cafétéria, Lavage) `
+    + `et ${fmt(financeCash)} dans celle de la Finance, soit ${fmt(activitiesCash + financeCash)} d'espèces. `
+    + 'Chaque tiroir est lu sur SES mouvements : ceux de l\'activité pour les trois premiers, les lignes du grand '
+    + 'livre sans activité pour la Finance. '
+    + `Le tiroir commun, lui, contient ${fmt(drawerCash)} au grand livre : l'argent que les activités y ont déposé y `
+    + 'dort aussi, et leurs caisses le portent déjà — le rajouter ici compterait deux fois les mêmes billets.');
   const banks = block('banks', 'Comptes bancaires', 'Solde d\'ouverture + tous les mouvements enregistrés', bankRows, 1,
     `Sur la période : ${fmt(treasury.bankOpening)} au départ, +${fmt(treasury.bankIn)} reçus, `
-    + `−${fmt(treasury.bankOut)} sortis, soit ${fmt(treasury.bankTotal)} aujourd'hui sur ${treasury.accounts.length} compte(s).`,
-    { opening: treasury.bankOpening, in: treasury.bankIn, out: treasury.bankOut });
+    + `−${fmt(treasury.bankOut)} sortis, soit ${fmt(treasury.bankTotal)} aujourd'hui sur ${treasury.accounts.length} compte(s). `
+    + 'Un compte bancaire n\'appartient à aucune activité : il est rattaché à la Finance.');
   const receivables = block('receivables', 'Créances clients', 'Ventes à crédit non encore encaissées', receivableRows, 1);
   const stockBlock = block('stock', 'Stock (carburant & marchandise)',
     'Litres en cuve et marchandise du catalogue, au prix d\'achat', stockRows, 1,
@@ -302,14 +417,20 @@ export function computeWorkingCapital(
 
   const stockByPart = new Map((stock?.parts || []).map(p => [p.key, p.buyValue]));
 
+  // Le tableau par activité lit la MÊME caisse que le bloc de trésorerie —
+  // celle des mouvements de l'activité. Il passait par `treasury.partBalances`,
+  // un second chemin vers le même chiffre : deux chemins, deux occasions de
+  // diverger, et un total qui ne recomposait plus les cartes du haut.
   const partRows: WCPart[] = parts.map(p => {
-    const partCash = treasury.partBalances.find(b => b.key === p.key)?.balance ?? p.caisseBalance;
+    const partCash = p.caisseBalance;
     const rec = p.clientDebtTotal;
     const pay = p.supplierDebtTotal;
     const stk = stockByPart.get(p.key) ?? p.stockValue;
     return {
       key: p.key, label: p.label, emoji: p.emoji,
       cash: partCash,
+      // Aucune activité ne détient de compte : ils sont tous à la Finance.
+      bank: 0,
       receivables: rec,
       payables: pay,
       stockValue: stk,
@@ -318,10 +439,22 @@ export function computeWorkingCapital(
     };
   });
 
+  // La Finance est une ligne du tableau comme les autres — avec son tiroir et
+  // ses comptes bancaires. Sans elle, le TOTAL du tableau ne rendait pas le
+  // fonds de roulement affiché en haut, et rien ne disait où passait l'écart.
+  partRows.push({
+    key: 'systeme', label: 'Finance', emoji: '🏦',
+    cash: financeCash,
+    bank: banks.total,
+    receivables: 0, payables: 0, stockValue: 0,
+    net: financeCash + banks.total,
+    total: financeCash + banks.total,
+  });
+
   return {
     from: treasury.from, to: treasury.to,
     cash, banks, receivables, stock: stockBlock, payables,
-    cashTotal, bankTotal, treasuryTotal,
+    cashTotal, activitiesCash, financeCash, drawerCash, bankTotal, treasuryTotal,
     receivablesTotal: receivables.total,
     payablesTotal: payables.total,
     stockValue, fuelStockValue, goodsStockValue,
@@ -341,9 +474,11 @@ export function computeWorkingCapital(
  * recalculés depuis ces lignes : rien n'est réécrit à la main, donc le filtre ne
  * peut pas afficher un total qui ne correspond pas à ce qu'il montre.
  *
- * `partKey` vaut `'all'` (aucun filtre) ou la clé d'une activité. Les comptes
- * bancaires et la caisse générale appartiennent à la clé `systeme` : ils ne sont
- * conservés que sur « Toutes les activités » et sur « Finance ».
+ * `partKey` vaut `'all'` (aucun filtre) ou la clé d'une activité. La caisse
+ * d'une activité la suit — c'est SA trésorerie, et l'écran serait faux sans
+ * elle. Les comptes bancaires et le tiroir de la Finance, eux, n'appartiennent
+ * à aucune activité : ils portent la clé `systeme` et ne restent que sur
+ * « Toutes les activités » et sur « Finance ».
  */
 export function filterWorkingCapital(
   report: WorkingCapitalReport,
@@ -354,12 +489,21 @@ export function filterWorkingCapital(
   const keep = (rows: WCRow[]) => rows.filter(r => (r.partKey || 'systeme') === partKey);
   const rebuild = (b: WCBlock): WCBlock => {
     const rows = keep(b.rows);
-    // Les flux de période décrivent les lignes du bloc : un bloc vidé par le
-    // filtre ne doit pas continuer à afficher les mouvements des lignes exclues.
-    return { ...b, rows, total: sum(rows), flow: rows.length ? b.flow : undefined };
+    // Les flux du bloc sont ceux de ses lignes retenues, recalculés : un bloc
+    // filtré ne peut plus afficher les mouvements des lignes qu'il a exclues.
+    return { ...b, rows, total: sum(rows), flow: flowSum(rows) };
   };
 
-  const cash = rebuild(report.cash);
+  // La note d'un bloc décrit ce qu'il contient : filtré, il ne contient plus la
+  // même chose. Celle des caisses annonçait le détail de TOUTE la station sous
+  // le solde d'une seule activité.
+  const cash = { ...rebuild(report.cash), note: partKey === 'systeme'
+    ? `Le tiroir de la Finance : la part du tiroir commun qui n'appartient à aucune activité. Le tiroir commun `
+      + `contient ${fmt(report.drawerCash)} au grand livre — l'argent que les activités y ont déposé y dort aussi, `
+      + 'et il est déjà compté dans leur caisse à elles.'
+    : 'La caisse de cette activité, lue sur SES mouvements — la même liste, et le même solde, que l\'écran Caisse '
+      + 'Générale. Le tiroir de la Finance et les comptes bancaires n\'appartiennent à aucune activité : ils ne '
+      + 'figurent que sur « Toutes les activités » et sur « Finance ».' };
   const banks = rebuild(report.banks);
   const receivables = rebuild(report.receivables);
   const stockBlock = rebuild(report.stock);
@@ -377,6 +521,8 @@ export function filterWorkingCapital(
     ...report,
     cash, banks, receivables, stock: stockBlock, payables,
     cashTotal, bankTotal, treasuryTotal,
+    activitiesCash: partKey === 'systeme' ? 0 : cashTotal,
+    financeCash: partKey === 'systeme' ? cashTotal : 0,
     receivablesTotal: receivables.total,
     payablesTotal: payables.total,
     stockValue,
