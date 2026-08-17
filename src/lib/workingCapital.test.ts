@@ -167,6 +167,20 @@ check('et sa part des comptes — le solde d\'ouverture', fin.bankTotal, 1000);
 check('les quatre parts refont le total en banque',
   carb.bankTotal + caf.bankTotal + lav.bankTotal + fin.bankTotal, treasury.bankTotal);
 
+// ─── L'argent RÉEL en banque reste lisible sous un filtre ────────────────────
+// `bankTotal` filtré est une PART : il ne dit plus ce que la station possède.
+// Le total de tous les comptes ne bouge donc jamais, et les comptes restent
+// déroulés — filtrer les effaçait, et le chiffre réel n'était plus nulle part.
+console.log('\nFiltré, le total de tous les comptes reste affiché');
+check('sans filtre, part et total se confondent', r.stationBankTotal, r.bankTotal);
+check('le total ne bouge pas sur le Carburant', carb.stationBankTotal, treasury.bankTotal);
+check('ni sur le Lavage, qui n\'y a rien mis', lav.stationBankTotal, treasury.bankTotal);
+check('la part reste la part', carb.bankTotal === carb.stationBankTotal, false);
+check('les comptes restent déroulés, filtre ou non', carb.accounts.length, r.accounts.length);
+check('chacun garde son solde ENTIER', carb.accounts[0]?.balance, b1.balance);
+check('et la part du Carburant s\'y lit',
+  carb.accounts[0]?.parts.find(p => p.key === 'carburant')?.balance, 600);
+
 // ─── Le tableau par activité recompose l'écran ───────────────────────────────
 console.log('\nLe tableau par activité rend le total affiché');
 const sumBy = (f: (p: typeof r.parts[number]) => number) => r.parts.reduce((s, p) => s + f(p), 0);

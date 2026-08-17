@@ -123,10 +123,11 @@ export interface WCPart {
   /** Le tiroir de l'activité, lu sur ses mouvements — COMPTÉ dans le total. */
   cash: number;
   /**
-   * Comptes bancaires. Une activité n'en a pas : ils appartiennent à la
-   * Finance, qui les porte tous. Sans cette colonne, le total du tableau ne
-   * rendait pas le fonds de roulement affiché en haut de l'écran, et l'argent
-   * manquant n'était expliqué nulle part.
+   * SA part des comptes bancaires : ce qu'elle y a versé moins ce qu'elle en a
+   * réglé. Les comptes sont COMMUNS — aucun n'appartient à une activité — mais
+   * chaque ligne du grand livre dit de qui est le mouvement, et c'est elle qui
+   * répartit les soldes. La somme de cette colonne est exactement le total en
+   * banque de la station : aucun dinar inventé, aucun perdu.
    */
   bank: number;
   receivables: number;
@@ -166,7 +167,19 @@ export interface WorkingCapitalReport {
    * additionné : leurs caisses le portent déjà.
    */
   drawerCash: number;
+  /** La part des comptes bancaires retenue par le filtre en cours. */
   bankTotal: number;
+  /**
+   * L'ARGENT RÉELLEMENT EN BANQUE, tous comptes confondus — jamais filtré.
+   *
+   * `bankTotal` est une PART : filtré sur une activité, il ne dit plus combien
+   * la station possède en banque, et l'écran n'affichait alors nulle part ce
+   * chiffre-là. Les deux sont montrés côte à côte : le total de tous les
+   * comptes, et ce que l'activité regardée y détient. Seule la part entre dans
+   * son fonds de roulement — additionner le total sur chaque activité
+   * compterait le même argent quatre fois.
+   */
+  stationBankTotal: number;
   /** Trésorerie immédiate : caisses + banques. */
   treasuryTotal: number;
   receivablesTotal: number;
@@ -473,7 +486,9 @@ export function computeWorkingCapital(
   return {
     from: treasury.from, to: treasury.to,
     cash, banks, receivables, stock: stockBlock, payables,
-    cashTotal, activitiesCash, financeCash, drawerCash, bankTotal, treasuryTotal,
+    cashTotal, activitiesCash, financeCash, drawerCash, bankTotal,
+    stationBankTotal: bankTotal,
+    treasuryTotal,
     receivablesTotal: receivables.total,
     payablesTotal: payables.total,
     stockValue, fuelStockValue, goodsStockValue,
@@ -523,12 +538,18 @@ export function filterWorkingCapital(
     : 'La caisse de cette activité, lue sur SES mouvements — la même liste, et le même solde, que l\'écran Caisse '
       + 'Générale. Le tiroir de la Finance et les comptes bancaires n\'appartiennent à aucune activité : ils ne '
       + 'figurent que sur « Toutes les activités » et sur « Finance ».' };
-  const banks = { ...rebuild(report.banks), note: partKey === 'systeme'
+  // Le bloc filtré ne porte plus le total en banque mais une PART : la carte et
+  // la fenêtre de détail doivent le dire, sinon le chiffre passe pour l'argent
+  // de la station.
+  const banks = { ...rebuild(report.banks), label: 'Comptes bancaires — sa part', note: (partKey === 'systeme'
     ? 'La part des comptes qui revient à la Finance — le solde d\'ouverture compris, puisqu\'aucune activité ne l\'a '
       + 'provoqué. Le reste des soldes appartient aux activités, chacune sur sa propre ligne.'
     : 'La part des comptes qui revient à cette activité : ce qu\'elle y a versé, moins ce qu\'elle en a réglé. Elle '
-      + 'est négative quand la station a payé ses achats depuis la banque sans qu\'elle y ait versé autant. Le solde '
-      + 'entier de chaque compte se lit sur « Toutes les activités ».' };
+      + 'est négative quand la station a payé ses achats depuis la banque sans qu\'elle y ait versé autant.')
+    + ` La station possède en tout ${fmt(report.stationBankTotal)} en banque, sur ${report.accounts.length} compte(s) : `
+    + 'chaque compte est déroulé plus bas avec son solde ENTIER, et la part de cette activité indiquée dessous. Seule '
+    + 'cette part entre dans le fonds de roulement de l\'activité — compter le total sur chacune reviendrait à compter '
+    + 'le même argent quatre fois.' };
   const receivables = rebuild(report.receivables);
   const stockBlock = rebuild(report.stock);
   const payables = rebuild(report.payables);
@@ -538,10 +559,14 @@ export function filterWorkingCapital(
   const treasuryTotal = cashTotal + bankTotal;
   const stockValue = stockBlock.total;
   const financialWorkingCapital = treasuryTotal + receivables.total - payables.total;
-  // Le détail compte-par-compte montre des soldes ENTIERS : le laisser sous un
-  // filtre ferait cohabiter le solde total d'un compte avec la seule part de
-  // l'activité regardée. Filtré, c'est la liste des parts qui explique le total.
-  const accounts: TreasuryAccount[] = [];
+  // Les comptes restent déroulés, filtre ou non : leur solde ENTIER est le seul
+  // endroit où se lit l'argent que la station possède vraiment en banque. Il
+  // était retiré de l'écran filtré de peur qu'on le confonde avec la part de
+  // l'activité — mais l'écran n'affichait alors plus du tout ce chiffre, et le
+  // gérant devait revenir sur « Toutes les activités » pour le retrouver. Les
+  // deux sont désormais montrés ensemble et nommés : le solde du compte, et
+  // « dont <activité> ». Seule la part est additionnée dans les totaux.
+  const accounts: TreasuryAccount[] = report.accounts;
   const parts = report.parts.filter(p => p.key === partKey);
 
   return {
