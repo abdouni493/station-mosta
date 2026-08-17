@@ -40,7 +40,7 @@ import {
   Star, ArrowUp, ArrowDown, ListOrdered, Zap, Users, Monitor, MonitorOff,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizProduct, BizDiscountType,
   detailPrice, discountOf, posPinKey, isSellableProduct, roundQty, formatQty,
@@ -229,7 +229,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const filtered = useMemo(() => source
     .filter(s =>
-      (!search || s.name.toLowerCase().includes(search.toLowerCase())) &&
+      matchesSearch(search, s.name) &&
       (category === 'all' || s.categoryName === category))
     .sort((a, b) => rank(a) - rank(b)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -869,7 +869,7 @@ function OrganizeModal({ sources, pinned, sales, onSave, onClose }: {
     setKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
 
   const available = unique
-    .filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()));
+    .filter(s => matchesSearch(search, s.name));
 
   return (
     <Modal open onClose={onClose} icon={ListOrdered} size="lg"

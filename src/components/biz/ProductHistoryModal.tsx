@@ -11,7 +11,7 @@ import {
   History, ShoppingCart, TrendingUp, CircleDollarSign, Boxes, Search, Receipt,
   ArrowDownRight, ArrowUpRight, Printer, Flame, Beaker, Wrench, FileText, Info,
 } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import {
   Modal, Table, Badge, Select, money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
@@ -161,16 +161,10 @@ export default function ProductHistoryModal({ product, state, settings, onClose 
   const [doc, setDoc] = useState<ProductDocument | null>(null);
 
   const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
     return history.movements.filter(m =>
       (kind === 'all' || m.kind === kind)
       && inPeriod(m.date, period, from, to)
-      && (!needle
-        || m.ref.toLowerCase().includes(needle)
-        || m.party.toLowerCase().includes(needle)
-        || (m.note || '').toLowerCase().includes(needle)
-        || (m.status || '').toLowerCase().includes(needle)
-        || formatDate(m.date).toLowerCase().includes(needle)));
+      && matchesSearch(q, m.ref, m.party, m.note, m.status, formatDate(m.date)));
   }, [history.movements, q, kind, period, from, to]);
 
   /** Les totaux de ce que l'utilisateur voit — pas ceux de tout l'historique. */

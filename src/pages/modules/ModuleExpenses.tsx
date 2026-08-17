@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { CreditCard, Plus, TrendingDown, Calendar, Banknote, Landmark, Wallet } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizExpense, bizExpensePaidInCash } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import {
@@ -31,7 +31,7 @@ export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) 
 
   const cats = useMemo(() => Array.from(new Set(expenses.map(e => e.category).filter(Boolean))) as string[], [expenses]);
   const filtered = useMemo(() => [...expenses]
-    .filter(e => (!search || e.name.toLowerCase().includes(search.toLowerCase())) && inPeriod(e.date, period, from, to))
+    .filter(e => matchesSearch(search, e.name, e.category) && inPeriod(e.date, period, from, to))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()), [expenses, search, period, from, to]);
   const total = filtered.reduce((s, e) => s + e.amount, 0);
   /** Ce qui est réellement sorti du tiroir de la partie sur la période. */

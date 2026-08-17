@@ -21,7 +21,7 @@ import {
   Eye, Edit2, Trash2, Clock, Package, CheckCircle2, Hourglass, Layers, Percent, Tag,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizReparation, BizRepKind, BizPrestation, BizDiscountType,
   BizCar, BizLineItem, BizProduct, BizWorker, detailPrice, discountOf, prestationsOf, formatQty,
@@ -82,12 +82,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
   const filtered = useMemo(() => [...reparations].filter(r => {
     const client = clients.find(c => c.id === r.clientId);
-    const q = search.trim().toLowerCase();
-    const matchQ = !q
-      || r.clientName.toLowerCase().includes(q)
-      || (client?.phone || '').includes(q)
-      || r.ref.toLowerCase().includes(q)
-      || (r.car?.immatriculation || '').toLowerCase().includes(q);
+    const matchQ = matchesSearch(search, r.clientName, client?.phone, r.ref, r.car?.immatriculation);
     return matchQ && (status === 'all' || r.status === status) && inPeriod(r.date, period, from, to);
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
     [reparations, clients, search, status, period, from, to]);
@@ -564,10 +559,9 @@ function ReparationForm({
   // Products out of stock stay searchable: an intervention may consume them and
   // drive the stock negative (rattrapé au prochain achat), like the POS comptoir.
   const productMatches = useMemo(() => {
-    const q = pQuery.trim().toLowerCase();
-    if (!q) return [];
+    if (!pQuery.trim()) return [];
     return products
-      .filter(p => p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q))
+      .filter(p => matchesSearch(pQuery, p.name, p.barcode))
       .slice(0, 8);
   }, [products, pQuery]);
 

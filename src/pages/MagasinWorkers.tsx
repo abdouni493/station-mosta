@@ -23,7 +23,7 @@ import {
   Loader,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId } from "@/src/lib/utils";
+import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, MagasinWorker, Track, BrigadeChef } from "../store/AppContext";
 import { provisionWorkerAccount } from "../lib/supabase";
 import { emptyPermissions } from "../lib/permissionDefaults";
@@ -46,6 +46,15 @@ const MagasinWorkers = () => {
   const dispatch = useAppDispatch();
 
   const currentMonth = new Date().toISOString().slice(0, 7);
+
+  // Toolbar: recherche libre + filtre de statut
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<'tous' | 'Actif' | 'Inactif'>('tous');
+
+  const visibleWorkers: MagasinWorker[] = useMemo(() => workers.filter((w: MagasinWorker) =>
+    (statusFilter === 'tous' || w.status === statusFilter) &&
+    matchesSearch(search, w.name, w.cin, w.phone, w.email)
+  ), [workers, search, statusFilter]);
 
   // Modals state
   const [showModal, setShowModal] = useState(false);
@@ -422,22 +431,46 @@ const MagasinWorkers = () => {
 
       {/* Toolbar */}
       <div className="p-6 border border-slate-100 rounded-3xl flex flex-wrap items-center justify-between gap-6 bg-white shadow-sm italic">
-        <div className="relative w-full max-w-lg">
+        <div className="relative flex-1 min-w-[260px] max-w-lg">
           <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
-          <input 
-            type="text" 
-            placeholder="Rechercher par nom ou CIN..." 
-            className="w-full pl-14 pr-6 h-14 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner"
+          <input
+            type="text"
+            placeholder="Rechercher par nom, CIN ou téléphone..."
+            value={search}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
+            className="w-full pl-14 pr-12 h-14 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner text-blue-900 placeholder-slate-400"
           />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              title="Effacer la recherche"
+              className="absolute right-4 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-blue-900 hover:bg-slate-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
-        <div className="h-14 px-6 bg-slate-50 rounded-2xl flex items-center gap-4 text-[10px] font-black text-slate-400 uppercase tracking-widest border border-slate-100 cursor-pointer shadow-sm hover:bg-slate-100 transition-colors">
-          <Filter className="w-4 h-4" /> Filtrer
+        <div className="h-14 px-6 bg-slate-50 rounded-2xl flex items-center gap-3 text-[10px] font-black text-slate-400 uppercase tracking-widest border border-slate-100 shadow-sm">
+          <Filter className="w-4 h-4 shrink-0" />
+          <select
+            value={statusFilter}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setStatusFilter(e.target.value as 'tous' | 'Actif' | 'Inactif')}
+            className="bg-transparent border-none outline-none text-[10px] font-black uppercase tracking-widest text-blue-900 cursor-pointer"
+          >
+            <option value="tous">Tous les statuts</option>
+            <option value="Actif">Actifs</option>
+            <option value="Inactif">Inactifs</option>
+          </select>
         </div>
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+          {visibleWorkers.length} / {workers.length} employé(s)
+        </p>
       </div>
 
       {/* Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {workers.length > 0 ? workers.map((w) => {
+        {visibleWorkers.length > 0 ? visibleWorkers.map((w: MagasinWorker) => {
           const currentMonthAcomptes = (w.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
           const isMonthPaid = (w.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
 
@@ -573,7 +606,11 @@ const MagasinWorkers = () => {
         );
         }) : (
           <div className="col-span-full">
-            <EmptyState icon={Store} title="Aucun employé magasin" description="Commencez par ajouter votre premier employé" actionLabel="Ajouter" action={() => { resetForm(); setShowModal(true); }} />
+            {workers.length > 0 ? (
+              <EmptyState icon={Search} title="Aucun résultat" description="Aucun employé ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
+            ) : (
+              <EmptyState icon={Store} title="Aucun employé magasin" description="Commencez par ajouter votre premier employé" actionLabel="Ajouter" action={() => { resetForm(); setShowModal(true); }} />
+            )}
           </div>
         )}
       </div>

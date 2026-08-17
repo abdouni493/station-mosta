@@ -23,7 +23,7 @@ import {
   CalendarClock, BellRing, CheckCircle2,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import {
   useAppState, useAppDispatch, useModulePermission,
   Purchase, PurchaseItem, PurchasePayment, TreasuryTransaction, CAISSE_ID,
@@ -96,14 +96,10 @@ export default function FuelPurchases() {
     [purchases]);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return [...fuelPurchases]
       .filter(p => {
         const supplier = suppliers.find(s => s.id === p.supplierId);
-        const matchQ = !q
-          || (p.invoiceNumber || '').toLowerCase().includes(q)
-          || (p.blNumber || '').toLowerCase().includes(q)
-          || (supplier?.name || '').toLowerCase().includes(q);
+        const matchQ = matchesSearch(search, p.invoiceNumber, p.blNumber, supplier?.name);
         return matchQ && inPeriod(p.date, period, from, to);
       })
       // Newest first.

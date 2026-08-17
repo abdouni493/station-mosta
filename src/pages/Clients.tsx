@@ -39,7 +39,7 @@ import {
   Mail
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId } from "@/src/lib/utils";
+import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Client, bankBalanceOf, TreasuryTransaction, CAISSE_ID } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -540,14 +540,11 @@ const Clients = () => {
 
   /** Les opérations réellement affichées dans le journal, filtres appliqués. */
   const visibleEntries = useMemo(() => {
-    const q = historySearch.trim().toLowerCase();
     return ledger.entries.filter((e: ClientEntry) => {
       if (historyFilter === "Consommations" && !['bon', 'magasin', 'vente'].includes(e.kind)) return false;
       if (historyFilter === "Règlements" && e.kind !== 'reglement') return false;
       if (historyFilter === "Avance" && e.advanceEffect === 0) return false;
-      if (!q) return true;
-      return [e.label, e.notes, e.reference, e.mode, e.fuelType]
-        .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+      return matchesSearch(historySearch, e.label, e.notes, e.reference, e.mode, e.fuelType);
     });
   }, [ledger, historyFilter, historySearch]);
 
@@ -563,15 +560,12 @@ const Clients = () => {
   // Filtering Logic
   const filteredClients = useMemo(() => {
     return clients.filter(c => {
-      const matchesSearch = c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (c.phone || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (c.email || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (c.cin || "").toLowerCase().includes(searchTerm.toLowerCase());
-        
+      const matchesQuery = matchesSearch(searchTerm, c.name, c.phone, c.email, c.cin);
+
       const matchesType = selectedType === "Tous" || c.type === selectedType;
       const matchesMode = selectedMode === "Tous" || c.paymentMode === selectedMode;
       
-      return matchesSearch && matchesType && matchesMode;
+      return matchesQuery && matchesType && matchesMode;
     });
   }, [clients, searchTerm, selectedType, selectedMode]);
 

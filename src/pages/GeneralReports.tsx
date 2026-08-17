@@ -7,7 +7,7 @@ import {
   ClipboardList, PackageX,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizLineItem, isReversedSale, formatQty } from '@/src/lib/bizConfig';
 import { applyRestock, describeRestock, restockPlan } from '@/src/lib/bizRestock';
 import { useBizAll, useBiz } from '@/src/store/BizContext';
@@ -1310,10 +1310,9 @@ function CardDetailModal({ detail, onClose }: { detail: CardDetail | null; onClo
 
   const rows = useMemo(() => {
     if (!detail) return [] as DetailRow[];
-    const q = query.trim().toLowerCase();
-    if (!q) return detail.rows;
-    return detail.rows.filter(r =>
-      `${r.label} ${r.sub || ''} ${r.badge?.text || ''}`.toLowerCase().includes(q));
+    if (!query.trim()) return detail.rows;
+    return detail.rows.filter((r: DetailRow) =>
+      matchesSearch(query, r.label, r.sub, r.badge?.text));
   }, [detail, query]);
 
   if (!detail) return null;

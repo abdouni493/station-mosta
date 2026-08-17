@@ -4,7 +4,7 @@ import {
   X, DollarSign, Droplets, Printer, CheckCircle, AlertTriangle,
   Search, Plus, Trash2, ChevronRight, ArrowRight, Users, Zap
 } from "lucide-react";
-import { cn, newId, degreesFromLiters } from "@/src/lib/utils";
+import { cn, newId, degreesFromLiters, matchesSearch } from "@/src/lib/utils";
 import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, StationSettings,
   Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType,
@@ -220,7 +220,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
   // ── Client search ────────────────────────────────────────────────────────────
   const filteredClients = useMemo(() => {
     if (!clientSearch.trim()) return clients.slice(0, 8);
-    return clients.filter(c => c.name.toLowerCase().includes(clientSearch.toLowerCase())).slice(0, 8);
+    return clients.filter(c => matchesSearch(clientSearch, c.name, c.phone, c.cin)).slice(0, 8);
   }, [clients, clientSearch]);
 
   const addJustification = () => {

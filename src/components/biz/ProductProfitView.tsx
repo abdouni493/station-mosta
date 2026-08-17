@@ -14,7 +14,7 @@ import {
   Search, TrendingUp, TrendingDown, CircleDollarSign, Layers, Percent, ArrowUpDown,
   Boxes, ChevronRight, AlertTriangle,
 } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import { money, Table, Badge, Select } from '@/src/components/biz/Kit';
 import { PartAnalytics, ProductAnalytics, PRODUCT_KIND_LABEL, ProductKind } from '@/src/lib/bizAnalytics';
 import { ProductAnalyticsModal } from '@/src/components/biz/AnalyticsView';
@@ -63,9 +63,8 @@ export default function ProductProfitView({ analytics: a }: { analytics: PartAna
   const kinds = useMemo(() => Array.from(new Set(a.products.map(p => p.kind))) as ProductKind[], [a.products]);
 
   const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
     const filtered = a.products.filter(p =>
-      (!needle || p.name.toLowerCase().includes(needle) || (p.code || '').toLowerCase().includes(needle))
+      matchesSearch(q, p.name, p.code)
       && (kind === 'all' || p.kind === kind)
       && (cat === 'all' || (p.category || 'Sans catégorie') === cat)
       && (profit === 'all' || (profit === 'positive' ? p.gain > 0 : p.gain <= 0)));

@@ -7,7 +7,7 @@ import {
   TrendingUp, BarChart2, Info
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId } from "@/src/lib/utils";
+import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Tank, Product, Pump, Inventory as InventoryType } from "../store/AppContext";
 import EmptyState from "../components/EmptyState";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -253,9 +253,7 @@ const FuelFormStep = ({ tanks, pumps, fuelData, pumpData, onFuelChange, onPumpCh
 ════════════════════════════════════════ */
 const ShopFormStep = ({ products, shopData, onSearch, searchTerm, onAdd, onQtyChange, onRemove }: any) => {
   const filtered = useMemo(() => products.filter((p: Product) =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (p.ref && p.ref.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    (p.barcode && p.barcode.toLowerCase().includes(searchTerm.toLowerCase()))
+    matchesSearch(searchTerm, p.name, p.ref, p.barcode)
   ), [products, searchTerm]);
 
   const addedIds = Object.keys(shopData);

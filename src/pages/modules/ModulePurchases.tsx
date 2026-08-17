@@ -4,7 +4,7 @@ import {
   Tag, Banknote, Droplet, Scale, Info,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty } from '@/src/lib/bizConfig';
 import { deleteBizPurchase, describePurchaseRollback, purchaseStockDeltas, totalRolledBack } from '@/src/lib/bizPurchase';
 import {
@@ -36,9 +36,8 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
   const [toDelete, setToDelete] = useState<BizPurchase | null>(null);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return [...purchases]
-      .filter(p => !q || p.ref.toLowerCase().includes(q) || p.supplierName.toLowerCase().includes(q))
+      .filter(p => matchesSearch(search, p.ref, p.supplierName))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [purchases, search]);
 
@@ -300,9 +299,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
     () => items.reduce((s, it) => s + it.qty * ((it.salePrice ?? 0) - it.unitPrice), 0), [items]);
 
   const matches = useMemo(() => {
-    const q = pQuery.trim().toLowerCase();
-    if (!q) return [];
-    return products.filter(p => p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)).slice(0, 8);
+    if (!pQuery.trim()) return [];
+    return products.filter(p => matchesSearch(pQuery, p.name, p.barcode)).slice(0, 8);
   }, [products, pQuery]);
 
   /**

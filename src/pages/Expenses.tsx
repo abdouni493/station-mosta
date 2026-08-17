@@ -47,7 +47,7 @@ import {
 } from "recharts";
 import ChartBox from "../components/ChartBox";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId } from "@/src/lib/utils";
+import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import {
   useAppState, useAppDispatch, useModulePermission,
   TreasuryTransaction, TreasuryPart, CAISSE_ID, CASH_ACCOUNT_LABEL,
@@ -157,14 +157,14 @@ const Expenses = () => {
    */
   const scopedExpenses = useMemo(() => {
     return expenses.filter(e => {
-      const matchesSearch = (e.description || '').toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesQuery = matchesSearch(searchQuery, e.description, e.category, e.recipient, e.chequeNumber, e.bordereauNumber);
       const matchesCategory = categoryFilter === "all" || e.category === categoryFilter;
       const matchesDateFrom = !dateFrom || new Date(e.date) >= new Date(dateFrom);
       const matchesDateTo = !dateTo || new Date(e.date) <= new Date(dateTo);
       const matchesMin = !minAmount || e.amount >= parseFloat(minAmount);
       const matchesMax = !maxAmount || e.amount <= parseFloat(maxAmount);
 
-      return matchesSearch && matchesCategory && matchesDateFrom && matchesDateTo && matchesMin && matchesMax;
+      return matchesQuery && matchesCategory && matchesDateFrom && matchesDateTo && matchesMin && matchesMax;
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [expenses, searchQuery, categoryFilter, dateFrom, dateTo, minAmount, maxAmount]);
 
@@ -576,7 +576,7 @@ const Expenses = () => {
                   <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
                   <input 
                     type="text" 
-                    placeholder="Rechercher par description ou mot-clé..." 
+                    placeholder="Description, catégorie, bénéficiaire, n° chèque..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full pl-14 pr-6 h-14 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner text-blue-900 placeholder-slate-400"

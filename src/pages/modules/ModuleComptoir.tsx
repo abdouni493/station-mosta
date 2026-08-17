@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Beaker, Flame, RotateCcw, Trash2 as Trash, Search, Layers, Wallet, Boxes } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizComptoirItem, BizDestruction, formatQty } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
@@ -32,7 +32,7 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
   // NÉGATIVE, elle, reste affichée : le point de vente a servi plus que ce qui
   // avait été fabriqué, et il faut voir ce qu'il reste à produire pour combler.
   const availFiltered = useMemo(() => comptoir.filter(c =>
-    c.qty !== 0 && (!search || c.productName.toLowerCase().includes(search.toLowerCase())) && (cat === 'all' || c.categoryName === cat)), [comptoir, search, cat]);
+    c.qty !== 0 && matchesSearch(search, c.productName) && (cat === 'all' || c.categoryName === cat)), [comptoir, search, cat]);
 
   const stockValue = comptoir.reduce((s, c) => s + c.qty * c.unitPrice, 0);
   const destroyedValue = destructions.reduce((s, d) => s + (d.recovered ? 0 : d.value), 0);

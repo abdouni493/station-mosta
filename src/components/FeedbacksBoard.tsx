@@ -23,6 +23,7 @@ import {
   Clock, Inbox, CalendarDays, MailOpen,
 } from 'lucide-react';
 import { ClientFeedback, FeedbackPart, FEEDBACK_PART_META, feedbackAuthor } from '@/src/lib/feedbacks';
+import { matchesSearch } from '@/src/lib/utils';
 import { useFeedbacks, usePartFeedbacks } from '@/src/store/FeedbackContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
@@ -65,12 +66,7 @@ export default function FeedbacksBoard({
   }, [feedbacks]);
 
   const filtered = useMemo(() => feedbacks.filter(f => {
-    const q = search.trim().toLowerCase();
-    const matchQ = !q
-      || (f.fullName || '').toLowerCase().includes(q)
-      || (f.phone || '').toLowerCase().includes(q)
-      || (f.email || '').toLowerCase().includes(q)
-      || f.message.toLowerCase().includes(q);
+    const matchQ = matchesSearch(search, f.fullName, f.phone, f.email, f.message);
     return matchQ && (status === 'all' || f.status === status) && inPeriod(f.createdAt, period, from, to);
   }), [feedbacks, search, status, period, from, to]);
 

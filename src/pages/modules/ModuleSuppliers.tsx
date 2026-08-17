@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Truck, Plus, Phone, MapPin, ShoppingCart, CircleDollarSign, Wallet, TrendingUp } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { ModuleKey, MODULES, BizContact } from '@/src/lib/bizConfig';
+import { matchesSearch } from '@/src/lib/utils';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import {
@@ -22,7 +23,7 @@ export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey })
   const [history, setHistory] = useState<BizContact | null>(null);
   const [toDelete, setToDelete] = useState<BizContact | null>(null);
 
-  const filtered = suppliers.filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()) || (s.phone || '').includes(search));
+  const filtered = suppliers.filter((s: BizContact) => matchesSearch(search, s.name, s.phone));
 
   const supStats = (id: string) => {
     const ps = purchases.filter(p => p.supplierId === id);

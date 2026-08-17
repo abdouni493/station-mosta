@@ -11,7 +11,7 @@ import {
   BellRing, Plus, Car, User, Check, CheckCheck, X, Clock, Wallet, Trash2, CircleDollarSign,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizPayRequest, BizCar } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -43,12 +43,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
   const [confirmAll, setConfirmAll] = useState(false);
 
   const filtered = useMemo(() => [...payRequests].filter(r => {
-    const q = search.trim().toLowerCase();
-    const matchQ = !q
-      || r.clientName.toLowerCase().includes(q)
-      || (r.car?.immatriculation || '').toLowerCase().includes(q)
-      || r.workerName.toLowerCase().includes(q)
-      || r.ref.toLowerCase().includes(q);
+    const matchQ = matchesSearch(search, r.clientName, r.car?.immatriculation, r.workerName, r.ref);
     return matchQ && (status === 'all' || r.status === status) && inPeriod(r.createdAt, period, from, to);
   }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [payRequests, search, status, period, from, to]);

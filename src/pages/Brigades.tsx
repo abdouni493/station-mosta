@@ -38,7 +38,7 @@ import {
   Wrench as WrenchIcon,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId } from "@/src/lib/utils";
+import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
@@ -115,7 +115,7 @@ const Brigades = () => {
   // Shared brigade history filter predicate (id / chef / pompiste / date / période).
   // b.date is 'YYYY-MM-DD' so string comparison is chronologically correct.
   const matchesBrigadeFilters = (b: Brigade) => {
-    if (searchId && !b.id.toLowerCase().includes(searchId.toLowerCase())) return false;
+    if (!matchesSearch(searchId, b.id)) return false;
     if (filterChef && b.chefId !== filterChef) return false;
     if (filterPompiste && !b.pompisteIds?.includes(filterPompiste)) return false;
     const d = b.date || '';
@@ -2452,7 +2452,7 @@ const Brigades = () => {
                                 const isAvance = showNewClientForm === `avance-${s.pompisteId}`;
                                 const matches = clients
                                   .filter(c => !isAvance || (c.advanceBalance || 0) > 0)
-                                  .filter(c => !searchVal || c.name.toLowerCase().includes(searchVal.toLowerCase()) || (c.phone || '').includes(searchVal))
+                                  .filter(c => matchesSearch(searchVal, c.name, c.phone))
                                   .slice(0, 5);
                                 return (
                                   <div className="p-3 rounded-xl border-2 border-slate-100 bg-slate-50 space-y-2">

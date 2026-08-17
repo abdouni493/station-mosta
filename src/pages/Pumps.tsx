@@ -19,7 +19,7 @@ import {
   Save
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId, orNull } from "@/src/lib/utils";
+import { cn, newId, orNull, matchesSearch } from "@/src/lib/utils";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 import ChartBox from "../components/ChartBox";
 import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType, pumpTankIds, nozzleTankId, pumpsInCreationOrder } from "../store/AppContext";
@@ -71,9 +71,8 @@ const Pumps = () => {
   };
 
   // Listed from the first created pompe to the last, like everywhere else.
-  const filteredPumps = pumpsInCreationOrder(pumps).filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.number.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredPumps = pumpsInCreationOrder(pumps).filter((p: Pump) =>
+    matchesSearch(searchTerm, p.name, p.number)
   );
 
   const handleOpenAdd = () => {

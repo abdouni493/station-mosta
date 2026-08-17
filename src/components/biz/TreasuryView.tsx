@@ -13,7 +13,7 @@ import {
   Building2, ChevronDown, ChevronRight, Coins,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import { money, formatDate, Table } from '@/src/components/biz/Kit';
 import { TreasuryReport, TreasuryAccount, TreasuryPartKey } from '@/src/lib/treasuryReporting';
 import CaisseDetailModal from '@/src/components/biz/CaisseDetailModal';
@@ -130,10 +130,9 @@ export default function TreasuryView({ report: r }: { report: TreasuryReport }) 
   const natures = useMemo(() => r.byNature.map(n => n.nature), [r.byNature]);
 
   const rows = useMemo(() => r.movements.filter(m => {
-    const q = search.trim().toLowerCase();
     return (part === 'all' || m.part === part)
       && (nature === 'all' || m.nature === nature)
-      && (!q || m.label.toLowerCase().includes(q) || (m.accounts || '').toLowerCase().includes(q));
+      && matchesSearch(search, m.label, m.accounts);
   }), [r.movements, part, nature, search]);
 
   const flow = useMemo(() => {

@@ -2,7 +2,7 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, X, Home, Users, Package, ShoppingCart, FileText, Settings, BarChart3, Truck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { cn } from '../lib/utils';
+import { cn, matchesSearch } from '../lib/utils';
 
 interface CommandItem {
   id: string;
@@ -43,7 +43,7 @@ const CommandPalette: React.FC<{ workers?: any[]; clients?: any[] }> = ({ worker
         // Pourrait ouvrir un detail modal ou naviguer
         setOpen(false);
       },
-      keywords: [w.name.toLowerCase(), w.phone || ''],
+      keywords: [w.name, w.phone || ''],
     })),
     ...clients.map((c: any) => ({
       id: `client-${c.id}`,
@@ -53,7 +53,7 @@ const CommandPalette: React.FC<{ workers?: any[]; clients?: any[] }> = ({ worker
       action: () => { 
         setOpen(false);
       },
-      keywords: [c.name.toLowerCase()],
+      keywords: [c.name],
     })),
   ];
 
@@ -61,10 +61,7 @@ const CommandPalette: React.FC<{ workers?: any[]; clients?: any[] }> = ({ worker
 
   // Filtrer les résultats
   const filteredItems = search
-    ? allItems.filter(item =>
-        item.label.toLowerCase().includes(search.toLowerCase()) ||
-        item.keywords?.some(k => k.toLowerCase().includes(search.toLowerCase()))
-      )
+    ? allItems.filter(item => matchesSearch(search, item.label, ...(item.keywords || [])))
     : navigationItems;
 
   // Grouper par catégorie

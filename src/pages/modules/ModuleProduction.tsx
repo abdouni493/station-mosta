@@ -4,7 +4,7 @@ import {
   TrendingUp, PackageCheck, Layers, Calculator, Upload, Image as ImageIcon,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizProduction, BizFiche, BizIngredient, BizProduct } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
@@ -59,8 +59,7 @@ function ProductionsTab({ moduleKey }: { moduleKey: ModuleKey }) {
   const [toDelete, setToDelete] = useState<BizProduction | null>(null);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return [...productions].filter(p => (!q || p.name.toLowerCase().includes(q)) && inPeriod(p.date, period))
+    return [...productions].filter(p => matchesSearch(search, p.name) && inPeriod(p.date, period))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [productions, search, period]);
 
@@ -233,9 +232,8 @@ function ProductionForm({ moduleKey, onClose }: { moduleKey: ModuleKey; onClose:
   const totalValue = selectedFiche ? outputQty * selectedFiche.unitPrice : 0;
 
   const matches = useMemo(() => {
-    const q = ficheQuery.trim().toLowerCase();
-    if (!q) return [];
-    return fiches.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+    if (!ficheQuery.trim()) return [];
+    return fiches.filter(f => matchesSearch(ficheQuery, f.name)).slice(0, 6);
   }, [fiches, ficheQuery]);
 
   const pick = (f: BizFiche) => { setSelectedFiche(f); setQty(f.outputQuantity); setRealQty(f.outputQuantity); setFicheQuery(''); };
@@ -365,7 +363,7 @@ function FichesTab({ moduleKey }: { moduleKey: ModuleKey }) {
   const [editing, setEditing] = useState<BizFiche | null>(null);
   const [toDelete, setToDelete] = useState<BizFiche | null>(null);
 
-  const filtered = fiches.filter(f => f.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const filtered = fiches.filter(f => matchesSearch(search, f.name));
   const del = () => { if (toDelete) { biz.remove('fiches', toDelete.id); toast.success('Fiche supprimée'); setToDelete(null); } };
 
   return (
@@ -450,10 +448,9 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
 
   const reusable = fiches.filter(f => f.usableInProduction && f.id !== initial?.id);
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    const fromStock = products.filter(p => p.name.toLowerCase().includes(q)).map(p => ({ type: 'stock' as const, id: p.id, name: p.name, cost: p.purchasePrice, unit: p.unit }));
-    const fromFiche = reusable.filter(f => f.name.toLowerCase().includes(q)).map(f => ({ type: 'fiche' as const, id: f.id, name: f.name, cost: f.costPerUnit, unit: f.productUnit || f.sellUnit }));
+    if (!query.trim()) return [];
+    const fromStock = products.filter(p => matchesSearch(query, p.name, p.barcode)).map(p => ({ type: 'stock' as const, id: p.id, name: p.name, cost: p.purchasePrice, unit: p.unit }));
+    const fromFiche = reusable.filter(f => matchesSearch(query, f.name)).map(f => ({ type: 'fiche' as const, id: f.id, name: f.name, cost: f.costPerUnit, unit: f.productUnit || f.sellUnit }));
     return [...fromStock, ...fromFiche].slice(0, 6);
   }, [products, reusable, query]);
 

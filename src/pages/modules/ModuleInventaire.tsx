@@ -29,7 +29,7 @@ import {
   FileText, Undo2, UsersRound, Ban, Boxes, ListChecks, RotateCcw,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { cn, newId } from '@/src/lib/utils';
+import { cn, newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizInventaire, BizInventaireLine, BizInventaireStatus, BizProduct,
   INVENTAIRE_STATUS_META, formatQty, inventaireRefFor, roundQty,
@@ -83,13 +83,10 @@ export default function ModuleInventaire({ moduleKey }: { moduleKey: ModuleKey }
   }, [printing]);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return [...inventaires]
       .filter(i =>
-        (!q || i.ref.toLowerCase().includes(q)
-          || (i.notes || '').toLowerCase().includes(q)
-          || (i.createdBy || '').toLowerCase().includes(q)
-          || i.lines.some(l => l.productName.toLowerCase().includes(q)))
+        (matchesSearch(search, i.ref, i.notes, i.createdBy)
+          || i.lines.some(l => matchesSearch(search, l.productName)))
         && (statusFilter === 'all' || i.status === statusFilter)
         && inPeriod(i.date, period, from, to))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -320,10 +317,9 @@ function InventaireWizard({ moduleKey, initial, author, onClose }: {
   const ref = useMemo(() => inventaireRefFor(date), [date]);
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
     return products.filter(p =>
       (catFilter === 'all' || p.categoryId === catFilter)
-      && (!q || p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)));
+      && matchesSearch(query, p.name, p.barcode));
   }, [products, query, catFilter]);
 
   const selectedIds = useMemo(() => new Set(lines.keys()), [lines]);

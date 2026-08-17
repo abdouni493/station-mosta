@@ -23,6 +23,55 @@ export const orNull = (v?: string | null): string | null =>
   v && v.length ? v : null;
 
 /**
+ * Met un texte à plat pour la recherche : minuscules, accents retirés, espaces
+ * réduits à un seul.
+ *
+ * Les noms saisis ici sont écrits comme sur la carte d'identité — « Benaïssa »,
+ * « Chérif », « Saïd » — mais personne ne tape les accents dans une barre de
+ * recherche. Sans cette mise à plat, chercher « benaissa » ne trouve rien.
+ */
+export function normalizeSearch(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Vrai si CHAQUE mot de `query` se retrouve dans au moins un des `fields`.
+ *
+ * Deux comportements voulus, parce que c'est ainsi qu'on cherche quelqu'un :
+ *
+ *   • les mots comptent séparément et dans n'importe quel ordre — « aissa ben »
+ *     trouve « Ben Aïssa », et « ben 0555 » croise le nom et le téléphone ;
+ *   • un mot fait uniquement de chiffres est aussi comparé aux chiffres seuls de
+ *     chaque champ, si bien que « 0555123456 » retrouve un numéro enregistré
+ *     « 05 55 12 34 56 ». Chaque champ garde ses chiffres à part, pour que la
+ *     fin d'un CIN et le début d'un téléphone ne forment pas un faux numéro.
+ *
+ * Une requête vide laisse tout passer : c'est l'état normal d'une barre de
+ * recherche au repos.
+ */
+export function matchesSearch(query: string, ...fields: unknown[]): boolean {
+  const terms = normalizeSearch(query).split(" ").filter(Boolean);
+  if (!terms.length) return true;
+
+  const normalized = fields.map(normalizeSearch).filter(Boolean);
+  const haystack = normalized.join(" ");
+  const digitFields = normalized
+    .map(f => f.replace(/\D/g, ""))
+    .filter(Boolean);
+
+  return terms.every(term =>
+    haystack.includes(term) ||
+    (/^\d+$/.test(term) && digitFields.some(d => d.includes(term)))
+  );
+}
+
+/**
  * Converts a dipstick height (degrees, in cm) to litres using linear
  * interpolation over the tank's gauge curve.
  *

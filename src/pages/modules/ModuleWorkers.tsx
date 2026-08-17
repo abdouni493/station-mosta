@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'react-hot-toast';
-import { cn, newId } from '@/src/lib/utils';
+import { cn, newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizWorker, BizWorkerPayment, BizReparation, BizWorkerKind,
   WORKER_KIND_META, INTERFACE_ACTIONS, interfacesForModule, workerShareOf, prestationsOf,
@@ -50,8 +50,7 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
   // The speciality only exists on the Lavage & Réparation part.
   const hasKinds = cfg.isService;
   const filtered = workers.filter(w => {
-    const q = search.trim().toLowerCase();
-    const matchQ = !q || w.name.toLowerCase().includes(q) || w.roleName.toLowerCase().includes(q);
+    const matchQ = matchesSearch(search, w.name, w.roleName, w.phone, w.cin);
     const kind = w.workerKind || 'both';
     // A polyvalent employee belongs to both the "lavage" and the "réparation" filters.
     const matchKind = !hasKinds || kindFilter === 'all' || kind === kindFilter || kind === 'both';
@@ -94,7 +93,7 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
       </div>
 
       <div className="card-glass p-4 flex flex-wrap items-center gap-3">
-        <SearchInput value={search} onChange={setSearch} placeholder="Nom ou rôle…" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Nom, rôle, téléphone ou CIN…" />
         {hasKinds && (
           <div className="flex flex-wrap gap-1.5">
             {(['all', 'lavage', 'reparation', 'both'] as const).map(k => (

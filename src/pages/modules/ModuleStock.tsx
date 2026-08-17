@@ -19,7 +19,7 @@ import {
   RefreshCw, CheckCircle2, History, Scale,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import { ModuleKey, MODULES, BizProduct, BizDestruction, formatQty } from '@/src/lib/bizConfig';
 import { useBiz, useBizSync, useBizProductsSync } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -68,9 +68,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const [dFrom, setDFrom] = useState(''); const [dTo, setDTo] = useState('');
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return products.filter(p =>
-      (!q || p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)) &&
+      matchesSearch(search, p.name, p.barcode) &&
       (cat === 'all' || p.categoryId === cat) &&
       (mrq === 'all' || p.marqueId === mrq) &&
       (nature === 'all' || (nature === 'raw' ? !!p.isRawMaterial : !p.isRawMaterial)));

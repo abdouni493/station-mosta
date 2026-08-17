@@ -4,7 +4,7 @@ import {
   Undo2, Repeat, Search, X, Printer, ArrowRightLeft, Clock,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId } from '@/src/lib/utils';
+import { newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizSale, BizLineItem, BizProduct,
   detailPrice, isSellableProduct, isReversedSale, netCashOfSale, formatQty,
@@ -42,10 +42,9 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
   const [exchanging, setExchanging] = useState<BizSale | null>(null);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return [...sales].filter(s => {
       const client = clients.find(c => c.id === s.clientId);
-      const matchQ = !q || s.clientName.toLowerCase().includes(q) || (client?.phone || '').includes(q) || s.ref.toLowerCase().includes(q);
+      const matchQ = matchesSearch(search, s.clientName, client?.phone, s.ref);
       return matchQ && inPeriod(s.date, period, from, to);
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [sales, clients, search, period, from, to]);
@@ -364,12 +363,11 @@ function ExchangeModal({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sal
   const [lines, setLines] = useState<BizLineItem[]>([]);
 
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [] as BizProduct[];
+    if (!query.trim()) return [] as BizProduct[];
     return (products as BizProduct[])
       // Une matière première ne part jamais chez le client, même en échange.
       .filter(p => isSellableProduct(p) && p.currentQty > 0
-        && (p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q)))
+        && matchesSearch(query, p.name, p.barcode))
       .slice(0, 8);
   }, [products, query]);
 

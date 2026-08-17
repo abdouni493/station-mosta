@@ -18,7 +18,7 @@ import {
   TrendingUp, TrendingDown, BarChart3, PackageSearch, Trophy, Snowflake, Layers,
   Beaker, ChevronRight, Search, CircleDollarSign, ShoppingCart, Boxes, Activity, Flame,
 } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import { money, formatDate, Modal, Badge, Table, Select } from '@/src/components/biz/Kit';
 import ChartBox from '@/src/components/ChartBox';
 import {
@@ -347,9 +347,8 @@ export default function AnalyticsView({ analytics: a, onGranularity }: {
     [a.products]);
 
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
     const rows = a.products.filter(p =>
-      (!needle || p.name.toLowerCase().includes(needle) || (p.code || '').toLowerCase().includes(needle))
+      matchesSearch(q, p.name, p.code)
       && (kind === 'all' || p.kind === kind)
       && (cat === 'all' || (p.category || 'Sans catégorie') === cat));
     const key = sort === 'margin' ? 'marginPct' : sort === 'gain' ? 'gain' : sort === 'qty' ? 'qty' : 'revenue';

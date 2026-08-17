@@ -20,7 +20,7 @@ import {
   Search, Briefcase, TrendingUp, TrendingDown, Layers, Receipt, ClipboardList,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import { money, formatDate, Table } from '@/src/components/biz/Kit';
 import {
   WorkforceReport, WorkforceWorker, WorkforcePart, WFBrigade, PART_META,
@@ -579,8 +579,7 @@ export default function WorkforceView({ report }: { report: WorkforceReport }) {
     [report.workers]);
 
   const shown = useMemo(() => report.workers.filter(w => {
-    const q = search.trim().toLowerCase();
-    const matchQ = !q || w.name.toLowerCase().includes(q) || w.role.toLowerCase().includes(q) || (w.phone || '').includes(q);
+    const matchQ = matchesSearch(search, w.name, w.role, w.phone);
     const hasActivity = w.brigadesCount + w.sessionsCount + w.worksCount + w.salesCount > 0;
     return matchQ
       && (part === 'all' || w.part === part)

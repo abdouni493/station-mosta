@@ -15,7 +15,7 @@ import {
   CalendarClock, Beaker, PieChart as PieIcon,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Tooltip, XAxis, YAxis } from 'recharts';
-import { cn } from '@/src/lib/utils';
+import { cn, matchesSearch } from '@/src/lib/utils';
 import { money, formatDate, Table, Badge, Select } from '@/src/components/biz/Kit';
 import ChartBox from '@/src/components/ChartBox';
 import { StockValuation, StockPart, StockLine } from '@/src/lib/stockValuation';
@@ -115,10 +115,8 @@ function LinesTable({ lines }: { lines: StockLine[] }) {
 /** Une activité : ses totaux, puis chacune de ses sections déroulée. */
 function PartBlock({ part, query }: { part: StockPart; query: string; key?: React.Key }) {
   const [open, setOpen] = useState<string | null>(part.sections[0]?.key || null);
-  const needle = query.trim().toLowerCase();
-  const match = (l: StockLine) =>
-    !needle || l.name.toLowerCase().includes(needle) || (l.code || '').toLowerCase().includes(needle)
-    || (l.category || '').toLowerCase().includes(needle);
+  const needle = query.trim();
+  const match = (l: StockLine) => matchesSearch(query, l.name, l.code, l.category);
 
   const sections = part.sections
     .map(s => ({ ...s, lines: s.lines.filter(match) }))

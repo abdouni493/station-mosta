@@ -35,7 +35,7 @@ import {
   ChevronDown
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { cn, newId } from "@/src/lib/utils";
+import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Supplier } from "../store/AppContext";
 import { supplierStats, unpaidSupplierInvoices } from "../lib/supplierDebt";
 import EmptyState from "../components/EmptyState";
@@ -278,14 +278,12 @@ const Suppliers = () => {
   // Filter logic
   const filteredSuppliers = useMemo(() => {
     return suppliers.filter(s => {
-      const matchesSearch = s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (s.contact || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (s.phone || "").toLowerCase().includes(searchTerm.toLowerCase());
-        
+      const matchesQuery = matchesSearch(searchTerm, s.name, s.contact, s.phone, s.email);
+
       const sType = s.type || (s.id === 'S1' || s.id === 'S2' ? 'Carburant' : 'Magasin');
       const matchesType = selectedType === "Tous" || sType === selectedType;
       
-      return matchesSearch && matchesType;
+      return matchesQuery && matchesType;
     });
   }, [suppliers, searchTerm, selectedType]);
 
@@ -329,7 +327,7 @@ const Suppliers = () => {
             <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
             <input 
               type="text" 
-              placeholder="Rechercher par nom, contact ou téléphone..." 
+              placeholder="Rechercher par nom, contact, téléphone ou e-mail..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-14 pr-6 h-14 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner text-blue-900 placeholder-slate-400"
