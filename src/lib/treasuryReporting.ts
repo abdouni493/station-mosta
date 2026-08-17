@@ -19,7 +19,7 @@ import { BizState, ModuleKey, MODULES, netCashOfSale, bizExpensePaidInCash } fro
 import { within } from './period';
 import { computeCarburantCash } from './carburantSales';
 import { moduleCaisseBalance } from './bizReporting';
-import { expensePartOf, cashEffectOf, treasuryEffectOf } from '../store/AppContext';
+import { expensePartOf, cashEffectOf, treasuryEffectOf, partCashEffect } from '../store/AppContext';
 
 export const CAISSE_ID = 'CAISSE';
 
@@ -83,6 +83,11 @@ export interface TreasuryMovement {
   gross: number;
   /** L'argent a bougé sur un compte bancaire, pas dans un tiroir. */
   bank: boolean;
+  /**
+   * Virement d'un tiroir de la station vers un AUTRE tiroir : le billet a changé
+   * de poche, les espèces de la station n'ont pas bougé d'un dinar.
+   */
+  internal?: boolean;
   accounts?: string;
   reference?: string;
   /** True for ledger lines (editable in Caisse Générale), false for documents. */
@@ -350,11 +355,16 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   for (const t of txs) {
     const nature = TX_LABEL[t.kind] || t.kind;
     const amount = cashEffectOf(t);
+    // Un virement d'un tiroir vers un autre ne fait sortir aucune espèce de la
+    // station : le compter en décaissement gonflait les sorties de la période
+    // d'un argent qui n'était jamais parti.
+    const internal = isCashAccount(t.accountFrom) && isCashAccount(t.accountTo);
     push({
       id: t.id, date: t.date, nature, part: (t.part || 'systeme') as TreasuryPartKey,
-      label: t.description || nature, amount, isLedger: true,
+      label: t.description || nature, amount: internal ? 0 : amount, isLedger: true,
       gross: Math.abs(amount || treasuryEffectOf(t) || num(t.amount)),
-      bank: amount === 0,
+      bank: !internal && amount === 0,
+      internal,
       accounts: [t.accountFrom && accName(t.accountFrom), t.accountTo && accName(t.accountTo)].filter(Boolean).join(' → ') || undefined,
       reference: refOf(t),
     });
@@ -401,6 +411,38 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     });
   }
 
+  // Salaires et acomptes du personnel carburant — ils sortent de la caisse de
+  // l'activité (`lib/carburantSales`), le journal doit donc les porter, sans
+  // quoi le solde d'une caisse baissait sans qu'aucune ligne ne l'explique.
+  for (const key of ['pompistes', 'brigadeChefs', 'gerants', 'magasinWorkers']) {
+    for (const w of ((app?.[key] || []) as any[])) {
+      for (const p of (w.paymentRecord || [])) {
+        if (p.isPaid === false) continue;
+        const amount = num(p.netSalary ?? p.amount);
+        if (!amount) continue;
+        const mode = String(p.paymentMode || '').trim().toUpperCase();
+        const cash = mode === '' || mode === 'ESPÈCES' || mode === 'ESPECES' || mode === 'CASH' || mode === 'LIQUIDE';
+        push({
+          id: `sal-${p.id}`, date: p.paymentDate, nature: 'Salaire',
+          part: 'carburant', isLedger: false,
+          label: `Salaire ${w.name || 'Employé'}${p.month ? ` — ${p.month}` : ''}`,
+          amount: cash ? -amount : 0,
+          gross: amount, bank: !cash,
+        });
+      }
+      for (const a of (w.acomptes || [])) {
+        const amount = num(a.amount);
+        if (!amount) continue;
+        push({
+          id: `aco-${a.id}`, date: a.date, nature: 'Acompte',
+          part: 'carburant', isLedger: false,
+          label: `Acompte ${w.name || 'Employé'}${a.description ? ` — ${a.description}` : ''}`,
+          amount: -amount,
+        });
+      }
+    }
+  }
+
   // 3. Business parts (Cafétéria / Lavage).
   (Object.keys(MODULES) as ModuleKey[]).forEach(key => {
     const m = biz[key];
@@ -445,6 +487,12 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
       id: `${key}-pay-${pay.id}`, date: pay.date, nature: 'Salaire', part, isLedger: false,
       label: `Salaire ${w.name} — ${pay.period}`, amount: -num(pay.amount),
     })));
+    // L'acompte est de l'argent déjà remis : il quitte le tiroir le jour où il a
+    // été donné, et le salaire net l'a déjà déduit.
+    (m.workers || []).forEach(w => (w.acomptes || []).filter(a => num(a.amount) > 0).forEach(a => push({
+      id: `${key}-aco-${a.id}`, date: a.date, nature: 'Acompte', part, isLedger: false,
+      label: `Acompte ${w.name}${a.description ? ` — ${a.description}` : ''}`, amount: -num(a.amount),
+    })));
   });
 
   const movements = all
@@ -469,12 +517,26 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   // il annonçait un découvert que le tiroir n'avait jamais connu.
   const carburantBalance = computeCarburantCash(app).balance;
 
+  /**
+   * Les flux d'UNE activité sur la période.
+   *
+   * Un virement d'un tiroir vers un AUTRE tiroir ne compte pour rien au niveau
+   * de la station — les espèces n'ont pas bougé — mais il est bien une sortie
+   * pour la caisse qui donne et une entrée pour celle qui reçoit. La ligne du
+   * journal étant unique, ces deux effets sont relus ici depuis le grand livre,
+   * bout par bout : sans ça, la caisse d'une activité baissait sans qu'aucune
+   * sortie ne l'explique.
+   */
   const flowsOf = (key: TreasuryPartKey) => {
-    const rows = movements.filter(m => m.part === key);
-    return {
-      inflow: rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0),
-      outflow: rows.filter(r => r.amount < 0).reduce((s, r) => s - r.amount, 0),
-    };
+    const rows = movements.filter(m => m.part === key && !m.internal);
+    let inflow = rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+    let outflow = rows.filter(r => r.amount < 0).reduce((s, r) => s - r.amount, 0);
+    for (const t of txsInRange) {
+      if (!isCashAccount(t.accountFrom) || !isCashAccount(t.accountTo)) continue;
+      const effect = partCashEffect(key as any, t);
+      if (effect > 0) inflow += effect; else if (effect < 0) outflow += -effect;
+    }
+    return { inflow, outflow };
   };
 
   const partBalances: TreasuryPartBalance[] = [

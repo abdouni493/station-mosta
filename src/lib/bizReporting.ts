@@ -250,6 +250,14 @@ export function moduleCaisseMovements(
       id: `pay-${p.id}`, date: p.date, nature: 'Salaire',
       label: `Salaire ${w.name} — ${p.period}`, amount: -num(p.amount),
     }))),
+    // Un ACOMPTE est de l'argent déjà remis en main propre : il est sorti du
+    // tiroir le jour où il a été donné, pas le jour de la paie. Le salaire net
+    // le déduit déjà, les deux lignes ne comptent donc pas le même billet.
+    ...st.workers.flatMap(w => (w.acomptes || []).filter(a => num(a.amount) > 0).map(a => ({
+      id: `aco-${a.id}`, date: a.date, nature: 'Acompte',
+      label: `Acompte ${w.name}${a.description ? ` — ${a.description}` : ''}`,
+      amount: -num(a.amount),
+    }))),
     ...partCashLedgerLines(key as any, (txs || []) as any).map(({ tx: t, amount }) => ({
       id: t.id, date: t.date,
       nature: t.kind === 'DEPOSIT' ? 'Dépôt' : t.kind === 'WITHDRAW' ? 'Retrait' : 'Virement',

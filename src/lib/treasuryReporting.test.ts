@@ -8,7 +8,11 @@
  *   • le solde de la caisse doit toujours se relire : ouverture + entrées
  *     − sorties + mouvements postérieurs = solde affiché, sans reste ;
  *   • un virement au départ de la caisse d'une activité est une SORTIE — il
- *     comptait pour zéro, et cette caisse restait pleine d'un argent déjà parti.
+ *     comptait pour zéro, et cette caisse restait pleine d'un argent déjà parti ;
+ *   • un virement d'un TIROIR VERS UN AUTRE ne sort rien de la station : le
+ *     compter en décaissement d'espèces gonflait les sorties de la période d'un
+ *     argent qui n'avait fait que changer de poche. Il reste bien une sortie
+ *     pour la caisse source et une entrée pour la caisse d'arrivée.
  *
  *   npx tsx src/lib/treasuryReporting.test.ts
  * ──────────────────────────────────────────────────────────────────────────────
@@ -117,7 +121,17 @@ const rb = computeTreasuryReport(appBank, biz, FROM, TO);
 check('la caisse générale ne garde que les espèces de la brigade', rb.caisseBalance, 15000);
 check('le compte bancaire porte l\'achat, la dépense et le TPE', rb.bankTotal, 72000);
 check('encaissements espèces (la brigade seule)', rb.inflow, 20000);
-check('décaissements espèces (le seul virement au départ de la caisse)', rb.outflow, 5000);
+// Le virement va d'un tiroir de la station vers un autre : rien n'est sorti.
+check('aucun décaissement d\'espèces', rb.outflow, 0);
+check('flux net espèces (la brigade seule)', rb.net, 20000);
+const internalRows = rb.movements.filter(m => m.internal);
+check('le virement entre tiroirs est marqué « interne »', internalRows.length, 1);
+check('son montant reste lisible', internalRows[0]?.gross, 5000);
+// … mais la caisse qui donne s'est bien vidée, et celle qui reçoit remplie.
+const financePart = rb.partBalances.find(p => p.key === 'systeme')!;
+const cafeteriaPart = rb.partBalances.find(p => p.key === 'cafeteria')!;
+check('sortie pour la caisse source', financePart.outflow, 5000);
+check('entrée pour la caisse d\'arrivée', cafeteriaPart.inflow, 5000);
 const bankRows = rb.movements.filter(m => m.bank);
 check('achat, dépense et TPE sont marqués « banque »', bankRows.length, 3);
 check('leur montant reste lisible', bankRows.reduce((s, m) => s + m.gross, 0), 40000);

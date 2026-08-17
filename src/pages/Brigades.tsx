@@ -636,7 +636,13 @@ const Brigades = () => {
         }),
         pompisteSummary: Object.fromEntries(
           pompisteSales.map(s => {
-            const cash = pompistePayments[s.pompisteId] || 0;
+            // Les VERSEMENTS horodatés sont de l'argent remis, au même titre que
+            // le montant tapé en fin de brigade. Les oublier ici faisait dire au
+            // rapport Carburant qu'un pompiste devait encore tout ce qu'il avait
+            // déjà versé — un manquant inventé, alors que la caisse, elle,
+            // comptait bien les deux (`totalCash`).
+            const versed = (versements[s.pompisteId] || []).reduce((sum, v) => sum + (v.amount || 0), 0);
+            const cash = (pompistePayments[s.pompisteId] || 0) + versed;
             const justifs = pompisteJustifications[s.pompisteId] || [];
             const justifTotal = justifs.reduce((sum, j) => sum + (j.amount || 0), 0);
             return [s.pompisteId, {
@@ -2718,6 +2724,7 @@ const Brigades = () => {
             currentUserRole={currentUserRole || 'admin'}
             currentUserName={currentUserName}
             existingAccounting={brigadeAccountings.find(a => a.brigadeId === selectedBrigade.id)}
+            treasuryTransactions={treasuryTransactions}
             dispatch={dispatch}
             onClose={() => { setShowAccountingModal(false); setSelectedBrigade(null); }}
           />

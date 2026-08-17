@@ -24,6 +24,7 @@ import {
   PiggyBank, Plus, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Layers,
   Fuel, Coffee, Droplets, Landmark, Trash2, Edit2, ShoppingCart, Receipt,
   CreditCard, Target, Wallet, TrendingUp, TrendingDown, ArrowRight, Check,
+  HandCoins, Search,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -34,9 +35,9 @@ import {
   cashAccountOfPart, expensePartOf, cashEffectOf, treasuryEffectOf,
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
-import { MODULES, ModuleKey, bizExpensePaidInCash } from '../lib/bizConfig';
-import { carburantCashBalance } from '../lib/carburantSales';
-import { moduleCaisseBalance } from '../lib/bizReporting';
+import { MODULES, ModuleKey, bizExpensePaidInCash, netCashOfSale } from '../lib/bizConfig';
+import { computeCarburantCash } from '../lib/carburantSales';
+import { moduleCaisseMovements } from '../lib/bizReporting';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
   Table, money, formatDate, PeriodFilter, Period, inPeriod,
@@ -44,6 +45,24 @@ import {
 import { TX_LABEL } from './BankAccounts';
 
 const todayISO = () => new Date().toISOString().split('T')[0];
+
+/**
+ * Un mouvement d'UNE caisse : la ligne élémentaire dont la somme FAIT le solde
+ * affiché. Carburant, Cafétéria, Lavage et Finance rendent tous cette forme, si
+ * bien qu'aucune carte de cet écran ne peut annoncer un chiffre que sa propre
+ * liste ne justifie pas.
+ */
+interface CashLine {
+  id: string;
+  date: string;
+  nature: string;
+  label: string;
+  /** Signé sur la caisse : > 0 = espèces entrées, < 0 = espèces sorties. */
+  amount: number;
+  reference?: string;
+}
+
+const sumLines = (rows: CashLine[]): number => rows.reduce((s, r) => s + r.amount, 0);
 
 /** One row of the consolidated journal. */
 interface Movement {
@@ -62,6 +81,8 @@ interface Movement {
   gross: number;
   /** L'argent a bougé sur un compte bancaire, pas dans un tiroir. */
   bank: boolean;
+  /** Virement d'un tiroir de la station vers un autre : rien n'est sorti. */
+  internal?: boolean;
   /** Ledger lines can be edited/deleted; document lines are read-only here. */
   tx?: TreasuryTransaction;
   account?: string;
@@ -70,6 +91,15 @@ interface Movement {
 /** Un mouvement d'espèces pur — montant signé, rien en banque. */
 const cashRow = (m: Omit<Movement, 'gross' | 'bank'>): Movement =>
   ({ ...m, gross: Math.abs(m.amount), bank: false });
+
+/** Le personnel payé par l'activité Carburant (même découpage que l'Effectif). */
+const FUEL_STAFF_KEYS = ['pompistes', 'brigadeChefs', 'gerants', 'magasinWorkers'] as const;
+
+/** Un salaire sans mode de règlement est réputé payé en espèces. */
+const salaryPaidInCash = (mode?: string): boolean => {
+  const m = String(mode || '').trim().toUpperCase();
+  return m === '' || m === 'ESPÈCES' || m === 'ESPECES' || m === 'CASH' || m === 'LIQUIDE';
+};
 
 const PART_META: Record<TreasuryPart, { label: string; icon: React.ElementType; tone: string }> = {
   carburant: { label: 'Carburant', icon: Fuel, tone: '#003087' },
@@ -82,6 +112,7 @@ const NATURE_ICON: Record<string, React.ElementType> = {
   'Dépôt': ArrowDownCircle, 'Retrait': ArrowUpCircle, 'Virement': ArrowLeftRight,
   'Achat': ShoppingCart, 'Vente': Receipt, 'Dépense': CreditCard,
   'Brigade': Target, 'TPE': CreditCard, 'Salaire': Wallet, 'Ajustement': Layers,
+  'Acompte': HandCoins, 'Règlement client': Receipt,
 };
 
 export default function CaisseGenerale() {
@@ -102,6 +133,8 @@ export default function CaisseGenerale() {
   const [txForm, setTxForm] = useState<null | 'new' | TreasuryTransaction>(null);
   const [transferring, setTransferring] = useState(false);
   const [toDelete, setToDelete] = useState<TreasuryTransaction | null>(null);
+  /** Caisse dont on déroule le calcul, ligne par ligne. */
+  const [detailPart, setDetailPart] = useState<TreasuryPart | null>(null);
 
   // ── Balances ───────────────────────────────────────────────────────────────
   /** Ce que contient PHYSIQUEMENT le tiroir commun, tous propriétaires confondus. */
@@ -112,54 +145,59 @@ export default function CaisseGenerale() {
   const totalBank = accounts.reduce((s, a) => s + a.balance, 0);
 
   /**
-   * L'argent du tiroir commun qui n'appartient à AUCUNE activité — la caisse de
-   * la Finance elle-même.
+   * Les mouvements de CHAQUE caisse, dans la définition qui fait autorité pour
+   * elle : `lib/carburantSales` pour le Carburant, `lib/bizReporting` pour la
+   * Cafétéria et le Lavage, le grand livre pour la Finance. Les mêmes fonctions
+   * servent aux Rapports Généraux — les deux écrans ne peuvent donc pas
+   * annoncer deux soldes différents.
    *
-   * `caisseBalanceOf` compte tout ce qui entre et sort de la caisse générale, y
-   * compris l'argent qu'une activité y a déposé ou viré. Or cet argent-là est
-   * DÉJÀ dans la caisse de l'activité : `partCashEffect` lit le tiroir commun dès
-   * que la ligne lui est imputée. L'additionner tel quel aux trois activités
-   * comptait donc deux fois le même billet dans le total de la station. Ne
-   * restent ici que les lignes que la Finance porte en propre.
+   * Tout ce que cette page affiche d'une caisse — son solde, ses entrées, ses
+   * sorties, son détail — est tiré de CETTE liste. Les soldes étaient jusqu'ici
+   * calculés d'un côté et les flux de l'autre (depuis le journal consolidé) :
+   * les deux ne se répondaient pas, et un chiffre n'expliquait jamais l'autre.
    */
-  const financeCash = useMemo(() => treasuryTransactions.reduce((s, t) => {
-    if ((t.part || 'systeme') !== 'systeme') return s;
-    const amount = Number(t.amount) || 0;
-    let net = 0;
-    if (t.accountTo === CAISSE_ID) net += amount;
-    if (t.accountFrom === CAISSE_ID) net -= amount;
-    return s + net;
-  }, 0), [treasuryTransactions]);
-
-  /**
-   * Position de caisse d'une partie commerciale — le MÊME calcul que son
-   * rapport (`lib/bizReporting`) : ses propres documents plus les opérations
-   * manuelles du grand livre qui lui sont imputées. Ce dernier terme manquait
-   * ici comme là-bas : un dépôt saisi ci-dessous avec « Cafétéria » en partie
-   * concernée n'arrivait dans aucune caisse.
-   */
-  const partBalance = (key: ModuleKey) => {
-    const m = biz[key];
-    if (!m) return 0;
-    // `expenses` : les dépenses de la station imputées à cette partie sortent de
-    // SA caisse quand elles sont payées en espèces.
-    return moduleCaisseBalance(m, key, treasuryTransactions, expenses);
-  };
-
-  /**
-   * La caisse Carburant — une seule définition, partagée avec les Rapports
-   * Généraux (`lib/carburantSales`). Le calcul fait ici retranchait le montant
-   * payé de CHAQUE achat, chèques et virements compris : de l'argent qui n'est
-   * jamais passé par le tiroir creusait donc un découvert imaginaire.
-   */
-  const carburantBalance = useMemo(() => carburantCashBalance(state), [state]);
+  const partLines = useMemo<Record<TreasuryPart, CashLine[]>>(() => {
+    /**
+     * La Finance ne tient pas de documents : sa caisse, c'est la part du tiroir
+     * commun qui n'appartient à aucune activité. Un mouvement imputé à une
+     * activité en est exclu — il est DÉJÀ dans la caisse de celle-ci, et
+     * l'additionner ici compterait deux fois le même billet.
+     */
+    const financeLines: CashLine[] = treasuryTransactions
+      .filter(t => (t.part || 'systeme') === 'systeme'
+        && (t.accountTo === CAISSE_ID) !== (t.accountFrom === CAISSE_ID))
+      .map(t => ({
+        id: t.id,
+        date: t.date,
+        nature: TX_LABEL[t.kind] || t.kind,
+        label: t.description || TX_LABEL[t.kind] || t.kind,
+        amount: t.accountTo === CAISSE_ID ? (Number(t.amount) || 0) : -(Number(t.amount) || 0),
+        reference: t.chequeNumber || t.bordereauNumber,
+      }));
+    const bizLines = (key: ModuleKey): CashLine[] => {
+      const m = biz[key];
+      // `expenses` : les dépenses de la station imputées à cette partie sortent
+      // de SA caisse quand elles sont payées en espèces.
+      return m ? moduleCaisseMovements(m, key, treasuryTransactions, expenses) : [];
+    };
+    return {
+      carburant: computeCarburantCash(state).lines,
+      cafeteria: bizLines('cafeteria'),
+      lavage: bizLines('lavage'),
+      systeme: financeLines,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, biz, treasuryTransactions, expenses]);
 
   const partBalances = useMemo(() => ({
-    carburant: carburantBalance,
-    cafeteria: partBalance('cafeteria'),
-    lavage: partBalance('lavage'),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [carburantBalance, biz, treasuryTransactions, expenses]);
+    carburant: sumLines(partLines.carburant),
+    cafeteria: sumLines(partLines.cafeteria),
+    lavage: sumLines(partLines.lavage),
+    systeme: sumLines(partLines.systeme),
+  }), [partLines]);
+
+  /** L'argent du tiroir commun qui n'appartient à AUCUNE activité. */
+  const financeCash = partBalances.systeme;
 
   /**
    * Le solde de la caisse générale = les ESPÈCES des trois activités réunies
@@ -172,6 +210,31 @@ export default function CaisseGenerale() {
   const caissesTotal = caissesActivites + financeCash;
   /** Toute la trésorerie : les caisses ET les comptes bancaires. */
   const grandTotal = caissesTotal + totalBank;
+
+  /**
+   * Ce que chaque caisse a encaissé et décaissé SUR LA PÉRIODE, lu sur ses
+   * propres lignes. Le reste du solde vient d'avant (ou d'après) la fenêtre
+   * regardée : les trois termes se recomposent donc exactement, et la carte
+   * d'une caisse explique enfin le chiffre qu'elle affiche.
+   */
+  const partFlow = useMemo(() => {
+    const out = {} as Record<TreasuryPart, {
+      in: number; out: number; count: number; outside: number; lines: CashLine[];
+    }>;
+    (Object.keys(PART_META) as TreasuryPart[]).forEach(key => {
+      const rows = (partLines[key] || []).filter(r => inPeriod(r.date, period, from, to));
+      const inTotal = rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+      const outTotal = rows.filter(r => r.amount < 0).reduce((s, r) => s - r.amount, 0);
+      out[key] = {
+        in: inTotal,
+        out: outTotal,
+        count: rows.length,
+        outside: partBalances[key] - (inTotal - outTotal),
+        lines: rows.slice().sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+      };
+    });
+    return out;
+  }, [partLines, partBalances, period, from, to]);
 
   // ── Consolidated journal ───────────────────────────────────────────────────
   const movements = useMemo<Movement[]>(() => {
@@ -186,15 +249,23 @@ export default function CaisseGenerale() {
     for (const t of treasuryTransactions) {
       const nature = TX_LABEL[t.kind] || t.kind;
       const amount = cashEffectOf(t);
+      // Un virement d'un tiroir vers un AUTRE tiroir ne fait sortir aucune
+      // espèce de la station : le billet a changé de poche. Le compter en
+      // décaissement gonflait les sorties de la période d'un argent qui n'était
+      // jamais parti — et le « flux net » avec. Il reste bien sûr une sortie
+      // pour la caisse SOURCE et une entrée pour la caisse d'arrivée : c'est la
+      // liste de chaque caisse (ci-dessus) qui le dit, pas ce total-là.
+      const internal = isCashAccount(t.accountFrom) && isCashAccount(t.accountTo);
       out.push({
         id: t.id,
         date: t.date,
         label: t.description || nature,
         nature,
         part: t.part,
-        amount,
+        amount: internal ? 0 : amount,
         gross: Math.abs(amount || treasuryEffectOf(t) || t.amount),
-        bank: amount === 0,
+        bank: !internal && amount === 0,
+        internal,
         tx: t,
         account: [accName(t.accountFrom), accName(t.accountTo)].filter(Boolean).join(' → ') || undefined,
       });
@@ -237,10 +308,62 @@ export default function CaisseGenerale() {
       if (ledgered.has(`brigade:${a.brigadeId}`)) continue;
       const br = brigades.find(b => b.id === a.brigadeId);
       out.push(cashRow({
-        id: `bri-${a.id}`, date: br?.date || new Date().toISOString(), nature: 'Brigade', part: 'carburant',
+        // La brigade est datée de son DÉBUT, comme partout ailleurs : la caler
+        // sur `date` seul la faisait basculer d'une période à l'autre selon
+        // l'écran qui la lisait.
+        id: `bri-${a.id}`, date: br?.startDatetime || br?.date || new Date().toISOString(),
+        nature: 'Brigade', part: 'carburant',
         label: `Encaissement brigade ${br ? `${br.shift} du ${formatDate(br.date)}` : ''}`.trim(),
         amount: a.cashReceived || 0,
       }));
+    }
+
+    // Salaires et acomptes du personnel carburant — ils sortent de la caisse de
+    // l'activité (`lib/carburantSales`), le journal doit donc les montrer, sans
+    // quoi le tiroir se vidait à l'écran sans qu'aucune ligne ne l'explique.
+    for (const key of FUEL_STAFF_KEYS) {
+      for (const w of ((state as any)[key] || []) as any[]) {
+        for (const p of (w.paymentRecord || [])) {
+          if (p.isPaid === false) continue;
+          const amount = Number(p.netSalary ?? p.amount) || 0;
+          if (!amount) continue;
+          const cash = salaryPaidInCash(p.paymentMode);
+          out.push({
+            id: `sal-${p.id}`, date: p.paymentDate, nature: 'Salaire', part: 'carburant',
+            label: `Salaire ${w.name || 'Employé'}${p.month ? ` — ${p.month}` : ''}`,
+            amount: cash ? -amount : 0,
+            gross: amount, bank: !cash,
+            account: cash ? CASH_ACCOUNT_LABEL[CAISSE_PART_ID.carburant] : undefined,
+          });
+        }
+        for (const a of (w.acomptes || [])) {
+          const amount = Number(a.amount) || 0;
+          if (!amount) continue;
+          out.push(cashRow({
+            id: `aco-${a.id}`, date: a.date, nature: 'Acompte', part: 'carburant',
+            label: `Acompte ${w.name || 'Employé'}${a.description ? ` — ${a.description}` : ''}`,
+            amount: -amount,
+          }));
+        }
+      }
+    }
+
+    // Règlements de dettes clients encaissés en espèces sans ligne au grand
+    // livre (saisies anciennes) — la caisse Carburant les compte, le journal
+    // les ignorait.
+    for (const c of (state.clients || [])) {
+      for (const t of (c.transactionHistory || [])) {
+        if (t.type !== 'PAYMENT') continue;
+        if (ledgered.has(`client_payment:${t.id}`)) continue;
+        const mode = String(t.mode || 'ESPECES').toUpperCase();
+        if (mode !== 'ESPECES' && mode !== 'CASH') continue;
+        const amount = Number(t.amount) || 0;
+        if (!amount) continue;
+        out.push(cashRow({
+          id: `cli-${t.id}`, date: t.date, nature: 'Règlement client', part: 'carburant',
+          label: `Règlement dette — ${c.name}`, amount,
+        }));
+      }
     }
 
     // 3. Business parts (Cafétéria / Lavage) — sales, interventions, purchases…
@@ -248,13 +371,21 @@ export default function CaisseGenerale() {
       const m = biz[key];
       if (!m) return;
       const part = key as TreasuryPart;
-      m.sales.forEach(s => out.push(cashRow({
+      // `netCashOfSale` : une vente RETOURNÉE n'a laissé dans le tiroir que ce
+      // qui n'a pas été remboursé, une vente ÉCHANGÉE rien du tout (c'est la
+      // vente de remplacement qui porte l'encaissement). Le journal comptait
+      // `paid` en entier : il encaissait deux fois un échange, et gardait
+      // l'argent d'un retour que la caisse, elle, avait bien rendu.
+      m.sales.filter(s => netCashOfSale(s) !== 0).forEach(s => out.push(cashRow({
         id: `${key}-sale-${s.id}`, date: s.date, nature: 'Vente', part,
-        label: `Vente ${s.ref} — ${s.clientName}`, amount: s.paid,
+        label: `Vente ${s.ref} — ${s.clientName}`
+          + (s.status === 'retournée' ? ' (retournée)' : s.status === 'échangée' ? ' (échangée)' : ''),
+        amount: netCashOfSale(s),
       })));
       m.reparations.filter(r => r.paid > 0).forEach(r => out.push(cashRow({
         id: `${key}-rep-${r.id}`, date: r.date, nature: 'Vente', part,
-        label: `${r.kind === 'lavage' ? 'Lavage' : 'Réparation'} ${r.ref} — ${r.clientName}`, amount: r.paid,
+        label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
+        amount: r.paid,
       })));
       m.purchases.forEach(p => out.push(cashRow({
         id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part,
@@ -284,10 +415,17 @@ export default function CaisseGenerale() {
         id: `${key}-pay-${pay.id}`, date: pay.date, nature: 'Salaire', part,
         label: `Salaire ${w.name} — ${pay.period}`, amount: -pay.amount,
       }))));
+      // L'acompte est de l'argent déjà remis : il quitte le tiroir le jour où
+      // il a été donné, et le salaire net l'a déjà déduit.
+      m.workers.forEach(w => (w.acomptes || []).filter(a => a.amount > 0).forEach(a => out.push(cashRow({
+        id: `${key}-aco-${a.id}`, date: a.date, nature: 'Acompte', part,
+        label: `Acompte ${w.name}${a.description ? ` — ${a.description}` : ''}`, amount: -a.amount,
+      }))));
     });
 
     return out.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [treasuryTransactions, purchases, expenses, brigadeAccountings, brigades, biz, accounts, state.suppliers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treasuryTransactions, purchases, expenses, brigadeAccountings, brigades, biz, accounts, state]);
 
   const natures = useMemo(
     () => Array.from(new Set(movements.map(m => m.nature))).sort(),
@@ -309,14 +447,11 @@ export default function CaisseGenerale() {
    * dire ce que chacune avait payé.
    */
   const partSpending = useMemo(() => {
-    const blank = () => ({ expenses: 0, count: 0, in: 0, out: 0, bank: 0 });
+    const blank = () => ({ expenses: 0, count: 0, bank: 0 });
     const out: Record<string, ReturnType<typeof blank>> = {};
     for (const p of Object.keys(PART_META)) out[p] = blank();
     for (const m of inRange) {
       const e = out[m.part] || (out[m.part] = blank());
-      // `in` / `out` ne comptent que les ESPÈCES : ce sont elles, et elles
-      // seules, qui expliquent le solde du tiroir affiché juste au-dessus.
-      if (m.amount > 0) e.in += m.amount; else if (m.amount < 0) e.out += -m.amount;
       if (m.bank) e.bank += m.gross;
       // Une dépense reste une dépense de l'activité, réglée en espèces ou par
       // la banque : c'est ce qu'elle a coûté, pas ce qui est sorti du tiroir.
@@ -328,10 +463,13 @@ export default function CaisseGenerale() {
   const flow = useMemo(() => {
     const inTotal = filtered.filter(m => m.amount > 0).reduce((s, m) => s + m.amount, 0);
     const outTotal = filtered.filter(m => m.amount < 0).reduce((s, m) => s - m.amount, 0);
-    // Ce qui a bougé sans passer par un tiroir : virements, achats et dépenses
-    // réglés depuis un compte bancaire, encaissements TPE.
+    // Ce qui a bougé sans passer par un tiroir : achats et dépenses réglés
+    // depuis un compte bancaire, encaissements TPE.
     const bankTotal = filtered.filter(m => m.bank).reduce((s, m) => s + m.gross, 0);
-    return { inTotal, outTotal, net: inTotal - outTotal, bankTotal };
+    // L'argent passé d'un tiroir à l'autre : il n'a quitté ni la station ni les
+    // espèces, mais il explique pourquoi une caisse a baissé et une autre monté.
+    const internalTotal = filtered.filter(m => m.internal).reduce((s, m) => s + m.gross, 0);
+    return { inTotal, outTotal, net: inTotal - outTotal, bankTotal, internalTotal };
   }, [filtered]);
 
   const del = () => {
@@ -370,16 +508,25 @@ export default function CaisseGenerale() {
             Somme des caisses Carburant, Cafétéria et Lavage — <strong>espèces uniquement</strong>.
             L'argent placé en banque n'entre pas dans ce solde.
           </p>
+          {/* L'addition est écrite en toutes lettres : trois caisses, un total.
+              Chaque terme est cliquable et s'ouvre ligne par ligne. */}
           <div className="grid grid-cols-3 gap-2 mt-4">
             {(['carburant', 'cafeteria', 'lavage'] as const).map(k => (
-              <div key={k} className="rounded-xl bg-white/10 px-2.5 py-2">
+              <button key={k} onClick={() => setDetailPart(k)}
+                className="rounded-xl bg-white/10 hover:bg-white/20 transition-colors px-2.5 py-2 text-left">
                 <p className="text-[10px] uppercase text-blue-200 font-bold truncate">{PART_META[k].label}</p>
                 <p className={`font-black tabular-nums text-sm ${partBalances[k] >= 0 ? '' : 'text-red-300'}`}>
                   {money(partBalances[k])}
                 </p>
-              </div>
+                <p className="text-[9px] text-blue-300 tabular-nums">
+                  {partFlow[k].count} mouvement(s)
+                </p>
+              </button>
             ))}
           </div>
+          <p className="text-[10px] text-blue-300 tabular-nums mt-2 leading-snug">
+            {money(partBalances.carburant)} + {money(partBalances.cafeteria)} + {money(partBalances.lavage)} = {money(caissesActivites)}
+          </p>
         </div>
 
         <div className="rounded-2xl p-6 text-white" style={{ background: 'linear-gradient(135deg, #065f46, #047857)' }}>
@@ -444,20 +591,39 @@ export default function CaisseGenerale() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {(['carburant', 'cafeteria', 'lavage', 'systeme'] as const).map(key => {
           const meta = PART_META[key]; const Icon = meta.icon;
-          const val = key === 'systeme' ? financeCash : partBalances[key];
-          const spent = partSpending[key] || { expenses: 0, count: 0, in: 0, out: 0 };
+          const val = partBalances[key];
+          const spent = partSpending[key] || { expenses: 0, count: 0, bank: 0 };
+          const f = partFlow[key];
           return (
-            <button key={key} onClick={() => setPartFilter(partFilter === key ? 'all' : key)}
+            <div key={key}
               className={`card-glass p-5 text-left transition-all ${partFilter === key ? 'ring-2 ring-[#003087]' : ''}`}>
               <div className="flex items-center gap-2" style={{ color: meta.tone }}>
                 <Icon className="w-5 h-5" />
                 <span className="text-xs font-bold uppercase">Caisse {meta.label}</span>
               </div>
               <p className={`text-2xl font-black tabular-nums mt-2 ${val >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(val)}</p>
-              <p className="text-[11px] text-slate-400 mt-1 tabular-nums">
-                +{money(spent.in)} · −{money(spent.out)} en espèces sur la période
-              </p>
-              <p className="text-[11px] font-bold text-red-500 mt-0.5 tabular-nums">
+
+              {/* Le solde, décomposé : ce qui vient d'avant la période, ce que
+                  la période a fait entrer, ce qu'elle a fait sortir. Les trois
+                  termes se recomposent exactement — c'est la même liste de
+                  mouvements qui donne le solde et ces flux. */}
+              <div className="mt-2 rounded-xl bg-slate-50 px-2.5 py-2 text-[11px] tabular-nums space-y-0.5">
+                <div className="flex items-center justify-between text-slate-500">
+                  <span>Hors période</span><span className="font-bold">{money(f.outside)}</span>
+                </div>
+                <div className="flex items-center justify-between text-emerald-600">
+                  <span>+ Entrées</span><span className="font-bold">{money(f.in)}</span>
+                </div>
+                <div className="flex items-center justify-between text-red-500">
+                  <span>− Sorties</span><span className="font-bold">{money(f.out)}</span>
+                </div>
+                <div className="flex items-center justify-between border-t border-slate-200 pt-0.5 text-slate-700">
+                  <span className="font-bold">= Solde</span>
+                  <span className="font-black">{money(val)}</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] font-bold text-red-500 mt-1.5 tabular-nums">
                 Dépenses : {money(spent.expenses)} ({spent.count})
               </p>
               {spent.bank > 0 && (
@@ -472,7 +638,18 @@ export default function CaisseGenerale() {
                   Tiroir commun : {money(caisse)} (dont l'argent des activités déposé ici)
                 </p>
               )}
-            </button>
+
+              <div className="flex items-center gap-2 mt-3">
+                <button onClick={() => setDetailPart(key)}
+                  className="text-[10px] font-black uppercase tracking-wider text-[#003087] hover:underline flex items-center gap-1">
+                  <Search className="w-3 h-3" /> Détail du calcul
+                </button>
+                <button onClick={() => setPartFilter(partFilter === key ? 'all' : key)}
+                  className="text-[10px] font-black uppercase tracking-wider text-slate-400 hover:text-slate-600 ml-auto">
+                  {partFilter === key ? 'Tout le journal' : 'Filtrer le journal'}
+                </button>
+              </div>
+            </div>
           );
         })}
       </div>
@@ -494,12 +671,17 @@ export default function CaisseGenerale() {
       </div>
 
       {/* Flow — les trois premiers chiffres ne parlent que d'ESPÈCES, comme les
-          soldes ci-dessus ; le quatrième dit ce qui a bougé en banque. */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          soldes ci-dessus ; les deux derniers disent ce qui a bougé sans jamais
+          entrer ni sortir des tiroirs de la station. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard icon={TrendingUp} label="Encaissements espèces" value={`+${money(flow.inTotal)}`} tone="green" />
         <StatCard icon={TrendingDown} label="Décaissements espèces" value={`−${money(flow.outTotal)}`} tone="red" />
-        <StatCard icon={Layers} label="Flux net espèces" value={money(flow.net)} tone={flow.net >= 0 ? 'blue' : 'red'} />
-        <StatCard icon={Landmark} label="Réglé par la banque" value={money(flow.bankTotal)} tone="amber" />
+        <StatCard icon={Layers} label="Flux net espèces" value={money(flow.net)} tone={flow.net >= 0 ? 'blue' : 'red'}
+          sub="Encaissements − décaissements" />
+        <StatCard icon={Landmark} label="Réglé par la banque" value={money(flow.bankTotal)} tone="amber"
+          sub="Aucun tiroir ouvert" />
+        <StatCard icon={ArrowLeftRight} label="Virements internes" value={money(flow.internalTotal)} tone="slate"
+          sub="D'une caisse à une autre" />
       </div>
 
       {/* Journal */}
@@ -534,8 +716,13 @@ export default function CaisseGenerale() {
                   <td className="table-cell text-[11px] text-slate-400">{m.account || '—'}</td>
                   {/* Une opération réglée en banque garde son montant, mais il
                       n'est pas signé : aucun tiroir ne s'est ouvert. */}
-                  <td className={`table-cell text-right tabular-nums font-bold ${m.bank ? 'text-slate-500' : m.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                    {m.bank ? (
+                  <td className={`table-cell text-right tabular-nums font-bold ${m.bank || m.internal ? 'text-slate-500' : m.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {m.internal ? (
+                      <span className="inline-flex items-center gap-1.5 justify-end">
+                        {money(m.gross)}
+                        <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[9px] font-black uppercase tracking-wide">Interne</span>
+                      </span>
+                    ) : m.bank ? (
                       <span className="inline-flex items-center gap-1.5 justify-end">
                         {money(m.gross)}
                         <span className="px-1.5 py-0.5 rounded-md bg-cyan-50 text-cyan-700 text-[9px] font-black uppercase tracking-wide">Banque</span>
@@ -600,10 +787,177 @@ export default function CaisseGenerale() {
         />
       )}
 
+      {detailPart && (
+        <CaisseDetailModal
+          part={detailPart}
+          balance={partBalances[detailPart]}
+          flow={partFlow[detailPart]}
+          onClose={() => setDetailPart(null)}
+        />
+      )}
+
       <Confirm open={!!toDelete} title="Supprimer la transaction"
         message="Cette opération sera retirée de la caisse générale. Confirmer ?"
         onConfirm={del} onCancel={() => setToDelete(null)} />
     </div>
+  );
+}
+
+// ─── Le solde d'une caisse, déroulé jusqu'à la ligne ──────────────────────────
+/**
+ * Le chiffre affiché sur une carte ne se discutait pas mais ne se vérifiait pas
+ * non plus. Cet écran montre les mouvements QUI FONT ce solde — la liste même
+ * dont la somme a été prise, groupée par nature puis détaillée — pour qu'un
+ * tiroir qui a baissé dise pourquoi.
+ */
+function CaisseDetailModal({ part, balance, flow, onClose }: {
+  part: TreasuryPart;
+  balance: number;
+  flow: { in: number; out: number; count: number; outside: number; lines: CashLine[] };
+  onClose: () => void;
+}) {
+  const meta = PART_META[part];
+  const [nature, setNature] = useState<string | null>(null);
+
+  /** Les mouvements de la période, regroupés par nature et par sens. */
+  const groups = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; direction: 'in' | 'out'; count: number; total: number }>();
+    for (const l of flow.lines) {
+      const direction: 'in' | 'out' = l.amount >= 0 ? 'in' : 'out';
+      const key = `${l.nature}|${direction}`;
+      const g = map.get(key) || { key, label: l.nature, direction, count: 0, total: 0 };
+      g.count += 1;
+      g.total += Math.abs(l.amount);
+      map.set(key, g);
+    }
+    return [...map.values()].sort((a, b) => b.total - a.total);
+  }, [flow.lines]);
+
+  const lines = nature ? flow.lines.filter(l => `${l.nature}|${l.amount >= 0 ? 'in' : 'out'}` === nature) : flow.lines;
+
+  return (
+    <Modal open onClose={onClose} icon={meta.icon} size="2xl" fullHeight
+      title={`Caisse ${meta.label}`}
+      subtitle={`${flow.count} mouvement(s) sur la période — le détail du solde affiché`}
+      footer={<>
+        <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
+          <span className="text-emerald-600">Entrées +{money(flow.in)}</span>
+          <span className="text-red-600">Sorties −{money(flow.out)}</span>
+          <span className={balance >= 0 ? 'text-[#002d87]' : 'text-red-600'}>Solde {money(balance)}</span>
+        </div>
+        <button className="btn-primary" onClick={onClose}>Fermer</button>
+      </>}>
+      <div className="space-y-5">
+        {/* Le calcul, écrit en entier : rien à recomposer de tête. */}
+        <div className="card-glass p-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
+            Comment ce solde est calculé
+          </p>
+          <div className="flex flex-wrap items-stretch gap-2">
+            {[
+              { label: 'Hors période', value: flow.outside, sign: '', tone: 'text-slate-700' },
+              { label: 'Entrées de la période', value: flow.in, sign: '+', tone: 'text-emerald-600' },
+              { label: 'Sorties de la période', value: flow.out, sign: '−', tone: 'text-red-600' },
+              { label: 'Solde actuel', value: balance, sign: '=', tone: balance >= 0 ? 'text-emerald-600' : 'text-red-600' },
+            ].map(s => (
+              <React.Fragment key={s.label}>
+                {s.sign && <span className="self-center text-slate-300 font-black text-lg px-0.5 shrink-0">{s.sign}</span>}
+                <div className={`rounded-xl px-3 py-2 flex-1 min-w-[128px] ${s.sign === '=' ? 'bg-slate-100' : 'bg-slate-50'}`}>
+                  <p className="text-[10px] uppercase font-bold text-slate-400 leading-tight">{s.label}</p>
+                  <p className={`font-black tabular-nums text-sm mt-0.5 ${s.tone}`}>{money(s.value)}</p>
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 italic mt-3">
+            {part === 'systeme'
+              ? "La caisse de la Finance ne compte que les mouvements du tiroir commun qui ne sont imputés à aucune activité : l'argent qu'une activité y dépose reste dans SA caisse."
+              : `Tout ce que l'activité a encaissé et décaissé EN ESPÈCES, où que l'argent se trouve — son propre coffre comme la caisse générale. Un règlement par chèque ou par virement n'y figure pas : aucun tiroir ne s'est ouvert.`}
+          </p>
+        </div>
+
+        {/* Par nature */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-black uppercase tracking-wide text-[#002d87] flex items-center gap-2">
+              <Layers className="w-4 h-4 text-[#FFB800]" /> Détail par nature d'opération
+            </h4>
+            {nature && (
+              <button className="text-[11px] font-black text-[#003087] hover:underline" onClick={() => setNature(null)}>
+                Voir toutes les natures
+              </button>
+            )}
+          </div>
+          {groups.length === 0 ? (
+            <p className="text-center text-slate-400 text-sm py-8 italic">Aucun mouvement sur cette période.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {groups.map(g => {
+                const Icon = NATURE_ICON[g.label] || Layers;
+                const on = nature === g.key;
+                const isIn = g.direction === 'in';
+                return (
+                  <button key={g.key} onClick={() => setNature(on ? null : g.key)}
+                    className={`rounded-2xl border p-3 text-left transition-all bg-white ${on
+                      ? 'border-[#003087] ring-2 ring-[#003087]/20 shadow-md'
+                      : 'border-slate-100 shadow-sm hover:border-[#003087]/40'}`}>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-8 h-8 rounded-lg text-white flex items-center justify-center shrink-0 ${isIn ? 'bg-emerald-500' : 'bg-red-500'}`}>
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-black text-slate-700 truncate">{g.label}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                          {isIn ? 'Entrée' : 'Sortie'} · {g.count} op.
+                        </p>
+                      </div>
+                    </div>
+                    <p className={`text-lg font-black tabular-nums mt-1.5 ${isIn ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {isIn ? '+' : '−'}{money(g.total)}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Ligne par ligne */}
+        <div>
+          {lines.length === 0 ? (
+            <p className="text-center text-slate-400 text-sm py-8 italic">Aucun mouvement sur cette période.</p>
+          ) : (
+            <Table head={<>
+              <th className="table-head">Date</th>
+              <th className="table-head">Nature</th>
+              <th className="table-head">Description</th>
+              <th className="table-head text-right">Effet sur la caisse</th>
+            </>}>
+              {lines.slice(0, 400).map(l => {
+                const Icon = NATURE_ICON[l.nature] || Layers;
+                return (
+                  <tr key={l.id}>
+                    <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(l.date)}</td>
+                    <td className="table-cell">
+                      <span className="inline-flex items-center gap-1.5 font-semibold text-slate-600 whitespace-nowrap">
+                        <Icon className="w-3.5 h-3.5" /> {l.nature}
+                      </span>
+                    </td>
+                    <td className="table-cell max-w-[320px]">
+                      <span className="block truncate" title={l.label}>{l.label}</span>
+                      {l.reference && <span className="text-[10px] text-slate-400">{l.reference}</span>}
+                    </td>
+                    <td className={`table-cell text-right tabular-nums font-bold whitespace-nowrap ${l.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {l.amount >= 0 ? '+' : '−'}{money(Math.abs(l.amount))}
+                    </td>
+                  </tr>
+                );
+              })}
+            </Table>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

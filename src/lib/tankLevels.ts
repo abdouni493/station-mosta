@@ -1,29 +1,22 @@
 /**
- * ─── Cuves — le niveau relu depuis les documents ────────────────────────────────
+ * ─── Cuves — ce que les documents ont fait passer par chaque cuve ───────────────
  *
- * `tanks.current` est un COMPTEUR : il ne bouge que par delta (achat +, brigade −)
- * via la RPC `adjust_tank_level`. C'est rapide et concurrent, mais un compteur ne
- * sait pas se relire : si une écriture est perdue — panne réseau, session fermée
- * pendant l'enregistrement, ou l'ancien bug qui réécrivait le niveau en valeur
- * absolue — le compteur s'écarte des documents et RIEN ne le ramène. C'est
- * exactement ce qui s'est produit : les cuves affichaient 0 L alors que 41 000 L
- * d'achats étaient enregistrés.
+ * `tanks.current` est LE niveau : il ne bouge que par delta (achat +, brigade −)
+ * via la RPC `adjust_tank_level`, appelée au moment même où l'achat est
+ * enregistré ou la brigade clôturée. Le niveau suit donc les documents sans
+ * qu'on ait jamais à le « réaligner » après coup.
  *
- * Ce module donne le second regard qui manquait : le niveau THÉORIQUE, recalculé
- * de zéro à chaque affichage à partir des seules pièces qui font foi —
- *
- *     achats carburant  +  bons de livraison  −  litres débités par les brigades
- *
- * — pour que l'écran Cuves puisse montrer les deux et proposer de les réaligner.
- * Même principe que `lib/supplierDebt.ts` pour les dettes fournisseurs : le
- * document est la source, la colonne n'est qu'un miroir.
+ * Ce module ne recalcule plus un niveau concurrent : il donne seulement le
+ * DÉTAIL du mouvement — combien d'achats sont entrés, combien les brigades ont
+ * débité — pour que la carte d'une cuve explique son contenu sans obliger à
+ * ouvrir l'historique.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import type { Brigade, DeliveryNote, Pump, PumpNozzle, Purchase, Tank } from '../store/AppContext';
 import { brigadeTankConsumption } from './brigadeTanks';
-import { tankQuantitiesOf, type TankDelta } from './fuelPurchase';
+import { tankQuantitiesOf } from './fuelPurchase';
 
-/** Les collections dont dépend le niveau d'une cuve. */
+/** Les collections dont dépend le mouvement d'une cuve. */
 export interface TankLedgerSource {
   purchases?: Purchase[];
   deliveryNotes?: DeliveryNote[];
@@ -40,16 +33,7 @@ export interface TankLedger {
   delivered: number;
   /** Litres débités par les pistolets pendant les brigades. */
   consumed: number;
-  /** Niveau théorique : ce que les documents disent que la cuve contient. */
-  expected: number;
-  /** Niveau enregistré sur la cuve (`tanks.current`). */
-  stored: number;
-  /** `stored − expected` : positif = la cuve annonce plus que ses documents. */
-  drift: number;
 }
-
-/** Un écart inférieur à ce seuil (en litres) n'est que du bruit d'arrondi. */
-export const TANK_DRIFT_TOLERANCE = 1;
 
 /**
  * Litres apportés à chaque cuve par un bon de livraison. Un BL peut alimenter
@@ -107,46 +91,11 @@ export function tankLedgers(tanks: Tank[], data: TankLedgerSource): Record<strin
 
   const out: Record<string, TankLedger> = {};
   tanks.forEach(t => {
-    const inPurchases = purchased[t.id] || 0;
-    const inDeliveries = delivered[t.id] || 0;
-    const out_ = consumed[t.id] || 0;
-    // Une cuve ne descend pas sous zéro, et ne déborde pas de sa capacité : les
-    // deux bornes évitent d'annoncer un théorique qui n'existe pas physiquement.
-    const expected = Math.min(
-      t.capacity > 0 ? t.capacity : Number.POSITIVE_INFINITY,
-      Math.max(0, inPurchases + inDeliveries - out_));
-    const stored = Number(t.current) || 0;
     out[t.id] = {
-      purchased: inPurchases,
-      delivered: inDeliveries,
-      consumed: out_,
-      expected,
-      stored,
-      drift: stored - expected,
+      purchased: purchased[t.id] || 0,
+      delivered: delivered[t.id] || 0,
+      consumed: consumed[t.id] || 0,
     };
   });
   return out;
-}
-
-/** Le mouvement d'UNE cuve. */
-export function tankLedger(tank: Tank, data: TankLedgerSource): TankLedger {
-  return tankLedgers([tank], data)[tank.id];
-}
-
-/** Vrai si le niveau enregistré s'est écarté de ce que disent les documents. */
-export function hasDrift(ledger: TankLedger | undefined): boolean {
-  return !!ledger && Math.abs(ledger.drift) > TANK_DRIFT_TOLERANCE;
-}
-
-/**
- * Deltas ramenant les cuves sur leur niveau théorique. On passe par des deltas
- * (jamais par une écriture absolue) pour que le réalignement suive la même
- * route que les achats et les brigades — la RPC `adjust_tank_level` — et reste
- * juste même si une autre session écrit au même moment.
- */
-export function realignTankDeltas(tanks: Tank[], data: TankLedgerSource): TankDelta[] {
-  const ledgers = tankLedgers(tanks, data);
-  return tanks
-    .map(t => ({ tankId: t.id, deltaLiters: -(ledgers[t.id]?.drift || 0) }))
-    .filter(d => Math.abs(d.deltaLiters) > TANK_DRIFT_TOLERANCE);
 }

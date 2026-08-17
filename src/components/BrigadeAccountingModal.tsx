@@ -7,11 +7,13 @@ import {
 import { cn, newId, degreesFromLiters } from "@/src/lib/utils";
 import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, StationSettings,
-  Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType
+  Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType,
+  TreasuryTransaction, CAISSE_ID,
 } from "../store/AppContext";
 import {
   brigadeActiveNozzles, brigadeNozzleRows, brigadeTankRows, brigadePompisteGroups, justifiedByPompiste,
 } from "../lib/brigadeCalc";
+import { brigadeTankDeltas } from "../lib/brigadeTanks";
 
 interface Justification {
   id: string;
@@ -39,6 +41,12 @@ interface Props {
   currentUserRole: string;
   currentUserName?: string;
   existingAccounting?: BrigadeAccounting;
+  /**
+   * Le grand livre — les lignes de trésorerie que CETTE brigade a écrites sont
+   * réécrites à l'enregistrement, pour que la caisse suive le montant corrigé
+   * ici au lieu de rester sur celui saisi à la clôture.
+   */
+  treasuryTransactions?: TreasuryTransaction[];
   dispatch: React.Dispatch<any>;
   onClose: () => void;
 }
@@ -47,7 +55,8 @@ type VerEntry = { verified: boolean; corrected: boolean; correctedValue?: number
 
 const BrigadeAccountingModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, settings,
-  clients, tracks, currentUserRole, currentUserName, existingAccounting, dispatch, onClose
+  clients, tracks, currentUserRole, currentUserName, existingAccounting,
+  treasuryTransactions = [], dispatch, onClose
 }) => {
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
 
@@ -334,21 +343,12 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       }});
     });
 
-    // Apply cuve corrections to brigade + tanks
-    tankComparison.forEach(({ tank }) => {
-      const ver = cuveVer[tank.id];
-      if (ver?.corrected && ver.correctedValue !== undefined) {
-        const curve = settings.conversionTables?.[tank.id] || [];
-        const deg = tank.type === 'GPL'
-          ? (tank.capacity > 0 ? (ver.correctedValue / tank.capacity) * 100 : 0)
-          : (curve.length > 0 ? degreesFromLiters(curve, ver.correctedValue) : (brigade.endTankLevels?.[tank.id]?.degrees || 0));
-
-        dispatch({ type: 'UPDATE_TANK', payload: { ...tank, current: ver.correctedValue, degrees: deg } });
-        dispatch({ type: 'UPDATE_BRIGADE', payload: { ...brigade, endTankLevels: { ...(brigade.endTankLevels || {}), [tank.id]: { degrees: deg, liters: ver.correctedValue } } } });
-      }
-    });
-
-    // Apply nozzle corrections to brigade
+    // ── Corrections de pistolets ────────────────────────────────────────────
+    // Corriger l'index de fin d'un pistolet change le volume que la brigade a
+    // débité : la cuve doit suivre DANS LE MÊME MOUVEMENT. Elle ne le faisait
+    // pas — l'index corrigé était enregistré, le stock restait sur l'ancien
+    // volume, et la cuve s'éloignait un peu plus de ses pièces à chaque
+    // correction. Seule la DIFFÉRENCE est appliquée, comme partout ailleurs.
     let hadNozzleCorrection = false;
     const newEndNozzleIndices = { ...(brigade.endNozzleIndices || {}) };
     activeNozzles.forEach(nozzle => {
@@ -359,8 +359,86 @@ const BrigadeAccountingModal: React.FC<Props> = ({
         hadNozzleCorrection = true;
       }
     });
-    if (hadNozzleCorrection) {
+    const nozzleDeltas = hadNozzleCorrection
+      ? brigadeTankDeltas(
+        brigade,
+        { startNozzleIndices: brigade.startNozzleIndices, endNozzleIndices: newEndNozzleIndices },
+        pumpNozzles, pumps)
+      : [];
+    if (nozzleDeltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: nozzleDeltas });
+
+    // ── Corrections de cuve (jauge relevée) ─────────────────────────────────
+    // Le comptage physique fait foi : la cuve est ramenée sur la valeur relevée.
+    // On y va par DELTA (`adjust_tank_level`), jamais par une écriture absolue —
+    // c'est la seule route qui reste juste si un achat ou une brigade est
+    // enregistré au même instant depuis un autre poste, et c'est le serveur qui
+    // recalcule les degrés à partir de la table de conversion.
+    //
+    // Le delta est calculé APRÈS les corrections de pistolets ci-dessus, pour
+    // que la jauge relevée soit bien le niveau final et non un niveau corrigé
+    // deux fois.
+    const nozzleDeltaByTank: Record<string, number> = {};
+    nozzleDeltas.forEach(d => { nozzleDeltaByTank[d.tankId] = d.deltaLiters; });
+    const cuveDeltas: { tankId: string; deltaLiters: number }[] = [];
+    // Les relevés corrigés sont rassemblés puis écrits EN UNE FOIS : une
+    // écriture par cuve repartait à chaque tour de la brigade d'origine, et
+    // seule la dernière cuve corrigée survivait.
+    const correctedLevels: Record<string, { degrees: number; liters: number; measured: boolean }> = {};
+    tankComparison.forEach(({ tank }: any) => {
+      const ver = cuveVer[tank.id];
+      if (!ver?.corrected || ver.correctedValue === undefined) return;
+      const after = Math.max(0, (Number(tank.current) || 0) + (nozzleDeltaByTank[tank.id] || 0));
+      const delta = ver.correctedValue - after;
+      if (Math.abs(delta) > 0.0001) cuveDeltas.push({ tankId: tank.id, deltaLiters: delta });
+      const curve = settings.conversionTables?.[tank.id] || [];
+      correctedLevels[tank.id] = {
+        degrees: tank.type === 'GPL'
+          ? (tank.capacity > 0 ? (ver.correctedValue / tank.capacity) * 100 : 0)
+          : (curve.length > 0
+            ? degreesFromLiters(curve, ver.correctedValue)
+            : (brigade.endTankLevels?.[tank.id]?.degrees || 0)),
+        liters: ver.correctedValue,
+        measured: true,
+      };
+    });
+    if (Object.keys(correctedLevels).length > 0) {
+      dispatch({
+        type: 'UPDATE_BRIGADE',
+        payload: {
+          ...brigade,
+          ...(hadNozzleCorrection ? { endNozzleIndices: newEndNozzleIndices } : {}),
+          endTankLevels: { ...(brigade.endTankLevels || {}), ...correctedLevels },
+        },
+      });
+    } else if (hadNozzleCorrection) {
       dispatch({ type: 'UPDATE_BRIGADE', payload: { ...brigade, endNozzleIndices: newEndNozzleIndices } });
+    }
+    if (cuveDeltas.length) dispatch({ type: 'ADJUST_TANK_LEVELS', payload: cuveDeltas });
+
+    // ── La caisse suit le montant enregistré ici ────────────────────────────
+    // La clôture avait écrit une ligne au grand livre pour les espèces remises.
+    // Corriger ce montant ici la laissait telle quelle : la caisse gardait
+    // l'ancien chiffre pendant que le rapport Carburant montrait le nouveau.
+    // La ligne est donc réécrite, exactement comme le fait l'assistant.
+    (treasuryTransactions || [])
+      .filter(t => t.refType === 'brigade' && t.refId === brigade.id && t.kind === 'BRIGADE')
+      .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
+    if (cashReceived > 0) {
+      dispatch({
+        type: 'ADD_TREASURY_TX',
+        payload: {
+          id: newId(),
+          date: brigade.endDatetime || brigade.date,
+          kind: 'BRIGADE',
+          amount: cashReceived,
+          description: `Encaissement brigade du ${brigade.date}`,
+          accountTo: CAISSE_ID,
+          part: 'carburant',
+          refType: 'brigade', refId: brigade.id,
+          createdBy: currentUserName,
+          createdAt: new Date().toISOString(),
+        } as TreasuryTransaction,
+      });
     }
 
     // Assign rest décalage to the selected agent (pompiste or chef)

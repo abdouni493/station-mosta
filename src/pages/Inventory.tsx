@@ -676,10 +676,19 @@ const Inventory = () => {
     if (!selected) return;
     setIsLoading(true);
     setTimeout(() => {
-      selected.fuelGaps.forEach(g => {
-        const t = tanks.find(t => t.id === g.tankId);
-        if (t && g.gap !== 0) dispatch({ type: "UPDATE_TANK", payload: { ...t, current: g.actualQty } });
-      });
+      // Le comptage physique ramène la cuve sur ce qui a été relevé — mais par
+      // DELTA (`adjust_tank_level`), jamais par une écriture absolue : une
+      // écriture absolue partie d'un `current` lu à l'écran écrase les litres
+      // qu'un achat ou une brigade aurait enregistrés entre-temps depuis un
+      // autre poste, et c'est le serveur qui recalcule les degrés.
+      const fuelDeltas = selected.fuelGaps
+        .map(g => {
+          const t = tanks.find(x => x.id === g.tankId);
+          if (!t || g.gap === 0) return null;
+          return { tankId: t.id, deltaLiters: g.actualQty - (Number(t.current) || 0) };
+        })
+        .filter((d): d is { tankId: string; deltaLiters: number } => !!d && Math.abs(d.deltaLiters) > 0.0001);
+      if (fuelDeltas.length) dispatch({ type: "ADJUST_TANK_LEVELS", payload: fuelDeltas });
       selected.productGaps.forEach(g => {
         const p = products.find(p => p.id === g.productId);
         if (p && g.gap !== 0) dispatch({ type: "UPDATE_PRODUCT", payload: { ...p, stock: g.actualQty } });

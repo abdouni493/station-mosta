@@ -403,11 +403,15 @@ export interface CarburantCash {
   balance: number;
   inflow: number;
   outflow: number;
-  /** Les quatre termes du calcul, pour que le solde s'explique d'un coup d'œil. */
+  /** Les termes du calcul, pour que le solde s'explique d'un coup d'œil. */
   brigadeCash: number;
   clientCash: number;
   purchasesCash: number;
   expensesCash: number;
+  /** Salaires du personnel carburant réglés en espèces. */
+  salariesCash: number;
+  /** Acomptes remis en main propre au personnel carburant. */
+  acomptesCash: number;
   /** Dépôts saisis dans la Caisse Générale et imputés au Carburant. */
   deposits: number;
   /** Retraits imputés au Carburant. */
@@ -416,6 +420,20 @@ export interface CarburantCash {
   transfers: number;
   lines: CarburantCashLine[];
 }
+
+/**
+ * Le personnel que l'activité Carburant paie : pompistes, chefs de brigade,
+ * gérants et employés magasin. C'est le même découpage que le rapport Effectif
+ * (`lib/workforceReporting`), où ces quatre familles sont rattachées au
+ * Carburant — les deux écrans ne peuvent donc pas se contredire.
+ */
+const FUEL_STAFF_KEYS = ['pompistes', 'brigadeChefs', 'gerants', 'magasinWorkers'] as const;
+
+/** Un salaire sans mode de règlement est réputé payé en espèces. */
+const salaryPaidInCash = (mode?: string): boolean => {
+  const m = String(mode || '').trim().toUpperCase();
+  return m === '' || m === 'ESPÈCES' || m === 'ESPECES' || m === 'CASH' || m === 'LIQUIDE';
+};
 
 /**
  * La position de caisse de l'activité Carburant — la SEULE définition.
@@ -520,7 +538,44 @@ export function computeCarburantCash(app: any): CarburantCash {
     });
   }
 
-  // 5. Opérations manuelles imputées au Carburant : dépôts, retraits, virements.
+  // 5. Salaires et acomptes du personnel carburant.
+  //    Ils ne sortaient d'AUCUNE caisse : la Cafétéria et le Lavage retiraient
+  //    bien les salaires de leurs employés de leur tiroir, le Carburant payait
+  //    les siens avec de l'argent qui restait indéfiniment en caisse. Un salaire
+  //    réglé par chèque ou par virement, lui, ne touche pas le tiroir.
+  //    L'ACOMPTE est de l'argent déjà remis en main propre ; le salaire net,
+  //    lui, en est déjà déduit — les additionner ne compte donc rien deux fois.
+  for (const key of FUEL_STAFF_KEYS) {
+    for (const w of (app?.[key] || []) as any[]) {
+      for (const p of (w.paymentRecord || [])) {
+        if (p.isPaid === false) continue;
+        if (!salaryPaidInCash(p.paymentMode)) continue;
+        const amount = num(p.netSalary ?? p.amount);
+        if (!amount) continue;
+        lines.push({
+          id: `sal-${p.id}`,
+          date: p.paymentDate,
+          nature: 'Salaire',
+          label: `Salaire ${w.name || 'Employé'}${p.month ? ` — ${p.month}` : ''}`,
+          amount: -amount,
+          reference: p.chequeNumber,
+        });
+      }
+      for (const a of (w.acomptes || [])) {
+        const amount = num(a.amount);
+        if (!amount) continue;
+        lines.push({
+          id: `aco-${a.id}`,
+          date: a.date,
+          nature: 'Acompte',
+          label: `Acompte ${w.name || 'Employé'}${a.description ? ` — ${a.description}` : ''}`,
+          amount: -amount,
+        });
+      }
+    }
+  }
+
+  // 6. Opérations manuelles imputées au Carburant : dépôts, retraits, virements.
   //    On ne regardait que le coffre `CAISSE_CARBURANT` — un dépôt saisi dans la
   //    Caisse Générale avec « Carburant » en partie concernée n'entrait donc
   //    NULLE PART, et la caisse de l'activité restait bloquée sur les seules
@@ -550,6 +605,8 @@ export function computeCarburantCash(app: any): CarburantCash {
     clientCash: totalOf('Règlement client'),
     purchasesCash: -totalOf('Achat'),
     expensesCash: -totalOf('Dépense'),
+    salariesCash: -totalOf('Salaire'),
+    acomptesCash: -totalOf('Acompte'),
     deposits: totalOf('Dépôt'),
     withdrawals: -totalOf('Retrait'),
     transfers: totalOf('Virement'),

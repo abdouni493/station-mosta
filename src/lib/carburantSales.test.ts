@@ -241,5 +241,51 @@ check('les deux comptent dans le rapport de la partie',
   computeModuleReport(cafeteriaExp, 'cafeteria', FROM, TO, app.treasuryTransactions, app.expenses).expensesTotal,
   800 + 3_000 + 1_500);
 
+// ─── Les salaires du personnel carburant sortent bien de SA caisse ───────────
+// Le défaut : la Cafétéria et le Lavage retiraient les salaires de leurs
+// employés de leur tiroir, le Carburant payait les siens avec un argent qui
+// restait indéfiniment en caisse. Un salaire réglé par chèque, lui, ne touche
+// pas les espèces ; un ACOMPTE est de l'argent déjà remis en main propre, et le
+// salaire net l'a déjà déduit — les deux lignes ne comptent pas le même billet.
+console.log("\nLe personnel carburant est payé avec l'argent de la caisse Carburant");
+const appStaff = {
+  ...app,
+  pompistes: [{
+    id: 'W1', name: 'Ali',
+    paymentRecord: [
+      { id: 'PR1', month: '2026-07', netSalary: 25_000, paymentDate: '2026-08-01', paymentMode: 'Espèces', isPaid: true },
+      { id: 'PR2', month: '2026-08', netSalary: 30_000, paymentDate: '2026-08-28', paymentMode: 'Chèque', isPaid: true },
+    ],
+    acomptes: [{ id: 'AC1', date: '2026-08-15', amount: 4_000, description: 'Avance', isPaid: false }],
+  }],
+  brigadeChefs: [{
+    id: 'W2', name: 'Karim',
+    paymentRecord: [{ id: 'PR3', month: '2026-07', netSalary: 35_000, paymentDate: '2026-08-02', paymentMode: 'Espèces', isPaid: true }],
+    acomptes: [],
+  }],
+};
+const cashStaff = computeCarburantCash(appStaff);
+check('les salaires réglés en espèces sortent du tiroir', cashStaff.salariesCash, 25_000 + 35_000);
+check('le salaire réglé par chèque ne le touche pas',
+  cashStaff.lines.some(l => l.id === 'sal-PR2'), false);
+check("l'acompte remis en main propre sort aussi", cashStaff.acomptesCash, 4_000);
+check('le solde en tient compte', cashStaff.balance, cash.balance - 25_000 - 35_000 - 4_000);
+check('chaque ligne se relit toujours',
+  cashStaff.lines.reduce((s, l) => s + l.amount, 0), cashStaff.balance);
+
+console.log("\nLes acomptes d'une partie commerciale suivent la même règle");
+const cafeteriaStaff: any = {
+  ...cafeteria,
+  workers: [{
+    id: 'BW1', name: 'Nadia',
+    payments: [{ id: 'BP1', period: '2026-07', amount: 20_000, date: '2026-08-03' }],
+    acomptes: [{ id: 'BA1', date: '2026-08-10', amount: 2_000, description: 'Avance', paid: false }],
+    absences: [],
+  }],
+};
+check('salaire ET acompte vident le tiroir de la partie',
+  moduleCaisseBalance(cafeteriaStaff, 'cafeteria', app.treasuryTransactions, app.expenses),
+  10_000 - 20_000 - 2_000);
+
 console.log(`\n${passed} vérification(s) passée(s), ${failed} échec(s).`);
 if (failed > 0) process.exit(1);
