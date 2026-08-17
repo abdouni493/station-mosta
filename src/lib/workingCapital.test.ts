@@ -126,20 +126,26 @@ check('aucun mouvement de la Finance dans la période', finance?.flow?.count, 0)
 console.log('\nUn compte bancaire est commun : chaque activité y a sa part');
 const b1 = treasury.accounts[0];
 check('solde du compte', b1.balance, 2300);
-check('part Carburant (1000 versés − 400 réglés)', b1.parts.find(p => p.key === 'carburant')?.balance, 600);
+// Le solde d'ouverture (1000) n'a aucune ligne de grand livre derrière lui : il
+// revient au Carburant, dont ces comptes sont ceux. Rangé dans « Finance », il
+// dormait dans une activité que personne ne consulte — et le Carburant
+// affichait 600 en banque quand la station en avait 2300.
+check('part Carburant (1000 d\'ouverture + 1000 versés − 400 réglés)',
+  b1.parts.find(p => p.key === 'carburant')?.balance, 1600);
 check('part Cafétéria (700 déposés)', b1.parts.find(p => p.key === 'cafeteria')?.balance, 700);
 check('part Lavage', b1.parts.find(p => p.key === 'lavage')?.balance, 0);
-check('part Finance (le solde d\'ouverture)', b1.parts.find(p => p.key === 'systeme')?.balance, 1000);
+check('la Finance ne provoque aucun mouvement bancaire',
+  b1.parts.find(p => p.key === 'systeme')?.balance, 0);
 check('la somme des parts EST le solde du compte',
   b1.parts.reduce((s, p) => s + p.balance, 0), b1.balance);
 check('le bloc banque rend le total en banque', r.bankTotal, treasury.bankTotal);
-check('une ligne par compte et par activité concernée', r.banks.rows.length, 3);
+check('une ligne par compte et par activité concernée', r.banks.rows.length, 2);
 
 console.log('\nFiltré sur une activité, l\'écran montre SA trésorerie');
 const carb = filterWorkingCapital(r, 'carburant');
 check('la caisse de l\'activité est comptée', carb.cashTotal, carburantCash);
-check('sa part des comptes bancaires aussi', carb.bankTotal, 600);
-check('sa trésorerie est caisse + banque', carb.treasuryTotal, carburantCash + 600);
+check('sa part des comptes bancaires aussi — ouverture comprise', carb.bankTotal, 1600);
+check('sa trésorerie est caisse + banque', carb.treasuryTotal, carburantCash + 1600);
 check('une seule ligne de caisse', carb.cash.rows.length, 1);
 check('ses flux sont les siens', carb.cash.flow?.in, 5000);
 check('et pas ceux de la station', carb.cash.flow?.in === r.cash.flow?.in, false);
@@ -163,7 +169,7 @@ check('son bloc banque est vide, donc sans flux', lav.banks.flow, undefined);
 
 const fin = filterWorkingCapital(r, 'systeme');
 check('la Finance garde son tiroir', fin.cashTotal, 1700);
-check('et sa part des comptes — le solde d\'ouverture', fin.bankTotal, 1000);
+check('mais plus rien en banque : elle n\'y provoque aucun mouvement', fin.bankTotal, 0);
 check('les quatre parts refont le total en banque',
   carb.bankTotal + caf.bankTotal + lav.bankTotal + fin.bankTotal, treasury.bankTotal);
 
@@ -179,7 +185,21 @@ check('la part reste la part', carb.bankTotal === carb.stationBankTotal, false);
 check('les comptes restent déroulés, filtre ou non', carb.accounts.length, r.accounts.length);
 check('chacun garde son solde ENTIER', carb.accounts[0]?.balance, b1.balance);
 check('et la part du Carburant s\'y lit',
-  carb.accounts[0]?.parts.find(p => p.key === 'carburant')?.balance, 600);
+  carb.accounts[0]?.parts.find(p => p.key === 'carburant')?.balance, 1600);
+
+// ─── Le solde d'ouverture ne dort plus dans une activité fantôme ─────────────
+// Sur la station réelle, TOUS les mouvements bancaires sont du Carburant : sa
+// part devient alors le total en banque, et l'écran le dit au lieu d'annoncer
+// « sa part » sous un chiffre qui est le total. Le libellé du bloc suit.
+console.log('\nQuand toute la banque revient à une activité, l\'écran le dit');
+check('le bloc filtré s\'annonce comme une part', carb.banks.label, 'Comptes bancaires — sa part');
+const soloTreasury = computeTreasuryReport(
+  { ...app, treasuryTransactions: app.treasuryTransactions.filter(t => t.part === 'carburant') },
+  biz, FROM, TO);
+const solo = filterWorkingCapital(
+  computeWorkingCapital(soloTreasury, parts, undefined), 'carburant');
+check('toute la banque revient au Carburant', solo.bankTotal, solo.stationBankTotal);
+check('le bloc ne parle plus de part', solo.banks.label, 'Comptes bancaires');
 
 // ─── Le tableau par activité recompose l'écran ───────────────────────────────
 console.log('\nLe tableau par activité rend le total affiché');

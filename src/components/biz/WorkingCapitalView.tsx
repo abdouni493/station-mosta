@@ -15,8 +15,9 @@
  * sa part des comptes bancaires suivent ce filtre — c'est sa trésorerie. Le
  * tiroir et les comptes sont COMMUNS, mais chaque ligne du grand livre dit de
  * quelle activité est le mouvement : ce sont ces lignes qui répartissent les
- * soldes, sans en inventer ni en perdre un dinar. Seul le solde d'ouverture des
- * comptes, provoqué par personne, reste à la Finance.
+ * soldes, sans en inventer ni en perdre un dinar. Le solde d'ouverture des
+ * comptes, qui n'a aucune ligne derrière lui, revient à l'activité dont ces
+ * comptes sont ceux — le Carburant (`BANK_OPENING_PART`).
  *
  * Sous chaque solde, la période se relit en toutes lettres :
  *
@@ -133,6 +134,9 @@ function AccountCard({ account: a, highlight }: {
 }) {
   const [open, setOpen] = useState(false);
   const share = highlight ? a.parts.find(p => p.key === highlight.key) : undefined;
+  // Quand tout le compte revient à l'activité regardée, répéter le montant sous
+  // lui-même n'apprend rien — et laisse croire à deux chiffres différents.
+  const whole = !!share && Math.abs(share.balance - a.balance) < 0.005;
   return (
     <div className="rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden">
       <button onClick={() => setOpen(!open)} className="w-full flex flex-wrap items-center gap-3 px-4 py-3 text-left hover:bg-slate-50">
@@ -149,12 +153,16 @@ function AccountCard({ account: a, highlight }: {
         <div className="text-right shrink-0">
           <p className="text-[10px] uppercase font-bold text-slate-400">Solde du compte</p>
           <p className={cn('font-black tabular-nums', a.balance >= 0 ? 'text-[#002d87]' : 'text-red-600')}>{money(a.balance)}</p>
-          {highlight && (
+          {highlight && (whole ? (
+            <p className="text-[11px] mt-0.5 whitespace-nowrap font-bold text-emerald-600">
+              entièrement {highlight.label}
+            </p>
+          ) : (
             <p className="text-[11px] tabular-nums mt-0.5 whitespace-nowrap">
               <span className="text-slate-400">dont {highlight.label} </span>
               <b className={(share?.balance || 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}>{money(share?.balance || 0)}</b>
             </p>
-          )}
+          ))}
         </div>
         <ChevronRight className={cn('w-4 h-4 text-slate-300 transition-transform shrink-0', open && 'rotate-90')} />
       </button>
@@ -247,10 +255,18 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
   const filtered = partKey !== 'all';
   const activeFilter = filters.find(f => f.key === partKey);
   const positive = r.workingCapital >= 0;
+  /**
+   * L'activité regardée détient TOUT l'argent en banque. C'est le cas normal du
+   * Carburant : les comptes sont les siens, tous les mouvements viennent de lui
+   * et le solde d'ouverture aussi. L'écran dit alors « la totalité revient à
+   * … » au lieu de répéter le même montant sur deux lignes, ce qui donnait
+   * l'impression de deux chiffres qui ne se rejoignent pas.
+   */
+  const bankIsWhole = filtered && Math.abs(r.stationBankTotal - r.bankTotal) < 0.005;
 
   const steps: { label: string; value: number; sign: '' | '+' | '−' | '='; tone: string }[] = [
     { label: 'Caisses (espèces)', value: r.cashTotal, sign: '', tone: 'text-[#002d87]' },
-    { label: filtered ? 'Comptes bancaires (sa part)' : 'Comptes bancaires', value: r.bankTotal, sign: '+', tone: 'text-emerald-700' },
+    { label: filtered && !bankIsWhole ? 'Comptes bancaires (sa part)' : 'Comptes bancaires', value: r.bankTotal, sign: '+', tone: 'text-emerald-700' },
     { label: 'Créances clients', value: r.receivablesTotal, sign: '+', tone: 'text-violet-700' },
     { label: "Stock (prix d'achat)", value: r.stockValue, sign: '+', tone: 'text-amber-700' },
     { label: 'Dettes fournisseurs', value: r.payablesTotal, sign: '−', tone: 'text-red-600' },
@@ -280,7 +296,8 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
             comptes bancaires : c'est sa trésorerie, au même solde que l'écran Caisse Générale.
             {partKey !== 'systeme' && ' Le tiroir de la Finance est la part du tiroir commun qui n\'appartient à aucune activité.'}
             {' '}Les comptes bancaires, eux, restent déroulés en entier plus bas : la station y détient
-            en tout {money(r.stationBankTotal)}, dont {money(r.bankTotal)} pour cette activité.
+            en tout {money(r.stationBankTotal)}
+            {bankIsWhole ? ', qui reviennent en entier à cette activité.' : `, dont ${money(r.bankTotal)} pour cette activité.`}
           </p>
         )}
       </div>
@@ -306,8 +323,10 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
           <p className="text-xs opacity-75 mt-1 tabular-nums">
             Trésorerie = caisses {money(r.cashTotal)}
             {!filtered && <> ({money(r.activitiesCash)} activités + {money(r.financeCash)} Finance)</>}
-            {' '}+ {filtered ? 'sa part des comptes bancaires' : 'comptes bancaires'} {money(r.bankTotal)}
-            {filtered && <> (sur {money(r.stationBankTotal)} en banque, tous comptes confondus)</>}.
+            {' '}+ {filtered && !bankIsWhole ? 'sa part des comptes bancaires' : 'comptes bancaires'} {money(r.bankTotal)}
+            {filtered && (bankIsWhole
+              ? <> (la totalité des {r.accounts.length} comptes)</>
+              : <> (sur {money(r.stationBankTotal)} en banque, tous comptes confondus)</>)}.
           </p>
           <p className="text-xs opacity-75 mt-1">
             Dont {money(r.fuelStockValue)} de carburant en cuve et {money(r.goodsStockValue)} de marchandise.
@@ -364,10 +383,9 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
           <Wallet className="w-5 h-5 text-[#FFB800]" /> Détail par activité
         </h3>
         {/* Une ligne par tiroir — les trois activités ET la Finance, qui porte
-            le reste du tiroir commun et la part des comptes que personne n'a
-            provoquée (le solde d'ouverture). La colonne « Comptes bancaires »
-            se totalise donc exactement à l'argent réel en banque, et le total
-            du tableau au fonds de roulement affiché en haut : il manquait la
+            le reste du tiroir commun. La colonne « Comptes bancaires » se
+            totalise exactement à l'argent réel en banque, et le total du
+            tableau au fonds de roulement affiché en haut : il manquait la
             Finance, et l'écart n'était expliqué nulle part. */}
         <Table head={<>
           <th className="table-head">Activité</th>
@@ -409,9 +427,10 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
           roulement. La colonne « Comptes bancaires » est SA PART des comptes : ce qu'elle y a versé moins ce qu'elle
           en a réglé. Les comptes sont communs, aucun n'appartient à une activité, mais chaque ligne du grand livre dit
           de qui est le mouvement — et la somme de la colonne fait exactement l'argent réel en banque
-          ({money(r.stationBankTotal)}), sans en inventer ni en perdre un dinar. La Finance est la part du tiroir commun
-          qui n'appartient à aucune activité ; elle porte aussi le solde d'ouverture des comptes, que personne n'a
-          provoqué. Le calcul retient donc les caisses ({money(r.cashTotal)}), la banque ({money(r.bankTotal)}), les
+          ({money(r.stationBankTotal)}), sans en inventer ni en perdre un dinar. Le solde d'ouverture des comptes, qui
+          n'a aucune ligne derrière lui, revient au Carburant : ce sont ses comptes, et il y dormait auparavant sous
+          « Finance », invisible partout. La Finance n'est donc plus que la part du tiroir commun qui n'appartient à
+          aucune activité. Le calcul retient les caisses ({money(r.cashTotal)}), la banque ({money(r.bankTotal)}), les
           créances ({money(r.receivablesTotal)}) et le stock au prix d'achat ({money(r.stockValue)}), moins les dettes
           ({money(r.payablesTotal)}).
         </p>
@@ -460,7 +479,9 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
           <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
             {r.accounts.length} compte(s) · {money(r.stationBankTotal)} au total
           </span>
-          {filtered && <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">part de {activeFilter?.label} : {money(r.bankTotal)}</span>}
+          {filtered && (bankIsWhole
+            ? <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-emerald-600 text-white">la totalité revient à {activeFilter?.label}</span>
+            : <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">part de {activeFilter?.label} : {money(r.bankTotal)}</span>)}
         </h3>
         {r.accounts.length === 0 ? (
           <div className="card-glass p-8 text-center text-sm text-slate-400">Aucun compte bancaire enregistré.</div>
@@ -480,14 +501,18 @@ export default function WorkingCapitalView({ report: full }: { report: WorkingCa
                 </span>
                 <span className={cn('font-black tabular-nums', r.stationBankTotal >= 0 ? 'text-[#002d87]' : 'text-red-600')}>{money(r.stationBankTotal)}</span>
               </div>
-              {filtered && (
+              {filtered && (bankIsWhole ? (
+                <p className="text-[11px] font-bold text-emerald-700 pt-1.5 border-t border-slate-200">
+                  Cette somme revient en entier à « {activeFilter?.label} » — c'est elle qui entre dans son fonds de roulement.
+                </p>
+              ) : (
                 <div className="flex items-center justify-between gap-3 pt-1.5 border-t border-slate-200">
                   <span className="text-xs font-bold uppercase tracking-wide text-slate-400">
                     Dont part de {activeFilter?.label} — comptée dans le fonds de roulement
                   </span>
                   <span className={cn('font-black tabular-nums', r.bankTotal >= 0 ? 'text-emerald-700' : 'text-red-600')}>{money(r.bankTotal)}</span>
                 </div>
-              )}
+              ))}
             </div>
             {/* Filtré, le détail des parts explique ligne par ligne d'où sort ce
                 que l'activité détient sur chaque compte. */}

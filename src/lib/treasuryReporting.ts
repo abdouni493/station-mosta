@@ -48,6 +48,22 @@ const isCashAccount = (id?: string): boolean => !!id && CASH_ACCOUNT_IDS.include
 
 export type TreasuryPartKey = 'carburant' | 'cafeteria' | 'lavage' | 'systeme';
 
+/**
+ * À QUI appartient l'argent DÉJÀ sur un compte bancaire le jour de sa création.
+ *
+ * Ce solde d'ouverture n'a aucune ligne de grand livre derrière lui : rien ne
+ * dit quelle activité l'a versé. Il était donc rangé dans « Finance », une
+ * activité qui ne vend rien et que personne ne consulte — 2,7 millions y
+ * dormaient, invisibles. Le Carburant, qui provoque TOUS les mouvements de ces
+ * comptes, affichait 2,2 millions en banque quand la station en avait 4,9.
+ *
+ * Ces comptes sont ceux de la station-service : leur solde de départ vient du
+ * carburant, comme tout ce qui y passe ensuite. Il lui revient donc, et la
+ * somme des parts fait toujours EXACTEMENT le solde du compte — aucun dinar
+ * inventé, aucun perdu, aucune activité qui compterait l'argent d'une autre.
+ */
+export const BANK_OPENING_PART: TreasuryPartKey = 'carburant';
+
 export const TX_LABEL: Record<string, string> = {
   DEPOSIT: 'Dépôt', WITHDRAW: 'Retrait', TRANSFER: 'Virement',
   PURCHASE: 'Achat', SALE: 'Vente', EXPENSE: 'Dépense',
@@ -100,7 +116,8 @@ export interface TreasuryMovement {
  * Un compte est commun, comme le tiroir : c'est la ligne du grand livre qui dit
  * de qui est le mouvement (`tx.part`). Ce qu'une activité a versé sur le compte
  * lui reste ; ce qu'elle en a réglé le quitte. Le solde d'ouverture du compte,
- * lui, n'a été provoqué par personne : il reste à la Finance.
+ * lui, n'a aucune ligne derrière lui : il revient à l'activité des comptes
+ * (voir `BANK_OPENING_PART`).
  *
  * La somme des parts fait EXACTEMENT le solde du compte — aucun dinar n'est
  * compté deux fois, aucun n'est perdu.
@@ -348,8 +365,9 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
         const ownRange = own.filter(t => within(t.date, from, to));
         return {
           key, label: TREASURY_PART_LABEL[key],
-          // Le solde d'ouverture n'a été provoqué par personne : il est à la Finance.
-          balance: (key === 'systeme' ? num(a.initialBalance) : 0) + ledgerNetFor(a.id, own),
+          // Le solde d'ouverture revient à l'activité des comptes (`BANK_OPENING_PART`) :
+          // rangé dans « Finance », il disparaissait de tous les écrans.
+          balance: (key === BANK_OPENING_PART ? num(a.initialBalance) : 0) + ledgerNetFor(a.id, own),
           credit: ownRange.filter(t => t.accountTo === a.id).reduce((s, t) => s + num(t.amount), 0),
           debit: ownRange.filter(t => t.accountFrom === a.id).reduce((s, t) => s + num(t.amount), 0),
           count: ownRange.length,

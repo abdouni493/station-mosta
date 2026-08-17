@@ -47,7 +47,7 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { PartReport } from './bizReporting';
-import { TreasuryReport, TreasuryAccount } from './treasuryReporting';
+import { TreasuryReport, TreasuryAccount, BANK_OPENING_PART, TREASURY_PART_LABEL } from './treasuryReporting';
 import { StockValuation } from './stockValuation';
 import { within } from './period';
 
@@ -323,7 +323,7 @@ export function computeWorkingCapital(
   // banque à une activité qui y avait pourtant versé ses recettes et réglé ses
   // fournisseurs. C'est la ligne du grand livre qui dit à qui est le mouvement
   // (`tx.part`), et la somme des parts rend exactement le solde du compte —
-  // le solde d'ouverture, provoqué par personne, restant à la Finance.
+  // le solde d'ouverture allant à l'activité des comptes (`BANK_OPENING_PART`).
   const bankRows: WCRow[] = treasury.accounts.flatMap(a => a.parts
     .filter(p => p.balance !== 0 || p.credit !== 0 || p.debit !== 0)
     .map(p => {
@@ -339,8 +339,9 @@ export function computeWorkingCapital(
         label: a.name,
         sub: [
           a.accountNumber ? `N° ${a.accountNumber}` : null,
-          p.key === 'systeme'
-            ? `Part Finance · solde d'ouverture ${fmt(a.initialBalance)} compris`
+          p.key === BANK_OPENING_PART
+            ? `Part ${p.label} : ce qu'elle y a versé moins ce qu'elle en a réglé, `
+              + `solde d'ouverture du compte (${fmt(a.initialBalance)}) compris`
             : `Part ${p.label} : ce qu'elle y a versé, moins ce qu'elle en a réglé`,
           p.credit || p.debit
             ? `+${fmt(p.credit)} / −${fmt(p.debit)} sur la période`
@@ -418,8 +419,9 @@ export function computeWorkingCapital(
     + `−${fmt(treasury.bankOut)} sortis, soit ${fmt(treasury.bankTotal)} aujourd'hui sur ${treasury.accounts.length} compte(s). `
     + 'Un compte est COMMUN : c\'est la ligne du grand livre qui dit de quelle activité est le mouvement, et c\'est '
     + 'elle qui répartit le solde. La part d\'une activité, c\'est ce qu\'elle a versé sur le compte moins ce qu\'elle '
-    + 'en a réglé — elle est donc négative quand la station a payé ses achats pour elle. Le solde d\'ouverture des '
-    + 'comptes, provoqué par personne, reste à la Finance. La somme des parts fait exactement le total en banque.');
+    + `en a réglé — elle est donc négative quand la station a payé ses achats pour elle. Le solde d'ouverture des `
+    + `comptes n'a aucune ligne derrière lui : il revient au ${TREASURY_PART_LABEL[BANK_OPENING_PART]}, dont ces `
+    + 'comptes sont ceux. La somme des parts fait exactement le total en banque.');
   const receivables = block('receivables', 'Créances clients', 'Ventes à crédit non encore encaissées', receivableRows, 1);
   const stockBlock = block('stock', 'Stock (carburant & marchandise)',
     'Litres en cuve et marchandise du catalogue, au prix d\'achat', stockRows, 1,
@@ -541,11 +543,20 @@ export function filterWorkingCapital(
   // Le bloc filtré ne porte plus le total en banque mais une PART : la carte et
   // la fenêtre de détail doivent le dire, sinon le chiffre passe pour l'argent
   // de la station.
-  const banks = { ...rebuild(report.banks), label: 'Comptes bancaires — sa part', note: (partKey === 'systeme'
-    ? 'La part des comptes qui revient à la Finance — le solde d\'ouverture compris, puisqu\'aucune activité ne l\'a '
-      + 'provoqué. Le reste des soldes appartient aux activités, chacune sur sa propre ligne.'
-    : 'La part des comptes qui revient à cette activité : ce qu\'elle y a versé, moins ce qu\'elle en a réglé. Elle '
-      + 'est négative quand la station a payé ses achats depuis la banque sans qu\'elle y ait versé autant.')
+  const rebuiltBanks = rebuild(report.banks);
+  // « — sa part » n'a de sens que si une part manque. Quand toute la banque
+  // revient à l'activité regardée, la carte annonçait une part sous un montant
+  // qui était en fait le total : deux mots pour un seul chiffre.
+  const wholeBank = Math.abs(rebuiltBanks.total - report.stationBankTotal) < 0.005;
+  const banks = { ...rebuiltBanks, label: wholeBank ? 'Comptes bancaires' : 'Comptes bancaires — sa part', note: (partKey === 'systeme'
+    ? 'La Finance ne provoque aucun mouvement bancaire : sa part est vide, et c\'est normal. Le solde d\'ouverture '
+      + `des comptes, qui y dormait sans que personne puisse le voir, revient désormais au `
+      + `${TREASURY_PART_LABEL[BANK_OPENING_PART]}.`
+    : partKey === BANK_OPENING_PART
+      ? 'La part des comptes qui revient à cette activité : ce qu\'elle y a versé moins ce qu\'elle en a réglé, ET le '
+        + 'solde d\'ouverture des comptes — ce sont les siens, et il n\'a aucune ligne de grand livre derrière lui.'
+      : 'La part des comptes qui revient à cette activité : ce qu\'elle y a versé, moins ce qu\'elle en a réglé. Elle '
+        + 'est négative quand la station a payé ses achats depuis la banque sans qu\'elle y ait versé autant.')
     + ` La station possède en tout ${fmt(report.stationBankTotal)} en banque, sur ${report.accounts.length} compte(s) : `
     + 'chaque compte est déroulé plus bas avec son solde ENTIER, et la part de cette activité indiquée dessous. Seule '
     + 'cette part entre dans le fonds de roulement de l\'activité — compter le total sur chacune reviendrait à compter '
