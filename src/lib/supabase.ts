@@ -866,6 +866,57 @@ export async function dbDelete(tableName: string, id: string) {
 }
 
 /**
+ * ─── Lire une table ENTIÈRE, quel que soit le plafond du serveur ──────────────
+ *
+ * PostgREST tronque toute réponse à `db-max-rows` (1000 lignes par défaut) et ne
+ * signale rien : la requête réussit, il en manque simplement la fin. Les tables
+ * d'historique — comptabilité de brigade, justifications, transactions client,
+ * ventes magasin — dépassent ce plafond au bout de quelques mois d'exploitation.
+ *
+ * Conséquence observée : l'historique d'un client ne remontait plus que les
+ * toutes dernières opérations. Rien n'était perdu en base ; c'est la lecture qui
+ * s'arrêtait. On pagine donc explicitement, par tranches, jusqu'à ce que le
+ * serveur rende moins d'une tranche pleine.
+ *
+ * `orderBy` sert uniquement à rendre la pagination DÉTERMINISTE : sans ordre
+ * stable, deux tranches peuvent se recouvrir ou sauter des lignes.
+ */
+const PAGE_SIZE = 1000;
+
+export async function dbSelectAll<T>(
+  tableName: string,
+  opts?: { orderBy?: string; ascending?: boolean; eq?: Record<string, unknown> },
+): Promise<T[]> {
+  const orderBy = opts?.orderBy || 'created_at';
+  const ascending = opts?.ascending ?? false;
+  const out: any[] = [];
+
+  for (let page = 0; ; page++) {
+    let q = supabase.from(tableName).select('*');
+    if (opts?.eq) for (const [k, v] of Object.entries(opts.eq)) q = q.eq(k, v as any);
+    // `nullsFirst: false` garde les lignes sans horodatage à la fin plutôt que de
+    // les faire remonter en tête à chaque tranche.
+    q = q.order(orderBy, { ascending, nullsFirst: false })
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+
+    const { data, error } = await q;
+    if (error) {
+      // La colonne d'ordre n'existe pas sur cette table : on retombe sur la
+      // lecture simple plutôt que de faire échouer tout le chargement.
+      if (page === 0 && /column .* does not exist|42703/i.test(error.message || '')) {
+        return dbSelect<T>(tableName, opts?.eq);
+      }
+      console.error(`[dbSelectAll:${tableName}]`, error);
+      throw new Error(`[select ${tableName}] ${error.message}`);
+    }
+    const rows = (data as any[]) || [];
+    out.push(...rows);
+    if (rows.length < PAGE_SIZE) break;
+  }
+  return out as T[];
+}
+
+/**
  * Lecture d'une table. Une lecture qui échoue LÈVE au lieu de rendre une liste
  * vide : renvoyer `[]` faisait passer une panne réseau ou une règle RLS pour
  * « il n'y a rien », l'écran se vidait, et l'utilisateur croyait ses données
@@ -1028,7 +1079,7 @@ export const db = {
   markPaymentPaid: async (paymentId: string) => dbUpdate('worker_payment_records', paymentId, { is_paid: true }),
 
   // Brigades
-  getBrigades:   () => dbSelect('brigades'),
+  getBrigades:   () => dbSelectAll('brigades'),
   addBrigade:    (b: object) => dbInsert('brigades', b),
   updateBrigade: (id: string, b: object) => dbUpdate('brigades', id, b),
   deleteBrigade: (id: string) => dbDelete('brigades', id),
@@ -1038,7 +1089,7 @@ export const db = {
   getDecalageHistory: (pompisteId: string) => dbSelect('pompiste_decalage_history', { pompiste_id: pompisteId }),
 
   // Brigade Accounting
-  getBrigadeAccountings: () => dbSelect('brigade_accounting'),
+  getBrigadeAccountings: () => dbSelectAll('brigade_accounting'),
   addBrigadeAccounting: (a: object) => dbInsert('brigade_accounting', a),
   updateBrigadeAccounting: (id: string, a: object) => dbUpdate('brigade_accounting', id, a),
   getBrigadeAccountingJustifications: (accountingId: string) =>

@@ -34,7 +34,7 @@ import {
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Select, money, formatDate,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
-import { ContactModal, PayDebtModal, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
+import { ContactModal, PayDebtModal, PayDebtMeta, withPayment, seedPayments, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
 
 const KIND_META: Record<BizRepKind, { label: string; icon: React.ElementType }> = {
   reparation: { label: 'Réparation', icon: Wrench },
@@ -117,10 +117,9 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
     () => (toDelete ? describeRestock(biz.state, toDelete.usedProducts || []) : ''),
     [toDelete, biz.state]);
 
-  const onPay = (amount: number) => {
+  const onPay = (amount: number, meta: PayDebtMeta) => {
     if (!paying) return;
-    const paid = Math.min(paying.total, paying.paid + amount);
-    biz.update('reparations', { ...paying, paid, rest: Math.max(0, paying.total - paid) });
+    biz.update('reparations', withPayment(paying, amount, meta));
     toast.success('Paiement enregistré'); setPaying(null);
   };
 
@@ -616,6 +615,9 @@ function ReparationForm({
     const status: BizReparation['status'] = pending ? 'pending' : 'finalized';
     const finalKind = kindOfPrestations(cleanLines, kind);
     const prefix = finalKind === 'lavage' ? 'LAV' : finalKind === 'reparation' ? 'REP' : 'INT';
+    // Une intervention éditée garde SA date : c'est elle qui date aussi son
+    // encaissement d'origine dans le relevé du client.
+    const repDate = initial?.date || new Date().toISOString();
     const rep: BizReparation = {
       id: initial?.id || newId(),
       ref: initial?.ref || `${prefix}-${String(biz.state.reparations.length + 1).padStart(4, '0')}`,
@@ -632,7 +634,8 @@ function ReparationForm({
       discountValue: discountMode === 'none' ? undefined : Number(discountStr) || 0,
       discountAmount,
       total, paid, rest, status,
-      date: initial?.date || new Date().toISOString(),
+      date: repDate,
+      payments: seedPayments(initial?.payments, paid, repDate, initial?.createdBy),
       outDate: initial?.outDate,
       workers: Array.from(new Set(cleanLines.flatMap(l => l.workerIds))),
       createdBy: initial?.createdBy || 'Admin',

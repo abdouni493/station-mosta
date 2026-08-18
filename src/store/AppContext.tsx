@@ -12,7 +12,7 @@ import React, {
 import { ToastMessage, ToastType } from '../components/Toast';
 import {
   db, supabase, subscribeTable, uploadFile, uploadBase64, BUCKETS,
-  onRealtimeHealthChange, readPersistedSession,
+  onRealtimeHealthChange, readPersistedSession, dbSelectAll,
 } from '../lib/supabase';
 import type { RealtimeHealth } from '../lib/supabase';
 import { newId, degreesFromLiters } from '../lib/utils';
@@ -1736,7 +1736,10 @@ async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccoun
   const accountingsRaw = await db.getBrigadeAccountings().catch(() => []);
   const accountings = ((accountingsRaw as any[]) || []).map(mapBrigadeAccounting);
   if (accountings.length > 0) {
-    const { data: justifRaw } = await supabase.from('brigade_accounting_justifications').select('*');
+    // Lecture PAGINÉE : au-delà du plafond du serveur, les justifications les
+    // plus anciennes ne remontaient plus — et l'historique d'un client se
+    // réduisait alors aux dernières brigades chargées.
+    const justifRaw = await dbSelectAll<any>('brigade_accounting_justifications');
     ((justifRaw ?? []) as any[]).forEach((jr: any) => {
       const acct = accountings.find(a => a.id === jr.accounting_id);
       if (!acct) return;
@@ -2659,7 +2662,9 @@ async function refetchEntityAfterAction(
       case 'ADD_CLIENT_PAYMENT': case 'ADD_CLIENT_APPOINTMENT': {
         const raw = await db.getClients();
         const apptRaw = await supabase.from('client_appointments').select('*').then(r => r.data ?? []);
-        const txRaw   = await supabase.from('client_transactions').select('*').order('created_at', { ascending: false }).limit(500).then(r => r.data ?? []);
+        // Tout l'historique, sans plafond : un règlement d'il y a deux ans reste
+        // une ligne du compte du client.
+        const txRaw   = await dbSelectAll<any>('client_transactions');
         const clients = (raw as any[]).map(c => {
           const m = mapClient(c);
           m.appointments      = (apptRaw as any[]).filter(a => a.client_id === c.id).map(a => ({ id: a.id, saleId: a.sale_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
@@ -2694,14 +2699,14 @@ async function refetchEntityAfterAction(
       }
       // ── Fuel Sales ────────────────────────────────────────────────────────
       case 'ADD_FUEL_SALE': case 'UPDATE_FUEL_SALE': case 'DELETE_FUEL_SALE': {
-        const { data } = await supabase.from('fuel_sales').select('*').order('created_at', { ascending: false }).limit(500);
-        dispatch({ type: 'HYDRATE', payload: { fuelSales: ((data ?? []) as any[]).map(mapFuelSale) } });
+        const data = await dbSelectAll<any>('fuel_sales');
+        dispatch({ type: 'HYDRATE', payload: { fuelSales: (data as any[]).map(mapFuelSale) } });
         break;
       }
       // ── Shop Sales ────────────────────────────────────────────────────────
       case 'ADD_SHOP_SALE': case 'UPDATE_SHOP_SALE': case 'DELETE_SHOP_SALE': {
-        const { data: salesData } = await supabase.from('shop_sales').select('*').order('created_at', { ascending: false }).limit(500);
-        const { data: itemsData } = await supabase.from('shop_sale_items').select('*');
+        const salesData = await dbSelectAll<any>('shop_sales');
+        const itemsData = await dbSelectAll<any>('shop_sale_items');
         if (salesData) {
           const shopSales = (salesData as any[]).map(s => {
             const m = mapShopSale(s);
@@ -3063,12 +3068,10 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         ] = await Promise.all([
           // Large tables — capped at 500 most-recent rows
           safeQ('Fuel Sales', async () => {
-            const { data, error } = await supabase.from('fuel_sales').select('*').order('created_at', { ascending: false }).limit(500);
-            if (error) throw error; return data ?? [];
+            return dbSelectAll<any>('fuel_sales');
           }),
           safeQ('Shop Sales', async () => {
-            const { data, error } = await supabase.from('shop_sales').select('*').order('created_at', { ascending: false }).limit(500);
-            if (error) throw error; return data ?? [];
+            return dbSelectAll<any>('shop_sales');
           }),
           safeQ('Delivery Notes', () => db.getDeliveryNotes()),
           safeQ('Purchases', async () => {
@@ -3108,10 +3111,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
             const { data, error } = await supabase.from('purchase_payments').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Shop Sale Items', async () => {
-            const { data, error } = await supabase.from('shop_sale_items').select('*');
-            if (error) throw error; return data ?? [];
-          }),
+          safeQ('Shop Sale Items', () => dbSelectAll<any>('shop_sale_items', { orderBy: 'sale_id', ascending: true })),
           // Client / Supplier sub-records
           safeQ('Supplier Appointments', async () => {
             const { data, error } = await supabase.from('supplier_appointments').select('*');
@@ -3121,14 +3121,8 @@ export const AppProvider = ({ children }: AppProviderProps) => {
             const { data, error } = await supabase.from('supplier_debt_payments').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Client Appointments', async () => {
-            const { data, error } = await supabase.from('client_appointments').select('*');
-            if (error) throw error; return data ?? [];
-          }),
-          safeQ('Client Transactions', async () => {
-            const { data, error } = await supabase.from('client_transactions').select('*').order('created_at', { ascending: false }).limit(1000);
-            if (error) throw error; return data ?? [];
-          }),
+          safeQ('Client Appointments', () => dbSelectAll<any>('client_appointments')),
+          safeQ('Client Transactions', () => dbSelectAll<any>('client_transactions')),
           safeQ('Delivery Note Items', async () => {
             const { data, error } = await supabase.from('delivery_note_items').select('*');
             if (error) throw error; return data ?? [];
@@ -3362,12 +3356,12 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         return { brigades: (raw as any[]).map(b => { const m = mapBrigade(b); m.pompisteIds = (assignRaw as any[]).filter(a => a.brigade_id === b.id).map(a => a.pompiste_id); return m; }), brigadeAccountings };
       },
       fuel_sales: async () => {
-        const { data } = await supabase.from('fuel_sales').select('*').order('created_at', { ascending: false }).limit(500);
-        return { fuelSales: ((data ?? []) as any[]).map(mapFuelSale) };
+        const data = await dbSelectAll<any>('fuel_sales');
+        return { fuelSales: (data as any[]).map(mapFuelSale) };
       },
       shop_sales: async () => {
-        const { data } = await supabase.from('shop_sales').select('*').order('created_at', { ascending: false }).limit(500);
-        return { shopSales: ((data ?? []) as any[]).map(mapShopSale) };
+        const data = await dbSelectAll<any>('shop_sales');
+        return { shopSales: (data as any[]).map(mapShopSale) };
       },
       delivery_notes: async () => {
         // Rebuild WITH sub-records — a lossy refetch here would drop `items`,

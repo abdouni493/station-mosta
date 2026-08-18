@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { 
   Plus, 
@@ -36,7 +36,8 @@ import {
   ChevronDown,
   Loader2,
   MoreVertical,
-  Mail
+  Mail,
+  FileBarChart
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, matchesSearch } from "@/src/lib/utils";
@@ -46,6 +47,8 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import { printPaymentReceipt, stationFromSettings } from "./modules/_shared";
 import { clientLedger, advanceAvailable, advanceColumnsDisagree, ClientEntry } from "../lib/clientLedger";
+import { fuelClientStatement } from "../lib/clientStatement";
+import ClientReportModal from "../components/biz/ClientReportModal";
 
 /** Receipt number of a debt payment, derived from its transaction id. */
 const receiptRef = (txId: string) => `REG-${txId.slice(0, 8).toUpperCase()}`;
@@ -102,6 +105,8 @@ const Clients = () => {
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [selectedSale, setSelectedSale] = useState<any>(null);
   const [activeTab, setActiveTab] = useState("resume");
+  /** Client dont on édite le relevé de compte sur une période choisie. */
+  const [reportClient, setReportClient] = useState<Client | null>(null);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -548,6 +553,15 @@ const Clients = () => {
     });
   }, [ledger, historyFilter, historySearch]);
 
+  /**
+   * Le relevé de compte du client, borné à la période demandée par le rapport.
+   * Il repart des mêmes pièces que le journal : ce qui s'imprime est exactement
+   * ce que l'écran montre, jamais un second calcul.
+   */
+  const buildReport = useCallback(
+    (from: string, to: string) => fuelClientStatement(state, reportClient, from, to),
+    [state, reportClient]);
+
   /** L'avance encore disponible — la même règle que la liste des clients. */
   const advanceLeft = advanceAvailable(selectedClient);
   /**
@@ -768,10 +782,16 @@ const Clients = () => {
                               </button>
                             )}
                             <button
-                              onClick={() => { setSelectedClient(c); setActiveTab("reglements"); setShowDetail(true); setActionMenuOpen(null); }}
+                              onClick={() => { setSelectedClient(c); setActiveTab("historique"); setShowDetail(true); setActionMenuOpen(null); }}
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                             >
-                              <History className="w-4 h-4 text-slate-500" /> Historique Règlements
+                              <History className="w-4 h-4 text-slate-500" /> Historique Complet
+                            </button>
+                            <button
+                              onClick={() => { setReportClient(c); setActionMenuOpen(null); }}
+                              className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-blue-900 hover:bg-blue-50 flex items-center gap-3 transition-colors"
+                            >
+                              <FileBarChart className="w-4 h-4 text-blue-600" /> Générer un Rapport
                             </button>
                             {perm.supprimer && (
                             <button
@@ -935,7 +955,8 @@ const Clients = () => {
                               <DollarSign className="w-3.5 h-3.5 text-yellow-300" /> Payer
                             </button>
                           )}
-                          <button onClick={() => { setSelectedClient(c); setActiveTab("reglements"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-emerald-600 transition-all border border-transparent hover:border-slate-200" title="Historique des règlements"><History className="w-4 h-4" /></button>
+                          <button onClick={() => { setSelectedClient(c); setActiveTab("historique"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-emerald-600 transition-all border border-transparent hover:border-slate-200" title="Historique complet du compte"><History className="w-4 h-4" /></button>
+                          <button onClick={() => setReportClient(c)} className="p-2.5 hover:bg-blue-50 rounded-xl text-slate-300 hover:text-blue-700 transition-all border border-transparent hover:border-blue-100" title="Générer un rapport sur une période"><FileBarChart className="w-4 h-4" /></button>
                           <button onClick={() => { setSelectedClient(c); setActiveTab("resume"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-900 transition-all border border-transparent hover:border-slate-200" title="Détails"><Eye className="w-4 h-4" /></button>
                           {perm.modifier && <button onClick={() => { setSelectedClient(c); setClientForm(c); setShowModal(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-600 transition-all border border-transparent hover:border-slate-200" title="Modifier"><Edit2 className="w-4 h-4" /></button>}
                           {perm.supprimer && <button onClick={() => setClientToDelete(c)} className="p-2.5 hover:bg-red-50 rounded-xl text-slate-200 hover:text-red-600 transition-all border border-transparent hover:border-red-100" title="Supprimer"><Trash2 className="w-4 h-4" /></button>}
@@ -1367,9 +1388,23 @@ const Clients = () => {
                           {" "}{ledger.counts.magasin} magasin · {ledger.counts.reglements} règlement(s) ·
                           {" "}{ledger.counts.recharges} recharge(s)
                         </p>
+                        {/* La portée du journal est dite : depuis la toute première
+                            opération du compte, sans aucune limite de date. */}
+                        <p className="text-[9px] font-bold text-slate-300 mt-0.5 not-italic normal-case tracking-normal">
+                          {ledger.entries.length > 0
+                            ? `Depuis le ${new Date(ledger.entries[ledger.entries.length - 1].date).toLocaleDateString()} — historique intégral, toutes périodes confondues`
+                            : "Historique intégral — aucune opération enregistrée pour l'instant"}
+                        </p>
                       </div>
 
                       <div className="flex gap-4 items-center w-full md:w-auto">
+                        <button
+                          onClick={() => setReportClient(selectedClient)}
+                          title="Générer un rapport sur une période"
+                          className="px-4 py-2.5 bg-blue-900 hover:bg-blue-800 text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-2 shrink-0 shadow-sm"
+                        >
+                          <FileBarChart className="w-4 h-4 text-yellow-400" /> Rapport
+                        </button>
                         <div className="relative flex-1 md:w-64">
                           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
                           <input type="text" placeholder="Filtrer..." value={historySearch} onChange={e => setHistorySearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-none rounded-xl text-[9px] font-black uppercase tracking-widest outline-none text-blue-900" />
@@ -2078,6 +2113,18 @@ const Clients = () => {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Relevé de compte imprimable, sur la période choisie par l'utilisateur. */}
+      {reportClient && (
+        <ClientReportModal
+          open
+          onClose={() => setReportClient(null)}
+          build={buildReport}
+          settings={settings}
+          clientName={reportClient.name}
+          partLabel="Carburant"
+        />
+      )}
 
       {/* Delete confirmation dialog */}
       <ConfirmDialog 

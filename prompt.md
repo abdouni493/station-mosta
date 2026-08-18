@@ -163,3 +163,5 @@ make it add that prime to that final amount to pay
 fix the interface design of payment button action interface make sure to make it bigger and make it better design and colors and make it more organized with this new updates and make sure to make it large like the interface of creation new brigade and like the interface of create the purchase of carburant and products purchase
 
 
+fix the interface of client history for each part for carburant and cafeteria and lavage fix it make it display all the history for all the time for each client not just the current date 
+then create new option on the interface of button action of history let user can generate report with set starting date and ending date and let him generate the repport with possibility of print it make sure to make it display all the transactions and sells and payement and the total payement and rest and all the small details and make the design exactly like the template of print fiche journlaier then push all updates to repo

@@ -92,10 +92,17 @@ const modalSizes: Record<string, string> = {
   '3xl': 'max-w-5xl',
 };
 export function Modal({
-  open, onClose, title, subtitle, icon: Icon, size = 'md', formScale, fullHeight, children, footer,
+  open, onClose, title, subtitle, icon: Icon, size = 'md', formScale, fullHeight, zClass, children, footer,
 }: {
   open: boolean; onClose: () => void; title: string; subtitle?: string; icon?: React.ElementType;
   size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl';
+  /**
+   * Plan de superposition. Une boîte ouverte PAR-DESSUS une autre doit passer
+   * au-dessus d'elle : les écrans historiques montent jusqu'à `z-[80]`, donc un
+   * dialogue lancé depuis l'un d'eux doit le dire ici, sinon il s'ouvre derrière
+   * et paraît ne pas répondre.
+   */
+  zClass?: string;
   /**
    * Long data-entry workspaces (achats, ventes…) opt into the larger control
    * scale: taller inputs, bigger labels and full-width actions on a phone.
@@ -116,7 +123,7 @@ export function Modal({
     <ModalPortal>
     <AnimatePresence>
       {open && (
-        <div className="modal-shell z-[60]">
+        <div className={cn('modal-shell', zClass || 'z-[60]')}>
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}

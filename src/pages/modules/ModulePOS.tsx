@@ -322,6 +322,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       }
       : { productId: l.id, productName: l.name, qty: l.qty, unitPrice: l.unitPrice, unitCost: l.unitCost, total: l.qty * l.unitPrice });
 
+    const soldAt = new Date().toISOString();
     const sale: BizSale = {
       id: newId(), ref: `V-${String(biz.state.sales.length + 1).padStart(4, '0')}`,
       clientId: passage ? undefined : clientId,
@@ -331,7 +332,12 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       discountType: discountMode === 'none' ? undefined : discountMode,
       discountValue: discountMode === 'none' ? undefined : Number(discountStr) || 0,
       total, paid, rest,
-      date: new Date().toISOString(), status: rest > 0 ? 'crédit' : 'payée',
+      date: soldAt, status: rest > 0 ? 'crédit' : 'payée',
+      // L'encaissement du comptoir est daté dès la vente : le relevé du client
+      // n'a alors rien à reconstruire.
+      payments: paid > 0
+        ? [{ id: newId(), date: soldAt, amount: paid, mode: 'Espèces', by: currentUserName || 'Admin' }]
+        : undefined,
       createdBy: currentUserName || 'Admin',
       sessionId: mySession.id,
       workerId: mySession.workerId,

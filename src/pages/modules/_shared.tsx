@@ -15,7 +15,7 @@ import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
 import { useAppState } from '@/src/store/AppContext';
-import { BizProduct, BizContact } from '@/src/lib/bizConfig';
+import { BizProduct, BizContact, BizDocPayment } from '@/src/lib/bizConfig';
 import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import { uploadFile } from '@/src/lib/supabase';
@@ -698,22 +698,53 @@ export function useProductSearch(products: BizProduct[], query: string) {
 }
 
 // ─── PayDebtModal ───────────────────────────────────────────────────────────────
+/** Ce qu'un encaissement porte en plus de son montant. */
+export interface PayDebtMeta {
+  /** Espèces, Chèque, TPE, Virement. */
+  mode: string;
+  /** Numéro de chèque, de bordereau ou de transaction. */
+  reference?: string;
+  /** Date de l'encaissement, `YYYY-MM-DD` — aujourd'hui par défaut. */
+  date: string;
+}
+
+/** Modes proposés à la caisse d'une partie. */
+export const PAY_MODES = ['Espèces', 'Chèque', 'TPE', 'Virement'] as const;
+
+const todayISO = () => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+
 export function PayDebtModal({
   open, onClose, total, alreadyPaid, onPay, title = 'Payer la dette',
 }: {
   open: boolean; onClose: () => void; total: number; alreadyPaid: number;
-  onPay: (amount: number) => void; title?: string;
+  /**
+   * `meta` porte le mode, la référence et la DATE de l'encaissement : sans elle
+   * un relevé de compte ne peut pas dire quand l'argent est entré.
+   */
+  onPay: (amount: number, meta: PayDebtMeta) => void;
+  title?: string;
 }) {
   const rest = Math.max(0, total - alreadyPaid);
   const [amount, setAmount] = useState<number>(rest);
-  React.useEffect(() => { setAmount(rest); }, [rest, open]);
+  const [mode, setMode] = useState<string>('Espèces');
+  const [reference, setReference] = useState('');
+  const [date, setDate] = useState<string>(todayISO());
+  React.useEffect(() => {
+    setAmount(rest); setMode('Espèces'); setReference(''); setDate(todayISO());
+  }, [rest, open]);
   const newRest = Math.max(0, rest - (Number(amount) || 0));
 
   return (
     <Modal open={open} onClose={onClose} icon={Wallet} size="lg" formScale title={title} subtitle="Encaissement d'un règlement partiel ou total"
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={() => { if (amount > 0) onPay(Number(amount)); }} disabled={!amount || amount <= 0}>Enregistrer le paiement</button>
+        <button className="btn-primary" disabled={!amount || amount <= 0}
+          onClick={() => { if (amount > 0) onPay(Number(amount), { mode, reference: reference.trim() || undefined, date }); }}>
+          Enregistrer le paiement
+        </button>
       </>}>
       <div className="space-y-4">
         <div className="grid grid-cols-3 gap-2 sm:gap-3">
@@ -725,6 +756,19 @@ export function PayDebtModal({
           <Input type="number" inputMode="decimal" value={amount}
             onChange={e => setAmount(Number(e.target.value))} max={rest} className="text-right" />
         </Field>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Field label="Mode de règlement">
+            <Select value={mode} onChange={e => setMode(e.target.value)}>
+              {PAY_MODES.map(m => <option key={m} value={m}>{m}</option>)}
+            </Select>
+          </Field>
+          <Field label="Référence (chèque, bordereau…)">
+            <Input value={reference} onChange={e => setReference(e.target.value)} placeholder="Optionnel" />
+          </Field>
+          <Field label="Date de l'encaissement">
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} />
+          </Field>
+        </div>
         <div className="rounded-2xl bg-[#001f5c] text-white p-4 sm:p-5 flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-semibold text-blue-200">Nouveau reste</span>
           <span className="text-2xl font-black tabular-nums text-[#FFB800]">{fc(newRest)}</span>
@@ -732,6 +776,58 @@ export function PayDebtModal({
       </div>
     </Modal>
   );
+}
+
+/**
+ * Les versements d'un document au moment où il est ENREGISTRÉ (création, ou
+ * édition qui change le montant déjà payé).
+ *
+ * Tant que la somme des versements connus colle au cumul `paid`, on les garde
+ * intacts — une édition de libellé ne doit pas réécrire l'histoire des
+ * encaissements. Dès qu'elle ne colle plus, l'ancien détail ne décrit plus ce
+ * document : il est remplacé par UN versement à la date du document, ce qui est
+ * exactement ce que l'on sait de lui.
+ */
+export function seedPayments(
+  previous: BizDocPayment[] | undefined, paid: number, date: string, by?: string,
+): BizDocPayment[] | undefined {
+  const known = Array.isArray(previous) ? previous : [];
+  const sum = known.reduce((t, x) => t + (Number(x.amount) || 0), 0);
+  if (known.length && Math.abs(sum - paid) < 0.005) return known;
+  if (paid <= 0) return undefined;
+  return [{ id: newId(), date, amount: paid, mode: 'Espèces', by }];
+}
+
+/**
+ * Ajoute un versement DATÉ à un document (vente ou intervention) et remet à jour
+ * son cumul `paid`.
+ *
+ * Les documents antérieurs n'avaient qu'un cumul : le premier appel le reprend
+ * comme versement d'origine, à la date du document, pour que la somme des
+ * versements soit toujours égale à `paid` — sinon le relevé encaisserait deux
+ * fois le même argent.
+ */
+export function withPayment<T extends { id: string; date: string; total: number; paid: number; payments?: BizDocPayment[] }>(
+  doc: T, amount: number, meta: PayDebtMeta, by?: string,
+): T & { paid: number; rest: number; payments: BizDocPayment[] } {
+  const existing: BizDocPayment[] = Array.isArray(doc.payments) ? [...doc.payments] : [];
+  if (!existing.length && doc.paid > 0) {
+    existing.push({ id: `${doc.id}-p0`, date: doc.date, amount: doc.paid, mode: 'Espèces' });
+  }
+  const paid = Math.min(doc.total, doc.paid + amount);
+  // Le versement réellement ajouté ne peut pas dépasser ce qui restait dû.
+  const applied = paid - doc.paid;
+  if (applied > 0) {
+    existing.push({
+      id: newId(),
+      date: `${meta.date}T${new Date().toTimeString().slice(0, 8)}`,
+      amount: applied,
+      mode: meta.mode,
+      reference: meta.reference,
+      by,
+    });
+  }
+  return { ...doc, paid, rest: Math.max(0, doc.total - paid), payments: existing };
 }
 
 // ─── Invoice print helper ───────────────────────────────────────────────────────

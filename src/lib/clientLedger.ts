@@ -61,6 +61,25 @@ export interface ClientEntry {
   pricePerLiter?: number;
   /** Reste dû sur une facture magasin. */
   rest?: number;
+  /** Ce que le document a déjà encaissé (part réglée sur place). */
+  paidOnDocument?: number;
+  /** Numéro du document d'origine, quand il en porte un. */
+  ref?: string;
+  /**
+   * Le détail article par article du document — c'est lui que le relevé
+   * imprimé déplie sous chaque ligne : sans lui, un « Vente magasin — 4
+   * article(s) » ne se vérifie pas.
+   */
+  items?: ClientEntryItem[];
+}
+
+/** Une ligne de détail d'un document du compte client. */
+export interface ClientEntryItem {
+  name: string;
+  qty: number;
+  unit?: string;
+  unitPrice: number;
+  total: number;
 }
 
 export interface ClientLedger {
@@ -133,6 +152,14 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
         liters: liters || undefined,
         fuelType: j.fuelType,
         pricePerLiter: num(j.pricePerLiter) || undefined,
+        ref: brigade ? `BRG-${(brigade.date || date || '').slice(0, 10)}-${brigade.shift || ''}`.replace(/-$/, '') : undefined,
+        items: liters > 0 ? [{
+          name: j.fuelType || 'Carburant',
+          qty: liters,
+          unit: 'L',
+          unitPrice: num(j.pricePerLiter) || (liters ? amount / liters : 0),
+          total: amount,
+        }] : undefined,
       });
     }
   }
@@ -157,6 +184,14 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
       reference: s.bonNumber || s.chequeNumber,
       notes: s.notes,
       rest,
+      paidOnDocument: paidOnSale,
+      ref: s.bonNumber || undefined,
+      items: (s.items || []).map((it: any) => ({
+        name: it.productName || 'Article',
+        qty: num(it.quantity),
+        unitPrice: num(it.price),
+        total: num(it.quantity) * num(it.price),
+      })),
     });
   }
 

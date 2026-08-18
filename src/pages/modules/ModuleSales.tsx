@@ -21,7 +21,7 @@ import {
   formatDate, formatDateTime, formatTime,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
-import { PayDebtModal, printInvoice, stationFromSettings } from './_shared';
+import { PayDebtModal, PayDebtMeta, withPayment, seedPayments, printInvoice, stationFromSettings } from './_shared';
 
 export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
@@ -97,10 +97,12 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
   const deleteImpact = useMemo(
     () => (toDelete && !isReversedSale(toDelete) ? describeRestock(biz.state, toDelete.items) : ''),
     [toDelete, biz.state]);
-  const onPay = (amount: number) => {
+  const onPay = (amount: number, meta: PayDebtMeta) => {
     if (!paying) return;
-    const paid = Math.min(paying.total, paying.paid + amount);
-    biz.update('sales', { ...paying, paid, rest: Math.max(0, paying.total - paid), status: paying.total - paid > 0 ? 'crédit' : 'payée' });
+    // `withPayment` ajoute le versement daté ET recalcule paid/rest : le relevé
+    // de compte peut alors dire quand l'argent est entré, et par quel moyen.
+    const next = withPayment(paying, amount, meta);
+    biz.update('sales', { ...next, status: next.rest > 0 ? 'crédit' : 'payée' });
     toast.success('Paiement enregistré'); setPaying(null);
   };
 
@@ -554,7 +556,14 @@ function EditSale({ moduleKey, sale, onClose }: { moduleKey: ModuleKey; sale: Bi
   const total = Math.max(0, sale.subtotal - reduction);
   const save = () => {
     const client = clients.find(c => c.id === clientId);
-    biz.update('sales', { ...sale, clientId: clientId || undefined, clientName: client?.name || 'Client de passage', reduction, total, paid, rest: Math.max(0, total - paid), status: total - paid > 0 ? 'crédit' : 'payée' });
+    biz.update('sales', {
+      ...sale, clientId: clientId || undefined, clientName: client?.name || 'Client de passage',
+      reduction, total, paid, rest: Math.max(0, total - paid),
+      status: total - paid > 0 ? 'crédit' : 'payée',
+      // Le détail des encaissements ne survit que s'il colle encore au montant
+      // payé : sinon il décrirait une facture qui n'existe plus.
+      payments: seedPayments(sale.payments, paid, sale.date, sale.createdBy),
+    });
     toast.success('Vente modifiée'); onClose();
   };
   return (

@@ -188,6 +188,29 @@ export interface BizPurchase {
   useAverageCost?: boolean;
 }
 
+/**
+ * Un versement DATÉ sur un document (vente ou intervention).
+ *
+ * `paid` ne disait que le cumul : impossible de savoir quand l'argent était
+ * entré, donc impossible de sortir un relevé « du 1er au 31 » honnête. Chaque
+ * encaissement laisse maintenant sa trace. Les documents antérieurs n'en ont
+ * pas : le relevé les lit alors comme un versement unique à la date du
+ * document, en le signalant (voir `lib/clientStatement.ts`).
+ */
+export interface BizDocPayment {
+  id: string;
+  /** Horodatage de l'encaissement. */
+  date: string;
+  amount: number;
+  /** Espèces, chèque, TPE, virement… tel que choisi à la caisse. */
+  mode?: string;
+  /** Numéro de chèque, de bordereau ou de transaction. */
+  reference?: string;
+  notes?: string;
+  /** Qui a encaissé. */
+  by?: string;
+}
+
 export interface BizSale {
   id: string;
   ref: string;
@@ -223,6 +246,8 @@ export interface BizSale {
   exchangedIntoSaleId?: string;
   /** Difference settled at exchange time (>0 client pays, <0 station refunds). */
   exchangeDelta?: number;
+  /** Les encaissements de cette facture, dans l'ordre où ils sont tombés. */
+  payments?: BizDocPayment[];
 }
 
 /**
@@ -636,6 +661,8 @@ export interface BizReparation {
   printedAt?: string;
   /** Payment already settled to the percentage-paid workers of this job. */
   payrollSettled?: boolean;
+  /** Les encaissements de cette intervention, dans l'ordre où ils sont tombés. */
+  payments?: BizDocPayment[];
 }
 
 /** Money actually deducted by a remise, clamped to the subtotal. */
