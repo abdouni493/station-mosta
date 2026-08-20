@@ -14,7 +14,7 @@
  *   npx tsx src/lib/clientLedger.test.ts
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { clientLedger } from './clientLedger';
+import { clientLedger, clientLedgers, clientChargeDelta } from './clientLedger';
 import { computeCarburantCash } from './carburantSales';
 
 let passed = 0, failed = 0;
@@ -123,6 +123,168 @@ check('le règlement par chèque reste en dehors',
   cash.lines.some(l => l.id === 'cli-TX2'), false);
 check('solde de la caisse Carburant', cash.balance, 23_000);
 check('chaque ligne se relit', cash.lines.reduce((s, l) => s + l.amount, 0), cash.balance);
+
+/**
+ * L'ombre d'un bon.
+ *
+ * La comptabilité de brigade écrivait, à côté de chaque justification, une
+ * ligne « SALE » dans l'historique du client. Le journal comptait alors DEUX
+ * fois le même bon : la pièce, puis sa copie. Et pour un client sur avance la
+ * copie partait à la DETTE — une dette égale à tout ce qu'il avait déjà payé
+ * d'avance.
+ */
+console.log("");
+console.log("L'ombre d'un bon ne le compte pas deux fois");
+{
+  const withShadows = {
+    ...app,
+    clients: [
+      {
+        ...app.clients[0],
+        transactionHistory: [
+          ...app.clients[0].transactionHistory,
+          // Les copies des deux bons de CL1, écrites à la clôture des brigades.
+          { id: 'SH-J1', date: '2026-08-10', type: 'SALE', amount: 6_000, mode: 'CREDIT', notes: 'Brigade 2026-08-10 Matin' },
+          { id: 'SH-J4', date: '2026-08-12', type: 'SALE', amount: 4_000, mode: 'CREDIT', notes: 'Brigade 2026-08-12 Soir' },
+        ],
+      },
+      {
+        ...app.clients[1],
+        transactionHistory: [
+          ...app.clients[1].transactionHistory,
+          { id: 'SH-J2', date: '2026-08-10', type: 'SALE', amount: 5_000, mode: 'ADVANCE', notes: 'Brigade 2026-08-10 Matin' },
+        ],
+      },
+    ],
+  };
+  const l1 = clientLedger(withShadows, 'CL1');
+  check('le journal ne double pas', l1.entries.length, 5);
+  check('les deux ombres sont écartées', l1.shadowsDropped, 2);
+  check('la consommation reste celle des pièces', l1.charged, 13_000);
+  check('la dette aussi', l1.debtFromDocuments, 7_000);
+
+  const l2 = clientLedger(withShadows, 'CL2');
+  check("l'ombre d'un bon sur avance est écartée", l2.shadowsDropped, 1);
+  check('aucune dette inventée au client sur avance', l2.debtFromDocuments, 0);
+  check('sa consommation reste celle de son bon', l2.charged, 5_000);
+}
+
+/**
+ * Une consommation dont la brigade a disparu garde sa ligne — mais avec son
+ * effet RÉEL : prise sur l'avance, elle ne doit rien à personne.
+ */
+console.log("");
+console.log('Une consommation orpheline garde son effet réel');
+{
+  const orphan = {
+    ...app,
+    brigadeAccountings: [],
+    clients: [{
+      ...app.clients[1],
+      transactionHistory: [
+        { id: 'TX3', date: '2026-08-01', type: 'RECHARGE', amount: 20_000, mode: 'ESPECES' },
+        { id: 'ORP', date: '2026-08-10', type: 'SALE', amount: 5_000, mode: 'ADVANCE', notes: 'Brigade effacée' },
+      ],
+    }],
+  };
+  const l = clientLedger(orphan, 'CL2');
+  check('la ligne est conservée', l.entries.length, 2);
+  check('rien à écarter, la pièce a disparu', l.shadowsDropped, 0);
+  check("elle sort de l'avance", l.chargedOnAdvance, 5_000);
+  check('et ne crée aucune dette', l.debtFromDocuments, 0);
+}
+
+console.log("");
+console.log("L'encours enregistré se compare aux pièces");
+{
+  const l = clientLedger(app, 'CL1');
+  check('la colonne `debt` est rendue telle quelle', l.recordedDebt, 9_000);
+  check('et son écart avec les pièces est dit', l.debtGap, 2_000);
+  check('première opération', l.firstDate.slice(0, 10), '2026-08-10');
+  check('dernière opération', l.lastDate.slice(0, 10), '2026-08-21');
+}
+
+/**
+ * Rouvrir une comptabilité de brigade ne doit reporter que la DIFFÉRENCE :
+ * enregistrée à l'identique, elle ne bouge aucun compte.
+ */
+console.log("");
+console.log('Une comptabilité rouverte ne recharge pas les comptes');
+{
+  const before = [
+    { clientId: 'CL1', amount: 6_000, justificationType: 'CLIENT', paymentMode: 'CREDIT' },
+    { clientId: '', amount: 12_000, justificationType: 'TPE' },
+  ];
+  check("enregistrement à l'identique : aucun mouvement",
+    clientChargeDelta(before, before).size, 0);
+  check('un bon porté de 6 000 à 8 000 ne reporte que 2 000',
+    clientChargeDelta(before, [{ clientId: 'CL1', amount: 8_000, justificationType: 'CLIENT', paymentMode: 'CREDIT' }]).get('CL1')?.credit, 2_000);
+  check('un bon retiré rend son montant au client',
+    clientChargeDelta(before, []).get('CL1')?.credit, -6_000);
+  check("un TPE n'entre dans le compte de personne",
+    clientChargeDelta([], [{ clientId: 'CL9', amount: 3_000, justificationType: 'TPE' }]).size, 0);
+  check('une première clôture reporte tout',
+    clientChargeDelta(undefined, before).get('CL1')?.credit, 6_000);
+
+  // Le mode de la JUSTIFICATION décide, pas la fiche du client — et les deux
+  // écrans ne l'écrivent pas avec le même mot.
+  check("un bon « AVANCE » descend l'avance, pas la dette",
+    clientChargeDelta([], [{ clientId: 'CL2', amount: 5_000, justificationType: 'CLIENT', paymentMode: 'AVANCE' }]).get('CL2'),
+    { credit: 0, advance: 5_000 });
+  check("« ADVANCE » — l'autre orthographe — fait exactement pareil",
+    clientChargeDelta([], [{ clientId: 'CL2', amount: 5_000, justificationType: 'CLIENT', paymentMode: 'ADVANCE' }]).get('CL2'),
+    { credit: 0, advance: 5_000 });
+  check('un bon sans mode reste une dette',
+    clientChargeDelta([], [{ clientId: 'CL1', amount: 4_000, justificationType: 'CLIENT' }]).get('CL1'),
+    { credit: 4_000, advance: 0 });
+  check("passer un bon du crédit à l'avance rend la dette et prend sur l'avance",
+    clientChargeDelta(
+      [{ clientId: 'CL1', amount: 6_000, justificationType: 'CLIENT', paymentMode: 'CREDIT' }],
+      [{ clientId: 'CL1', amount: 6_000, justificationType: 'CLIENT', paymentMode: 'AVANCE' }]).get('CL1'),
+    { credit: -6_000, advance: 6_000 });
+}
+
+/**
+ * Un bon saisi depuis la COMPTABILITÉ de brigade porte « ADVANCE » (le mode
+ * recopié de la fiche client) là où la clôture écrit « AVANCE ». Ne reconnaître
+ * que le second faisait apparaître une dette chez un client qui avait pourtant
+ * déjà payé d'avance.
+ */
+console.log("");
+console.log("Les deux orthographes de l'avance sont comprises au journal");
+{
+  const app2 = {
+    clients: [{ id: 'CL2', name: 'Ecole', debt: 0, balance: 20_000, advanceBalance: 20_000, transactionHistory: [] }],
+    brigades: [{ id: 'BR1', date: '2026-08-10', startDatetime: '2026-08-10T06:00:00.000Z', shift: 'Matin' }],
+    brigadeAccountings: [{
+      id: 'A1', brigadeId: 'BR1',
+      justifications: [{ id: 'J1', justificationType: 'CLIENT', paymentMode: 'ADVANCE', clientId: 'CL2', amount: 5_000, fuelType: 'ESSENCE', liters: 100 }],
+    }],
+    shopSales: [], fuelSales: [],
+  };
+  const l = clientLedger(app2, 'CL2');
+  check('aucune dette créée', l.debtFromDocuments, 0);
+  check("le bon sort bien de l'avance", l.chargedOnAdvance, 5_000);
+}
+
+/**
+ * La liste des clients construit tous les comptes d'un coup, en rangeant les
+ * pièces par client au lieu de faire relire toute la base à chacun. Le résultat
+ * doit rester rigoureusement identique compte par compte.
+ */
+console.log("");
+console.log("Tous les comptes d'un coup disent la même chose qu'un par un");
+{
+  const all = clientLedgers(app);
+  for (const id of ['CL1', 'CL2']) {
+    const one = clientLedger(app, id);
+    check(`${id} — mêmes opérations`, all[id].entries.map(e => e.id), one.entries.map(e => e.id));
+    check(`${id} — même consommation`, all[id].charged, one.charged);
+    check(`${id} — même dette`, all[id].debtFromDocuments, one.debtFromDocuments);
+    check(`${id} — même avance`, all[id].advanceFromDocuments, one.advanceFromDocuments);
+  }
+  check('aucun client oublié', Object.keys(all).sort(), ['CL1', 'CL2']);
+}
 
 console.log(`\n${passed} vérification(s) passée(s), ${failed} échec(s).`);
 if (failed > 0) process.exit(1);

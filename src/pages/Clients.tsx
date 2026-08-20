@@ -46,9 +46,12 @@ import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import { printPaymentReceipt, stationFromSettings } from "./modules/_shared";
-import { clientLedger, advanceAvailable, advanceColumnsDisagree, ClientEntry } from "../lib/clientLedger";
+import { clientLedger, clientLedgers, advanceAvailable, advanceColumnsDisagree, ClientEntry, ClientLedger } from "../lib/clientLedger";
 import { fuelClientStatement } from "../lib/clientStatement";
 import ClientReportModal from "../components/biz/ClientReportModal";
+import { ClientStatementFiche } from "../components/biz/ClientStatementFiche";
+import { printFiche } from "../components/biz/ReportFiche";
+import ClientDossier from "../components/clients/ClientDossier";
 
 /** Receipt number of a debt payment, derived from its transaction id. */
 const receiptRef = (txId: string) => `REG-${txId.slice(0, 8).toUpperCase()}`;
@@ -58,21 +61,23 @@ const PAYMENT_MODE_LABEL: Record<string, string> = {
   CREDIT: "À crédit", AVANCE: "Sur avance", CASH: "Espèces", BON: "Bon",
 };
 
-/** Comment chaque nature d'opération se présente dans le journal du client. */
-const ENTRY_META: Record<string, { label: string; tone: string }> = {
-  bon: { label: "Bon carburant", tone: "bg-amber-50 text-amber-700 border-amber-100" },
-  magasin: { label: "Magasin", tone: "bg-blue-50 text-blue-700 border-blue-100" },
-  vente: { label: "Vente", tone: "bg-slate-50 text-slate-700 border-slate-100" },
-  reglement: { label: "Règlement", tone: "bg-emerald-50 text-emerald-700 border-emerald-100" },
-  recharge: { label: "Recharge", tone: "bg-purple-50 text-purple-700 border-purple-100" },
+/** Le mode de règlement d'un client, dit en français. */
+const MODE_LABEL: Record<string, string> = {
+  CASH: 'Comptant', CREDIT: 'À crédit', ADVANCE: 'Sur avance',
 };
 
-const HISTORY_FILTERS: { id: string; label: string }[] = [
-  { id: "Tous", label: "Tous" },
-  { id: "Consommations", label: "Consos" },
-  { id: "Règlements", label: "Règlements" },
-  { id: "Avance", label: "Avance" },
-];
+/**
+ * Ce qu'un client peut régler aujourd'hui.
+ *
+ * Deux chiffres racontent sa dette : la colonne `debt` de sa fiche — un compteur
+ * tenu au fil de l'eau — et ce que ses PIÈCES disent. Le second fait foi
+ * partout à l'écran ; mais tant qu'ils diffèrent (reprise d'ouverture, brigade
+ * corrigée après coup), plafonner la saisie au plus petit des deux reviendrait
+ * à refuser un règlement que le client est venu payer. On retient donc le plus
+ * grand : c'est une borne de saisie, pas un montant imposé.
+ */
+const payableDebt = (client: Client | null, ledger: ClientLedger): number =>
+  Math.max(0, Math.max(client?.debt || 0, ledger.debtFromDocuments));
 
 const Clients = () => {
   const { t } = useTranslation();
@@ -109,6 +114,8 @@ const Clients = () => {
   const [reportClient, setReportClient] = useState<Client | null>(null);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  /** La feuille A4 du relevé, imprimée depuis le dossier. */
+  const dossierFicheRef = React.useRef<HTMLDivElement>(null);
 
   // Form States
   const [clientForm, setClientForm] = useState<Partial<Client>>({
@@ -152,8 +159,6 @@ const Clients = () => {
   });
 
   const [showAppointmentForm, setShowAppointmentForm] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState("Tous");
-  const [historySearch, setHistorySearch] = useState("");
   const [appointmentForm, setAppointmentForm] = useState({
     date: new Date().toISOString().split("T")[0],
     amount: 0,
@@ -345,7 +350,7 @@ const Clients = () => {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Montant invalide" } });
       return;
     }
-    if (paymentForm.amount > selectedClient.debt) {
+    if (paymentForm.amount > payableDebt(selectedClient, ledger)) {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Le montant dépasse la dette du client" } });
       return;
     }
@@ -446,7 +451,8 @@ const Clients = () => {
     setSelectedClient(client);
     setSelectedSale(null);
     setPaymentForm({
-      amount: client.debt,
+      // Ce que ses PIÈCES réclament, pas le compteur de sa fiche.
+      amount: Math.max(0, ledgers[client.id]?.debtFromDocuments ?? client.debt),
       date: new Date().toISOString().split("T")[0],
       mode: "ESPECES", chequeNumber: "", bankAccountId: liveBankAccounts[0]?.id || "", notes: "",
     });
@@ -518,40 +524,36 @@ const Clients = () => {
     () => clientLedger(state, selectedClient?.id || ''),
     [state, selectedClient?.id]);
 
+  /**
+   * Le compte de CHAQUE client, pour la liste.
+   *
+   * Les cartes annonçaient l'avance et la dette lues sur les colonnes de la
+   * fiche — des compteurs tenus à la main, que rien ne rapproche des pièces.
+   * Elles lisent maintenant le même journal que le dossier : ce qui est affiché
+   * en couverture est exactement ce qu'on retrouve en l'ouvrant.
+   *
+   * Le calcul ne dépend que des tables qui l'alimentent : le recalculer à chaque
+   * frappe dans le champ de recherche n'aurait aucun sens.
+   */
+  const ledgers = useMemo(
+    () => clientLedgers(state),
+    [state.clients, state.brigades, state.brigadeAccountings, state.shopSales, state.fuelSales]);
+
   /** Ce que le client a CONSOMMÉ — bons, factures magasin, ventes anciennes. */
   const clientPurchases = useMemo(
-    () => ledger.entries.filter(e => e.kind === 'bon' || e.kind === 'magasin' || e.kind === 'vente'),
+    () => ledger.entries.filter((e: ClientEntry) => e.kind === 'bon' || e.kind === 'magasin' || e.kind === 'vente'),
     [ledger]);
 
   /**
-   * Règlements et recharges dans leur forme d'origine (les lignes de
-   * `client_transactions`) : l'impression d'un reçu a besoin de l'identifiant
-   * réel de la transaction, pas de celui du journal.
+   * Le relevé complet du client ouvert — la forme que le dossier partagé sait
+   * lire, et celle que la feuille A4 imprime. Sans bornes : un dossier montre la
+   * vie ENTIÈRE du compte, c'est le rapport qui restreint.
    */
-  const clientPayments = useMemo(() => {
-    if (!selectedClient) return [];
-    return (selectedClient.transactionHistory || [])
-      .filter(tx => tx.type === "PAYMENT")
-      .slice()
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [selectedClient]);
-
-  /** Tout ce qui a fait bouger l'avance : les dépôts ET les bons pris dessus. */
-  const advanceMovements = useMemo(
-    () => ledger.entries.filter((e: ClientEntry) => e.advanceEffect !== 0),
-    [ledger]);
-
-  const totalPaid = ledger.paid;
-
-  /** Les opérations réellement affichées dans le journal, filtres appliqués. */
-  const visibleEntries = useMemo(() => {
-    return ledger.entries.filter((e: ClientEntry) => {
-      if (historyFilter === "Consommations" && !['bon', 'magasin', 'vente'].includes(e.kind)) return false;
-      if (historyFilter === "Règlements" && e.kind !== 'reglement') return false;
-      if (historyFilter === "Avance" && e.advanceEffect === 0) return false;
-      return matchesSearch(historySearch, e.label, e.notes, e.reference, e.mode, e.fuelType);
-    });
-  }, [ledger, historyFilter, historySearch]);
+  const dossierStatement = useMemo(
+    // Fermé, le dossier ne coûte rien : inutile de relire toutes les brigades à
+    // chaque mouvement de l'application pour un écran que personne ne regarde.
+    () => fuelClientStatement(state, showDetail ? selectedClient : null),
+    [state, selectedClient, showDetail]);
 
   /**
    * Le relevé de compte du client, borné à la période demandée par le rapport.
@@ -570,6 +572,182 @@ const Clients = () => {
    * choisir en silence : c'est une reprise à faire, pas un calcul à deviner.
    */
   const advanceGap = advanceColumnsDisagree(selectedClient);
+
+  /** Les blocs d'identité de la rubrique « Fiche » du dossier. */
+  const dossierIdentity = useMemo(() => {
+    const c = selectedClient;
+    if (!c) return [];
+    return [
+      {
+        title: 'Identité et coordonnées',
+        icon: UserIcon,
+        rows: [
+          { label: 'Raison sociale / Nom', value: c.name },
+          { label: 'Type de client', value: c.type },
+          { label: 'Personne à contacter', value: c.contactPerson },
+          { label: 'Téléphone', value: c.phone },
+          { label: 'E-mail', value: c.email },
+          { label: 'CIN / Identifiant', value: c.cin },
+          { label: 'Adresse', value: c.address },
+        ],
+      },
+      {
+        title: 'Conditions commerciales',
+        icon: ShieldCheck,
+        rows: [
+          { label: 'Mode de règlement', value: MODE_LABEL[c.paymentMode] || c.paymentMode },
+          { label: 'Plafond de crédit', value: c.creditLimit ? `${c.creditLimit.toLocaleString()} DA` : undefined },
+          { label: 'Délai de paiement', value: c.paymentDelay ? `${c.paymentDelay} jour(s)` : undefined },
+          {
+            label: 'Encours enregistré', value: `${(c.debt || 0).toLocaleString()} DA`,
+            hint: "le compteur de la fiche — les pièces font foi",
+          },
+          {
+            label: "Reste dû d'après les pièces", value: `${ledger.debtFromDocuments.toLocaleString()} DA`,
+            hint: `${ledger.chargedOnCredit.toLocaleString()} à crédit − ${ledger.paid.toLocaleString()} réglés`,
+          },
+          {
+            label: "Avance disponible", value: `${advanceLeft.toLocaleString()} DA`,
+            hint: `${ledger.recharged.toLocaleString()} déposés − ${ledger.chargedOnAdvance.toLocaleString()} consommés`,
+          },
+        ],
+      },
+      {
+        title: 'Fiscalité et registre',
+        icon: FileText,
+        rows: [
+          { label: 'NIF', value: c.nif },
+          { label: 'NIS', value: c.nis },
+          { label: "Article d'imposition", value: c.article },
+          { label: 'Registre du commerce', value: c.rc },
+        ],
+      },
+    ];
+  }, [selectedClient, ledger, advanceLeft]);
+
+  /** La rubrique « Rendez-vous » du dossier — propre au Carburant. */
+  const renderAppointments = () => {
+    if (!selectedClient) return null;
+    const appts = [...(selectedClient.appointments || [])]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const due = appts.filter(a => !a.isPaid).reduce((s, a) => s + (a.amount || 0), 0);
+    return (
+      <div className="space-y-4 not-italic">
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Échéances non encore réglées</p>
+            <p className="text-xl font-black tabular-nums text-[#002d87]">{due.toLocaleString()} DA</p>
+            <p className="text-[11px] font-semibold text-slate-400">
+              {appts.filter(a => !a.isPaid).length} à venir sur {appts.length} programmé(s)
+            </p>
+          </div>
+          {perm.modifier && (
+            <button
+              onClick={() => setShowAppointmentForm(!showAppointmentForm)}
+              className="btn-primary !py-2 !px-4 text-xs flex items-center gap-2"
+            >
+              <Plus className="w-3.5 h-3.5" /> {showAppointmentForm ? "Fermer le formulaire" : "Programmer un paiement"}
+            </button>
+          )}
+        </div>
+
+        {showAppointmentForm && (
+          <div className="p-5 bg-white border border-slate-200 rounded-2xl space-y-4 shadow-sm">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="label-field">Date d'échéance</label>
+                <input type="date" value={appointmentForm.date}
+                  onChange={(e) => setAppointmentForm({ ...appointmentForm, date: e.target.value })}
+                  className="input-field font-bold" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="label-field">Montant attendu (DA)</label>
+                <input type="number" value={appointmentForm.amount}
+                  onChange={(e) => setAppointmentForm({ ...appointmentForm, amount: parseFloat(e.target.value) || 0 })}
+                  className="input-field font-bold" placeholder="0.00" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="label-field">Opération concernée (optionnel)</label>
+                <select value={appointmentForm.linkedSaleId}
+                  onChange={(e) => setAppointmentForm({ ...appointmentForm, linkedSaleId: e.target.value })}
+                  className="input-field font-bold">
+                  <option value="">Sélectionner une opération…</option>
+                  {/* Seules les consommations qui ont laissé une dette peuvent
+                      motiver un rendez-vous : un bon pris sur l'avance est déjà payé. */}
+                  {clientPurchases.filter((e: ClientEntry) => e.debtEffect > 0).map((e: ClientEntry) => (
+                    <option key={e.id} value={e.id}>
+                      {e.label} — {e.date ? new Date(e.date).toLocaleDateString() : "—"} ({e.debtEffect.toLocaleString()} DA)
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="label-field">Notes</label>
+                <input type="text" value={appointmentForm.notes}
+                  onChange={(e) => setAppointmentForm({ ...appointmentForm, notes: e.target.value })}
+                  placeholder="Instructions, interlocuteur…" className="input-field font-bold" />
+              </div>
+            </div>
+            <button onClick={handleSaveAppointment} className="btn-primary w-full flex items-center justify-center gap-2">
+              <Calendar className="w-4 h-4" /> Programmer le rendez-vous
+            </button>
+          </div>
+        )}
+
+        {appts.length === 0 ? (
+          <div className="p-10 text-center bg-white rounded-2xl border border-slate-200">
+            <Calendar className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+            <p className="text-xs font-bold text-slate-400">Aucun rendez-vous de paiement programmé</p>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {appts.map(appt => {
+              const isLate = new Date(appt.date) < new Date() && !appt.isPaid;
+              return (
+                <div key={appt.id}
+                  className={cn("flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl border",
+                    isLate ? "bg-red-50/60 border-red-100" : appt.isPaid ? "bg-emerald-50/40 border-emerald-100" : "bg-white border-slate-200")}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center border shrink-0",
+                      isLate ? "bg-red-100 text-red-600 border-red-200"
+                        : appt.isPaid ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                          : "bg-blue-100 text-blue-900 border-blue-200")}>
+                      <Calendar className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                        {new Date(appt.date).toLocaleDateString()}
+                        {appt.linkedSaleId ? ` · opération ${appt.linkedSaleId.substring(0, 8).toUpperCase()}` : ''}
+                      </p>
+                      <p className={cn("text-base font-black tabular-nums",
+                        isLate ? "text-red-600" : appt.isPaid ? "text-emerald-700" : "text-[#002d87]")}>
+                        {appt.amount.toLocaleString()} DA
+                      </p>
+                      {appt.notes && <p className="text-[11px] text-slate-400 font-semibold truncate">{appt.notes}</p>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={cn("text-[9px] font-black px-2.5 py-1 rounded-full border uppercase tracking-wider",
+                      isLate ? "bg-red-100 text-red-700 border-red-200"
+                        : appt.isPaid ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+                          : "bg-amber-100 text-amber-800 border-amber-200")}>
+                      {isLate ? "En retard" : appt.isPaid ? "Payé" : "À venir"}
+                    </span>
+                    {!appt.isPaid && perm.modifier && (
+                      <button onClick={() => handleMarkAppointmentPaid(appt.id)}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[9px] font-black uppercase tracking-wider transition-all">
+                        Marquer payé
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Filtering Logic
   const filteredClients = useMemo(() => {
@@ -706,7 +884,12 @@ const Clients = () => {
             className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
           >
             {filteredClients.length > 0 ? (
-              filteredClients.map((c, index) => (
+              filteredClients.map((c, index) => {
+                // Le compte du client, relu sur ses pièces : c'est lui qui donne
+                // les chiffres de la carte, jamais les colonnes de la fiche.
+                const cl = ledgers[c.id] || clientLedger(state, c.id);
+                const cDebt = cl.debtFromDocuments;
+                return (
                 <motion.div
                   key={c.id}
                   initial={{ opacity: 0, y: 20 }}
@@ -755,7 +938,7 @@ const Clients = () => {
                               onClick={() => { setSelectedClient(c); setActiveTab("resume"); setShowDetail(true); setActionMenuOpen(null); }}
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                             >
-                              <Eye className="w-4 h-4 text-slate-500" /> Voir Détails
+                              <Eye className="w-4 h-4 text-slate-500" /> Dossier Client
                             </button>
                             {perm.modifier && (
                             <button
@@ -773,7 +956,7 @@ const Clients = () => {
                                 <Wallet className="w-4 h-4 text-green-500" /> Recharger Avance
                               </button>
                             )}
-                            {c.debt > 0 && perm.modifier && (
+                            {cDebt > 0 && perm.modifier && (
                               <button
                                 onClick={() => { openDebtPayment(c); setActionMenuOpen(null); }}
                                 className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-emerald-700 hover:bg-emerald-50 flex items-center gap-3 transition-colors"
@@ -782,7 +965,7 @@ const Clients = () => {
                               </button>
                             )}
                             <button
-                              onClick={() => { setSelectedClient(c); setActiveTab("historique"); setShowDetail(true); setActionMenuOpen(null); }}
+                              onClick={() => { setSelectedClient(c); setActiveTab("journal"); setShowDetail(true); setActionMenuOpen(null); }}
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                             >
                               <History className="w-4 h-4 text-slate-500" /> Historique Complet
@@ -830,26 +1013,58 @@ const Clients = () => {
                     </div>
                   </div>
 
-                  {/* Metrics grid footer */}
+                  {/* ── Les chiffres de la carte ──────────────────────────
+                      Ils se lisent l'un l'autre : consommé − payé = reste dû, et
+                      tous trois viennent du MÊME journal que le dossier. Avant,
+                      la carte annonçait la colonne `debt` de la fiche, un
+                      compteur que rien ne rapprochait des pièces — d'où des
+                      cartes qui ne disaient pas la même chose que l'historique. */}
                   <div className="pt-2 mt-auto border-t border-slate-100 grid grid-cols-3 gap-2">
                     <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
-                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Avance</p>
-                      <p className="text-[10px] font-black text-green-700 italic truncate">{advanceAvailable(c).toLocaleString()} DA</p>
+                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Consommé</p>
+                      <p className="text-[10px] font-black text-blue-900 italic truncate">{cl.charged.toLocaleString()} DA</p>
                     </div>
                     <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
-                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Crédit</p>
-                      <p className={cn("text-[10px] font-black italic truncate", c.debt > 0 ? "text-red-600" : "text-slate-500")}>
-                        {c.debt.toLocaleString()} DA
-                      </p>
+                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Réglé</p>
+                      <p className="text-[10px] font-black text-emerald-700 italic truncate">{cl.paid.toLocaleString()} DA</p>
                     </div>
-                    <div className="text-center bg-blue-50/50 rounded-xl p-2.5 border border-blue-100 flex flex-col justify-center">
-                      <p className="text-[7px] font-black text-blue-400 uppercase tracking-widest mb-1">Plafond</p>
-                      <p className="text-[10px] font-black text-blue-900 italic truncate">{c.creditLimit.toLocaleString()} DA</p>
+                    <div className={cn("text-center rounded-xl p-2.5 border flex flex-col justify-center",
+                      cDebt > 0 ? "bg-red-50/60 border-red-100" : "bg-emerald-50/50 border-emerald-100")}>
+                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Reste dû</p>
+                      <p className={cn("text-[10px] font-black italic truncate", cDebt > 0 ? "text-red-600" : "text-emerald-600")}>
+                        {cDebt.toLocaleString()} DA
+                      </p>
                     </div>
                   </div>
 
+                  {/* Avance, plafond et ce que le compte a d'anormal. */}
+                  <div className="flex flex-wrap items-center gap-1.5 text-[8px] font-black uppercase tracking-wider">
+                    <span className="px-2 py-1 rounded-lg bg-green-50 text-green-700 border border-green-100">
+                      Avance {advanceAvailable(c).toLocaleString()} DA
+                    </span>
+                    {c.creditLimit > 0 && (
+                      <span className="px-2 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-100">
+                        Plafond {c.creditLimit.toLocaleString()} DA
+                      </span>
+                    )}
+                    <span className="px-2 py-1 rounded-lg bg-slate-50 text-slate-500 border border-slate-100">
+                      {cl.entries.length} opé.
+                    </span>
+                    {c.creditLimit > 0 && cDebt > c.creditLimit && (
+                      <span className="px-2 py-1 rounded-lg bg-red-50 text-red-700 border border-red-100 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" /> Hors plafond
+                      </span>
+                    )}
+                    {Math.abs(cl.debtGap) >= 1 && (
+                      <span className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-100"
+                        title={`La fiche annonce ${(c.debt || 0).toLocaleString()} DA, les pièces ${cl.debtFromDocuments.toLocaleString()} DA`}>
+                        Écart {Math.abs(cl.debtGap).toLocaleString()} DA
+                      </span>
+                    )}
+                  </div>
+
                   {/* Règlement de la dette — action directe, sans passer par le menu */}
-                  {c.debt > 0 && perm.modifier && (
+                  {cDebt > 0 && perm.modifier && (
                     <button
                       onClick={() => openDebtPayment(c)}
                       className="w-full h-11 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-700 text-white text-[9px] font-black uppercase tracking-widest italic flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 hover:scale-[1.02] active:scale-95 transition-all"
@@ -858,7 +1073,8 @@ const Clients = () => {
                     </button>
                   )}
                 </motion.div>
-              ))
+                );
+              })
             ) : (
               <div className="col-span-full">
                 <EmptyState 
@@ -886,15 +1102,17 @@ const Clients = () => {
                   <tr>
                     <th className="px-8 py-6">Client</th>
                     <th className="px-8 py-6">Type / Mode</th>
+                    <th className="px-8 py-6 text-right">Consommé</th>
+                    <th className="px-8 py-6 text-right">Réglé</th>
                     <th className="px-8 py-6 text-right">Solde Avance</th>
-                    <th className="px-8 py-6 text-right">Dette Crédit</th>
+                    <th className="px-8 py-6 text-right">Reste Dû</th>
                     <th className="px-8 py-6 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {filteredClients.length === 0 ? (
                     <tr>
-                      <td colSpan={5}>
+                      <td colSpan={7}>
                         <EmptyState 
                           icon={Building2}
                           title="Aucun client trouvé"
@@ -904,7 +1122,10 @@ const Clients = () => {
                         />
                       </td>
                     </tr>
-                  ) : filteredClients.map((c, index) => (
+                  ) : filteredClients.map((c, index) => {
+                    const cl = ledgers[c.id] || clientLedger(state, c.id);
+                    const cDebt = cl.debtFromDocuments;
+                    return (
                     <motion.tr
                       key={c.id}
                       initial={{ opacity: 0, y: 10 }}
@@ -929,24 +1150,44 @@ const Clients = () => {
                           <ModeBadge mode={c.paymentMode} />
                         </div>
                       </td>
+                      {/* Consommé, réglé, reste : les trois se relisent, et
+                          tous viennent du journal du client. */}
+                      <td className="px-8 py-5 text-right font-black text-blue-900 text-base italic">
+                        {cl.charged.toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
+                        <span className="block text-[9px] font-bold text-slate-400 not-italic normal-case tracking-normal">
+                          {cl.entries.length} opération(s)
+                        </span>
+                      </td>
+                      <td className="px-8 py-5 text-right font-black text-emerald-600 text-base italic">
+                        {cl.paid.toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
+                        <span className="block text-[9px] font-bold text-slate-400 not-italic normal-case tracking-normal">
+                          {cl.counts.reglements} règlement(s)
+                        </span>
+                      </td>
                       <td className="px-8 py-5 text-right font-black text-green-600 text-base italic">
                         {advanceAvailable(c).toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
                       </td>
                       <td className="px-8 py-5 text-right">
                         <div className="flex flex-col items-end gap-1">
-                          <span className={cn("font-black text-base italic leading-none", c.debt > 0 ? "text-red-500" : "text-slate-300")}>
-                            {c.debt.toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
+                          <span className={cn("font-black text-base italic leading-none", cDebt > 0 ? "text-red-500" : "text-slate-300")}>
+                            {cDebt.toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
                           </span>
-                          {c.paymentMode === "CREDIT" && c.debt > c.creditLimit && (
-                            <span className="flex items-center gap-1 text-[8px] font-black uppercase text-red-600 bg-red-50 px-2 py-0.5 rounded italic animate-pulse">
+                          {c.creditLimit > 0 && cDebt > c.creditLimit && (
+                            <span className="flex items-center gap-1 text-[8px] font-black uppercase text-red-600 bg-red-50 px-2 py-0.5 rounded italic">
                               <AlertTriangle className="w-3 h-3" /> Hors Plafond
+                            </span>
+                          )}
+                          {Math.abs(cl.debtGap) >= 1 && (
+                            <span className="text-[8px] font-black uppercase text-amber-700 bg-amber-50 px-2 py-0.5 rounded not-italic"
+                              title={`La fiche annonce ${(c.debt || 0).toLocaleString()} DA`}>
+                              Écart fiche {Math.abs(cl.debtGap).toLocaleString()}
                             </span>
                           )}
                         </div>
                       </td>
                       <td className="px-8 py-5 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          {c.debt > 0 && perm.modifier && (
+                          {cDebt > 0 && perm.modifier && (
                             <button
                               onClick={() => openDebtPayment(c)}
                               title="Payer la dette"
@@ -955,15 +1196,16 @@ const Clients = () => {
                               <DollarSign className="w-3.5 h-3.5 text-yellow-300" /> Payer
                             </button>
                           )}
-                          <button onClick={() => { setSelectedClient(c); setActiveTab("historique"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-emerald-600 transition-all border border-transparent hover:border-slate-200" title="Historique complet du compte"><History className="w-4 h-4" /></button>
+                          <button onClick={() => { setSelectedClient(c); setActiveTab("journal"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-emerald-600 transition-all border border-transparent hover:border-slate-200" title="Historique complet du compte"><History className="w-4 h-4" /></button>
                           <button onClick={() => setReportClient(c)} className="p-2.5 hover:bg-blue-50 rounded-xl text-slate-300 hover:text-blue-700 transition-all border border-transparent hover:border-blue-100" title="Générer un rapport sur une période"><FileBarChart className="w-4 h-4" /></button>
-                          <button onClick={() => { setSelectedClient(c); setActiveTab("resume"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-900 transition-all border border-transparent hover:border-slate-200" title="Détails"><Eye className="w-4 h-4" /></button>
+                          <button onClick={() => { setSelectedClient(c); setActiveTab("resume"); setShowDetail(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-900 transition-all border border-transparent hover:border-slate-200" title="Dossier complet du client"><Eye className="w-4 h-4" /></button>
                           {perm.modifier && <button onClick={() => { setSelectedClient(c); setClientForm(c); setShowModal(true); }} className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-blue-600 transition-all border border-transparent hover:border-slate-200" title="Modifier"><Edit2 className="w-4 h-4" /></button>}
                           {perm.supprimer && <button onClick={() => setClientToDelete(c)} className="p-2.5 hover:bg-red-50 rounded-xl text-slate-200 hover:text-red-600 transition-all border border-transparent hover:border-red-100" title="Supprimer"><Trash2 className="w-4 h-4" /></button>}
                         </div>
                       </td>
                     </motion.tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1221,617 +1463,75 @@ const Clients = () => {
         )}
       </AnimatePresence>
 
-      {/* Details View Modal */}
-      <AnimatePresence>
-        {showDetail && selectedClient && (
-          <div className="modal-shell z-[70] italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDetail(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 20 }} 
-              animate={{ opacity: 1, scale: 1, y: 0 }} 
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-6xl rounded-[3rem] relative z-10 flex flex-col h-[var(--modal-max-h)] overflow-hidden shadow-2xl border border-blue-200"
-            >
-              {/* Header Banner */}
-              <div className="p-8 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0 border-b border-blue-900/10">
-                <div className="flex items-center gap-6">
-                  <div className="w-16 h-16 bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-400 border-4 border-white shadow-xl rounded-2xl flex items-center justify-center text-3xl font-black uppercase">
-                    {selectedClient.name[0]}
-                  </div>
-                  <div>
-                    <h2 className="text-2xl font-black text-yellow-400 uppercase italic tracking-tighter leading-none mb-1.5">{selectedClient.name}</h2>
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] text-blue-200 font-bold uppercase tracking-wider">ID: {selectedClient.id}</span>
-                      <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full" />
-                      <div className="flex gap-1.5">
-                        <TypeBadge type={selectedClient.type} />
-                        <ModeBadge mode={selectedClient.paymentMode} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <button onClick={() => setShowDetail(false)} className="p-3 bg-white/10 hover:bg-white/20 border border-white/10 rounded-2xl text-white transition-all shadow-sm"><X className="w-6 h-6" /></button>
-              </div>
-
-              {/* Sub tabs navigation */}
-              <div className="flex border-b border-slate-100 bg-slate-50 shrink-0 overflow-x-auto items-center justify-between pr-8">
-                <div className="flex">
-                  {[
-                    { id: "resume", label: "Résumé", icon: Building2 },
-                    { id: "historique", label: "Factures & Ventes", icon: History },
-                    { id: "reglements", label: "Règlements", icon: CreditCard },
-                    ...(selectedClient?.paymentMode === "ADVANCE" ? [{ id: "avances", label: "Avances", icon: Wallet }] : []),
-                    { id: "rdv", label: "Rendez-vous", icon: Calendar }
-                  ].map(tab => (
-                    <button 
-                      key={tab.id}
-                      onClick={() => { setActiveTab(tab.id); setShowAppointmentForm(false); }}
-                      className={cn(
-                        "flex items-center gap-3 px-8 py-5 text-[10px] font-black uppercase tracking-widest transition-all relative whitespace-nowrap italic",
-                        activeTab === tab.id ? "text-blue-900 bg-white border-b-2 border-yellow-400" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100/50"
-                      )}
-                    >
-                      <tab.icon className="w-4 h-4" /> {tab.label}
-                    </button>
-                  ))}
-                </div>
-                
-                <div className="flex gap-2">
-                  {selectedClient.debt > 0 && perm.modifier && (
-                    <button
-                      onClick={() => openDebtPayment(selectedClient)}
-                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest italic flex items-center gap-2 shadow-sm"
-                    >
-                      <DollarSign className="w-3.5 h-3.5 text-yellow-300" /> Payer la Dette
-                    </button>
-                  )}
-                  <button onClick={() => { setShowDetail(false); navigate('/fuel-sales'); }} className="px-5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl text-[9px] font-black uppercase tracking-widest italic">+ Vente Carburant</button>
-                  <button onClick={() => { setShowDetail(false); navigate('/pos'); }} className="px-5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-[9px] font-black uppercase tracking-widest italic">+ Vente Boutique</button>
-                </div>
-              </div>
-
-              {/* Scrollable Tab Body */}
-              <div className="flex-1 overflow-y-auto p-10 custom-scrollbar bg-white">
-                
-                {/* RESUME TAB */}
-                {activeTab === "resume" && (
-                  <div className="space-y-10 animate-in fade-in slide-in-from-bottom-3 duration-250">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      {/* Left side details */}
-                      <div className="space-y-4">
-                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-900 border-b pb-2">Informations Générales</h4>
-                        <div className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center border border-slate-100">
-                          <span className="text-[9px] font-black text-slate-400 uppercase">Téléphone Direct</span>
-                          <span className="font-black text-blue-900 text-xs">{selectedClient.phone || "---"}</span>
-                        </div>
-                        <div className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center border border-slate-100">
-                          <span className="text-[9px] font-black text-slate-400 uppercase">E-mail Officiel</span>
-                          <span className="font-black text-blue-900 text-xs lowercase truncate">{selectedClient.email || "---"}</span>
-                        </div>
-                        <div className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center border border-slate-100">
-                          <span className="text-[9px] font-black text-slate-400 uppercase">CIN / ID Unique</span>
-                          <span className="font-black text-blue-900 text-xs uppercase">{selectedClient.cin || "---"}</span>
-                        </div>
-                      </div>
-
-                      {/* Right side details */}
-                      <div className="space-y-4">
-                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-900 border-b pb-2">Adresse & Fiscalité</h4>
-                        <div className="p-4 bg-slate-50 rounded-2xl flex flex-col gap-1 border border-slate-100">
-                          <span className="text-[8px] font-black text-slate-400 uppercase leading-none">Adresse Postale</span>
-                          <span className="font-black text-blue-900 text-xs uppercase leading-relaxed">{selectedClient.address || "---"}</span>
-                        </div>
-
-                        {(selectedClient.nif || selectedClient.nis || selectedClient.article || selectedClient.rc) && (
-                          <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-100/50 grid grid-cols-2 gap-3 mt-4">
-                            {selectedClient.nif && <div><p className="text-[7px] font-black text-slate-400 uppercase">NIF</p><p className="font-black text-blue-900 text-xs">{selectedClient.nif}</p></div>}
-                            {selectedClient.nis && <div><p className="text-[7px] font-black text-slate-400 uppercase">NIS</p><p className="font-black text-blue-900 text-xs">{selectedClient.nis}</p></div>}
-                            {selectedClient.article && <div><p className="text-[7px] font-black text-slate-400 uppercase">Article</p><p className="font-black text-blue-900 text-xs">{selectedClient.article}</p></div>}
-                            {selectedClient.rc && <div><p className="text-[7px] font-black text-slate-400 uppercase">RC</p><p className="font-black text-blue-900 text-xs">{selectedClient.rc}</p></div>}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Financial stats widgets */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-6 border-t border-slate-100">
-                      <div className="p-8 bg-blue-900 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-12 bg-white/5 rounded-full blur-2xl -mr-6 -mt-6" />
-                        <div className="relative z-10 space-y-2">
-                          <p className="text-[9px] font-black uppercase tracking-[0.25em] text-blue-300">Achats Cumulés</p>
-                          <p className="text-3xl font-black italic tracking-tighter leading-none">{ledger.charged.toLocaleString()} <span className="text-xs font-bold text-yellow-400">DA</span></p>
-                          <p className="text-[9px] font-bold text-blue-300">
-                            {ledger.counts.bons} bon(s) carburant · {ledger.counts.magasin} facture(s) magasin
-                          </p>
-                        </div>
-                      </div>
-                      <div className={cn("p-8 rounded-[2rem] shadow-xl relative overflow-hidden border",
-                        selectedClient.debt > 0 ? "bg-red-500 text-white border-red-400 shadow-red-200" : "bg-slate-50 text-slate-700 border-slate-200")}>
-                        <div className="relative z-10 space-y-2">
-                          <p className="text-[9px] font-black uppercase tracking-[0.25em] opacity-80">Dette En-cours</p>
-                          <p className="text-3xl font-black italic tracking-tighter leading-none">{selectedClient.debt.toLocaleString()} <span className="text-xs font-bold">DA</span></p>
-                          {/* Ce que les PIÈCES disent de la dette : bons à crédit
-                              moins règlements. Un écart avec l'encours ci-dessus
-                              vient d'un solde d'ouverture ou d'une reprise à la
-                              main — mieux vaut le voir que le deviner. */}
-                          <p className="text-[9px] font-bold opacity-80">
-                            {ledger.chargedOnCredit.toLocaleString()} à crédit − {ledger.paid.toLocaleString()} réglés
-                            = {ledger.debtFromDocuments.toLocaleString()} DA d'après les pièces
-                          </p>
-                        </div>
-                      </div>
-                      <div className="p-8 bg-emerald-700 text-white rounded-[2rem] shadow-xl relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-12 bg-white/5 rounded-full blur-2xl -mr-6 -mt-6" />
-                        <div className="relative z-10 space-y-2">
-                          <p className="text-[9px] font-black uppercase tracking-[0.25em] text-emerald-200">Solde Avance</p>
-                          <p className="text-3xl font-black italic tracking-tighter leading-none">{advanceLeft.toLocaleString()} <span className="text-xs font-bold text-yellow-400">DA</span></p>
-                          <p className="text-[9px] font-bold text-emerald-200">
-                            {ledger.recharged.toLocaleString()} rechargés − {ledger.chargedOnAdvance.toLocaleString()} consommés
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* HISTORIQUE — TOUTES les opérations du client, dans l'ordre.
-                    Bons carburant pris sur les brigades, factures magasin,
-                    règlements de dette et recharges d'avance : la même liste que
-                    celle qui calcule les soldes du Résumé. */}
-                {activeTab === "historique" && (
-                  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
-                    <div className="flex flex-col md:flex-row gap-4 items-center justify-between border-b pb-4">
-                      <div>
-                        <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900">Journal complet du compte client</h4>
-                        <p className="text-[9px] font-bold text-slate-400 mt-1">
-                          {ledger.entries.length} opération(s) — {ledger.counts.bons} bon(s) carburant ·
-                          {" "}{ledger.counts.magasin} magasin · {ledger.counts.reglements} règlement(s) ·
-                          {" "}{ledger.counts.recharges} recharge(s)
-                        </p>
-                        {/* La portée du journal est dite : depuis la toute première
-                            opération du compte, sans aucune limite de date. */}
-                        <p className="text-[9px] font-bold text-slate-300 mt-0.5 not-italic normal-case tracking-normal">
-                          {ledger.entries.length > 0
-                            ? `Depuis le ${new Date(ledger.entries[ledger.entries.length - 1].date).toLocaleDateString()} — historique intégral, toutes périodes confondues`
-                            : "Historique intégral — aucune opération enregistrée pour l'instant"}
-                        </p>
-                      </div>
-
-                      <div className="flex gap-4 items-center w-full md:w-auto">
-                        <button
-                          onClick={() => setReportClient(selectedClient)}
-                          title="Générer un rapport sur une période"
-                          className="px-4 py-2.5 bg-blue-900 hover:bg-blue-800 text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-2 shrink-0 shadow-sm"
-                        >
-                          <FileBarChart className="w-4 h-4 text-yellow-400" /> Rapport
-                        </button>
-                        <div className="relative flex-1 md:w-64">
-                          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
-                          <input type="text" placeholder="Filtrer..." value={historySearch} onChange={e => setHistorySearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-none rounded-xl text-[9px] font-black uppercase tracking-widest outline-none text-blue-900" />
-                        </div>
-                        <div className="flex bg-slate-100 rounded-xl p-1 shrink-0">
-                          {HISTORY_FILTERS.map(f => (
-                            <button key={f.id} onClick={() => setHistoryFilter(f.id)} className={cn("px-3.5 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all whitespace-nowrap", historyFilter === f.id ? "bg-white text-blue-900 shadow-sm" : "text-slate-400 hover:text-slate-600")}>{f.label}</button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    {visibleEntries.length > 0 ? (
-                      <div className="overflow-hidden border border-slate-100 rounded-2xl shadow-sm">
-                        <table className="w-full text-left border-collapse text-xs font-bold">
-                          <thead className="bg-slate-50 text-blue-900 uppercase text-[9px] tracking-wider border-b border-slate-100">
-                            <tr>
-                              <th className="px-6 py-4">Date</th>
-                              <th className="px-6 py-4">Opération</th>
-                              <th className="px-6 py-4">Détail</th>
-                              <th className="px-6 py-4 text-right">Débit</th>
-                              <th className="px-6 py-4 text-right">Crédit</th>
-                              <th className="px-6 py-4 text-right">Effet dette</th>
-                              <th className="px-6 py-4 text-right">Effet avance</th>
-                              <th className="px-6 py-4 text-center">Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {visibleEntries.map(e => {
-                              const meta = ENTRY_META[e.kind];
-                              return (
-                                <tr key={e.id} className="hover:bg-slate-50 transition-colors">
-                                  <td className="px-6 py-4 text-slate-500 whitespace-nowrap">
-                                    {e.date ? new Date(e.date).toLocaleDateString() : "—"}
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <span className={cn("px-2.5 py-0.5 rounded text-[8px] font-black uppercase inline-block border", meta.tone)}>
-                                      {meta.label}
-                                    </span>
-                                  </td>
-                                  <td className="px-6 py-4 text-slate-600 max-w-[320px]">
-                                    <span className="block truncate" title={e.label}>{e.label}</span>
-                                    {(e.mode || e.reference || e.notes) && (
-                                      <span className="block text-[9px] text-slate-400 font-bold truncate">
-                                        {[PAYMENT_MODE_LABEL[e.mode || ''] || e.mode, e.reference, e.notes].filter(Boolean).join(' · ')}
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="px-6 py-4 text-right text-slate-700 whitespace-nowrap">
-                                    {e.charged > 0 ? `${e.charged.toLocaleString()} DA` : "—"}
-                                  </td>
-                                  <td className="px-6 py-4 text-right text-emerald-600 whitespace-nowrap">
-                                    {e.paid > 0 ? `${e.paid.toLocaleString()} DA` : "—"}
-                                  </td>
-                                  <td className={cn("px-6 py-4 text-right font-black whitespace-nowrap",
-                                    e.debtEffect > 0 ? "text-red-600" : e.debtEffect < 0 ? "text-emerald-600" : "text-slate-300")}>
-                                    {e.debtEffect === 0 ? "—" : `${e.debtEffect > 0 ? "+" : "−"}${Math.abs(e.debtEffect).toLocaleString()} DA`}
-                                  </td>
-                                  <td className={cn("px-6 py-4 text-right font-black whitespace-nowrap",
-                                    e.advanceEffect > 0 ? "text-emerald-600" : e.advanceEffect < 0 ? "text-amber-600" : "text-slate-300")}>
-                                    {e.advanceEffect === 0 ? "—" : `${e.advanceEffect > 0 ? "+" : "−"}${Math.abs(e.advanceEffect).toLocaleString()} DA`}
-                                  </td>
-                                  <td className="px-6 py-4 text-center">
-                                    {e.kind === 'reglement' ? (
-                                      <button
-                                        onClick={() => {
-                                          const tx = (selectedClient.transactionHistory || []).find(t => `pay-${t.id}` === e.id);
-                                          if (tx) printReceipt(selectedClient, tx);
-                                        }}
-                                        title="Imprimer le reçu"
-                                        className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-700 border border-transparent hover:border-blue-100 transition-all"
-                                      >
-                                        <Printer className="w-3.5 h-3.5" />
-                                      </button>
-                                    ) : e.debtEffect > 0 && selectedClient.debt > 0 && perm.modifier ? (
-                                      <button
-                                        onClick={() => {
-                                          setSelectedSale({ id: e.id, label: e.label });
-                                          // Jamais plus que l'encours réel du client.
-                                          setPaymentForm({
-                                            amount: Math.min(e.debtEffect, selectedClient.debt),
-                                            date: new Date().toISOString().split("T")[0],
-                                            mode: "ESPECES", chequeNumber: "",
-                                            bankAccountId: liveBankAccounts[0]?.id || "", notes: "",
-                                          });
-                                          setShowPayment(true);
-                                        }}
-                                        className="px-2.5 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100 rounded-lg text-[8px] font-black uppercase transition-all inline-flex items-center gap-1"
-                                      >
-                                        Régler <DollarSign className="w-3 h-3" />
-                                      </button>
-                                    ) : (
-                                      <span className="text-[9px] text-slate-300 font-bold">—</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                          <tfoot className="bg-slate-50 text-blue-900 border-t border-slate-100">
-                            <tr>
-                              <td className="px-6 py-4 text-[9px] font-black uppercase tracking-widest" colSpan={3}>
-                                Total des opérations affichées
-                              </td>
-                              <td className="px-6 py-4 text-right">{visibleEntries.reduce((s, e) => s + e.charged, 0).toLocaleString()} DA</td>
-                              <td className="px-6 py-4 text-right text-emerald-700">{visibleEntries.reduce((s, e) => s + e.paid, 0).toLocaleString()} DA</td>
-                              <td className="px-6 py-4 text-right">{visibleEntries.reduce((s, e) => s + e.debtEffect, 0).toLocaleString()} DA</td>
-                              <td className="px-6 py-4 text-right">{visibleEntries.reduce((s, e) => s + e.advanceEffect, 0).toLocaleString()} DA</td>
-                              <td />
-                            </tr>
-                          </tfoot>
-                        </table>
-                      </div>
-                    ) : (
-                      <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
-                        <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                        <p className="text-slate-400 text-xs uppercase font-black tracking-widest">
-                          {ledger.entries.length === 0
-                            ? "Aucune opération enregistrée pour ce client"
-                            : "Aucune opération ne correspond à ce filtre"}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* RÈGLEMENTS TAB — historique des paiements de dette, imprimables */}
-                {activeTab === "reglements" && (
-                  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
-                    {/* Bandeau dette + action de règlement */}
-                    <div className={cn("p-10 rounded-[2.5rem] flex flex-col sm:flex-row justify-between items-start sm:items-center shadow-xl relative overflow-hidden group text-white",
-                      selectedClient.debt > 0
-                        ? "bg-gradient-to-r from-red-600 via-red-700 to-rose-800"
-                        : "bg-gradient-to-r from-emerald-600 via-emerald-700 to-emerald-800")}>
-                      <div className="absolute top-0 right-0 p-24 bg-white/5 rounded-full blur-3xl -mr-12 -mt-12 group-hover:scale-150 transition-transform duration-700" />
-                      <div className="relative z-10 space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-[0.3em] opacity-80">
-                          {selectedClient.debt > 0 ? "Dette en-cours à régler" : "Aucune dette en-cours"}
-                        </p>
-                        <p className="text-5xl font-black italic tracking-tighter leading-none">
-                          {selectedClient.debt.toLocaleString()} <span className="text-xl font-bold text-yellow-400">DA</span>
-                        </p>
-                        <p className="text-[9px] font-bold uppercase tracking-widest opacity-70 pt-1">
-                          {clientPayments.length} règlement(s) — {totalPaid.toLocaleString()} DA encaissés au total
-                        </p>
-                      </div>
-                      {selectedClient.debt > 0 && perm.modifier && (
-                        <button
-                          onClick={() => openDebtPayment(selectedClient)}
-                          className="relative z-10 mt-6 sm:mt-0 px-8 py-4 bg-white text-red-700 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md flex items-center gap-2 italic"
-                        >
-                          <DollarSign className="w-4 h-4" /> Payer la Dette
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="space-y-4">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">
-                        Historique des Règlements de Dette
-                      </h4>
-
-                      {clientPayments.length > 0 ? (
-                        <div className="overflow-hidden border border-slate-100 rounded-2xl shadow-sm">
-                          <table className="w-full text-left border-collapse text-xs font-bold">
-                            <thead className="bg-slate-50 text-blue-900 uppercase text-[9px] tracking-wider border-b border-slate-100">
-                              <tr>
-                                <th className="px-6 py-4">Date</th>
-                                <th className="px-6 py-4">N° Reçu</th>
-                                <th className="px-6 py-4">Mode</th>
-                                <th className="px-6 py-4">Référence / Notes</th>
-                                <th className="px-6 py-4 text-right">Montant</th>
-                                <th className="px-6 py-4 text-center">Reçu</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                              {clientPayments.map(tx => (
-                                <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
-                                  <td className="px-6 py-4 text-slate-500">{new Date(tx.date).toLocaleDateString()}</td>
-                                  <td className="px-6 py-4 text-blue-900 font-black">{receiptRef(tx.id)}</td>
-                                  <td className="px-6 py-4">
-                                    <span className="px-2.5 py-0.5 rounded text-[8px] font-black uppercase inline-block border bg-emerald-50 text-emerald-700 border-emerald-100">
-                                      {PAYMENT_MODE_LABEL[tx.mode || ''] || tx.mode || 'Espèces'}
-                                    </span>
-                                  </td>
-                                  <td className="px-6 py-4 text-slate-500 font-medium italic max-w-[280px] truncate">
-                                    {[tx.receiptNumber, tx.notes].filter(Boolean).join(' — ') || '—'}
-                                  </td>
-                                  <td className="px-6 py-4 text-right text-emerald-600 font-black">
-                                    -{tx.amount.toLocaleString()} DA
-                                  </td>
-                                  <td className="px-6 py-4 text-center">
-                                    <button
-                                      onClick={() => printReceipt(selectedClient, tx)}
-                                      title="Imprimer le reçu"
-                                      className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-700 border border-transparent hover:border-blue-100 transition-all"
-                                    >
-                                      <Printer className="w-4 h-4" />
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))}
-                              <tr className="bg-slate-50 text-blue-900">
-                                <td className="px-6 py-4 font-black uppercase text-[9px] tracking-widest" colSpan={4}>Total encaissé</td>
-                                <td className="px-6 py-4 text-right font-black">{totalPaid.toLocaleString()} DA</td>
-                                <td />
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
-                          <CreditCard className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                          <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucun règlement enregistré pour ce client</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* AVANCES TAB */}
-                {activeTab === "avances" && selectedClient.paymentMode === "ADVANCE" && (
-                  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
-                    <div className="p-10 bg-gradient-to-r from-green-600 via-green-700 to-emerald-800 text-white rounded-[2.5rem] flex flex-col sm:flex-row justify-between items-start sm:items-center shadow-xl relative overflow-hidden group">
-                      <div className="absolute top-0 right-0 p-24 bg-white/5 rounded-full blur-3xl -mr-12 -mt-12 group-hover:scale-150 transition-transform duration-700" />
-                      <div className="relative z-10 space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-green-200">Avance Actuelle Disponible</p>
-                        <p className="text-5xl font-black italic tracking-tighter leading-none">{advanceLeft.toLocaleString()} <span className="text-xl font-bold text-yellow-400">DA</span></p>
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-green-200 pt-1">
-                          {ledger.recharged.toLocaleString()} DA rechargés — {ledger.chargedOnAdvance.toLocaleString()} DA consommés en bons
-                        </p>
-                        {Math.abs(advanceGap) >= 1 && (
-                          <p className="text-[9px] font-bold text-yellow-300 pt-1 not-italic normal-case tracking-normal max-w-md leading-relaxed">
-                            Reprise à vérifier : ce client a été enregistré du temps où l'avance vivait dans
-                            deux compteurs séparés, qui diffèrent encore de {Math.abs(advanceGap).toLocaleString()} DA.
-                            Rechargez ou corrigez la fiche pour les recaler.
-                          </p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => setShowRecharge(true)}
-                        className="relative z-10 mt-6 sm:mt-0 px-8 py-4 bg-white text-green-700 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md flex items-center gap-2 italic"
-                      >
-                        <Wallet className="w-4 h-4" /> Recharger Solde
-                      </button>
-                    </div>
-
-                    {/* Recharges ET consommations : un solde d'avance ne se lit
-                        pas sur les seuls dépôts. Cet écran ne montrait que les
-                        recharges, si bien qu'une avance entièrement consommée
-                        continuait d'afficher une pile de dépôts sans contrepartie. */}
-                    <div className="space-y-4">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900 border-b pb-2">Mouvements du compte d'avance</h4>
-
-                      {advanceMovements.length > 0 ? (
-                        <div className="space-y-2.5">
-                          {advanceMovements.map(flow => {
-                            const isIn = flow.advanceEffect > 0;
-                            return (
-                              <div key={flow.id} className="flex items-center justify-between p-5 bg-slate-50/50 rounded-2xl border border-slate-100 hover:bg-slate-50 transition-all group">
-                                <div className="flex items-center gap-4">
-                                  <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center border group-hover:scale-115 transition-transform",
-                                    isIn ? "bg-green-50 text-green-700 border-green-100" : "bg-amber-50 text-amber-700 border-amber-100")}>
-                                    {isIn ? <ArrowUpRight className="w-5 h-5" /> : <ArrowDownRight className="w-5 h-5" />}
-                                  </div>
-                                  <div>
-                                    <p className="text-xs font-black text-blue-900 uppercase">
-                                      {isIn ? "Dépôt d'avance" : flow.label}
-                                    </p>
-                                    <p className="text-[8px] text-slate-400 font-bold uppercase tracking-widest">
-                                      {flow.date ? new Date(flow.date).toLocaleDateString() : "—"}
-                                      {flow.notes ? ` · ${flow.notes}` : ""}
-                                    </p>
-                                  </div>
-                                </div>
-                                <span className={cn("text-base font-black italic", isIn ? "text-green-600" : "text-amber-600")}>
-                                  {isIn ? "+" : "−"}{Math.abs(flow.advanceEffect).toLocaleString()} DA
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
-                          <Wallet className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                          <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucun mouvement sur le compte d'avance</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* RENDEZ-VOUS TAB */}
-                {activeTab === "rdv" && (
-                  <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-250">
-                    <div className="flex items-center justify-between border-b pb-2">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.25em] text-blue-900">Planification des Rendez-vous</h4>
-                      <button 
-                        onClick={() => setShowAppointmentForm(!showAppointmentForm)}
-                        className="px-4 py-2 bg-blue-900 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-105 transition-all flex items-center gap-2 italic"
-                      >
-                        <Plus className="w-3.5 h-3.5 text-yellow-400" /> {showAppointmentForm ? "Fermer Formulaire" : "Programmer Paiement"}
-                      </button>
-                    </div>
-
-                    {showAppointmentForm && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="p-8 bg-gradient-to-br from-blue-50 to-slate-50 border-2 border-blue-100/50 rounded-[2rem] space-y-6"
-                      >
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                          <div className="space-y-2">
-                            <label className="block text-[9px] font-black uppercase tracking-widest text-slate-500 ml-1">Date d'Échéance</label>
-                            <input
-                              type="date"
-                              value={appointmentForm.date}
-                              onChange={(e) => setAppointmentForm({ ...appointmentForm, date: e.target.value })}
-                              className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black h-13 shadow-inner bg-white"
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <label className="block text-[9px] font-black uppercase tracking-widest text-slate-500 ml-1">Montant Attendu (DA)</label>
-                            <input
-                              type="number"
-                              value={appointmentForm.amount}
-                              onChange={(e) => setAppointmentForm({ ...appointmentForm, amount: parseFloat(e.target.value) || 0 })}
-                              className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black h-13 shadow-inner bg-white"
-                              placeholder="0.00"
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <label className="block text-[9px] font-black uppercase tracking-widest text-slate-500 ml-1">Facture / Vente Associée (optionnel)</label>
-                            <select
-                              value={appointmentForm.linkedSaleId}
-                              onChange={(e) => setAppointmentForm({ ...appointmentForm, linkedSaleId: e.target.value })}
-                              className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black h-13 shadow-inner bg-white"
-                            >
-                              <option value="">Sélectionner une opération...</option>
-                              {/* Seules les consommations qui ont laissé une
-                                  dette peuvent motiver un rendez-vous : un bon
-                                  pris sur l'avance est déjà payé. */}
-                              {clientPurchases.filter((e: ClientEntry) => e.debtEffect > 0).map((e: ClientEntry) => (
-                                <option key={e.id} value={e.id}>
-                                  {e.label} — {e.date ? new Date(e.date).toLocaleDateString() : "—"} ({e.debtEffect.toLocaleString()} DA)
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="space-y-2">
-                            <label className="block text-[9px] font-black uppercase tracking-widest text-slate-500 ml-1">Notes / Instructions</label>
-                            <input
-                              type="text"
-                              value={appointmentForm.notes}
-                              onChange={(e) => setAppointmentForm({ ...appointmentForm, notes: e.target.value })}
-                              placeholder="Entrez vos notes..."
-                              className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black h-13 shadow-inner bg-white"
-                            />
-                          </div>
-                        </div>
-                        <button
-                          onClick={handleSaveAppointment}
-                          className="w-full h-14 bg-gradient-to-r from-blue-900 to-blue-800 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-lg hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-3 italic"
-                        >
-                          <Calendar className="w-4 h-4 text-yellow-400" /> PROGRAMMER LE RENDEZ-VOUS
-                        </button>
-                      </motion.div>
-                    )}
-
-                    {/* Appointments list */}
-                    <div className="space-y-3">
-                      {selectedClient.appointments && selectedClient.appointments.length > 0 ? (
-                        selectedClient.appointments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(appt => {
-                          const isLate = new Date(appt.date) < new Date() && !appt.isPaid;
-                          return (
-                            <div 
-                              key={appt.id} 
-                              className={cn(
-                                "flex flex-col sm:flex-row sm:items-center justify-between p-6 rounded-3xl border transition-all gap-4", 
-                                isLate ? "bg-red-50/50 border-red-100" : appt.isPaid ? "bg-emerald-50/30 border-emerald-100" : "bg-slate-50/50 border-slate-100"
-                              )}
-                            >
-                              <div className="flex items-center gap-4">
-                                <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center border", 
-                                  isLate ? "bg-red-100 text-red-600 border-red-200" : appt.isPaid ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-blue-100 text-blue-900 border-blue-200")}>
-                                  <Calendar className="w-5 h-5" />
-                                </div>
-                                <div>
-                                  <p className="text-[10px] font-black text-slate-400 uppercase">{new Date(appt.date).toLocaleDateString()} {appt.linkedSaleId ? `(Facture #${appt.linkedSaleId.substring(0,8).toUpperCase()})` : ''}</p>
-                                  <p className={cn("text-base font-black italic", isLate ? "text-red-600" : appt.isPaid ? "text-emerald-700" : "text-blue-900")}>
-                                    {appt.amount.toLocaleString()} DA
-                                  </p>
-                                  {appt.notes && <p className="text-[10px] text-slate-400 font-medium italic mt-1">"{appt.notes}"</p>}
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-3 self-end sm:self-center">
-                                <span className={cn("text-[8px] font-black px-3 py-1 rounded-full border italic", 
-                                  isLate ? "bg-red-100 text-red-700 border-red-200" : appt.isPaid ? "bg-emerald-100 text-emerald-800 border-emerald-200" : "bg-amber-100 text-amber-800 border-amber-200")}>
-                                  {isLate ? "EN RETARD" : appt.isPaid ? "PAYÉ" : "À VENIR"}
-                                </span>
-                                {!appt.isPaid && (
-                                  <button 
-                                    onClick={() => handleMarkAppointmentPaid(appt.id)}
-                                    className="px-3 py-1 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-lg text-[8px] font-black uppercase hover:scale-105 active:scale-95 transition-all tracking-wider"
-                                  >
-                                    Marquer Payé
-                                  </button>
-                                )}
-                                <button className="p-2 hover:bg-slate-100 rounded-lg border border-transparent hover:border-slate-200 text-slate-300 hover:text-slate-600 transition-all"><Printer className="w-4 h-4" /></button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="p-16 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-100 opacity-60">
-                          <Calendar className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                          <p className="text-slate-400 text-xs uppercase font-black tracking-widest">Aucun rendez-vous de paiement programmé</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* ── Le dossier du client ───────────────────────────────────────────
+          « Voir détails » et « Historique complet » ouvrent le MÊME dossier, à
+          une rubrique différente : c'est le même compte, il n'y a aucune raison
+          qu'il se raconte de deux façons. La mise en page est celle des
+          Paramètres (voir `components/clients/ClientDossier`). */}
+      {showDetail && selectedClient && (
+        <ClientDossier
+          key={selectedClient.id}
+          open
+          onClose={() => setShowDetail(false)}
+          statement={dossierStatement}
+          initialSection={activeTab}
+          // Le règlement et la recharge s'ouvrent PAR-DESSUS le dossier (z-80) :
+          // lancés depuis lui, ils doivent le recouvrir, sinon ils s'ouvrent
+          // derrière et le bouton paraît ne pas répondre.
+          zClass="z-[70]"
+          recordedDebt={selectedClient.debt}
+          creditLimit={selectedClient.creditLimit}
+          badges={<>
+            <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-white/10 border border-white/15 text-blue-100">
+              {selectedClient.type}
+            </span>
+            <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-white/10 border border-white/15 text-blue-100">
+              {MODE_LABEL[selectedClient.paymentMode] || selectedClient.paymentMode}
+            </span>
+            {selectedClient.cin && (
+              <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-white/10 border border-white/15 text-blue-100">
+                CIN {selectedClient.cin}
+              </span>
+            )}
+          </>}
+          identity={dossierIdentity}
+          advance={selectedClient.paymentMode === 'ADVANCE' || ledger.recharged > 0 ? {
+            available: advanceLeft,
+            recharged: ledger.recharged,
+            used: ledger.chargedOnAdvance,
+            gap: advanceGap,
+            onRecharge: perm.modifier ? () => setShowRecharge(true) : undefined,
+          } : undefined}
+          extraSections={[{
+            id: 'rdv',
+            label: 'Rendez-vous',
+            icon: Calendar,
+            count: (selectedClient.appointments || []).length,
+            hint: 'Les échéances de paiement convenues avec le client',
+            render: () => renderAppointments(),
+          }]}
+          onPayDebt={perm.modifier ? () => openDebtPayment(selectedClient) : undefined}
+          onSettleLine={perm.modifier ? (line) => {
+            setSelectedSale({ id: line.id, label: line.label });
+            setPaymentForm({
+              amount: Math.min(line.debtEffect, payableDebt(selectedClient, ledger)),
+              date: new Date().toISOString().split("T")[0],
+              mode: "ESPECES", chequeNumber: "",
+              bankAccountId: liveBankAccounts[0]?.id || "", notes: "",
+            });
+            setShowPayment(true);
+          } : undefined}
+          onPrintReceipt={(line) => {
+            const tx = (selectedClient.transactionHistory || []).find(t => `pay-${t.id}` === line.id);
+            if (tx) printReceipt(selectedClient, tx);
+          }}
+          onReport={() => { setReportClient(selectedClient); setShowDetail(false); }}
+          onPrintStatement={() => printFiche(dossierFicheRef.current)}
+        >
+          {/* La feuille A4, hors écran : c'est elle que `printFiche` clone. */}
+          <ClientStatementFiche ref={dossierFicheRef} statement={dossierStatement} settings={settings} />
+        </ClientDossier>
+      )}
 
       {/* Recharge Avance Modal */}
       <AnimatePresence>
@@ -1980,13 +1680,22 @@ const Clients = () => {
                         </span>
                       </>
                     )}
-                    <span>Dette actuelle</span>
-                    <span className="text-red-600 font-black text-right">{selectedClient.debt.toLocaleString()} DA</span>
+                    <span>Reste dû (d'après les pièces)</span>
+                    <span className="text-red-600 font-black text-right">{ledger.debtFromDocuments.toLocaleString()} DA</span>
                     <span className="text-emerald-600">Déjà réglé (cumul)</span>
-                    <span className="text-emerald-700 text-right">{totalPaid.toLocaleString()} DA</span>
+                    <span className="text-emerald-700 text-right">{ledger.paid.toLocaleString()} DA</span>
+                    {/* Le compteur de la fiche n'est montré QUE s'il diverge :
+                        le taire laisserait croire à une erreur de saisie quand
+                        c'est en réalité une reprise d'ouverture. */}
+                    {Math.abs(ledger.debtGap) >= 1 && (
+                      <>
+                        <span className="text-amber-600">Encours enregistré sur la fiche</span>
+                        <span className="text-amber-700 font-black text-right">{(selectedClient.debt || 0).toLocaleString()} DA</span>
+                      </>
+                    )}
                     <span className="text-slate-500 border-t pt-2">Reste après ce règlement</span>
                     <span className="text-blue-900 font-black text-right border-t pt-2">
-                      {Math.max(0, selectedClient.debt - (paymentForm.amount || 0)).toLocaleString()} DA
+                      {Math.max(0, ledger.debtFromDocuments - (paymentForm.amount || 0)).toLocaleString()} DA
                     </span>
                   </div>
                   {selectedSale && (
@@ -2007,7 +1716,7 @@ const Clients = () => {
                     />
                     <button
                       type="button"
-                      onClick={() => setPaymentForm({...paymentForm, amount: selectedClient.debt})}
+                      onClick={() => setPaymentForm({...paymentForm, amount: payableDebt(selectedClient, ledger)})}
                       className="absolute right-3 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-blue-50 text-blue-700 text-[8px] font-black uppercase rounded-lg hover:bg-blue-100 transition-colors"
                     >
                       Payer Total

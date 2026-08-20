@@ -43,6 +43,7 @@ import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, 
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
 import { toNum } from "../lib/brigadeCalc";
+import { clientChargeDelta } from "../lib/clientLedger";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Skeleton from "../components/Skeleton";
@@ -758,30 +759,34 @@ const Brigades = () => {
         }
       });
 
-      // Client avance / credit adjustments + absences only on first creation.
-      // (On edit, client balances and absences recorded at creation are left
-      // untouched to avoid double-counting them.)
-      if (!isEdit) {
-        const allJustifs = Object.values(pompisteJustifications).flat() as Array<{ type: string; clientId?: string; amount: number }>;
-        allJustifs.forEach(j => {
-          if (!j.clientId) return;
-          const client = clients.find(c => c.id === j.clientId);
+      // ── Report sur les comptes clients ────────────────────────────────────
+      // On applique la DIFFÉRENCE avec ce que cette brigade avait déjà porté aux
+      // comptes : à la création elle vaut la totalité des bons, à la correction
+      // elle ne vaut que ce qui a changé. Une justification retirée rend au
+      // client ce qu'elle lui avait pris — auparavant l'édition ne touchait rien
+      // du tout, et un bon corrigé restait facturé au montant d'origine.
+      clientChargeDelta(existingAccounting?.justifications, accJustifications)
+        .forEach((delta, clientId) => {
+          const client = clients.find(c => c.id === clientId);
           if (!client) return;
-          if (j.type === 'CLIENT_AVANCE') {
-            // Les deux colonnes de l'avance descendent ensemble : la recharge
-            // crédite `balance` côté Clients, la consommation ne touchait que
-            // `advanceBalance`, et le client gardait à l'écran une avance qu'il
-            // avait déjà dépensée.
-            const left = Math.max(0, (client.advanceBalance ?? client.balance ?? 0) - j.amount);
-            dispatch({
-              type: 'UPDATE_CLIENT',
-              payload: { ...client, advanceBalance: left, balance: Math.max(0, (client.balance || 0) - j.amount) },
-            });
-          } else if (j.type === 'CLIENT_CREDIT') {
-            dispatch({ type: 'UPDATE_CLIENT', payload: { ...client, debt: (client.debt || 0) + j.amount } });
-          }
+          // Les deux colonnes de l'avance descendent ensemble : la recharge
+          // crédite `balance` côté Clients, la consommation ne touchait que
+          // `advanceBalance`, et le client gardait à l'écran une avance qu'il
+          // avait déjà dépensée.
+          dispatch({
+            type: 'UPDATE_CLIENT',
+            payload: {
+              ...client,
+              debt: Math.max(0, (client.debt || 0) + delta.credit),
+              advanceBalance: Math.max(0, (client.advanceBalance ?? client.balance ?? 0) - delta.advance),
+              balance: Math.max(0, (client.balance || 0) - delta.advance),
+            },
+          });
         });
 
+      // Absences only on first creation — on edit they are left untouched to
+      // avoid double-counting them.
+      if (!isEdit) {
         // Record absences for absent pompistes
         assignments.filter(a => !a.present && !a.chefActingAsPompiste).forEach(a => {
           const pompiste = pompistes.find(p => p.id === a.pompisteId);

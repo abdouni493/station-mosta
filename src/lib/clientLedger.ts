@@ -99,15 +99,42 @@ export interface ClientLedger {
   /** Ce que les documents disent de l'avance : recharges − consommation. */
   advanceFromDocuments: number;
   counts: { bons: number; magasin: number; reglements: number; recharges: number };
+  /**
+   * Ce que la colonne `clients.debt` annonce. Elle n'est qu'un COMPTEUR tenu au
+   * fil de l'eau : chaque bon la monte, chaque règlement la baisse. Elle ne sait
+   * rien d'une reprise d'ouverture ni d'une brigade corrigée après coup, d'où
+   * l'écart ci-dessous — qu'on affiche plutôt que de le passer sous silence.
+   */
+  recordedDebt: number;
+  /** Encours enregistré − dette d'après les pièces. */
+  debtGap: number;
+  /** Date de la première et de la dernière opération ('' quand le compte est vide). */
+  firstDate: string;
+  lastDate: string;
+  /**
+   * Les ombres d'historique écartées du journal — voir `SALE` plus bas. Un
+   * nombre > 0 veut dire que le compte a été relu au lieu d'être doublé.
+   */
+  shadowsDropped: number;
 }
 
 /** Un bon de brigade concerne-t-il un vrai client (et pas un TAG / TPE) ? */
 const isClientJustification = (j: any): boolean =>
   !!j?.clientId && (!j.justificationType || j.justificationType === 'CLIENT');
 
-/** Le bon a-t-il été pris sur l'avance du client plutôt qu'à crédit ? */
-const onAdvance = (j: any): boolean =>
-  String(j?.paymentMode || '').toUpperCase() === 'AVANCE';
+/**
+ * Une opération a-t-elle été prise sur l'AVANCE du client plutôt qu'à crédit ?
+ *
+ * Deux écrans écrivent ce champ et ils n'emploient pas le même mot : la clôture
+ * de brigade enregistre « AVANCE », la comptabilité de brigade recopie le mode
+ * du client, qui s'écrit « ADVANCE ». Ne reconnaître que le premier revenait à
+ * porter à la DETTE tous les bons saisis depuis la comptabilité pour un client
+ * qui avait pourtant déjà payé d'avance.
+ */
+const onAdvance = (mode: any): boolean => {
+  const m = String(mode ?? '').toUpperCase();
+  return m === 'AVANCE' || m === 'ADVANCE';
+};
 
 /**
  * Le compte complet d'un client. `app` est l'état de l'application : on y lit
@@ -121,15 +148,22 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
   const brigades: any[] = app?.brigades || [];
   const accountings: any[] = app?.brigadeAccountings || [];
 
+  // Retrouver la brigade d'une comptabilité par un `find` DANS la boucle
+  // revenait à parcourir toute la table des brigades une fois par comptabilité :
+  // sur une station qui en a des milliers, l'écran Clients se figeait à chaque
+  // frappe. L'index se construit une seule fois.
+  const brigadeById = new Map<string, any>();
+  for (const b of brigades) brigadeById.set(b.id, b);
+
   // 1. Bons carburant — les justifications « client » des brigades.
   for (const acc of accountings) {
-    const brigade = brigades.find(b => b.id === acc.brigadeId);
+    const brigade = brigadeById.get(acc.brigadeId);
     const date = brigade?.startDatetime || brigade?.date || '';
     for (const j of (acc.justifications || [])) {
       if (!isClientJustification(j) || j.clientId !== clientId) continue;
       const amount = num(j.amount);
       if (!amount) continue;
-      const advance = onAdvance(j);
+      const advance = onAdvance(j.paymentMode);
       const liters = num(j.liters);
       entries.push({
         id: `bon-${j.id}`,
@@ -179,7 +213,7 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
       paid: 0,
       // Seule la part NON réglée sur place devient une dette.
       debtEffect: rest,
-      advanceEffect: String(s.paymentMode || '').toUpperCase() === 'AVANCE' ? -total : 0,
+      advanceEffect: onAdvance(s.paymentMode) ? -total : 0,
       mode: s.paymentMode,
       reference: s.bonNumber || s.chequeNumber,
       notes: s.notes,
@@ -209,7 +243,7 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
       charged: total,
       paid: 0,
       debtEffect: String(s.paymentMode || '').toUpperCase() === 'CREDIT' ? total : 0,
-      advanceEffect: String(s.paymentMode || '').toUpperCase() === 'AVANCE' ? -total : 0,
+      advanceEffect: onAdvance(s.paymentMode) ? -total : 0,
       mode: s.paymentMode,
       liters: num(s.liters) || undefined,
       fuelType: s.fuelType,
@@ -217,7 +251,36 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
     });
   }
 
-  // 4. Règlements et recharges — l'historique propre du client.
+  // 4. Règlements, recharges — et les « ombres » de l'historique.
+  //
+  //    Une ligne `SALE` de `client_transactions` n'est PAS un document : c'est
+  //    la copie que la comptabilité de brigade écrivait à côté de la
+  //    justification qu'elle venait d'enregistrer. Comptée telle quelle, chaque
+  //    bon carburant entrait DEUX fois dans le compte — une fois par sa pièce,
+  //    une fois par son ombre — et la consommation affichée valait le double de
+  //    la réalité. Pire pour un client sur avance : l'ombre était portée à la
+  //    dette, si bien qu'un client qui n'avait jamais rien dû voyait apparaître
+  //    une dette égale à tout ce qu'il avait consommé sur son propre argent.
+  //
+  //    On apparie donc chaque ombre au bon qu'elle recopie — même montant, à
+  //    moins de 36 h l'un de l'autre, ce qui absorbe l'écart entre la date de la
+  //    brigade et l'horodatage de sa nuit — et on ne garde au journal que celles
+  //    qui ne retrouvent aucune pièce : celles-là sont de vraies consommations
+  //    dont la brigade a disparu.
+  const bonPieces = entries
+    .filter(e => e.kind === 'bon')
+    .map(e => ({ entry: e, matched: false }));
+  const shadowOf = (date: string, amount: number) => {
+    const t = new Date(date).getTime();
+    return bonPieces.find(b => {
+      if (b.matched || Math.abs(b.entry.charged - amount) > 0.01) return false;
+      const bt = new Date(b.entry.date).getTime();
+      if (!Number.isFinite(t) || !Number.isFinite(bt)) return true;
+      return Math.abs(bt - t) <= 36 * 3600 * 1000;
+    });
+  };
+  let shadowsDropped = 0;
+
   for (const t of (client?.transactionHistory || [])) {
     const amount = num(t.amount);
     if (!amount) continue;
@@ -250,7 +313,15 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
         notes: t.notes,
       });
     } else {
-      // Ligne `SALE` d'historique : une consommation sans document rattaché.
+      // L'ombre d'un bon déjà au journal : la pièce a déjà tout dit.
+      const piece = shadowOf(t.date, amount);
+      if (piece) { piece.matched = true; shadowsDropped++; continue; }
+
+      // Une consommation dont la brigade n'existe plus. Elle garde son effet
+      // RÉEL : le mode enregistré est celui du compte au moment du bon, et une
+      // consommation payée d'avance ou au comptant ne doit rien à personne.
+      const fromAdvance = onAdvance(t.mode);
+      const settled = ['CASH', 'ESPECES'].includes(String(t.mode || '').toUpperCase());
       entries.push({
         id: `tx-${t.id}`,
         date: t.date,
@@ -258,8 +329,8 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
         label: t.notes || 'Consommation',
         charged: amount,
         paid: 0,
-        debtEffect: amount,
-        advanceEffect: 0,
+        debtEffect: fromAdvance || settled ? 0 : amount,
+        advanceEffect: fromAdvance ? -amount : 0,
         mode: t.mode,
         reference: t.receiptNumber,
         notes: t.notes,
@@ -275,6 +346,9 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
   const chargedOnCredit = entries.reduce((s, e) => s + Math.max(0, e.debtEffect), 0);
   const paid = sum(e => (e.kind === 'reglement' ? e.paid : 0));
 
+  const debtFromDocuments = chargedOnCredit - paid;
+  const recordedDebt = num(client?.debt);
+
   return {
     entries,
     charged: sum(e => e.charged),
@@ -282,7 +356,7 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
     chargedOnAdvance,
     paid,
     recharged,
-    debtFromDocuments: chargedOnCredit - paid,
+    debtFromDocuments,
     advanceFromDocuments: recharged - chargedOnAdvance,
     counts: {
       bons: entries.filter(e => e.kind === 'bon').length,
@@ -290,6 +364,11 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
       reglements: entries.filter(e => e.kind === 'reglement').length,
       recharges: entries.filter(e => e.kind === 'recharge').length,
     },
+    recordedDebt,
+    debtGap: recordedDebt - debtFromDocuments,
+    firstDate: entries.length ? entries[entries.length - 1].date : '',
+    lastDate: entries.length ? entries[0].date : '',
+    shadowsDropped,
   };
 }
 
@@ -325,16 +404,118 @@ function emptyLedger(): ClientLedger {
     charged: 0, chargedOnCredit: 0, chargedOnAdvance: 0, paid: 0, recharged: 0,
     debtFromDocuments: 0, advanceFromDocuments: 0,
     counts: { bons: 0, magasin: 0, reglements: 0, recharges: 0 },
+    recordedDebt: 0, debtGap: 0,
+    firstDate: '', lastDate: '', shadowsDropped: 0,
   };
 }
 
 /**
  * Ce que CHAQUE client doit et détient, d'après ses pièces — pour les écrans qui
- * affichent la liste entière sans vouloir relire les brigades une fois par
- * client.
+ * affichent la liste entière.
+ *
+ * Appeler `clientLedger` une fois par client ferait relire à chacun la TOTALITÉ
+ * des comptabilités de brigade et des ventes magasin, pour n'en retenir que sa
+ * poignée de lignes. Les pièces sont donc rangées par client une bonne fois, et
+ * chaque compte ne reçoit que les siennes. Le résultat est identique — le
+ * journal refiltre de toute façon — mais la liste ne dépend plus du produit
+ * « nombre de clients × nombre de brigades ».
  */
 export function clientLedgers(app: any): Record<string, ClientLedger> {
+  const groupBy = <T,>(rows: T[], key: (r: T) => string | undefined) => {
+    const map = new Map<string, T[]>();
+    for (const r of rows) {
+      const k = key(r);
+      if (!k) continue;
+      const list = map.get(k);
+      if (list) list.push(r); else map.set(k, [r]);
+    }
+    return map;
+  };
+
+  // Une comptabilité peut porter les bons de plusieurs clients : chacun reçoit
+  // une copie de la comptabilité réduite à SES justifications.
+  const accountingsByClient = new Map<string, any[]>();
+  for (const acc of (app?.brigadeAccountings || [])) {
+    const perClient = groupBy<any>(acc.justifications || [], j => (isClientJustification(j) ? j.clientId : undefined));
+    for (const [clientId, justifications] of perClient) {
+      const list = accountingsByClient.get(clientId);
+      const slice = { ...acc, justifications };
+      if (list) list.push(slice); else accountingsByClient.set(clientId, [slice]);
+    }
+  }
+
+  const shopByClient = groupBy<any>(app?.shopSales || [], s => s.clientId);
+  const fuelByClient = groupBy<any>(app?.fuelSales || [], s => s.clientId);
+
   const out: Record<string, ClientLedger> = {};
-  for (const c of (app?.clients || [])) out[c.id] = clientLedger(app, c.id);
+  for (const c of (app?.clients || [])) {
+    out[c.id] = clientLedger({
+      ...app,
+      brigadeAccountings: accountingsByClient.get(c.id) || [],
+      shopSales: shopByClient.get(c.id) || [],
+      fuelSales: fuelByClient.get(c.id) || [],
+    }, c.id);
+  }
   return out;
+}
+
+/** Ce qu'une brigade ajoute au compte d'un client : à crédit, et sur son avance. */
+export interface ClientChargeDelta {
+  /** Montant qui creuse la DETTE (> 0) ou la rembourse (< 0). */
+  credit: number;
+  /** Montant pris sur l'AVANCE (> 0) ou rendu (< 0). */
+  advance: number;
+}
+
+/**
+ * ─── Ce qu'une comptabilité de brigade change AUX COMPTES CLIENTS ─────────────
+ *
+ * Les colonnes `debt` / `advance_balance` d'un client sont des compteurs : on
+ * les fait bouger à la main, à chaque enregistrement. Deux écrans le faisaient,
+ * et tous deux appliquaient la TOTALITÉ des justifications à chaque fois —
+ * rouvrir une comptabilité pour corriger une virgule rajoutait donc une seconde
+ * fois toute la consommation de la brigade, et la dette du client enflait sans
+ * qu'aucune pièce ne l'explique.
+ *
+ * On ne reporte plus que la DIFFÉRENCE entre ce qui était déjà enregistré et ce
+ * qu'on enregistre maintenant. Un enregistrement à l'identique ne bouge rien ;
+ * une justification retirée rend au client ce qu'elle lui avait pris.
+ *
+ * Deux règles de tri, chacune pour une erreur constatée :
+ *
+ *  • les TAG et les TPE sont écartés — ils n'appartiennent à aucun client du
+ *    fichier, et l'identifiant qui traînait parfois sur leur ligne suffisait à
+ *    gonfler la dette de quelqu'un qui n'avait rien pris ;
+ *  • c'est le mode de la JUSTIFICATION qui décide, pas celui de la fiche du
+ *    client : un bon pris sur l'avance descend l'avance, tout le reste creuse
+ *    la dette. Ce sont exactement les règles que le journal applique, sans quoi
+ *    les compteurs et les pièces raconteraient deux histoires différentes.
+ */
+export function clientChargeDelta(
+  before: { clientId?: string; amount?: number; justificationType?: string; paymentMode?: string }[] | undefined,
+  after: typeof before,
+): Map<string, ClientChargeDelta> {
+  const totals = (list: typeof before) => {
+    const by = new Map<string, ClientChargeDelta>();
+    for (const j of (list || [])) {
+      if (!j?.clientId) continue;
+      if (j.justificationType && j.justificationType !== 'CLIENT') continue;
+      const cur = by.get(j.clientId) || { credit: 0, advance: 0 };
+      if (onAdvance(j.paymentMode)) cur.advance += num(j.amount);
+      else cur.credit += num(j.amount);
+      by.set(j.clientId, cur);
+    }
+    return by;
+  };
+  const was = totals(before);
+  const now = totals(after);
+  const zero: ClientChargeDelta = { credit: 0, advance: 0 };
+  const delta = new Map<string, ClientChargeDelta>();
+  for (const id of new Set([...was.keys(), ...now.keys()])) {
+    const a = now.get(id) || zero;
+    const b = was.get(id) || zero;
+    const d = { credit: a.credit - b.credit, advance: a.advance - b.advance };
+    if (Math.abs(d.credit) > 0.001 || Math.abs(d.advance) > 0.001) delta.set(id, d);
+  }
+  return delta;
 }

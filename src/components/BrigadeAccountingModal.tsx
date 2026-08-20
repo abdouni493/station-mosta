@@ -14,6 +14,7 @@ import {
   brigadeActiveNozzles, brigadeNozzleRows, brigadeTankRows, brigadePompisteGroups, justifiedByPompiste,
 } from "../lib/brigadeCalc";
 import { brigadeTankDeltas } from "../lib/brigadeTanks";
+import { clientChargeDelta } from "../lib/clientLedger";
 
 interface Justification {
   id: string;
@@ -321,35 +322,30 @@ const BrigadeAccountingModal: React.FC<Props> = ({
         }});
       });
 
-    // Apply client debt/advance changes + record transaction history
-    justifications.forEach(j => {
-      const client = clients.find(c => c.id === j.clientId);
+    // ── Report sur les comptes clients ──────────────────────────────────────
+    // Seule la DIFFÉRENCE avec ce qui était déjà enregistré est appliquée :
+    // rouvrir cette comptabilité pour corriger un montant rajoutait auparavant
+    // une seconde fois TOUTE la consommation de la brigade, et la dette du
+    // client enflait sans qu'aucune pièce ne l'explique. Les TAG et les TPE
+    // n'entrent dans le compte de personne (voir `clientChargeDelta`).
+    //
+    // Aucune ligne d'historique n'est plus écrite ici : la justification EST la
+    // pièce du bon. La copie qu'on en faisait dans `client_transactions` faisait
+    // compter chaque bon deux fois dans le compte du client.
+    clientChargeDelta(existingAccounting?.justifications, justObjs).forEach((delta, clientId) => {
+      const client = clients.find(c => c.id === clientId);
       if (!client) return;
-      if (client.paymentMode === 'CREDIT') {
-        dispatch({ type: 'UPDATE_CLIENT', payload: { ...client, debt: (client.debt || 0) + j.amount } });
-      } else if (client.paymentMode === 'ADVANCE') {
-        // Les deux colonnes de l'avance descendent ensemble — `balance` est
-        // celle que la recharge crédite côté Clients.
-        dispatch({
-          type: 'UPDATE_CLIENT',
-          payload: {
-            ...client,
-            advanceBalance: Math.max(0, (client.advanceBalance ?? client.balance ?? 0) - j.amount),
-            balance: Math.max(0, (client.balance || 0) - j.amount),
-          },
-        });
-      }
-      dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: {
-        clientId: client.id,
-        payment: {
-          id: newId(),
-          date: brigade.date,
-          type: 'SALE',
-          amount: j.amount,
-          mode: client.paymentMode,
-          notes: `Brigade ${brigade.date} ${brigade.shift}`,
-        }
-      }});
+      // Les deux colonnes de l'avance descendent ensemble — `balance` est celle
+      // que la recharge crédite côté Clients.
+      dispatch({
+        type: 'UPDATE_CLIENT',
+        payload: {
+          ...client,
+          debt: Math.max(0, (client.debt || 0) + delta.credit),
+          advanceBalance: Math.max(0, (client.advanceBalance ?? client.balance ?? 0) - delta.advance),
+          balance: Math.max(0, (client.balance || 0) - delta.advance),
+        },
+      });
     });
 
     // ── Corrections de pistolets ────────────────────────────────────────────
