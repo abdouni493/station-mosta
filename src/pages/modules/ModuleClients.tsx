@@ -2,24 +2,30 @@ import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   Users, Plus, Phone, MapPin, History, TrendingUp, CircleDollarSign,
   FileBarChart, Receipt, Eye, Car, IdCard, ShoppingBag,
-  AlertTriangle, DollarSign, MoreVertical,
+  AlertTriangle, DollarSign, MoreVertical, Search, X, Flag, Wallet,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'react-hot-toast';
-import { ModuleKey, MODULES, BizContact, BizReparation, BizSale } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizContact, BizDocPayment, BizReparation, BizSale } from '@/src/lib/bizConfig';
 import { matchesSearch, cn } from '@/src/lib/utils';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, SearchInput, EmptyState,
+  PageHeader, StatCard, EmptyState,
   Edit2, Trash2, Confirm, money, formatDate,
 } from '@/src/components/biz/Kit';
 import { printFiche } from '@/src/components/biz/ReportFiche';
 import { ClientStatementFiche } from '@/src/components/biz/ClientStatementFiche';
 import ClientReportModal from '@/src/components/biz/ClientReportModal';
 import ClientDossier, { DossierGroup, DossierSection } from '@/src/components/clients/ClientDossier';
-import { bizClientStatement, ClientStatement } from '@/src/lib/clientStatement';
-import { ContactModal, PayDebtModal, PayDebtMeta, withPayment } from './_shared';
+import { bizClientStatement, ClientStatement, StatementPayment } from '@/src/lib/clientStatement';
+import { clientOpening } from '@/src/lib/clientLedger';
+import {
+  ContactModal, PayDebtModal, PayDebtMeta, PAY_MODES, withPayment,
+  printPaymentReceipt, stationFromSettings,
+} from './_shared';
+import { Modal, Field, Input, Select } from '@/src/components/biz/Kit';
+import { newId } from '@/src/lib/utils';
 
 const shortDate = (s: string) => {
   if (!s) return '—';
@@ -99,6 +105,34 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
       .sort(byDate);
 
     let settled = 0;
+
+    // ── La DETTE INITIALE d'abord ──────────────────────────────────────────
+    // C'est la plus ancienne dette du compte : la règle du « plus ancien au
+    // plus récent » commence par elle. Sans ce passage, un client qui venait
+    // solder toute son ardoise laissait sa reprise intacte — et sa carte
+    // continuait d'afficher une dette que plus aucune facture n'expliquait.
+    const op = clientOpening(client as any);
+    const openPaid = (client.openingPayments || []).reduce((t, x) => t + (Number(x.amount) || 0), 0);
+    const openRest = Math.max(0, op.debt - openPaid);
+    if (left > 0.004 && openRest > 0) {
+      const part = Math.min(left, openRest);
+      biz.update('clients', {
+        ...client,
+        openingPayments: [
+          ...(client.openingPayments || []),
+          {
+            id: newId(),
+            date: `${meta.date}T${new Date().toTimeString().slice(0, 8)}`,
+            amount: part,
+            mode: meta.mode,
+            reference: meta.reference,
+            by: currentUserName,
+          },
+        ],
+      });
+      left -= part; settled += part;
+    }
+
     for (const doc of openSales) {
       if (left <= 0.004) break;
       const part = Math.min(left, Number(doc.rest) || 0);
@@ -172,7 +206,39 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
           sub="reste dû, d'après les documents" />
       </div>
 
-      <div className="card-glass p-4"><SearchInput value={search} onChange={setSearch} placeholder="Nom, téléphone ou adresse…" /></div>
+      {/* ── Rechercher un client ─────────────────────────────────────────
+          Le champ tenait dans une bande grise de la hauteur d'un bouton : rien
+          n'indiquait qu'il attendait une frappe, ni ce qu'il venait de retenir.
+          Il est maintenant une vraie boîte de recherche — large, qui s'allume au
+          focus, se vide d'un clic, et DIT combien de clients elle a gardés. */}
+      <div className="rounded-3xl border border-slate-200 bg-white shadow-sm px-5 sm:px-6 py-5">
+        <label htmlFor={`client-search-${moduleKey}`} className="block text-[10px] font-black uppercase tracking-[0.18em] text-slate-400 mb-2 ml-1">
+          Rechercher un client
+        </label>
+        <div className="group relative">
+          <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300 group-focus-within:text-[#003087] transition-colors pointer-events-none" />
+          <input
+            id={`client-search-${moduleKey}`}
+            type="search"
+            autoComplete="off"
+            placeholder="Nom, téléphone ou adresse…"
+            value={search}
+            onChange={(e: any) => setSearch(e.target.value)}
+            className="w-full h-16 pl-14 pr-32 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold text-[#002d87] placeholder:text-slate-400 placeholder:font-medium outline-none transition-all focus:bg-white focus:border-[#003087] focus:ring-4 focus:ring-blue-100"
+          />
+          <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+            {search && (
+              <button onClick={() => setSearch('')} title="Effacer la recherche"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+            <span className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500 tabular-nums whitespace-nowrap">
+              {filtered.length} / {clients.length}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {filtered.length === 0 ? <EmptyState icon={Users} title="Aucun client" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau client</button> : undefined} /> : (
         /* ── Les cartes clients ───────────────────────────────────
@@ -184,7 +250,6 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
           {filtered.map((c, index) => {
             const st = statements[c.id];
             const debt = st?.closingDebt || 0;
-            const last = st?.allLines[0];
             return (
               <motion.div
                 key={c.id}
@@ -192,21 +257,37 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: index * 0.03 }}
                 className={cn(
-                  'group relative bg-white rounded-3xl border hover:shadow-2xl transition-all p-6 space-y-4 italic flex flex-col',
+                  'group relative bg-white rounded-3xl border transition-all p-5 pt-6 space-y-4 flex flex-col hover:shadow-xl hover:-translate-y-0.5',
                   actionMenuOpen === c.id ? 'z-50 border-blue-300 ring-4 ring-blue-50 shadow-xl' : 'z-10 border-slate-100 hover:border-blue-200 shadow-sm',
                 )}
               >
-                <div className="h-2 absolute top-0 left-0 right-0 rounded-t-3xl bg-gradient-to-r from-blue-900 via-blue-800 to-yellow-400" />
+                {/* Le liseré de tête — la seule couleur de la carte. */}
+                <div className="h-1.5 absolute top-0 left-0 right-0 rounded-t-3xl bg-gradient-to-r from-[#001f5c] via-[#003087] to-[#FFB800]" />
 
-                {/* Activité et état du compte — les deux badges de la carte Carburant. */}
-                <div className="absolute top-4 left-4 flex flex-col gap-1 items-start">
-                  <span className="text-[8px] font-black uppercase px-2.5 py-1 rounded-full italic shadow-sm leading-none border inline-block bg-blue-50 text-blue-700 border-blue-100">
-                    {cfg.label}
-                  </span>
-                  <span className={cn('text-[8px] font-black uppercase px-2.5 py-1 rounded-full italic shadow-sm leading-none border inline-block',
-                    debt > 0 ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100')}>
-                    {debt > 0 ? 'Débiteur' : 'Soldé'}
-                  </span>
+                {/* ── Identité ──────────────────────────────────────────────
+                    La carte ne raconte plus que quatre choses : QUI est le
+                    client, ce qu'il a acheté, ce qu'il a payé, ce qu'il doit.
+                    Les six pastilles d'avant — nombre de documents, de
+                    règlements, d'opérations, date de la dernière — poussaient
+                    les trois chiffres qui comptent tout en bas d'une carte
+                    qu'on ne fait que survoler. Elles vivent dans le dossier. */}
+                <div className="flex items-start gap-3.5 pt-4">
+                  <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-black uppercase shrink-0 shadow-md border-2 border-white"
+                    style={{ background: 'linear-gradient(135deg, #001f5c 0%, #003087 100%)', color: '#FFB800' }}>
+                    {c.name[0]}
+                  </div>
+                  <div className="min-w-0 flex-1 pr-8">
+                    <h4 className="font-black text-[#002d87] uppercase tracking-tight text-sm leading-tight truncate">{c.name}</h4>
+                    <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                      <span className="text-[8px] font-black uppercase px-2.5 py-1 rounded-full leading-none border inline-block bg-blue-50 text-blue-700 border-blue-100">
+                        {cfg.label}
+                      </span>
+                      <span className={cn('text-[8px] font-black uppercase px-2.5 py-1 rounded-full leading-none border inline-block',
+                        debt > 0 ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100')}>
+                        {debt > 0 ? 'Débiteur' : 'Soldé'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Menu d’actions */}
@@ -227,7 +308,7 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: -8, scale: 0.95 }}
                         transition={{ duration: 0.15 }}
-                        className="absolute right-0 mt-2 w-52 bg-white border border-slate-100 rounded-2xl shadow-2xl z-[60] overflow-hidden"
+                        className="absolute right-0 mt-2 w-56 bg-white border border-slate-100 rounded-2xl shadow-2xl z-[60] overflow-hidden"
                       >
                         <div className="divide-y divide-slate-100">
                           <button
@@ -242,6 +323,14 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                             >
                               <Edit2 className="w-4 h-4 text-blue-500" /> Modifier
+                            </button>
+                          )}
+                          {perm.modifier && (
+                            <button
+                              onClick={() => { setEditing(c); setShowForm(true); setActionMenuOpen(null); }}
+                              className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-amber-700 hover:bg-amber-50 flex items-center gap-3 transition-colors"
+                            >
+                              <Flag className="w-4 h-4 text-amber-500" /> Dette initiale
                             </button>
                           )}
                           {debt > 0 && perm.modifier && (
@@ -278,100 +367,44 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                   </AnimatePresence>
                 </div>
 
-                {/* Initiale et identité */}
-                <div className="flex flex-col items-center text-center gap-3 pt-6">
-                  <div className="w-16 h-16 bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-400 rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg uppercase border-2 border-white">
-                    {c.name[0]}
+                {/* ── Informations personnelles ──────────────────────────── */}
+                <div className="rounded-2xl border border-slate-100 bg-slate-50/60 divide-y divide-slate-100/80">
+                  <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                    <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className="text-[11px] font-bold text-slate-600 truncate">{c.phone || 'Téléphone non renseigné'}</span>
                   </div>
-                  <div>
-                    <h4 className="font-black text-blue-900 uppercase tracking-tight text-sm mb-1">{c.name}</h4>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                    <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className="text-[11px] font-bold text-slate-600 truncate">{c.address || 'Adresse non renseignée'}</span>
+                  </div>
+                  <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                    <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className="text-[11px] font-bold text-slate-600 truncate">
                       Client depuis {c.createdAt ? formatDate(c.createdAt) : 'N/A'}
-                    </p>
+                    </span>
                   </div>
                 </div>
 
-                {/* Coordonnées */}
-                <div className="space-y-2 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50 p-4 rounded-2xl border border-slate-100/50">
-                  <div className="flex items-center gap-2.5">
-                    <Phone className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{c.phone || 'Non renseigné'}</span>
+                {/* ── Les trois chiffres du compte ────────────────────────
+                    Achats − règlements = dette, dette initiale de reprise
+                    comprise : les trois se relisent l'un l'autre. */}
+                <div className="mt-auto grid grid-cols-3 gap-2">
+                  <div className="rounded-2xl border border-slate-100 bg-white p-3 text-center">
+                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total achats</p>
+                    <p className="text-[13px] font-black text-[#002d87] tabular-nums leading-none truncate">{money(st?.totals.charged || 0)}</p>
                   </div>
-                  <div className="flex items-center gap-2.5">
-                    <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="truncate">{c.address || 'Non renseigné'}</span>
+                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-3 text-center">
+                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total règlements</p>
+                    <p className="text-[13px] font-black text-emerald-700 tabular-nums leading-none truncate">{money(st?.totals.paid || 0)}</p>
                   </div>
-                </div>
-
-                {/* Les trois chiffres du compte */}
-                <div className="pt-2 mt-auto border-t border-slate-100 grid grid-cols-3 gap-2">
-                  <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
-                    <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Consommé</p>
-                    <p className="text-[10px] font-black text-blue-900 italic truncate">{money(st?.totals.charged || 0)}</p>
-                  </div>
-                  <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
-                    <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Réglé</p>
-                    <p className="text-[10px] font-black text-emerald-700 italic truncate">{money(st?.totals.paid || 0)}</p>
-                  </div>
-                  <div className={cn('text-center rounded-xl p-2.5 border flex flex-col justify-center',
-                    debt > 0 ? 'bg-red-50/60 border-red-100' : 'bg-emerald-50/50 border-emerald-100')}>
-                    <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Reste dû</p>
-                    <p className={cn('text-[10px] font-black italic truncate', debt > 0 ? 'text-red-600' : 'text-emerald-600')}>
+                  <div className={cn('rounded-2xl border p-3 text-center', debt > 0 ? 'bg-red-50/70 border-red-100' : 'bg-slate-50 border-slate-100')}>
+                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total dettes</p>
+                    <p className={cn('text-[13px] font-black tabular-nums leading-none truncate', debt > 0 ? 'text-red-600' : 'text-slate-400')}>
                       {money(debt)}
                     </p>
                   </div>
                 </div>
 
-                {/* Ce que le compte a d’utile à dire en un coup d’œil */}
-                <div className="flex flex-wrap items-center gap-1.5 text-[8px] font-black uppercase tracking-wider">
-                  <span className="px-2 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-100">
-                    {st?.totals.documents || 0} document(s)
-                  </span>
-                  <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-100">
-                    {st?.payments.length || 0} règlement(s)
-                  </span>
-                  <span className="px-2 py-1 rounded-lg bg-slate-50 text-slate-500 border border-slate-100">
-                    {st?.allLines.length || 0} opé.
-                  </span>
-                  {last && (
-                    <span className="px-2 py-1 rounded-lg bg-slate-50 text-slate-500 border border-slate-100">
-                      Dernière {shortDate(last.date)}
-                    </span>
-                  )}
-                  {debt > 0 && (
-                    <span className="px-2 py-1 rounded-lg bg-red-50 text-red-700 border border-red-100 flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3" /> À recouvrer
-                    </span>
-                  )}
-                </div>
-
-                {/* Les deux entrées du dossier, toujours à portée de clic */}
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setDossier({ client: c, section: 'resume' })}
-                    title="Ouvrir le dossier complet du client"
-                    className="h-10 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-blue-900 text-[9px] font-black uppercase tracking-widest italic flex items-center justify-center gap-2 transition-all"
-                  >
-                    <Eye className="w-3.5 h-3.5" /> Détails
-                  </button>
-                  <button
-                    onClick={() => setDossier({ client: c, section: 'journal' })}
-                    title="Toutes les opérations du compte"
-                    className="h-10 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-blue-900 text-[9px] font-black uppercase tracking-widest italic flex items-center justify-center gap-2 transition-all"
-                  >
-                    <History className="w-3.5 h-3.5" /> Historique
-                  </button>
-                </div>
-
-                {/* Règlement de la dette — action directe, sans passer par le menu */}
-                {debt > 0 && perm.modifier && (
-                  <button
-                    onClick={() => setPaying(c)}
-                    className="w-full h-11 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-700 text-white text-[9px] font-black uppercase tracking-widest italic flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 hover:scale-[1.02] active:scale-95 transition-all"
-                  >
-                    <DollarSign className="w-4 h-4 text-yellow-300" /> Payer la Dette
-                  </button>
-                )}
               </motion.div>
             );
           })}
@@ -388,6 +421,9 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
           onClose={() => setDossier(null)}
           onReport={() => { setReport(dossier.client); setDossier(null); }}
           onPayDebt={perm.modifier ? () => { setPaying(dossier.client); setDossier(null); } : undefined}
+          onEditOpening={perm.modifier ? () => { setEditing(dossier.client); setShowForm(true); setDossier(null); } : undefined}
+          canEdit={perm.modifier}
+          canDelete={perm.supprimer}
         />
       )}
 
@@ -430,17 +466,137 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
  */
 function BizClientDossier({
   client, moduleKey, partLabel, settings, initialSection, onClose, onReport, onPayDebt,
+  onEditOpening, canEdit, canDelete,
 }: {
   client: BizContact; moduleKey: ModuleKey; partLabel: string; settings: any;
   initialSection: string; onClose: () => void; onReport: () => void;
   /** Encaisser la dette depuis la rubrique « Règlements » — comme au Carburant. */
   onPayDebt?: () => void;
+  /** Reprendre la dette initiale — elle vit sur la fiche, pas sur un document. */
+  onEditOpening?: () => void;
+  canEdit?: boolean;
+  canDelete?: boolean;
   /** `@types/react` absent : le `key` doit être déclaré pour être accepté. */
   key?: React.Key;
 }) {
   const biz = useBiz(moduleKey);
   const cfg = MODULES[moduleKey];
   const ficheRef = React.useRef<HTMLDivElement>(null);
+  const { currentUserName } = useAppState();
+
+  /** Le versement qu'on corrige, et celui qu'on s'apprête à effacer. */
+  const [editingPay, setEditingPay] = useState<any>(null);
+  const [payForm, setPayForm] = useState({ amount: 0, date: '', mode: 'Espèces', reference: '' });
+  const [payToDelete, setPayToDelete] = useState<any>(null);
+
+  /**
+   * ─── Retrouver le versement derrière une ligne de règlement ───────────────
+   *
+   * Le relevé aplatit tout : un versement peut venir d'une vente, d'une
+   * intervention, ou de la dette de reprise. L'identifiant de la ligne porte
+   * l'origine (`<docId>-pay-<payId>`, `open-pay-<payId>`) — c'est lui qu'on
+   * décode, sinon un bouton « corriger » ne saurait pas quel document rouvrir.
+   *
+   * Les versements RECONSTRUITS (`inferred`) n'existent pas en base : ils sont
+   * déduits du cumul `paid` d'un vieux document. On refuse de les corriger
+   * plutôt que d'inventer une ligne que le document ne porte pas.
+   */
+  const locatePayment = (payment: StatementPayment): any => {
+    const lineId = String(payment.lineId || '');
+    if (lineId.startsWith('open-pay-')) {
+      const payId = lineId.slice('open-pay-'.length);
+      const pay = (client.openingPayments || []).find((x: BizDocPayment) => x.id === payId);
+      return pay ? { origin: 'opening', pay } : null;
+    }
+    const cut = lineId.lastIndexOf('-pay-');
+    if (cut < 0) return null;
+    const docId = lineId.slice(0, cut);
+    const payId = lineId.slice(cut + 5);
+    for (const coll of ['sales', 'reparations'] as const) {
+      const doc = ((biz.state as any)[coll] || []).find((d: any) => d.id === docId);
+      if (!doc) continue;
+      const pay = (doc.payments || []).find((x: BizDocPayment) => x.id === payId);
+      if (pay) return { origin: coll, doc, pay };
+    }
+    return null;
+  };
+
+  /** Réécrit les versements d'un document et remet d'aplomb `paid` / `rest`. */
+  const rewriteDoc = (origin: 'sales' | 'reparations', doc: any, payments: BizDocPayment[]) => {
+    const paid = payments.reduce((t, x) => t + (Number(x.amount) || 0), 0);
+    const total = Number(doc.total) || 0;
+    const rest = Math.max(0, total - paid);
+    const next: any = { ...doc, payments, paid, rest };
+    if (origin === 'sales' && doc.status !== 'retournée' && doc.status !== 'échangée') {
+      next.status = rest > 0 ? 'crédit' : 'payée';
+    }
+    biz.update(origin, next);
+  };
+
+  const savePayment = () => {
+    if (!editingPay) return;
+    const amount = Math.max(0, Number(payForm.amount) || 0);
+    if (amount <= 0) { toast.error('Montant invalide'); return; }
+    const patch = (x: BizDocPayment) => (x.id !== editingPay.pay.id ? x : {
+      ...x, amount, date: payForm.date || x.date, mode: payForm.mode,
+      reference: payForm.reference || undefined,
+    });
+
+    if (editingPay.origin === 'opening') {
+      biz.update('clients', { ...client, openingPayments: (client.openingPayments || []).map(patch) });
+    } else {
+      const doc = editingPay.doc;
+      const next = (doc.payments || []).map(patch);
+      // Un versement ne peut pas dépasser ce que le document facture : au-delà,
+      // le « reste » deviendrait négatif et la dette du client fondrait sans
+      // qu'aucun billet ne soit entré.
+      const sum = next.reduce((t: number, x: BizDocPayment) => t + (Number(x.amount) || 0), 0);
+      if (sum > (Number(doc.total) || 0) + 0.004) {
+        toast.error(`Le total des versements dépasserait le montant du document (${money(Number(doc.total) || 0)})`);
+        return;
+      }
+      rewriteDoc(editingPay.origin, doc, next);
+    }
+    toast.success('Règlement corrigé');
+    setEditingPay(null);
+    void biz.flush();
+  };
+
+  const deletePayment = () => {
+    if (!payToDelete) return;
+    if (payToDelete.origin === 'opening') {
+      biz.update('clients', {
+        ...client,
+        openingPayments: (client.openingPayments || []).filter((x: BizDocPayment) => x.id !== payToDelete.pay.id),
+      });
+    } else {
+      const doc = payToDelete.doc;
+      rewriteDoc(payToDelete.origin, doc, (doc.payments || []).filter((x: BizDocPayment) => x.id !== payToDelete.pay.id));
+    }
+    toast.success('Règlement supprimé');
+    setPayToDelete(null);
+    void biz.flush();
+  };
+
+  /** Le reçu d'un versement, réimprimable des années après. */
+  const printPayment = (payment: StatementPayment) => {
+    printPaymentReceipt({
+      title: 'Reçu de règlement',
+      ref: `REG-${String(payment.id).slice(-8).toUpperCase()}`,
+      date: payment.date,
+      station: stationFromSettings(settings),
+      party: { label: 'Client', name: client.name, phone: client.phone, address: client.address },
+      info: [
+        { label: 'Activité', value: partLabel },
+        { label: 'Mode de règlement', value: payment.mode || 'Espèces' },
+        { label: 'Référence', value: payment.reference || '' },
+        { label: 'Encaissé par', value: currentUserName || '' },
+      ],
+      amount: payment.amount,
+      mode: payment.mode || 'Espèces',
+      reference: payment.reference,
+    });
+  };
 
   // Aucune borne : le dossier d'un client, c'est son compte entier.
   const st = useMemo(
@@ -549,25 +705,114 @@ function BizClientDossier({
     ),
   }] : [];
 
+  const op = clientOpening(client as any);
+  const openingPaid = (client.openingPayments || []).reduce((t, x) => t + (Number(x.amount) || 0), 0);
+
   return (
-    <ClientDossier
-      open onClose={onClose}
-      statement={st}
-      identity={identity}
-      extraSections={extraSections}
-      initialSection={initialSection}
-      onReport={onReport}
-      onPayDebt={onPayDebt}
-      onPrintStatement={() => printFiche(ficheRef.current)}
-      badges={
-        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-white/10 border border-white/15 text-blue-100">
-          {st.allLines.length} opération(s)
-        </span>
-      }
-    >
-      {/* La feuille A4, hors écran : c'est elle que `printFiche` clone. */}
-      <ClientStatementFiche ref={ficheRef} statement={st} settings={settings} />
-    </ClientDossier>
+    <>
+      <ClientDossier
+        open onClose={onClose}
+        statement={st}
+        identity={identity}
+        extraSections={extraSections}
+        initialSection={initialSection}
+        onReport={onReport}
+        onPayDebt={onPayDebt}
+        onPrintStatement={() => printFiche(ficheRef.current)}
+        // La reprise du compte, montrée pour ce qu'elle est : une ardoise
+        // reprise d'un carnet, pas une vente. C'est le premier endroit où l'on
+        // regarde quand un solde ne tombe pas juste.
+        opening={{
+          debt: op.debt,
+          advance: op.advance,
+          date: client.openingDate || client.createdAt || '',
+          notes: client.openingNotes,
+          paid: openingPaid,
+          onEdit: onEditOpening,
+        }}
+        onEditPayment={canEdit ? (payment) => {
+          const found = locatePayment(payment);
+          if (!found) {
+            toast.error(payment.inferred
+              ? "Ce versement est reconstruit d'un ancien document : corrigez-le depuis le document lui-même"
+              : "Versement introuvable");
+            return;
+          }
+          setEditingPay(found);
+          setPayForm({
+            amount: Number(found.pay.amount) || 0,
+            date: String(found.pay.date || '').slice(0, 10),
+            mode: found.pay.mode || 'Espèces',
+            reference: found.pay.reference || '',
+          });
+        } : undefined}
+        onDeletePayment={canDelete ? (payment) => {
+          const found = locatePayment(payment);
+          if (!found) { toast.error("Versement introuvable"); return; }
+          setPayToDelete(found);
+        } : undefined}
+        onPrintPayment={printPayment}
+        badges={
+          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-white/10 border border-white/15 text-blue-100">
+            {st.allLines.length} opération(s)
+          </span>
+        }
+      >
+        {/* La feuille A4, hors écran : c'est elle que `printFiche` clone. */}
+        <ClientStatementFiche ref={ficheRef} statement={st} settings={settings} />
+      </ClientDossier>
+
+      {/* ── Corriger un versement ──────────────────────────────────────────
+          Le relevé se lisait, il ne se corrigeait pas : un montant tapé de
+          travers restait au compte pour toujours. Le versement est repris à sa
+          source — dans la vente, l'intervention ou la reprise qui le porte — et
+          le reste dû du document se recalcule aussitôt. */}
+      <Modal open={!!editingPay} onClose={() => setEditingPay(null)} icon={Wallet} size="lg" formScale
+        title="Corriger le règlement" subtitle={client.name}
+        zClass="z-[100]"
+        footer={<>
+          <button className="btn-ghost" onClick={() => setEditingPay(null)}>Annuler</button>
+          <button className="btn-primary" onClick={savePayment} disabled={!payForm.amount || payForm.amount <= 0}>
+            Enregistrer la correction
+          </button>
+        </>}>
+        <div className="space-y-4">
+          {editingPay && (
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-[11px] font-semibold text-slate-500 leading-relaxed">
+              {editingPay.origin === 'opening'
+                ? 'Versement encaissé sur la dette initiale du client.'
+                : `Versement rattaché à ${editingPay.doc?.ref || 'un document'} — le reste dû sera recalculé.`}
+              {' '}Montant d'origine : <b className="text-[#002d87]">{money(Number(editingPay.pay?.amount) || 0)}</b>.
+            </div>
+          )}
+          <Field label="Montant (DA)">
+            <Input type="number" inputMode="decimal" className="text-right" value={payForm.amount}
+              onChange={(e: any) => setPayForm(f => ({ ...f, amount: Number(e.target.value) || 0 }))} />
+          </Field>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Field label="Date">
+              <Input type="date" value={payForm.date}
+                onChange={(e: any) => setPayForm(f => ({ ...f, date: e.target.value }))} />
+            </Field>
+            <Field label="Mode de règlement">
+              <Select value={payForm.mode} onChange={(e: any) => setPayForm(f => ({ ...f, mode: e.target.value }))}>
+                {PAY_MODES.map(m => <option key={m} value={m}>{m}</option>)}
+              </Select>
+            </Field>
+            <Field label="Référence">
+              <Input value={payForm.reference} placeholder="Optionnel"
+                onChange={(e: any) => setPayForm(f => ({ ...f, reference: e.target.value }))} />
+            </Field>
+          </div>
+        </div>
+      </Modal>
+
+      <Confirm open={!!payToDelete} title="Supprimer ce règlement"
+        message={payToDelete
+          ? `Supprimer le versement de ${money(Number(payToDelete.pay?.amount) || 0)} ? La dette du client remontera d'autant.`
+          : ''}
+        onConfirm={deletePayment} onCancel={() => setPayToDelete(null)} />
+    </>
   );
 }
 

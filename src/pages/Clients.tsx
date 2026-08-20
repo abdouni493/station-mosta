@@ -21,6 +21,7 @@ import {
   Download,
   Building2,
   User as UserIcon,
+  IdCard as IdCardIcon,
   ChevronRight,
   Upload,
   Save,
@@ -37,7 +38,9 @@ import {
   Loader2,
   MoreVertical,
   Mail,
-  FileBarChart
+  FileBarChart,
+  Flag,
+  Pencil
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, matchesSearch } from "@/src/lib/utils";
@@ -46,8 +49,8 @@ import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import { printPaymentReceipt, stationFromSettings } from "./modules/_shared";
-import { clientLedger, clientLedgers, advanceAvailable, advanceColumnsDisagree, ClientEntry, ClientLedger } from "../lib/clientLedger";
-import { fuelClientStatement } from "../lib/clientStatement";
+import { clientLedger, clientLedgers, clientOpening, advanceAvailable, advanceColumnsDisagree, ClientEntry, ClientLedger } from "../lib/clientLedger";
+import { fuelClientStatement, StatementPayment } from "../lib/clientStatement";
 import ClientReportModal from "../components/biz/ClientReportModal";
 import { ClientStatementFiche } from "../components/biz/ClientStatementFiche";
 import { printFiche } from "../components/biz/ReportFiche";
@@ -113,6 +116,13 @@ const Clients = () => {
   /** Client dont on édite le relevé de compte sur une période choisie. */
   const [reportClient, setReportClient] = useState<Client | null>(null);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+  /** Le mouvement de compte qu'on corrige, et celui qu'on s'apprête à effacer. */
+  const [editingTx, setEditingTx] = useState<any>(null);
+  const [txForm, setTxForm] = useState({ amount: 0, date: "", mode: "ESPECES", receiptNumber: "", notes: "" });
+  const [txToDelete, setTxToDelete] = useState<any>(null);
+  /** La reprise d'ouverture du compte, éditée depuis le dossier. */
+  const [showOpening, setShowOpening] = useState(false);
+  const [openingForm, setOpeningForm] = useState({ debt: 0, advance: 0, date: "", notes: "" });
   const [isLoading, setIsLoading] = useState(false);
   /** La feuille A4 du relevé, imprimée depuis le dossier. */
   const dossierFicheRef = React.useRef<HTMLDivElement>(null);
@@ -131,6 +141,10 @@ const Clients = () => {
     paymentDelay: 0,
     balance: 0,
     debt: 0,
+    openingDebt: 0,
+    openingAdvance: 0,
+    openingDate: new Date().toISOString().split("T")[0],
+    openingNotes: "",
     nif: "",
     nis: "",
     article: "",
@@ -194,20 +208,47 @@ const Clients = () => {
     setIsLoading(true);
 
     setTimeout(() => {
+      const openDebt = Math.max(0, clientForm.openingDebt || 0);
+      const openAdv = Math.max(0, clientForm.openingAdvance || 0);
+
       if (selectedClient) {
-        dispatch({ type: 'UPDATE_CLIENT', payload: { ...selectedClient, ...clientForm } as Client });
+        // ── Corriger une reprise ────────────────────────────────────────────
+        // Les compteurs de la fiche (`debt`, `balance`, `advanceBalance`) portent
+        // la reprise EN PLUS de tout ce qui a bougé depuis. On ne les réécrit
+        // donc pas : on leur applique la seule DIFFÉRENCE, sinon corriger une
+        // dette initiale effacerait au passage tous les bons et tous les
+        // règlements enregistrés depuis l'ouverture du compte.
+        const wasDebt = Math.max(0, selectedClient.openingDebt || 0);
+        const wasAdv = Math.max(0, selectedClient.openingAdvance || 0);
+        const updated: Client = {
+          ...selectedClient, ...clientForm,
+          openingDebt: openDebt,
+          openingAdvance: openAdv,
+          debt: Math.max(0, (selectedClient.debt || 0) + (openDebt - wasDebt)),
+          balance: Math.max(0, (selectedClient.balance || 0) + (openAdv - wasAdv)),
+          advanceBalance: Math.max(0, (selectedClient.advanceBalance ?? selectedClient.balance ?? 0) + (openAdv - wasAdv)),
+        } as Client;
+        dispatch({ type: 'UPDATE_CLIENT', payload: updated });
+        setSelectedClient(updated);
         dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: "Client mis à jour" } });
       } else {
-        const opening = clientForm.paymentMode === "ADVANCE" ? (clientForm.balance || 0) : 0;
         const newClient: Client = {
           ...clientForm as Client,
           id: newId(),
           // Les deux colonnes de l'avance partent de la MÊME valeur : sinon un
           // client naissait avec un solde d'ouverture que la consommation des
           // bons ne pouvait pas entamer.
-          balance: opening,
-          advanceBalance: opening,
-          debt: clientForm.paymentMode === "CREDIT" ? (clientForm.debt || 0) : 0,
+          balance: openAdv,
+          advanceBalance: openAdv,
+          // La reprise vit désormais À DEUX endroits qui se relisent : le
+          // compteur `debt` de la fiche, et la ligne d'ouverture du journal
+          // (`openingDebt`) que l'historique, les cartes et les rapports lisent.
+          // N'écrire que le premier revenait à saisir une dette que rien
+          // n'affichait nulle part.
+          debt: openDebt,
+          openingDebt: openDebt,
+          openingAdvance: openAdv,
+          openingDate: clientForm.openingDate || new Date().toISOString().split("T")[0],
           transactionHistory: []
         };
         dispatch({ type: 'ADD_CLIENT', payload: newClient });
@@ -228,6 +269,105 @@ const Clients = () => {
       setIsLoading(false);
       setClientToDelete(null);
     }, 800);
+  };
+
+  /**
+   * ─── Corriger un mouvement du compte client ──────────────────────────────
+   *
+   * L'historique se lisait, il ne se corrigeait pas. Un règlement saisi à 3 000
+   * au lieu de 2 000 ne pouvait être rattrapé qu'en en créant un second, en
+   * sens inverse — et le compte du client montrait alors deux opérations là où
+   * il n'y en avait jamais eu qu'une.
+   *
+   * La ligne de TRÉSORERIE suit le règlement : c'est le même argent. Sans quoi
+   * la dette serait corrigée à l'écran mais la caisse garderait l'ancien montant.
+   */
+  const saveEditedTx = () => {
+    if (!selectedClient || !editingTx) return;
+    const amount = Math.max(0, txForm.amount || 0);
+    if (amount <= 0) {
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Montant invalide" } });
+      return;
+    }
+    const payment = {
+      id: editingTx.id,
+      date: txForm.date,
+      type: editingTx.type,
+      amount,
+      mode: txForm.mode,
+      receiptNumber: txForm.receiptNumber || undefined,
+      receiptPhoto: editingTx.receiptPhoto,
+      notes: txForm.notes || undefined,
+    };
+    dispatch({ type: 'UPDATE_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment, previousAmount: Number(editingTx.amount) || 0 } });
+
+    const tx = treasuryTransactions.find(t => t.refType === 'client_payment' && t.refId === editingTx.id);
+    if (tx) {
+      dispatch({ type: 'UPDATE_TREASURY_TX', payload: {
+        ...tx,
+        amount,
+        date: new Date(txForm.date).toISOString(),
+        chequeNumber: txForm.mode === 'CHEQUE' ? (txForm.receiptNumber || undefined) : tx.chequeNumber,
+      } });
+    }
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: "Mouvement corrigé" } });
+    setEditingTx(null);
+  };
+
+  /** Effacer un mouvement — et l'argent qu'il avait fait entrer en caisse. */
+  const deleteTx = () => {
+    if (!selectedClient || !txToDelete) return;
+    dispatch({ type: 'DELETE_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, paymentId: txToDelete.id } });
+    const tx = treasuryTransactions.find(t => t.refType === 'client_payment' && t.refId === txToDelete.id);
+    if (tx) dispatch({ type: 'DELETE_TREASURY_TX', payload: tx.id });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: "Mouvement supprimé" } });
+    setTxToDelete(null);
+  };
+
+  /**
+   * Le mouvement d'origine d'une ligne de règlement du dossier. Le journal
+   * préfixe l'identifiant de la pièce (`pay-`, `rec-`) : sans ce décodage, un
+   * bouton « corriger » ne saurait pas quelle ligne de `client_transactions`
+   * il doit reprendre.
+   */
+  const txOfPayment = (payment: StatementPayment) => {
+    const raw = String(payment.lineId || '').replace(/^(pay|rec|tx)-/, '');
+    return (selectedClient?.transactionHistory || []).find(t => t.id === raw) || null;
+  };
+
+  /** Ouvre la reprise d'ouverture du compte, préremplie de ce qu'elle vaut. */
+  const openOpeningEditor = (client: Client, adopt = 0) => {
+    const op = clientOpening(client as any);
+    setOpeningForm({
+      debt: adopt > 0 ? Math.max(0, op.debt + adopt) : op.debt,
+      advance: op.advance,
+      date: (client.openingDate || client.createdAt || new Date().toISOString()).split('T')[0],
+      notes: client.openingNotes || '',
+    });
+    setShowOpening(true);
+  };
+
+  /** Enregistre la reprise — et reporte la DIFFÉRENCE sur les compteurs. */
+  const saveOpening = () => {
+    if (!selectedClient) return;
+    const debt = Math.max(0, openingForm.debt || 0);
+    const advance = Math.max(0, openingForm.advance || 0);
+    const wasDebt = Math.max(0, selectedClient.openingDebt || 0);
+    const wasAdv = Math.max(0, selectedClient.openingAdvance || 0);
+    const updated: Client = {
+      ...selectedClient,
+      openingDebt: debt,
+      openingAdvance: advance,
+      openingDate: openingForm.date,
+      openingNotes: openingForm.notes || undefined,
+      debt: Math.max(0, (selectedClient.debt || 0) + (debt - wasDebt)),
+      balance: Math.max(0, (selectedClient.balance || 0) + (advance - wasAdv)),
+      advanceBalance: Math.max(0, (selectedClient.advanceBalance ?? selectedClient.balance ?? 0) + (advance - wasAdv)),
+    };
+    dispatch({ type: 'UPDATE_CLIENT', payload: updated });
+    setSelectedClient(updated);
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: "Reprise d'ouverture enregistrée" } });
+    setShowOpening(false);
   };
 
   /**
@@ -827,55 +967,82 @@ const Clients = () => {
         )}
       </div>
 
-      {/* Filters Toolbar */}
-      <div className="p-6 border border-slate-100 rounded-3xl flex flex-wrap items-center justify-between gap-6 bg-white shadow-sm italic">
-        <div className="flex items-center gap-4 flex-1 min-w-[300px]">
-          <div className="relative flex-1">
-            <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
-            <input 
-              type="text" 
-              placeholder="Rechercher par nom, téléphone, CIN..." 
+      {/* ── Rechercher un client ───────────────────────────────────
+          Le champ était une barre grise, en petites capitales, qui ressemblait à
+          un bandeau décoratif plus qu'à une zone de saisie : on ne voyait ni
+          qu'elle attendait une frappe, ni ce qu'elle venait de retenir. Il est
+          maintenant ce qu'il doit être — une vraie boîte de recherche, large,
+          qui s'allume au focus, se vide d'un clic et DIT combien de clients elle
+          a retenus. Les filtres sont posés dessous, en pastilles lisibles. */}
+      <div className="rounded-3xl border border-slate-200 bg-white shadow-sm overflow-hidden not-italic">
+        <div className="px-5 sm:px-6 pt-5 pb-4">
+          <label htmlFor="client-search" className="block text-[10px] font-black uppercase tracking-[0.18em] text-slate-400 mb-2 ml-1">
+            Rechercher un client
+          </label>
+          <div className="group relative">
+            <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300 group-focus-within:text-[#003087] transition-colors pointer-events-none" />
+            <input
+              id="client-search"
+              type="search"
+              autoComplete="off"
+              placeholder="Nom, raison sociale, téléphone, e-mail ou CIN…"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-14 pr-6 h-14 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner text-blue-900 placeholder-slate-400"
+              className="w-full h-16 pl-14 pr-32 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold text-[#002d87] placeholder:text-slate-400 placeholder:font-medium outline-none transition-all focus:bg-white focus:border-[#003087] focus:ring-4 focus:ring-blue-100"
             />
+            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+              {searchTerm && (
+                <button onClick={() => setSearchTerm("")} title="Effacer la recherche"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+              <span className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-500 tabular-nums whitespace-nowrap">
+                {filteredClients.length} / {clients.length}
+              </span>
+            </div>
           </div>
-          <select 
-            value={selectedType}
-            onChange={(e) => setSelectedType(e.target.value)}
-            className="input-field h-14 w-40 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner px-6 text-blue-900 italic"
-          >
-            <option value="Tous">Tous les types</option>
-            <option value="PARTICULIER">Particulier</option>
-            <option value="ENTREPRISE">Entreprise</option>
-            <option value="GOUVERNEMENT">Gouvernement</option>
-          </select>
-          <select 
-            value={selectedMode}
-            onChange={(e) => setSelectedMode(e.target.value)}
-            className="input-field h-14 w-40 bg-slate-50 border-none rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-inner px-6 text-blue-900 italic"
-          >
-            <option value="Tous">Tous les modes</option>
-            <option value="CASH">Cash</option>
-            <option value="ADVANCE">Advance</option>
-            <option value="CREDIT">Crédit</option>
-          </select>
         </div>
 
-        {/* View Mode Switcher */}
-        <div className="flex gap-2 shrink-0">
-          <button 
-            onClick={() => setViewMode("grid")}
-            className={cn("p-4 rounded-2xl border transition-all", viewMode === "grid" ? "bg-blue-900 text-white shadow-md border-blue-900" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50")}
-          >
-            <Grid className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={() => setViewMode("table")}
-            className={cn("p-4 rounded-2xl border transition-all", viewMode === "table" ? "bg-blue-900 text-white shadow-md border-blue-900" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50")}
-          >
-            <ListIcon className="w-5 h-5" />
-          </button>
+        <div className="px-5 sm:px-6 pb-5 flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-slate-100 pt-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 mr-1">Type</span>
+            {[["Tous", "Tous"], ["PARTICULIER", "Particulier"], ["ENTREPRISE", "Entreprise"], ["GOUVERNEMENT", "Gouvernement"]].map(([v, label]) => (
+              <button key={v} onClick={() => setSelectedType(v)}
+                className={cn("px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border",
+                  selectedType === v
+                    ? "bg-[#002d87] text-white border-[#002d87] shadow-sm"
+                    : "bg-slate-50 text-slate-500 border-slate-100 hover:bg-slate-100")}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 mr-1">Règlement</span>
+            {[["Tous", "Tous"], ["CASH", "Comptant"], ["ADVANCE", "Avance"], ["CREDIT", "Crédit"]].map(([v, label]) => (
+              <button key={v} onClick={() => setSelectedMode(v)}
+                className={cn("px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border",
+                  selectedMode === v
+                    ? "bg-[#002d87] text-white border-[#002d87] shadow-sm"
+                    : "bg-slate-50 text-slate-500 border-slate-100 hover:bg-slate-100")}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-1.5 ml-auto bg-slate-100 rounded-xl p-1">
+            <button onClick={() => setViewMode("grid")} title="Cartes"
+              className={cn("px-3 py-2 rounded-lg transition-all flex items-center gap-2 text-[10px] font-black uppercase tracking-wider",
+                viewMode === "grid" ? "bg-white text-[#002d87] shadow-sm" : "text-slate-400 hover:text-slate-600")}>
+              <Grid className="w-4 h-4" /> Cartes
+            </button>
+            <button onClick={() => setViewMode("table")} title="Tableau"
+              className={cn("px-3 py-2 rounded-lg transition-all flex items-center gap-2 text-[10px] font-black uppercase tracking-wider",
+                viewMode === "table" ? "bg-white text-[#002d87] shadow-sm" : "text-slate-400 hover:text-slate-600")}>
+              <ListIcon className="w-4 h-4" /> Tableau
+            </button>
+          </div>
         </div>
       </div>
 
@@ -903,17 +1070,33 @@ const Clients = () => {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, delay: index * 0.03 }}
                   className={cn(
-                    "group relative bg-white rounded-3xl border hover:shadow-2xl transition-all p-6 space-y-4 italic flex flex-col",
+                    "group relative bg-white rounded-3xl border transition-all p-5 pt-6 space-y-4 not-italic flex flex-col hover:shadow-xl hover:-translate-y-0.5",
                     actionMenuOpen === c.id ? "z-50 border-blue-300 ring-4 ring-blue-50 shadow-xl" : "z-10 border-slate-100 hover:border-blue-200 shadow-sm"
                   )}
                 >
-                  {/* Top Gradient Border */}
-                  <div className="h-2 absolute top-0 left-0 right-0 rounded-t-3xl bg-gradient-to-r from-blue-900 via-blue-800 to-yellow-400" />
-                  
-                  {/* Type and Payment Mode Badges */}
-                  <div className="absolute top-4 left-4 flex flex-col gap-1 items-start">
-                    <TypeBadge type={c.type} />
-                    <ModeBadge mode={c.paymentMode} />
+                  {/* Le liseré de tête — la seule couleur de la carte. */}
+                  <div className="h-1.5 absolute top-0 left-0 right-0 rounded-t-3xl bg-gradient-to-r from-[#001f5c] via-[#003087] to-[#FFB800]" />
+
+                  {/* ── Identité ────────────────────────────────────────────
+                      La carte ne raconte plus que trois choses : QUI est le
+                      client, ce qu'il a pris, ce qu'il a payé, ce qu'il doit.
+                      Elle portait avant six pastilles de plus — avance, plafond,
+                      nombre d'opérations, écart de fiche — qu'on ne lisait
+                      jamais en survolant une liste, et qui poussaient les trois
+                      chiffres qui comptent tout en bas. Ils vivent tous dans le
+                      dossier, à un clic. */}
+                  <div className="flex items-start gap-3.5 pt-4">
+                    <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-black uppercase shrink-0 shadow-md border-2 border-white"
+                      style={{ background: 'linear-gradient(135deg, #001f5c 0%, #003087 100%)', color: '#FFB800' }}>
+                      {c.name[0]}
+                    </div>
+                    <div className="min-w-0 flex-1 pr-8">
+                      <h4 className="font-black text-[#002d87] uppercase tracking-tight text-sm leading-tight truncate not-italic">{c.name}</h4>
+                      <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                        <TypeBadge type={c.type} />
+                        <ModeBadge mode={c.paymentMode} />
+                      </div>
+                    </div>
                   </div>
 
                   {/* Actions Dropdown Button */}
@@ -938,10 +1121,10 @@ const Clients = () => {
                           animate={{ opacity: 1, y: 0, scale: 1 }}
                           exit={{ opacity: 0, y: -8, scale: 0.95 }}
                           transition={{ duration: 0.15 }}
-                          className="absolute right-0 mt-2 w-52 bg-white border border-slate-100 rounded-2xl shadow-2xl z-[60] overflow-hidden"
+                          className="absolute right-0 mt-2 w-56 bg-white border border-slate-100 rounded-2xl shadow-2xl z-[60] overflow-hidden not-italic"
                         >
                           <div className="divide-y divide-slate-100">
-                            <button 
+                            <button
                               onClick={() => { setSelectedClient(c); setActiveTab("resume"); setShowDetail(true); setActionMenuOpen(null); }}
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                             >
@@ -955,8 +1138,16 @@ const Clients = () => {
                               <Edit2 className="w-4 h-4 text-blue-500" /> Modifier
                             </button>
                             )}
+                            {perm.modifier && (
+                            <button
+                              onClick={() => { setSelectedClient(c); openOpeningEditor(c); setActionMenuOpen(null); }}
+                              className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-amber-700 hover:bg-amber-50 flex items-center gap-3 transition-colors"
+                            >
+                              <Flag className="w-4 h-4 text-amber-500" /> Dette initiale
+                            </button>
+                            )}
                             {c.paymentMode === "ADVANCE" && (
-                              <button 
+                              <button
                                 onClick={() => { setSelectedClient(c); setShowRecharge(true); setActionMenuOpen(null); }}
                                 className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-50 flex items-center gap-3 transition-colors"
                               >
@@ -997,88 +1188,50 @@ const Clients = () => {
                     </AnimatePresence>
                   </div>
 
-                  {/* Initial & Name Info */}
-                  <div className="flex flex-col items-center text-center gap-3 pt-6">
-                    <div className="w-16 h-16 bg-gradient-to-br from-blue-900 to-blue-800 text-yellow-400 rounded-2xl flex items-center justify-center text-2xl font-black shadow-lg uppercase border-2 border-white">
-                      {c.name[0]}
+                  {/* ── Informations personnelles ──────────────────────────── */}
+                  <div className="rounded-2xl border border-slate-100 bg-slate-50/60 divide-y divide-slate-100/80 not-italic">
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                      <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-600 truncate">{c.phone || "Téléphone non renseigné"}</span>
                     </div>
-                    <div>
-                      <h4 className="font-black text-blue-900 uppercase tracking-tight text-sm mb-1">{c.name}</h4>
-                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">CIN/ICE: {c.cin || "N/A"}</p>
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                      <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-600 truncate lowercase">{c.email || "e-mail non renseigné"}</span>
                     </div>
-                  </div>
-
-                  {/* Contacts info panel */}
-                  <div className="space-y-2 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/50 p-4 rounded-2xl border border-slate-100/50">
-                    <div className="flex items-center gap-2.5">
-                      <Phone className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{c.phone || "Non renseigné"}</span>
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                      <IdCardIcon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-600 truncate">{c.cin || "CIN / ICE non renseigné"}</span>
                     </div>
-                    <div className="flex items-center gap-2.5 lowercase text-slate-500">
-                      <Mail className="w-3.5 h-3.5 text-slate-400" />
-                      <span className="truncate">{c.email || "Non renseigné"}</span>
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                      <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-600 truncate">{c.address || "Adresse non renseignée"}</span>
                     </div>
                   </div>
 
-                  {/* ── Les chiffres de la carte ──────────────────────────
-                      Ils se lisent l'un l'autre : consommé − payé = reste dû, et
-                      tous trois viennent du MÊME journal que le dossier. Avant,
-                      la carte annonçait la colonne `debt` de la fiche, un
-                      compteur que rien ne rapprochait des pièces — d'où des
-                      cartes qui ne disaient pas la même chose que l'historique. */}
-                  <div className="pt-2 mt-auto border-t border-slate-100 grid grid-cols-3 gap-2">
-                    <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
-                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Consommé</p>
-                      <p className="text-[10px] font-black text-blue-900 italic truncate">{cl.charged.toLocaleString()} DA</p>
+                  {/* ── Les trois chiffres du compte ────────────────────────
+                      Ils se relisent l'un l'autre : achats − règlements = dette,
+                      et tous trois sortent du MÊME journal que le dossier —
+                      dette initiale de reprise comprise. */}
+                  <div className="mt-auto grid grid-cols-3 gap-2 not-italic">
+                    <div className="rounded-2xl border border-slate-100 bg-white p-3 text-center">
+                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total achats</p>
+                      <p className="text-[13px] font-black text-[#002d87] tabular-nums leading-none truncate">{cl.charged.toLocaleString()}</p>
+                      <p className="text-[8px] font-bold text-slate-300 mt-0.5">DA</p>
                     </div>
-                    <div className="text-center bg-slate-50/50 rounded-xl p-2.5 border border-slate-100 flex flex-col justify-center">
-                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Réglé</p>
-                      <p className="text-[10px] font-black text-emerald-700 italic truncate">{cl.paid.toLocaleString()} DA</p>
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-3 text-center">
+                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total règlements</p>
+                      <p className="text-[13px] font-black text-emerald-700 tabular-nums leading-none truncate">{cl.paid.toLocaleString()}</p>
+                      <p className="text-[8px] font-bold text-emerald-400 mt-0.5">DA</p>
                     </div>
-                    <div className={cn("text-center rounded-xl p-2.5 border flex flex-col justify-center",
-                      cDebt > 0 ? "bg-red-50/60 border-red-100" : "bg-emerald-50/50 border-emerald-100")}>
-                      <p className="text-[7px] font-black text-slate-400 uppercase tracking-widest mb-1">Reste dû</p>
-                      <p className={cn("text-[10px] font-black italic truncate", cDebt > 0 ? "text-red-600" : "text-emerald-600")}>
-                        {cDebt.toLocaleString()} DA
+                    <div className={cn("rounded-2xl border p-3 text-center", cDebt > 0 ? "bg-red-50/70 border-red-100" : "bg-slate-50 border-slate-100")}>
+                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total dettes</p>
+                      <p className={cn("text-[13px] font-black tabular-nums leading-none truncate", cDebt > 0 ? "text-red-600" : "text-slate-400")}>
+                        {cDebt.toLocaleString()}
                       </p>
+                      <p className={cn("text-[8px] font-bold mt-0.5", cDebt > 0 ? "text-red-300" : "text-slate-300")}>DA</p>
                     </div>
                   </div>
 
-                  {/* Avance, plafond et ce que le compte a d'anormal. */}
-                  <div className="flex flex-wrap items-center gap-1.5 text-[8px] font-black uppercase tracking-wider">
-                    <span className="px-2 py-1 rounded-lg bg-green-50 text-green-700 border border-green-100">
-                      Avance {advanceAvailable(c).toLocaleString()} DA
-                    </span>
-                    {c.creditLimit > 0 && (
-                      <span className="px-2 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-100">
-                        Plafond {c.creditLimit.toLocaleString()} DA
-                      </span>
-                    )}
-                    <span className="px-2 py-1 rounded-lg bg-slate-50 text-slate-500 border border-slate-100">
-                      {cl.entries.length} opé.
-                    </span>
-                    {c.creditLimit > 0 && cDebt > c.creditLimit && (
-                      <span className="px-2 py-1 rounded-lg bg-red-50 text-red-700 border border-red-100 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3" /> Hors plafond
-                      </span>
-                    )}
-                    {Math.abs(cl.debtGap) >= 1 && (
-                      <span className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-100"
-                        title={`La fiche annonce ${(c.debt || 0).toLocaleString()} DA, les pièces ${cl.debtFromDocuments.toLocaleString()} DA`}>
-                        Écart {Math.abs(cl.debtGap).toLocaleString()} DA
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Règlement de la dette — action directe, sans passer par le menu */}
-                  {cDebt > 0 && perm.modifier && (
-                    <button
-                      onClick={() => openDebtPayment(c)}
-                      className="w-full h-11 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-700 text-white text-[9px] font-black uppercase tracking-widest italic flex items-center justify-center gap-2 shadow-md shadow-emerald-600/20 hover:scale-[1.02] active:scale-95 transition-all"
-                    >
-                      <DollarSign className="w-4 h-4 text-yellow-300" /> Payer la Dette
-                    </button>
-                  )}
                 </motion.div>
                 );
               })
@@ -1368,12 +1521,21 @@ const Clients = () => {
                               <label className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">Délai Contractuel de Règlement (Jours)</label>
                               <input type="number" className="input-field bg-white border-red-100 text-red-950 font-black h-13 shadow-inner" value={clientForm.paymentDelay} onChange={e => setClientForm({...clientForm, paymentDelay: parseInt(e.target.value) || 0})} />
                             </div>
-                            {!selectedClient && (
-                              <div className="space-y-2">
-                                <label className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">Encours/Dette Initial (DA)</label>
-                                <input type="number" className="input-field bg-white border-red-100 text-red-950 font-black h-13 shadow-inner" value={clientForm.debt} onChange={e => setClientForm({...clientForm, debt: parseFloat(e.target.value) || 0})} />
-                              </div>
-                            )}
+                            {/* ── La dette de reprise ──────────────────────
+                                Elle ne s'affichait qu'à la CRÉATION, et n'était
+                                écrite que dans le compteur `debt` de la fiche :
+                                l'historique du client s'ouvrait donc vide, sa
+                                carte annonçait 0, et le rapport général ne
+                                comptait pas la créance. Elle est maintenant une
+                                LIGNE de son compte — et se corrige à tout moment. */}
+                            <div className="space-y-2">
+                              <label className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">Dette initiale à l'ouverture (DA)</label>
+                              <input type="number" className="input-field bg-white border-red-100 text-red-950 font-black h-13 shadow-inner" value={clientForm.openingDebt ?? 0} onChange={e => setClientForm({...clientForm, openingDebt: parseFloat(e.target.value) || 0})} />
+                              <p className="text-[9px] font-bold text-red-700/60 leading-relaxed ml-1">
+                                Ce que le client devait DÉJÀ avant sa fiche. Elle entre dans son historique,
+                                sur sa carte, dans la Caisse Générale et dans les rapports.
+                              </p>
+                            </div>
                           </motion.div>
                         ) : clientForm.paymentMode === "ADVANCE" ? (
                           <motion.div 
@@ -1383,12 +1545,14 @@ const Clients = () => {
                             exit={{ opacity: 0, scale: 0.98 }}
                             className="p-6 bg-green-50/50 rounded-2xl border border-green-100 space-y-4 w-full"
                           >
-                            {!selectedClient && (
-                              <div className="space-y-2">
-                                <label className="text-[9px] font-black text-green-700 uppercase tracking-widest ml-1">Versement Initial d'Avance (DA)</label>
-                                <input type="number" className="input-field bg-white border-green-100 text-green-950 font-black h-13 shadow-inner" value={clientForm.balance} onChange={e => setClientForm({...clientForm, balance: parseFloat(e.target.value) || 0})} />
-                              </div>
-                            )}
+                            <div className="space-y-2">
+                              <label className="text-[9px] font-black text-green-700 uppercase tracking-widest ml-1">Avance initiale à l'ouverture (DA)</label>
+                              <input type="number" className="input-field bg-white border-green-100 text-green-950 font-black h-13 shadow-inner" value={clientForm.openingAdvance ?? 0} onChange={e => setClientForm({...clientForm, openingAdvance: parseFloat(e.target.value) || 0})} />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Dette initiale à l'ouverture (DA)</label>
+                              <input type="number" className="input-field bg-white border-slate-200 text-red-950 font-black h-13 shadow-inner" value={clientForm.openingDebt ?? 0} onChange={e => setClientForm({...clientForm, openingDebt: parseFloat(e.target.value) || 0})} />
+                            </div>
                             <p className="text-[9px] font-bold text-green-700/70 italic leading-relaxed">
                               Les ventes et consommations boutique et carburant seront automatiquement imputées sur ce compte d'avance.
                             </p>
@@ -1402,12 +1566,37 @@ const Clients = () => {
                           >
                             <ShieldCheck className="w-12 h-12 text-slate-500" />
                             <p className="text-[9px] font-black uppercase tracking-widest">Paiement comptant standard sans encours ni avance.</p>
+                            <p className="text-[9px] font-bold normal-case text-slate-500 leading-relaxed">
+                              Une reprise reste possible : ouvrez « Dette initiale » depuis le menu
+                              de sa carte si ce client traînait déjà une ardoise.
+                            </p>
                           </motion.div>
                         )}
                       </AnimatePresence>
                     </div>
                   </div>
                 </div>
+
+                {/* La date de la reprise — elle place la ligne d'ouverture en
+                    TÊTE du journal ; sans elle, le solde après chaque opération
+                    se calculerait à partir du mauvais point de départ. */}
+                {((clientForm.openingDebt || 0) > 0 || (clientForm.openingAdvance || 0) > 0) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 rounded-[2rem] bg-amber-50/60 border border-amber-100">
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-black text-amber-700 uppercase tracking-widest ml-1">Date de la reprise</label>
+                      <input type="date" className="input-field bg-white border-amber-200 focus:border-amber-500 text-blue-900 font-black text-xs h-13 shadow-inner"
+                        value={(clientForm.openingDate || '').split('T')[0]}
+                        onChange={e => setClientForm({ ...clientForm, openingDate: e.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[9px] font-black text-amber-700 uppercase tracking-widest ml-1">Note de reprise (facultatif)</label>
+                      <input type="text" placeholder="Ancien carnet, solde repris au 01/01…"
+                        className="input-field bg-white border-amber-200 focus:border-amber-500 text-blue-900 font-black text-xs h-13 shadow-inner"
+                        value={clientForm.openingNotes || ''}
+                        onChange={e => setClientForm({ ...clientForm, openingNotes: e.target.value })} />
+                    </div>
+                  </div>
+                )}
 
                 {/* Collapsible Fiscal Panel */}
                 <div className="border-t border-slate-100 pt-6">
@@ -1502,6 +1691,49 @@ const Clients = () => {
             )}
           </>}
           identity={dossierIdentity}
+          // La reprise d'ouverture, montrée et corrigeable depuis le dossier —
+          // c'est là qu'on la cherche quand un solde ne tombe pas juste.
+          opening={{
+            debt: clientOpening(selectedClient as any).debt,
+            advance: clientOpening(selectedClient as any).advance,
+            date: selectedClient.openingDate || selectedClient.createdAt || '',
+            notes: selectedClient.openingNotes,
+            // Ce qui a été réglé DEPUIS l'ouverture rembourse d'abord la reprise :
+            // c'est la plus ancienne dette du compte.
+            paid: Math.min(clientOpening(selectedClient as any).debt, ledger.paid),
+            onEdit: perm.modifier ? () => openOpeningEditor(selectedClient) : undefined,
+            // Un écart entre la fiche et les pièces vient presque toujours d'une
+            // reprise jamais saisie : un clic la transforme en ligne d'ouverture.
+            onAdopt: perm.modifier && ledger.debtGap >= 1
+              ? () => openOpeningEditor(selectedClient, ledger.debtGap)
+              : undefined,
+          }}
+          onEditPayment={perm.modifier ? (payment) => {
+            const tx = txOfPayment(payment);
+            if (!tx) {
+              // La ligne d'ouverture n'est pas un mouvement de `client_transactions` :
+              // elle se corrige par la reprise, pas par ce formulaire.
+              openOpeningEditor(selectedClient);
+              return;
+            }
+            setEditingTx(tx);
+            setTxForm({
+              amount: Number(tx.amount) || 0,
+              date: (tx.date || '').split('T')[0],
+              mode: tx.mode || 'ESPECES',
+              receiptNumber: tx.receiptNumber || '',
+              notes: tx.notes || '',
+            });
+          } : undefined}
+          onDeletePayment={perm.supprimer ? (payment) => {
+            const tx = txOfPayment(payment);
+            if (tx) setTxToDelete(tx);
+            else dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Cette ligne vient de la reprise d'ouverture : modifiez-la depuis « Dette initiale »" } });
+          } : undefined}
+          onPrintPayment={(payment) => {
+            const tx = txOfPayment(payment);
+            if (tx) printReceipt(selectedClient, tx);
+          }}
           advance={selectedClient.paymentMode === 'ADVANCE' || ledger.recharged > 0 ? {
             available: advanceLeft,
             recharged: ledger.recharged,
@@ -1835,6 +2067,180 @@ const Clients = () => {
           </div>
         )}
       </AnimatePresence>
+
+      {/* ── Corriger un mouvement du compte ─────────────────────────────────
+          Un règlement mal saisi n'était rattrapable que par un second règlement
+          en sens inverse. Il se reprend maintenant sur place : montant, date,
+          mode, référence — et la ligne de caisse suit. */}
+      <AnimatePresence>
+        {editingTx && selectedClient && (
+          <div className="modal-shell z-[95] not-italic text-left">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setEditingTx(null)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-blue-200"
+            >
+              <div className="p-6 bg-gradient-to-r from-blue-900 via-blue-800 to-blue-700 text-white flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <Pencil className="w-5 h-5 text-yellow-400" />
+                  <div>
+                    <h3 className="font-black uppercase text-yellow-400">
+                      {editingTx.type === 'RECHARGE' ? "Corriger la recharge" : "Corriger le règlement"}
+                    </h3>
+                    <p className="text-[10px] text-blue-200 font-bold mt-0.5">{selectedClient.name}</p>
+                  </div>
+                </div>
+                <button onClick={() => setEditingTx(null)} className="p-2 hover:bg-white/10 rounded-lg text-white"><X className="w-5 h-5" /></button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-8 space-y-5 custom-scrollbar bg-white">
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100 text-[11px] font-bold text-slate-500 leading-relaxed">
+                  Montant enregistré à l'origine :{" "}
+                  <span className="text-blue-900 font-black">{(Number(editingTx.amount) || 0).toLocaleString()} DA</span>.
+                  La correction s'applique à la dette du client ET à la caisse qui avait reçu l'argent.
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Montant (DA)</label>
+                  <input type="number" value={txForm.amount}
+                    onChange={e => setTxForm({ ...txForm, amount: parseFloat(e.target.value) || 0 })}
+                    className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-lg h-14 shadow-inner text-center" />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Date</label>
+                    <input type="date" value={txForm.date}
+                      onChange={e => setTxForm({ ...txForm, date: e.target.value })}
+                      className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-xs h-13 shadow-inner" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Mode</label>
+                    <select value={txForm.mode} onChange={e => setTxForm({ ...txForm, mode: e.target.value })}
+                      className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-[10px] h-13 shadow-inner">
+                      <option value="ESPECES">Espèces</option>
+                      <option value="CHEQUE">Chèque</option>
+                      <option value="VIREMENT">Virement</option>
+                      <option value="TPE">Carte / TPE</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Référence / N° de chèque</label>
+                  <input type="text" value={txForm.receiptNumber}
+                    onChange={e => setTxForm({ ...txForm, receiptNumber: e.target.value })}
+                    className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-xs h-13 shadow-inner" />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-slate-400 uppercase ml-1">Notes</label>
+                  <textarea rows={2} value={txForm.notes}
+                    onChange={e => setTxForm({ ...txForm, notes: e.target.value })}
+                    className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-xs p-3 shadow-inner" />
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t flex gap-3 shrink-0">
+                <button onClick={() => setEditingTx(null)}
+                  className="px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all">Annuler</button>
+                <button onClick={saveEditedTx} disabled={txForm.amount <= 0}
+                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-900 to-blue-800 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 hover:scale-[1.02] transition-all flex items-center justify-center gap-2">
+                  <Save className="w-4 h-4 text-yellow-400" /> Enregistrer la correction
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ── La reprise d'ouverture du compte ───────────────────────────────── */}
+      <AnimatePresence>
+        {showOpening && selectedClient && (
+          <div className="modal-shell z-[95] not-italic text-left">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowOpening(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] border border-amber-200"
+            >
+              <div className="p-6 bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-500 text-white flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <Flag className="w-5 h-5" />
+                  <div>
+                    <h3 className="font-black uppercase">Ouverture du compte</h3>
+                    <p className="text-[10px] font-bold mt-0.5 opacity-90">{selectedClient.name}</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowOpening(false)} className="p-2 hover:bg-white/10 rounded-lg text-white"><X className="w-5 h-5" /></button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-8 space-y-5 custom-scrollbar bg-white">
+                <div className="p-4 rounded-2xl bg-amber-50 border border-amber-100 text-[11px] font-semibold text-amber-900 leading-relaxed">
+                  Ce que le client devait — ou avait déjà versé — le jour où sa fiche a été créée.
+                  Ce montant devient la <b>première ligne de son historique</b> : il compte dans sa
+                  dette, sur sa carte, dans la Caisse Générale et dans les rapports.
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">Dette initiale (DA)</label>
+                  <input type="number" value={openingForm.debt}
+                    onChange={e => setOpeningForm({ ...openingForm, debt: parseFloat(e.target.value) || 0 })}
+                    className="input-field bg-white border-red-100 text-red-950 font-black h-14 text-lg text-center shadow-inner" />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-green-700 uppercase tracking-widest ml-1">Avance initiale (DA)</label>
+                  <input type="number" value={openingForm.advance}
+                    onChange={e => setOpeningForm({ ...openingForm, advance: parseFloat(e.target.value) || 0 })}
+                    className="input-field bg-white border-green-100 text-green-950 font-black h-14 text-lg text-center shadow-inner" />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Date de la reprise</label>
+                  <input type="date" value={openingForm.date}
+                    onChange={e => setOpeningForm({ ...openingForm, date: e.target.value })}
+                    className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-xs h-13 shadow-inner" />
+                  <p className="text-[9px] font-bold text-slate-400 leading-relaxed ml-1">
+                    Elle place la ligne en tête du journal : sans elle, l'ouverture se retrouverait
+                    au milieu des bons et le solde après chaque opération deviendrait faux.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">Note (facultatif)</label>
+                  <input type="text" value={openingForm.notes} placeholder="Ancien carnet, solde repris au 01/01…"
+                    onChange={e => setOpeningForm({ ...openingForm, notes: e.target.value })}
+                    className="input-field border-slate-200 focus:border-blue-900 text-blue-900 font-black text-xs h-13 shadow-inner" />
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t flex gap-3 shrink-0">
+                <button onClick={() => setShowOpening(false)}
+                  className="px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all">Annuler</button>
+                <button onClick={saveOpening}
+                  className="flex-1 px-4 py-2.5 bg-gradient-to-r from-amber-600 to-amber-500 text-white rounded-xl text-[9px] font-black uppercase tracking-widest hover:scale-[1.02] transition-all flex items-center justify-center gap-2">
+                  <Save className="w-4 h-4" /> Enregistrer la reprise
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Suppression d'un mouvement du compte client */}
+      <ConfirmDialog
+        isOpen={!!txToDelete}
+        title="Supprimer ce mouvement"
+        message={txToDelete
+          ? `Supprimer ${txToDelete.type === 'RECHARGE' ? 'la recharge' : 'le règlement'} de ${(Number(txToDelete.amount) || 0).toLocaleString()} DA du ${new Date(txToDelete.date).toLocaleDateString('fr-FR')} ? La dette du client et la caisse qui avait reçu l'argent seront corrigées.`
+          : ''}
+        onConfirm={deleteTx}
+        onCancel={() => setTxToDelete(null)}
+        confirmLabel="SUPPRIMER"
+        danger={true}
+      />
 
       {/* Relevé de compte imprimable, sur la période choisie par l'utilisateur. */}
       {reportClient && (

@@ -35,6 +35,13 @@ export type ClientEntryKind =
   | 'reglement'
   /** Recharge du compte d'avance. */
   | 'recharge'
+  /**
+   * L'OUVERTURE du compte : ce que le client devait déjà le jour où sa fiche a
+   * été créée. Ce n'est pas une vente — aucune marchandise n'est sortie — mais
+   * c'est bien une dette, et tant qu'elle ne figurait nulle part au journal, le
+   * montant saisi à la création restait invisible partout.
+   */
+  | 'ouverture'
   /** Ligne d'historique ancienne, sans document rattaché. */
   | 'vente';
 
@@ -136,6 +143,38 @@ const onAdvance = (mode: any): boolean => {
   return m === 'AVANCE' || m === 'ADVANCE';
 };
 
+/** Ce que le compte d'un client portait DÉJÀ le jour de son ouverture. */
+export interface ClientOpening {
+  /** Dette de reprise saisie à la création de la fiche. */
+  debt: number;
+  /** Premier versement d'avance, pour un compte prépayé. */
+  advance: number;
+  /** Date de la reprise — la création de la fiche, à défaut. */
+  date: string;
+  notes?: string;
+}
+
+/**
+ * L'ouverture d'un compte, lue sur la fiche du client.
+ *
+ * La date compte autant que le montant : sans elle, la ligne d'ouverture se
+ * placerait au milieu du journal (ou en tête, à la date d'aujourd'hui) et le
+ * solde après chaque opération deviendrait faux. On retient, dans l'ordre : la
+ * date de reprise saisie, la date de création de la fiche, puis — faute de
+ * mieux — une date très ancienne, pour que l'ouverture reste la PREMIÈRE ligne.
+ */
+export function clientOpening(
+  client: { openingDebt?: number; openingAdvance?: number; openingDate?: string; openingNotes?: string; createdAt?: string } | null | undefined,
+): ClientOpening {
+  const date = client?.openingDate || client?.createdAt || '1970-01-01';
+  return {
+    debt: Math.max(0, num(client?.openingDebt)),
+    advance: Math.max(0, num(client?.openingAdvance)),
+    date,
+    notes: client?.openingNotes,
+  };
+}
+
 /**
  * Le compte complet d'un client. `app` est l'état de l'application : on y lit
  * les brigades, leur comptabilité, les ventes magasin et l'historique du client.
@@ -154,6 +193,48 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
   // frappe. L'index se construit une seule fois.
   const brigadeById = new Map<string, any>();
   for (const b of brigades) brigadeById.set(b.id, b);
+
+  // ─── 0. L'OUVERTURE DU COMPTE ───────────────────────────────────────────────
+  //
+  // Un client créé « à crédit » avec un encours de reprise, ou « sur avance »
+  // avec un premier versement, arrivait au fichier avec un solde que RIEN
+  // n'expliquait : le montant était écrit dans les colonnes `debt` / `balance`
+  // et nulle part ailleurs. Le journal — la seule source que les écrans lisent
+  // désormais — n'en savait donc rien : la carte annonçait 0, l'historique était
+  // vide, et le rapport général ne comptait pas la créance.
+  //
+  // L'ouverture est maintenant une LIGNE du compte, comme les autres : datée,
+  // affichée, imprimée, et modifiable. Elle porte la dette de reprise et, pour
+  // un compte prépayé, le versement initial.
+  const opening = clientOpening(client);
+  if (opening.debt > 0) {
+    entries.push({
+      id: `open-debt-${clientId}`,
+      date: opening.date,
+      kind: 'ouverture',
+      label: 'Dette initiale — ouverture du compte',
+      charged: opening.debt,
+      paid: 0,
+      debtEffect: opening.debt,
+      advanceEffect: 0,
+      mode: 'CREDIT',
+      notes: opening.notes,
+    });
+  }
+  if (opening.advance > 0) {
+    entries.push({
+      id: `open-adv-${clientId}`,
+      date: opening.date,
+      kind: 'recharge',
+      label: "Avance initiale — ouverture du compte",
+      charged: 0,
+      paid: opening.advance,
+      debtEffect: 0,
+      advanceEffect: opening.advance,
+      mode: 'OUVERTURE',
+      notes: opening.notes,
+    });
+  }
 
   // 1. Bons carburant — les justifications « client » des brigades.
   for (const acc of accountings) {

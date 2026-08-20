@@ -1026,6 +1026,8 @@ export const db = {
 
   getClientTransactions:  (clientId: string) => dbSelect('client_transactions', { client_id: clientId }),
   addClientTransaction:   (t: object) => dbInsert('client_transactions', t),
+  updateClientTransaction:(id: string, t: object) => dbUpdate('client_transactions', id, t),
+  deleteClientTransaction:(id: string) => dbDelete('client_transactions', id),
   getClientAppointments:  (clientId: string) => dbSelect('client_appointments', { client_id: clientId }),
   addClientAppointment:   (a: object) => dbInsert('client_appointments', a),
 

@@ -24,7 +24,7 @@ import {
   PiggyBank, Plus, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Layers,
   Fuel, Coffee, Droplets, Landmark, Trash2, Edit2, ShoppingCart, Receipt,
   CreditCard, Target, Wallet, TrendingUp, TrendingDown, ArrowRight, Check,
-  HandCoins, Search,
+  HandCoins, Search, Users, Flag, X,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -37,7 +37,9 @@ import {
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey, bizExpensePaidInCash, netCashOfSale } from '../lib/bizConfig';
 import { computeCarburantCash } from '../lib/carburantSales';
-import { moduleCaisseMovements, docPaymentSlices } from '../lib/bizReporting';
+import { moduleCaisseMovements, docPaymentSlices, openingDebtRest } from '../lib/bizReporting';
+import { clientLedgers, clientOpening } from '../lib/clientLedger';
+import { fuelClientStatement, bizClientStatement, KIND_COLOR } from '../lib/clientStatement';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
   Table, money, formatDate, PeriodFilter, Period, inPeriod,
@@ -135,6 +137,10 @@ export default function CaisseGenerale() {
   const [toDelete, setToDelete] = useState<TreasuryTransaction | null>(null);
   /** Caisse dont on déroule le calcul, ligne par ligne. */
   const [detailPart, setDetailPart] = useState<TreasuryPart | null>(null);
+  /** Le client dont on déplie le compte depuis le tableau des créances. */
+  const [debtClient, setDebtClient] = useState<{ id: string; part: TreasuryPart } | null>(null);
+  const [debtSearch, setDebtSearch] = useState('');
+  const [showAllDebtors, setShowAllDebtors] = useState(false);
 
   // ── Balances ───────────────────────────────────────────────────────────────
   /** Ce que contient PHYSIQUEMENT le tiroir commun, tous propriétaires confondus. */
@@ -394,6 +400,18 @@ export default function CaisseGenerale() {
         label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
         amount: l.amount,
       }))));
+      // Un règlement encaissé sur la DETTE INITIALE d'un client de partie est de
+      // l'argent qui entre dans le tiroir, au même titre qu'un règlement de
+      // facture. Il ne s'appuie sur aucun document : sans cette ligne, le
+      // journal ignorait l'argent d'une ardoise reprise que le client venait
+      // pourtant de solder (même règle que `moduleCaisseMovements`).
+      m.clients.forEach(c => ((c as any).openingPayments || [])
+        .filter((x: any) => Number(x?.amount) > 0)
+        .forEach((x: any) => out.push(cashRow({
+          id: `${key}-open-${x.id}`, date: x.date || (c as any).openingDate || c.createdAt,
+          nature: 'Règlement client', part,
+          label: `Règlement dette initiale — ${c.name}`, amount: Number(x.amount) || 0,
+        }))));
       m.purchases.forEach(p => out.push(cashRow({
         id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part,
         label: `Achat ${p.ref} — ${p.supplierName}`, amount: -p.paid,
@@ -433,6 +451,133 @@ export default function CaisseGenerale() {
     return out.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treasuryTransactions, purchases, expenses, brigadeAccountings, brigades, biz, accounts, state]);
+
+  /**
+   * ─── CE QUE LES CLIENTS DOIVENT, ACTIVITÉ PAR ACTIVITÉ ─────────────────────
+   *
+   * Cet écran ne parlait que d'argent DÉJÀ rentré. La créance — l'argent que la
+   * station a livré mais pas encore encaissé — n'y figurait nulle part : il
+   * fallait ouvrir trois écrans Clients l'un après l'autre pour savoir ce qu'on
+   * attendait, et aucun des trois ne comptait la dette de reprise saisie à
+   * l'ouverture d'une fiche.
+   *
+   * Les trois activités sont lues à la MÊME source que leur écran Clients : les
+   * pièces pour le Carburant (`clientLedgers`), les documents et la reprise pour
+   * la Cafétéria et le Lavage. Un chiffre affiché ici se retrouve donc, au
+   * dinar près, dans le dossier du client.
+   */
+  const clientDebts = useMemo(() => {
+    const rows: {
+      id: string; name: string; part: TreasuryPart; partLabel: string;
+      charged: number; paid: number; rest: number;
+      opening: number; openingRest: number; ops: number; last: string;
+    }[] = [];
+
+    // ── Carburant ──────────────────────────────────────────────────────────
+    const ledgers = clientLedgers(state);
+    for (const c of (state.clients || [])) {
+      const l = ledgers[c.id];
+      if (!l) continue;
+      const op = clientOpening(c as any);
+      rows.push({
+        id: c.id, name: c.name, part: 'carburant', partLabel: 'Carburant',
+        charged: l.charged, paid: l.paid, rest: Math.max(0, l.debtFromDocuments),
+        opening: op.debt,
+        // La reprise est la plus ancienne dette du compte : elle se solde en
+        // premier, ce qui reste dessus est donc ce qu'aucun règlement n'a couvert.
+        openingRest: Math.max(0, op.debt - Math.min(op.debt, l.paid)),
+        ops: l.entries.length,
+        last: l.lastDate,
+      });
+    }
+
+    // ── Cafétéria / Lavage ─────────────────────────────────────────────────
+    // Les documents sont regroupés par client EN UNE passe : appeler le relevé
+    // complet une fois par client relirait toutes les ventes de la partie
+    // autant de fois qu'elle a de clients.
+    for (const key of (Object.keys(MODULES) as ModuleKey[])) {
+      const m = biz[key];
+      if (!m) continue;
+      const agg = new Map<string, { charged: number; paid: number; rest: number; ops: number; last: string }>();
+      const touch = (id: string) => {
+        const cur = agg.get(id) || { charged: 0, paid: 0, rest: 0, ops: 0, last: '' };
+        agg.set(id, cur);
+        return cur;
+      };
+      const stamp = (cur: { last: string }, date: string) => {
+        if (date && (!cur.last || new Date(date).getTime() > new Date(cur.last).getTime())) cur.last = date;
+      };
+      for (const sale of (m.sales || [])) {
+        if (!sale.clientId) continue;
+        const cur = touch(sale.clientId);
+        const reversed = sale.status === 'retournée' || sale.status === 'échangée';
+        if (!reversed) {
+          cur.charged += Number(sale.total) || 0;
+          cur.paid += Number(sale.paid) || 0;
+          cur.rest += Number(sale.rest) || 0;
+        }
+        cur.ops += 1; stamp(cur, sale.date);
+      }
+      for (const r of (m.reparations || [])) {
+        if (!r.clientId) continue;
+        const cur = touch(r.clientId);
+        if (r.status !== 'canceled') {
+          cur.charged += Number(r.total) || 0;
+          cur.paid += Number(r.paid) || 0;
+          cur.rest += Number(r.rest) || 0;
+        }
+        cur.ops += 1; stamp(cur, r.date);
+      }
+      for (const c of (m.clients || [])) {
+        const cur = agg.get(c.id) || { charged: 0, paid: 0, rest: 0, ops: 0, last: '' };
+        const o = openingDebtRest(c as any);
+        rows.push({
+          id: c.id, name: c.name, part: key as TreasuryPart, partLabel: MODULES[key].label,
+          charged: cur.charged + o.debt,
+          paid: cur.paid + o.paid,
+          rest: cur.rest + o.rest,
+          opening: o.debt, openingRest: o.rest,
+          ops: cur.ops + (o.debt > 0 ? 1 : 0),
+          last: cur.last,
+        });
+      }
+    }
+
+    return rows.sort((a, b) => b.rest - a.rest);
+  }, [state, biz]);
+
+  const debtTotals = useMemo(() => ({
+    rest: clientDebts.reduce((t, r) => t + r.rest, 0),
+    opening: clientDebts.reduce((t, r) => t + r.openingRest, 0),
+    debtors: clientDebts.filter(r => r.rest > 0.004).length,
+    byPart: (['carburant', 'cafeteria', 'lavage'] as const).map(k => ({
+      part: k,
+      rest: clientDebts.filter(r => r.part === k).reduce((t, r) => t + r.rest, 0),
+    })),
+  }), [clientDebts]);
+
+  /** Les créances affichées : les débiteurs, filtrés par le champ de recherche. */
+  const visibleDebts = useMemo(() => {
+    const q = debtSearch.trim().toLowerCase();
+    const base = clientDebts.filter(r => (showAllDebtors ? true : r.rest > 0.004));
+    return q ? base.filter(r => r.name.toLowerCase().includes(q) || r.partLabel.toLowerCase().includes(q)) : base;
+  }, [clientDebts, debtSearch, showAllDebtors]);
+
+  /**
+   * Le compte COMPLET du client déplié — construit à la demande, pour le seul
+   * client qu'on regarde. Le construire pour tous d'avance relirait toutes les
+   * brigades de la station à chaque rendu de cet écran.
+   */
+  const debtStatement = useMemo(() => {
+    if (!debtClient) return null;
+    if (debtClient.part === 'carburant') {
+      const c = (state.clients || []).find(x => x.id === debtClient.id);
+      return c ? fuelClientStatement(state, c) : null;
+    }
+    const m = biz[debtClient.part as ModuleKey];
+    const c = m?.clients?.find((x: any) => x.id === debtClient.id);
+    return (m && c) ? bizClientStatement(m, c, MODULES[debtClient.part as ModuleKey].label) : null;
+  }, [debtClient, state, biz]);
 
   const natures = useMemo(
     () => Array.from(new Set(movements.map(m => m.nature))).sort(),
@@ -661,6 +806,133 @@ export default function CaisseGenerale() {
         })}
       </div>
 
+      {/* ── Créances clients ──────────────────────────────────────────────
+          L'écran ne parlait que d'argent DÉJÀ rentré : il fallait ouvrir les
+          trois écrans Clients l'un après l'autre pour savoir ce que la station
+          attendait encore — et aucun ne comptait la dette de reprise saisie à
+          l'ouverture d'une fiche. Les trois activités sont ici, à la même source
+          que leur propre écran, reprise comprise, et chaque ligne se déplie sur
+          l'historique complet du compte. */}
+      <div className="card-glass overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <h3 className="font-black text-[#002d87] flex items-center gap-2">
+            <Users className="w-5 h-5" /> Créances clients
+          </h3>
+          <span className="text-[11px] font-bold text-slate-400">
+            {debtTotals.debtors} client(s) débiteur(s) — encours toutes dates
+          </span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300 pointer-events-none" />
+              <input value={debtSearch} onChange={e => setDebtSearch(e.target.value)}
+                placeholder="Filtrer par client ou activité…"
+                className="h-10 w-56 pl-9 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-[#002d87] outline-none focus:bg-white focus:border-[#003087] transition-all" />
+              {debtSearch && (
+                <button onClick={() => setDebtSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-red-600">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <button onClick={() => setShowAllDebtors(v => !v)}
+              className="h-10 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-600 transition-all">
+              {showAllDebtors ? 'Débiteurs seuls' : 'Tous les clients'}
+            </button>
+          </div>
+        </div>
+
+        <div className="px-5 py-3 grid grid-cols-2 lg:grid-cols-4 gap-3 border-b border-slate-100 bg-slate-50/60">
+          <div className="rounded-xl bg-white border border-red-100 px-3 py-2.5">
+            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total à recouvrer</p>
+            <p className="text-xl font-black tabular-nums text-red-600">{money(debtTotals.rest)}</p>
+          </div>
+          {debtTotals.byPart.map(b => (
+            <div key={b.part} className="rounded-xl bg-white border border-slate-100 px-3 py-2.5">
+              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{PART_META[b.part].label}</p>
+              <p className={`text-xl font-black tabular-nums ${b.rest > 0 ? 'text-[#002d87]' : 'text-slate-300'}`}>{money(b.rest)}</p>
+            </div>
+          ))}
+        </div>
+
+        {debtTotals.opening > 0 && (
+          <div className="px-5 py-2.5 flex items-start gap-2.5 bg-amber-50 border-b border-amber-100">
+            <Flag className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <p className="text-[11px] font-semibold text-amber-900 leading-relaxed">
+              Dont <b>{money(debtTotals.opening)}</b> de <b>dettes initiales</b> — des ardoises reprises
+              à l'ouverture des fiches, qui n'étaient comptées nulle part avant.
+            </p>
+          </div>
+        )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50">
+              <tr className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                <th className="px-5 py-2.5">Client</th>
+                <th className="px-5 py-2.5">Activité</th>
+                <th className="px-5 py-2.5 text-right">Consommé</th>
+                <th className="px-5 py-2.5 text-right">Réglé</th>
+                <th className="px-5 py-2.5 text-right">Dette initiale</th>
+                <th className="px-5 py-2.5 text-right">Reste dû</th>
+                <th className="px-5 py-2.5 text-center">Compte</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {visibleDebts.length === 0 ? (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-xs font-bold text-slate-400">
+                  {clientDebts.length === 0 ? 'Aucun client enregistré' : 'Aucun client ne doit quoi que ce soit'}
+                </td></tr>
+              ) : visibleDebts.slice(0, 60).map(r => (
+                <tr key={`${r.part}-${r.id}`} className="hover:bg-slate-50">
+                  <td className="px-5 py-2.5 font-black text-[#002d87]">
+                    {r.name}
+                    <span className="block text-[10px] font-bold text-slate-400 normal-case">
+                      {r.ops} opération(s){r.last ? ` · dernière ${formatDate(r.last)}` : ''}
+                    </span>
+                  </td>
+                  <td className="px-5 py-2.5">
+                    <Badge tone={r.part === 'carburant' ? 'primary' : r.part === 'cafeteria' ? 'warning' : 'info'}>
+                      {r.partLabel}
+                    </Badge>
+                  </td>
+                  <td className="px-5 py-2.5 text-right tabular-nums font-bold text-slate-600">{money(r.charged)}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums font-bold text-emerald-600">{money(r.paid)}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums font-bold">
+                    {r.opening > 0
+                      ? <span className="text-amber-600">{money(r.opening)}
+                          {r.openingRest > 0.004 && r.openingRest < r.opening && (
+                            <span className="block text-[10px] text-amber-500">reste {money(r.openingRest)}</span>
+                          )}
+                        </span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className={`px-5 py-2.5 text-right tabular-nums font-black ${r.rest > 0.004 ? 'text-red-600' : 'text-slate-300'}`}>
+                    {money(r.rest)}
+                  </td>
+                  <td className="px-5 py-2.5 text-center">
+                    <button onClick={() => setDebtClient({ id: r.id, part: r.part })}
+                      className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-[#002d87] hover:text-white text-[10px] font-black uppercase tracking-wider text-slate-600 transition-all">
+                      Historique
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="bg-slate-50">
+              <tr className="text-[#002d87] font-black">
+                <td colSpan={5} className="px-5 py-3 uppercase text-[10px] tracking-widest">
+                  Total à recouvrer{visibleDebts.length > 60 ? ` — ${visibleDebts.length - 60} ligne(s) au-delà des 60 premières` : ''}
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-red-600">
+                  {money(visibleDebts.reduce((t, r) => t + r.rest, 0))}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
       {/* Filters */}
       <div className="card-glass p-4 space-y-3">
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
@@ -802,6 +1074,90 @@ export default function CaisseGenerale() {
           onClose={() => setDetailPart(null)}
         />
       )}
+
+      {/* ── L'historique d'un client, déplié sur place ──────────────────────
+          Le tableau ci-dessus dit COMBIEN ; celui-ci dit POURQUOI — chaque
+          opération du compte, dette initiale de reprise en tête, avec le solde
+          après chacune. */}
+      <Modal open={!!debtClient} onClose={() => setDebtClient(null)} icon={Users} size="3xl"
+        title={debtStatement ? `Compte de ${debtStatement.client.name}` : 'Compte client'}
+        subtitle={debtStatement ? `${debtStatement.partLabel} — ${debtStatement.allLines.length} opération(s)` : undefined}
+        footer={<button className="btn-ghost" onClick={() => setDebtClient(null)}>Fermer</button>}>
+        {!debtStatement ? (
+          <p className="text-xs font-bold text-slate-400 py-6 text-center">Compte introuvable</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                <p className="text-[10px] uppercase font-black text-slate-400">Consommé</p>
+                <p className="font-black text-[#002d87] tabular-nums">{money(debtStatement.totals.charged)}</p>
+              </div>
+              <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3">
+                <p className="text-[10px] uppercase font-black text-slate-400">Encaissé</p>
+                <p className="font-black text-emerald-600 tabular-nums">{money(debtStatement.totals.paid)}</p>
+              </div>
+              <div className="rounded-xl bg-red-50 border border-red-200 p-3">
+                <p className="text-[10px] uppercase font-black text-slate-400">Reste dû</p>
+                <p className="font-black text-red-600 tabular-nums">{money(debtStatement.closingDebt)}</p>
+              </div>
+              <div className="rounded-xl bg-amber-50 border border-amber-200 p-3">
+                <p className="text-[10px] uppercase font-black text-slate-400">Dette initiale</p>
+                <p className="font-black text-amber-600 tabular-nums">
+                  {money(debtStatement.allLines.filter(l => l.kind === 'ouverture').reduce((t, l) => t + l.charged, 0))}
+                </p>
+              </div>
+            </div>
+
+            <div className="max-h-[52vh] overflow-y-auto custom-scrollbar rounded-xl border border-slate-200">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 sticky top-0 z-10">
+                  <tr className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                    <th className="px-4 py-2.5">Date</th>
+                    <th className="px-4 py-2.5">Nature</th>
+                    <th className="px-4 py-2.5">Désignation</th>
+                    <th className="px-4 py-2.5 text-right">Débit</th>
+                    <th className="px-4 py-2.5 text-right">Crédit</th>
+                    <th className="px-4 py-2.5 text-right">Solde</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {debtStatement.allLines.length === 0 ? (
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-xs font-bold text-slate-400">
+                      Aucune opération sur ce compte
+                    </td></tr>
+                  ) : (() => {
+                    // Le solde APRÈS chaque ligne : un journal qui n'aligne que
+                    // des montants ne se vérifie pas.
+                    const lines = debtStatement.allLines;
+                    const running: Record<string, number> = {};
+                    let acc = 0;
+                    for (let i = lines.length - 1; i >= 0; i--) { acc += lines[i].debtEffect; running[lines[i].id] = acc; }
+                    return lines.map(l => (
+                      <tr key={l.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap font-medium">{formatDate(l.date)}</td>
+                        <td className="px-4 py-2.5 font-black whitespace-nowrap" style={{ color: KIND_COLOR[l.kind] }}>{l.kindLabel}</td>
+                        <td className="px-4 py-2.5 text-slate-600 font-semibold">
+                          {l.label}
+                          {l.ref && <span className="text-slate-300"> · {l.ref}</span>}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-slate-700">
+                          {l.charged > 0 ? money(l.charged) : '—'}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-emerald-600">
+                          {l.paid > 0 ? money(l.paid) : '—'}
+                        </td>
+                        <td className={`px-4 py-2.5 text-right tabular-nums font-black ${running[l.id] > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                          {money(running[l.id] || 0)}
+                        </td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Confirm open={!!toDelete} title="Supprimer la transaction"
         message="Cette opération sera retirée de la caisse générale. Confirmer ?"

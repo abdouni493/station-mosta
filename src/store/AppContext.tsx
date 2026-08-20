@@ -429,6 +429,20 @@ export interface Client {
   article?: string;
   rc?: string;
   advanceBalance?: number;
+  /**
+   * ─── L'OUVERTURE DU COMPTE ─────────────────────────────────────────────────
+   * Ce que le client devait DÉJÀ (ou avait déjà versé) le jour où sa fiche a été
+   * créée. Le montant était jusqu'ici écrit dans les seules colonnes `debt` /
+   * `balance` : le journal du client — la source que TOUS les écrans lisent
+   * désormais — n'en savait rien, l'historique s'ouvrait donc vide et le rapport
+   * général ne comptait pas la créance. C'est maintenant une ligne du compte.
+   */
+  openingDebt?: number;
+  openingAdvance?: number;
+  /** Date de la reprise — la création de la fiche à défaut. */
+  openingDate?: string;
+  openingNotes?: string;
+  createdAt?: string;
   appointments?: ClientAppointment[];
   transactionHistory: {
     id: string;
@@ -1291,6 +1305,8 @@ type AppAction =
   | { type: 'ADD_CLIENT_APPOINTMENT'; payload: { clientId: string; appointment: ClientAppointment } }
   | { type: 'ADD_SUPPLIER_PAYMENT'; payload: { supplierId: string; payment: SupplierDebtPayment } }
   | { type: 'ADD_CLIENT_PAYMENT'; payload: { clientId: string; payment: { id: string; date: string; type: 'PAYMENT' | 'RECHARGE' | 'SALE'; amount: number; mode?: string; receiptNumber?: string; receiptPhoto?: string; notes?: string } } }
+  | { type: 'UPDATE_CLIENT_PAYMENT'; payload: { clientId: string; payment: { id: string; date: string; type: 'PAYMENT' | 'RECHARGE' | 'SALE'; amount: number; mode?: string; receiptNumber?: string; receiptPhoto?: string; notes?: string }; previousAmount: number } }
+  | { type: 'DELETE_CLIENT_PAYMENT'; payload: { clientId: string; paymentId: string } }
   | { type: 'UPDATE_PRODUCT_STOCK'; payload: { productId: string; quantity: number; buyPrice?: number; sellPrice?: number } }
   | { type: 'SAVE_INVENTORY'; payload: Inventory }
   | { type: 'UPDATE_BRIGADE_STATUS'; payload: { brigadeId: string; isActive: boolean; status: string } }
@@ -1620,6 +1636,57 @@ function appReducer(state: AppState, action: AppAction): AppState {
         };
       }) };
 
+    /**
+     * ─── Corriger un mouvement du compte client ────────────────────────────
+     *
+     * Un règlement se saisit vite et mal : mauvais montant, mauvaise date,
+     * mauvais mode. Il n'existait aucun moyen de le reprendre — il fallait
+     * créer un second mouvement en sens inverse, que l'historique montrait
+     * ensuite comme deux opérations là où il n'y en avait qu'une.
+     *
+     * Le compteur de la fiche suit la CORRECTION, pas le nouveau montant : une
+     * dette de 5 000 réglée par erreur de 3 000 au lieu de 2 000 remonte de
+     * 1 000 quand on rectifie, elle ne repart pas de zéro.
+     */
+    case 'UPDATE_CLIENT_PAYMENT': {
+      const { clientId, payment, previousAmount } = action.payload;
+      const delta = (payment.amount || 0) - (previousAmount || 0);
+      return { ...state, clients: state.clients.map(c => {
+        if (c.id !== clientId) return c;
+        const advance = c.advanceBalance ?? c.balance;
+        const patch = payment.type === 'PAYMENT'
+          ? { debt: Math.max(0, c.debt - delta) }
+          : payment.type === 'RECHARGE'
+            ? { balance: c.balance + delta, advanceBalance: advance + delta }
+            : {};
+        return {
+          ...c, ...patch,
+          transactionHistory: (c.transactionHistory || []).map(t => t.id === payment.id ? { ...t, ...payment } as any : t),
+        };
+      }) };
+    }
+
+    case 'DELETE_CLIENT_PAYMENT': {
+      const { clientId, paymentId } = action.payload;
+      return { ...state, clients: state.clients.map(c => {
+        if (c.id !== clientId) return c;
+        const tx = (c.transactionHistory || []).find(t => t.id === paymentId);
+        const amount = Number(tx?.amount) || 0;
+        const advance = c.advanceBalance ?? c.balance;
+        // Supprimer un règlement REND la dette qu'il avait effacée ; supprimer
+        // une recharge reprend l'avance qu'elle avait créditée.
+        const patch = tx?.type === 'PAYMENT'
+          ? { debt: c.debt + amount }
+          : tx?.type === 'RECHARGE'
+            ? { balance: Math.max(0, c.balance - amount), advanceBalance: Math.max(0, advance - amount) }
+            : {};
+        return {
+          ...c, ...patch,
+          transactionHistory: (c.transactionHistory || []).filter(t => t.id !== paymentId),
+        };
+      }) };
+    }
+
     case 'UPDATE_PRODUCT_STOCK':
       return { ...state, products: state.products.map(p => p.id === action.payload.productId ? { ...p, stock: p.stock + action.payload.quantity, buyPrice: action.payload.buyPrice ?? p.buyPrice, sellingPrice: action.payload.sellPrice ?? p.sellingPrice } : p) };
 
@@ -1695,7 +1762,7 @@ function mapSupplier(r: any): Supplier {
   return { id: r.id, ref: r.ref, name: r.name, contact: r.contact, phone: r.phone, email: r.email, address: r.address, balance: +r.balance, totalPurchases: +r.total_purchases, nif: r.nif, nis: r.nis, article: r.article, rc: r.rc, type: r.type, appointments: [], debtPayments: [] };
 }
 function mapClient(r: any): Client {
-  return { id: r.id, name: r.name, phone: r.phone, cin: r.cin, email: r.email, address: r.address, contactPerson: r.contact_person, balance: +r.balance, debt: +r.debt, creditLimit: +r.credit_limit, paymentDelay: +r.payment_delay, type: r.type, paymentMode: r.payment_mode, nif: r.nif, nis: r.nis, article: r.article, rc: r.rc, advanceBalance: +(r.advance_balance ?? 0), appointments: [], transactionHistory: [] };
+  return { id: r.id, name: r.name, phone: r.phone, cin: r.cin, email: r.email, address: r.address, contactPerson: r.contact_person, balance: +r.balance, debt: +r.debt, creditLimit: +r.credit_limit, paymentDelay: +r.payment_delay, type: r.type, paymentMode: r.payment_mode, nif: r.nif, nis: r.nis, article: r.article, rc: r.rc, advanceBalance: +(r.advance_balance ?? 0), openingDebt: +(r.opening_debt ?? 0), openingAdvance: +(r.opening_advance ?? 0), openingDate: r.opening_date ?? undefined, openingNotes: r.opening_notes ?? undefined, createdAt: r.created_at ?? undefined, appointments: [], transactionHistory: [] };
 }
 function mapProduct(r: any): Product {
   return { id: r.id, ref: r.ref, name: r.name, category: r.category, buyPrice: +r.buy_price, sellingPrice: +r.selling_price, stock: +r.stock, minStock: +r.min_stock, barcode: r.barcode, image: r.image_url, imageUrl: r.image_url, unit: r.unit, brand: r.brand, brandId: r.brand_id, lastSellingPrice: r.last_selling_price ? +r.last_selling_price : undefined, tvaRate: +(r.tva_rate ?? 0), sellByDetails: r.sell_by_details ?? false, detailCapacity: r.detail_capacity ? +r.detail_capacity : undefined, detailUnit: r.detail_unit };
@@ -2075,6 +2142,32 @@ async function applyClientPaymentToAccount(
   await supabase.from('clients').update(patch).eq('id', clientId);
 }
 
+/**
+ * Report d'une CORRECTION ou d'une SUPPRESSION de mouvement client sur la fiche.
+ *
+ * Même raison d'être que `applyClientPaymentToAccount` : la table
+ * `client_transactions` porte l'historique, mais les colonnes `debt` /
+ * `balance` / `advance_balance` sont des compteurs qu'il faut bouger à la main,
+ * sinon le rafraîchissement qui suit l'écriture rendrait l'ancien solde.
+ *
+ * `delta` est la variation du montant encaissé : positif quand le règlement
+ * grossit, négatif quand il rétrécit ou disparaît.
+ */
+async function applyClientPaymentDelta(
+  clientId: string, type: 'PAYMENT' | 'RECHARGE' | 'SALE', delta: number,
+): Promise<void> {
+  if (type === 'SALE' || !delta) return;
+  const { data } = await supabase.from('clients').select('balance, debt, advance_balance').eq('id', clientId).maybeSingle();
+  if (!data) return;
+  const patch = type === 'PAYMENT'
+    ? { debt: Math.max(0, (+data.debt || 0) - delta) }
+    : {
+      balance: Math.max(0, (+data.balance || 0) + delta),
+      advance_balance: Math.max(0, (+(data.advance_balance ?? data.balance) || 0) + delta),
+    };
+  await supabase.from('clients').update(patch).eq('id', clientId);
+}
+
 async function cleanBrigadeDependencies(brigadeId: string): Promise<void> {
   // 1. Delete brigade_decalage_alerts for this brigade
   await supabase.from('brigade_decalage_alerts').delete().eq('brigade_id', brigadeId);
@@ -2149,10 +2242,10 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'DELETE_SUPPLIER': await db.deleteSupplier(action.payload); break;
       case 'ADD_CLIENT':
-        await db.addClient({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0 });
+        await db.addClient({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0, opening_debt: action.payload.openingDebt ?? 0, opening_advance: action.payload.openingAdvance ?? 0, opening_date: nz(action.payload.openingDate), opening_notes: nz(action.payload.openingNotes) });
         break;
       case 'UPDATE_CLIENT':
-        await db.updateClient(action.payload.id, { name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0 });
+        await db.updateClient(action.payload.id, { name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0, opening_debt: action.payload.openingDebt ?? 0, opening_advance: action.payload.openingAdvance ?? 0, opening_date: nz(action.payload.openingDate), opening_notes: nz(action.payload.openingNotes) });
         break;
       case 'DELETE_CLIENT': await db.deleteClient(action.payload); break;
       case 'ADD_PRODUCT':
@@ -2616,6 +2709,18 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         await db.addClientTransaction({ id: action.payload.payment.id, client_id: action.payload.clientId, date: action.payload.payment.date, type: action.payload.payment.type, amount: action.payload.payment.amount, mode: action.payload.payment.mode, receipt_number: action.payload.payment.receiptNumber, receipt_photo_url: action.payload.payment.receiptPhoto, notes: action.payload.payment.notes });
         await applyClientPaymentToAccount(action.payload.clientId, action.payload.payment);
         break;
+      case 'UPDATE_CLIENT_PAYMENT':
+        await db.updateClientTransaction(action.payload.payment.id, { date: action.payload.payment.date, type: action.payload.payment.type, amount: action.payload.payment.amount, mode: action.payload.payment.mode, receipt_number: action.payload.payment.receiptNumber, receipt_photo_url: action.payload.payment.receiptPhoto, notes: action.payload.payment.notes });
+        await applyClientPaymentDelta(action.payload.clientId, action.payload.payment.type, (action.payload.payment.amount || 0) - (action.payload.previousAmount || 0));
+        break;
+      case 'DELETE_CLIENT_PAYMENT': {
+        // Le montant se lit sur le SERVEUR avant la suppression : l'état local
+        // a déjà retiré la ligne quand cette fonction s'exécute.
+        const { data: gone } = await supabase.from('client_transactions').select('type, amount').eq('id', action.payload.paymentId).maybeSingle();
+        await db.deleteClientTransaction(action.payload.paymentId);
+        if (gone) await applyClientPaymentDelta(action.payload.clientId, gone.type, -(+gone.amount || 0));
+        break;
+      }
       case 'UPDATE_PRODUCT_STOCK': {
         // maybeSingle() avoids 406 if product was concurrently deleted
         const { data } = await supabase.from('products').select('stock, buy_price, selling_price').eq('id', action.payload.productId).maybeSingle();
@@ -2720,7 +2825,8 @@ async function refetchEntityAfterAction(
       }
       // ── Clients ───────────────────────────────────────────────────────────
       case 'ADD_CLIENT': case 'UPDATE_CLIENT': case 'DELETE_CLIENT':
-      case 'ADD_CLIENT_PAYMENT': case 'ADD_CLIENT_APPOINTMENT': {
+      case 'ADD_CLIENT_PAYMENT': case 'UPDATE_CLIENT_PAYMENT': case 'DELETE_CLIENT_PAYMENT':
+      case 'ADD_CLIENT_APPOINTMENT': {
         // Tout l'historique, sans plafond : un règlement d'il y a deux ans reste
         // une ligne du compte du client (`loadClientsEnriched`).
         dispatch({ type: 'HYDRATE', payload: { clients: await loadClientsEnriched() } });
@@ -3733,10 +3839,10 @@ export function useSupabaseDispatch() {
 
         // ── Clients ────────────────────────────────────────────────────────
         case 'ADD_CLIENT':
-          await db.addClient({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0 });
+          await db.addClient({ id: action.payload.id, name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0, opening_debt: action.payload.openingDebt ?? 0, opening_advance: action.payload.openingAdvance ?? 0, opening_date: nz(action.payload.openingDate), opening_notes: nz(action.payload.openingNotes) });
           break;
         case 'UPDATE_CLIENT':
-          await db.updateClient(action.payload.id, { name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0 });
+          await db.updateClient(action.payload.id, { name: action.payload.name, phone: action.payload.phone, cin: action.payload.cin, email: action.payload.email, address: action.payload.address, contact_person: action.payload.contactPerson, balance: action.payload.balance, debt: action.payload.debt, credit_limit: action.payload.creditLimit, payment_delay: action.payload.paymentDelay, type: action.payload.type, payment_mode: action.payload.paymentMode, nif: action.payload.nif, nis: action.payload.nis, article: action.payload.article, rc: action.payload.rc, advance_balance: action.payload.advanceBalance ?? 0, opening_debt: action.payload.openingDebt ?? 0, opening_advance: action.payload.openingAdvance ?? 0, opening_date: nz(action.payload.openingDate), opening_notes: nz(action.payload.openingNotes) });
           break;
         case 'DELETE_CLIENT':
           await db.deleteClient(action.payload);
@@ -3993,6 +4099,16 @@ export function useSupabaseDispatch() {
           await db.addClientTransaction({ id: action.payload.payment.id, client_id: action.payload.clientId, date: action.payload.payment.date, type: action.payload.payment.type, amount: action.payload.payment.amount, mode: action.payload.payment.mode, receipt_number: action.payload.payment.receiptNumber, receipt_photo_url: action.payload.payment.receiptPhoto, notes: action.payload.payment.notes });
           await applyClientPaymentToAccount(action.payload.clientId, action.payload.payment);
           break;
+        case 'UPDATE_CLIENT_PAYMENT':
+          await db.updateClientTransaction(action.payload.payment.id, { date: action.payload.payment.date, type: action.payload.payment.type, amount: action.payload.payment.amount, mode: action.payload.payment.mode, receipt_number: action.payload.payment.receiptNumber, receipt_photo_url: action.payload.payment.receiptPhoto, notes: action.payload.payment.notes });
+          await applyClientPaymentDelta(action.payload.clientId, action.payload.payment.type, (action.payload.payment.amount || 0) - (action.payload.previousAmount || 0));
+          break;
+        case 'DELETE_CLIENT_PAYMENT': {
+          const { data: goneTx } = await supabase.from('client_transactions').select('type, amount').eq('id', action.payload.paymentId).maybeSingle();
+          await db.deleteClientTransaction(action.payload.paymentId);
+          if (goneTx) await applyClientPaymentDelta(action.payload.clientId, goneTx.type, -(+goneTx.amount || 0));
+          break;
+        }
 
         // ── Product stock ──────────────────────────────────────────────────
         case 'UPDATE_PRODUCT_STOCK':

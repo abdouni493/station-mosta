@@ -8,7 +8,7 @@ import {
   BarChart2, Archive, UserCog, DollarSign, Building2, ChevronRight, X,
   Wallet, CalendarCheck, Shield, UserCheck, Calendar,
   FlaskConical, Beaker, ShoppingBag, Car, Utensils, Coffee, Droplets, FileBarChart,
-  BellRing, Landmark, PiggyBank, MessageSquare
+  BellRing, Landmark, PiggyBank, MessageSquare, Star
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -396,6 +396,57 @@ const SETTINGS_PATH: Record<string, string> = {
   module_worker:"/my-settings",
 };
 
+// --- Favoris de partie ---
+//
+// Une partie ouvre douze à quatorze interfaces. Celle qu'on utilise vingt fois
+// par jour — le point de vente d'une cafétéria, les réparations d'un lavage, les
+// brigades du carburant — se retrouvait au milieu d'une liste qu'il fallait
+// parcourir des yeux à chaque fois, souvent en la déroulant d'abord.
+//
+// Chaque partie a maintenant SES favoris : une étoile sur n'importe quelle
+// entrée l'épingle en tête de sa section, au-dessus de la liste complète.
+//
+// Le choix est PERSONNEL et propre au poste : c'est une préférence d'affichage,
+// pas une donnée de gestion. Elle vit donc dans le navigateur, sous une clé qui
+// porte l'utilisateur — deux personnes qui partagent un poste ne s'imposent pas
+// leurs raccourcis.
+
+/** Les sections qui acceptent des favoris : les trois activités. */
+const FAVORITE_GROUPS = new Set(["carburant", "cafeteria", "lavage"]);
+
+const favKey = (who: string) => `altech.sidebar.favorites.${who || "anon"}`;
+
+type Favorites = Record<string, string[]>;
+
+function readFavorites(who: string): Favorites {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(favKey(who));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    // On ne garde que ce qui a la forme attendue : une préférence corrompue ne
+    // doit pas empêcher la barre de s'afficher.
+    const out: Favorites = {};
+    for (const [group, paths] of Object.entries(parsed)) {
+      if (Array.isArray(paths)) out[group] = paths.filter(x => typeof x === "string");
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeFavorites(who: string, favorites: Favorites): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(favKey(who), JSON.stringify(favorites));
+  } catch {
+    // Stockage plein ou refusé (navigation privée) : le favori vaut pour la
+    // session en cours, ce n'est pas une raison de faire échouer un clic.
+  }
+}
+
 // --- Component ---
 
 const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, userId, userPermissions, moduleWorker }: SidebarProps) => {
@@ -436,6 +487,71 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
     setExpandedGroups(prev => prev.includes(moduleWorker.moduleKey) ? prev : [...prev, moduleWorker.moduleKey]);
   }, [moduleWorker]);
 
+  /**
+   * Une entrée de la barre. Elle est rendue à DEUX endroits — dans les favoris
+   * épinglés et dans la liste complète — et doit rester la même des deux côtés :
+   * même icône, même pastille d'alerte, même état actif.
+   *
+   * L'étoile est un bouton À CÔTÉ du lien, jamais dedans : un bouton imbriqué
+   * dans un bouton n'est pas du HTML valide, et le clic sur l'étoile finirait
+   * par déclencher la navigation.
+   */
+  const renderNavItem = (group: NavGroup, item: NavItem, pinned: boolean) => {
+    const isActive = activePath === item.path;
+    const Icon = item.icon;
+    const alert = alerts[item.path] || 0;
+    const canFavorite = FAVORITE_GROUPS.has(group.id);
+    const isFavorite = (favorites[group.id] || []).includes(item.path);
+
+    return (
+      <div key={`${pinned ? "fav" : "all"}-${item.path}`} className="relative group/nav">
+        <motion.button
+          onClick={() => handleNavigate(item.path)}
+          whileTap={{ scale: 0.98 }}
+          className={cn("sidebar-link", isActive ? "sidebar-link-active" : "sidebar-link-inactive", canFavorite && "!pr-9")}
+        >
+          <div className={cn(
+            "relative w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all",
+            isActive ? "bg-[#001f5c]/20" : "bg-white/6"
+          )}>
+            <Icon className={cn("w-3.5 h-3.5", isActive ? "text-[#001f5c]" : "text-blue-200")} />
+            {alert > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[#001f5c]" />
+            )}
+          </div>
+          <span className="text-sm leading-none flex-1 truncate">{trLabel(item.label)}</span>
+          {alert > 0 && <AlertBadge count={alert} />}
+          {isActive && alert === 0 && !canFavorite && (
+            <ChevronRight className="w-3 h-3 text-[#001f5c]/50 flex-shrink-0" />
+          )}
+        </motion.button>
+
+        {canFavorite && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); toggleFavorite(group.id, item.path); }}
+            title={isFavorite ? "Retirer des favoris" : "Épingler en haut de cette partie"}
+            aria-label={isFavorite ? "Retirer des favoris" : "Ajouter aux favoris"}
+            className={cn(
+              "absolute right-1.5 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-all",
+              // Une étoile allumée reste visible ; les autres n'apparaissent
+              // qu'au survol, pour ne pas transformer le menu en sapin de Noël.
+              isFavorite ? "opacity-100" : "opacity-0 group-hover/nav:opacity-100 focus:opacity-100",
+              isActive ? "hover:bg-[#001f5c]/10" : "hover:bg-white/10"
+            )}
+          >
+            <Star
+              className="w-3.5 h-3.5"
+              style={isFavorite
+                ? { color: "#FFB800", fill: "#FFB800" }
+                : { color: isActive ? "rgba(0,31,92,0.45)" : "rgba(147,197,253,0.6)" }}
+            />
+          </button>
+        )}
+      </div>
+    );
+  };
+
   const settingsPath = SETTINGS_PATH[userRole] ?? "/settings";
   const badge = roleBadge[userRole] ?? roleBadge.admin;
 
@@ -451,6 +567,38 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
   const handleNavigate = (path: string) => {
     onNavigate(path);
     if (window.innerWidth < 1280) onClose();
+  };
+
+  // ── Les favoris de chaque partie ──────────────────────────────────────────
+  const favOwner = userId || userRole;
+  const [favorites, setFavorites] = useState<Favorites>(() => readFavorites(favOwner));
+  // Changer d'utilisateur sur le même poste doit changer de raccourcis : les
+  // favoris se rechargent quand le propriétaire change.
+  useEffect(() => { setFavorites(readFavorites(favOwner)); }, [favOwner]);
+
+  const toggleFavorite = (groupId: string, path: string) => {
+    setFavorites(prev => {
+      const current = prev[groupId] || [];
+      const next = current.includes(path) ? current.filter(x => x !== path) : [...current, path];
+      const out = { ...prev, [groupId]: next };
+      writeFavorites(favOwner, out);
+      return out;
+    });
+  };
+
+  /**
+   * Les entrées épinglées d'une section, dans l'ordre où elles ont été
+   * choisies. On repart TOUJOURS de la liste réelle du menu : un favori qui
+   * pointe vers une interface retirée depuis (droits révoqués, module désactivé)
+   * n'a plus de bouton à afficher — il est simplement ignoré, jamais rendu à
+   * vide.
+   */
+  const favoritesOf = (group: NavGroup): NavItem[] => {
+    if (!FAVORITE_GROUPS.has(group.id)) return [];
+    const pinned = favorites[group.id] || [];
+    return pinned
+      .map(path => group.items.find(i => i.path === path))
+      .filter((i): i is NavItem => !!i);
   };
 
   return (
@@ -554,34 +702,23 @@ const Sidebar = ({ isOpen, onClose, activePath, onNavigate, onLogout, userRole, 
                       className="overflow-hidden"
                     >
                       <div className="space-y-0.5 pt-0.5">
-                        {group.items.map((item) => {
-                          const isActive = activePath === item.path;
-                          const Icon = item.icon;
-                          const alert = alerts[item.path] || 0;
-                          return (
-                            <motion.button
-                              key={item.path}
-                              onClick={() => handleNavigate(item.path)}
-                              whileTap={{ scale: 0.98 }}
-                              className={cn("sidebar-link", isActive ? "sidebar-link-active" : "sidebar-link-inactive")}
-                            >
-                              <div className={cn(
-                                "relative w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all",
-                                isActive ? "bg-[#001f5c]/20" : "bg-white/6"
-                              )}>
-                                <Icon className={cn("w-3.5 h-3.5", isActive ? "text-[#001f5c]" : "text-blue-200")} />
-                                {alert > 0 && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[#001f5c]" />
-                                )}
-                              </div>
-                              <span className="text-sm leading-none flex-1 truncate">{trLabel(item.label)}</span>
-                              {alert > 0 && <AlertBadge count={alert} />}
-                              {isActive && alert === 0 && (
-                                <ChevronRight className="w-3 h-3 text-[#001f5c]/50 flex-shrink-0" />
-                              )}
-                            </motion.button>
-                          );
-                        })}
+                        {/* ── Les favoris, épinglés en tête de la partie ────
+                            L'interface qu'on ouvre vingt fois par jour ne se
+                            cherche plus au milieu de quatorze autres. */}
+                        {favoritesOf(group).length > 0 && (
+                          <div className="mb-1.5 pb-1.5" style={{ borderBottom: "1px dashed rgba(255,184,0,0.22)" }}>
+                            <div className="flex items-center gap-1.5 px-3 pb-1">
+                              <Star className="w-2.5 h-2.5" style={{ color: "#FFB800", fill: "#FFB800" }} />
+                              <span className="text-[8px] font-black uppercase tracking-[0.22em]" style={{ color: "rgba(255,184,0,0.75)" }}>
+                                {t("sections.favorites", { defaultValue: "Favoris" })}
+                              </span>
+                            </div>
+                            <div className="space-y-0.5">
+                              {favoritesOf(group).map(item => renderNavItem(group, item, true))}
+                            </div>
+                          </div>
+                        )}
+                        {group.items.map((item) => renderNavItem(group, item, false))}
                       </div>
                     </motion.div>
                   )}

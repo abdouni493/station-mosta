@@ -262,6 +262,17 @@ export function moduleCaisseMovements(
       label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
       amount: l.amount,
     }))),
+    // Un règlement encaissé sur la DETTE INITIALE d'un client est de l'argent
+    // qui entre dans le tiroir, exactement comme le règlement d'une facture.
+    // Il ne s'appuie sur aucun document : sans cette ligne, la caisse ignorait
+    // l'argent d'une ardoise reprise que le client venait pourtant de solder.
+    ...(st.clients || []).flatMap(c => ((c as any).openingPayments || [])
+      .filter((x: any) => num(x?.amount) > 0)
+      .map((x: any) => ({
+        id: `open-pay-${x.id}`, date: x.date || (c as any).openingDate || c.createdAt, nature: 'Vente',
+        label: `Règlement dette initiale — ${c.name}`, amount: num(x.amount),
+        reference: x.reference,
+      }))),
     ...st.purchases.filter(x => num(x.paid) > 0).map(x => ({
       id: `pur-${x.id}`, date: x.date, nature: 'Achat',
       label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
@@ -383,6 +394,23 @@ export function makeCostResolver(st: ModuleState) {
   return { unitCostOf, unitOf, costOfItem, categoryOf, barcodeOf, kindOf };
 }
 
+/**
+ * ─── Ce qu'un client de partie doit encore SUR SA REPRISE ────────────────────
+ *
+ * La dette initiale d'un client de cafétéria ou de lavage ne s'appuie sur aucun
+ * document : elle vit sur sa fiche (`openingDebt`) et se solde par ses propres
+ * versements (`openingPayments`). Les rapports ne lisaient que les factures
+ * ouvertes — une ardoise reprise d'un ancien carnet n'apparaissait donc dans
+ * aucun total, et la créance de la partie était sous-évaluée d'autant.
+ */
+export function openingDebtRest(c: {
+  openingDebt?: number; openingPayments?: { amount?: number }[];
+}): { debt: number; paid: number; rest: number } {
+  const debt = Math.max(0, num(c?.openingDebt));
+  const paid = (c?.openingPayments || []).reduce((t, x) => t + num(x?.amount), 0);
+  return { debt, paid, rest: Math.max(0, debt - paid) };
+}
+
 // ─── Module (biz) report ─────────────────────────────────────────────────────
 /**
  * `txs` — le grand livre de la station. Sans lui, la caisse d'une partie
@@ -497,6 +525,16 @@ export function computeModuleReport(
 
   // ── Debts (outstanding, all dates) ──
   const clientDebts: DebtRow[] = [
+    // La REPRISE du compte est une créance comme une autre : elle figure au
+    // même titre qu'une facture ouverte, avec sa date de reprise pour repère.
+    ...(st.clients || []).map(c => {
+      const o = openingDebtRest(c as any);
+      return {
+        id: `open-${c.id}`, ref: 'REPRISE', name: c.name,
+        date: (c as any).openingDate || c.createdAt || '',
+        total: o.debt, paid: o.paid, rest: o.rest,
+      };
+    }).filter(r => r.rest > 0),
     ...st.sales.filter(s => s.rest > 0).map(s => ({ id: s.id, ref: s.ref, name: s.clientName, date: s.date, total: s.total, paid: s.paid, rest: s.rest })),
     ...(st.reparations || []).filter(r => r.rest > 0).map(r => ({ id: r.id, ref: r.ref, name: r.clientName, date: r.date, total: r.total, paid: r.paid, rest: r.rest })),
   ].sort((a, b) => b.rest - a.rest);

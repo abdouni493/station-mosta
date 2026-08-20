@@ -27,15 +27,17 @@
  *    comme reconstruit plutôt qu'inventé en silence.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { clientLedger, ClientEntry, advanceAvailable } from './clientLedger';
-import { BizSale, BizReparation, BizContact, ModuleState, prestationsOf } from './bizConfig';
+import { clientLedger, clientOpening, ClientEntry, advanceAvailable } from './clientLedger';
+import { BizSale, BizReparation, BizContact, BizDocPayment, ModuleState, prestationsOf } from './bizConfig';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 export type StatementKind =
+  | 'ouverture'
   | 'bon' | 'magasin' | 'vente' | 'intervention' | 'reglement' | 'recharge' | 'retour';
 
 export const KIND_LABEL: Record<StatementKind, string> = {
+  ouverture: 'Dette initiale',
   bon: 'Bon carburant',
   magasin: 'Vente magasin',
   vente: 'Vente',
@@ -47,6 +49,7 @@ export const KIND_LABEL: Record<StatementKind, string> = {
 
 /** Couleur d'impression d'une nature d'opération sur la fiche. */
 export const KIND_COLOR: Record<StatementKind, string> = {
+  ouverture: '#b45309',
   bon: '#1d4ed8', magasin: '#0e7490', vente: '#0e7490', intervention: '#7c3aed',
   reglement: '#15803d', recharge: '#047857', retour: '#b45309',
 };
@@ -93,6 +96,15 @@ export interface StatementLine {
 /** Un encaissement, isolé pour le tableau des règlements du relevé. */
 export interface StatementPayment {
   id: string;
+  /**
+   * La LIGNE du journal d'où vient ce versement. Un tableau de règlements qui
+   * ne sait pas de quelle pièce il descend ne peut ni la corriger, ni la
+   * supprimer, ni en réimprimer le reçu — c'est ce qui manquait pour rendre
+   * l'historique modifiable.
+   */
+  lineId: string;
+  /** Nature de la ligne d'origine — un règlement, ou une recharge d'avance. */
+  kind: StatementKind;
   date: string;
   label: string;
   mode: string;
@@ -182,11 +194,12 @@ const qtyFmt = (n: number) => n.toLocaleString('fr-FR', { maximumFractionDigits:
 /** Traduit une ligne du grand livre client carburant en ligne de relevé. */
 function fuelLine(e: ClientEntry): StatementLine {
   const kind: StatementKind =
-    e.kind === 'bon' ? 'bon'
-      : e.kind === 'magasin' ? 'magasin'
-        : e.kind === 'reglement' ? 'reglement'
-          : e.kind === 'recharge' ? 'recharge'
-            : 'vente';
+    e.kind === 'ouverture' ? 'ouverture'
+      : e.kind === 'bon' ? 'bon'
+        : e.kind === 'magasin' ? 'magasin'
+          : e.kind === 'reglement' ? 'reglement'
+            : e.kind === 'recharge' ? 'recharge'
+              : 'vente';
 
   const qtyLabel = e.liters
     ? `${qtyFmt(e.liters)} L`
@@ -206,7 +219,7 @@ function fuelLine(e: ClientEntry): StatementLine {
     // Un bon à crédit n'encaisse rien ; une facture magasin encaisse ce qui a
     // été réglé sur place ; un règlement encaisse son montant.
     paid: (e.kind === 'reglement' || e.kind === 'recharge') ? e.paid : num(e.paidOnDocument),
-    rest: num(e.rest ?? (e.kind === 'bon' ? Math.max(0, e.debtEffect) : 0)),
+    rest: num(e.rest ?? ((e.kind === 'bon' || e.kind === 'ouverture') ? Math.max(0, e.debtEffect) : 0)),
     debtEffect: e.debtEffect,
     advanceEffect: e.advanceEffect,
     qtyLabel,
@@ -359,11 +372,84 @@ function repLine(r: BizReparation): StatementLine {
   };
 }
 
+/**
+ * L'OUVERTURE du compte d'un client de partie, rendue en lignes de journal.
+ *
+ * Une cafétéria ou un lavage reprend des comptes qui existaient avant le
+ * logiciel : « ce client me doit déjà 12 000 DA ». Ce montant n'avait aucun
+ * endroit où vivre — la fiche ne portait qu'un nom, un téléphone et une adresse
+ * — si bien qu'il fallait inventer une fausse vente pour le faire apparaître.
+ *
+ * Il est maintenant porté par la fiche (`openingDebt`), avec ses propres
+ * règlements (`openingPayments`) : la dette de reprise se solde comme n'importe
+ * quelle facture, à sa date et par son mode de paiement.
+ */
+function openingLines(client: BizContact | null): StatementLine[] {
+  const op = clientOpening(client as any);
+  const out: StatementLine[] = [];
+  if (op.debt <= 0 && op.advance <= 0) return out;
+
+  const settled = (client?.openingPayments || [])
+    .filter((p: BizDocPayment) => num(p?.amount) > 0);
+  const paid = settled.reduce((t: number, p: BizDocPayment) => t + num(p.amount), 0);
+
+  if (op.debt > 0) {
+    out.push({
+      id: `open-debt-${client?.id || ''}`,
+      date: op.date,
+      kind: 'ouverture',
+      kindLabel: KIND_LABEL.ouverture,
+      label: 'Dette initiale — ouverture du compte',
+      notes: op.notes,
+      charged: op.debt,
+      paid: 0,
+      rest: Math.max(0, op.debt - paid),
+      debtEffect: op.debt,
+      advanceEffect: 0,
+    });
+    for (const p of settled) {
+      out.push({
+        id: `open-pay-${p.id}`,
+        date: p.date || op.date,
+        kind: 'reglement',
+        kindLabel: KIND_LABEL.reglement,
+        label: 'Règlement de la dette initiale',
+        mode: p.mode || 'Espèces',
+        reference: p.reference,
+        notes: p.notes,
+        charged: 0,
+        paid: num(p.amount),
+        rest: 0,
+        debtEffect: -num(p.amount),
+        advanceEffect: 0,
+      });
+    }
+  }
+
+  if (op.advance > 0) {
+    out.push({
+      id: `open-adv-${client?.id || ''}`,
+      date: op.date,
+      kind: 'recharge',
+      kindLabel: KIND_LABEL.recharge,
+      label: "Avance initiale — ouverture du compte",
+      mode: 'Ouverture',
+      notes: op.notes,
+      charged: 0,
+      paid: op.advance,
+      rest: 0,
+      debtEffect: 0,
+      advanceEffect: op.advance,
+    });
+  }
+  return out;
+}
+
 /** Le relevé d'un client d'une partie (Cafétéria, Lavage & Réparation). */
 export function bizClientStatement(
   state: ModuleState, client: BizContact | null, partLabel: string, from = '', to = '',
 ): ClientStatement {
-  const lines: StatementLine[] = [];
+  const lines: StatementLine[] = [...openingLines(client)];
   const id = client?.id || '';
 
   for (const s of (state?.sales || [])) {
@@ -379,10 +465,16 @@ export function bizClientStatement(
     if (r.status !== 'canceled') lines.push(...paymentLines(r));
   }
 
+  const op = clientOpening(client as any);
   return assemble({
     client: { id, name: client?.name || '', phone: client?.phone, address: client?.address },
     partLabel,
     from, to, allLines: lines,
+    // Rien ne consomme encore l'avance d'un client de partie : ce qu'il a versé
+    // à l'ouverture est ce dont il dispose. On le passe quand même par le même
+    // chemin que le Carburant pour que la rubrique « Avance » du dossier
+    // s'affiche — et se remplisse toute seule le jour où une vente s'y imputera.
+    currentAdvance: op.advance > 0 ? op.advance : undefined,
   });
 }
 
@@ -419,6 +511,8 @@ function assemble(input: {
     .filter(l => l.paid !== 0)
     .map(l => ({
       id: `${l.id}-pay`,
+      lineId: l.id,
+      kind: l.kind,
       date: l.date,
       label: l.kind === 'recharge' ? "Recharge d'avance" : (l.ref ? `Règlement ${l.ref}` : l.label),
       mode: l.mode || 'Espèces',

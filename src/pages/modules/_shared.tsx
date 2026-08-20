@@ -657,8 +657,15 @@ export function ContactModal({
 }) {
   const isSupplier = coll === 'suppliers';
   const isEdit = !!initial?.id;
-  const [form, setForm] = useState<Partial<BizContact>>(initial || { name: '', phone: '', address: '' });
-  React.useEffect(() => { setForm(initial || { name: '', phone: '', address: '' }); }, [initial, open]);
+  const blank = (): Partial<BizContact> => ({
+    name: '', phone: '', address: '',
+    openingDebt: 0, openingAdvance: 0, openingDate: todayISO(), openingNotes: '',
+  });
+  const [form, setForm] = useState<Partial<BizContact>>(initial || blank());
+  React.useEffect(() => { setForm(initial || blank()); }, [initial, open]);
+
+  const openDebt = Math.max(0, Number(form.openingDebt) || 0);
+  const openAdvance = Math.max(0, Number(form.openingAdvance) || 0);
 
   const save = () => {
     if (!form.name?.trim()) return;
@@ -668,6 +675,18 @@ export function ContactModal({
       phone: form.phone || '',
       address: form.address || '',
       createdAt: form.createdAt || new Date().toISOString(),
+      // ── La reprise du compte ────────────────────────────────────────────
+      // Un client de cafétéria ou de lavage arrive rarement à zéro : il
+      // traîne l'ardoise d'un carnet plus vieux que le logiciel. Faute d'un
+      // endroit où l'écrire, il fallait inventer une fausse vente — qui
+      // gonflait le chiffre d'affaires d'une marchandise jamais sortie.
+      openingDebt: openDebt,
+      openingAdvance: openAdvance,
+      openingDate: (openDebt > 0 || openAdvance > 0) ? (form.openingDate || todayISO()) : undefined,
+      openingNotes: form.openingNotes || undefined,
+      // Les règlements déjà encaissés sur cette reprise ne se perdent pas
+      // parce qu'on rouvre la fiche pour corriger un numéro de téléphone.
+      openingPayments: form.openingPayments,
     };
     if (isEdit) biz.update(coll, contact); else biz.add(coll, contact);
     onSaved?.(contact);
@@ -685,6 +704,42 @@ export function ContactModal({
         <Field label="Nom" required><Input value={form.name || ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Nom complet" /></Field>
         <Field label="Téléphone"><Input value={form.phone || ''} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="0550 00 00 00" /></Field>
         <Field label="Adresse"><Textarea value={form.address || ''} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Adresse" /></Field>
+
+        {!isSupplier && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              <p className="text-[11px] font-black uppercase tracking-wider text-amber-800">Reprise à l'ouverture du compte</p>
+            </div>
+            <p className="text-[11px] font-semibold text-amber-900/70 leading-relaxed">
+              Ce que le client doit déjà — ou a déjà versé — avant sa première vente ici.
+              Le montant devient la première ligne de son historique : il compte dans sa dette,
+              sur sa carte, dans la caisse et dans les rapports.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Dette initiale (DA)">
+                <Input type="number" inputMode="decimal" className="text-right" value={form.openingDebt ?? 0}
+                  onChange={e => setForm(f => ({ ...f, openingDebt: Number(e.target.value) || 0 }))} />
+              </Field>
+              <Field label="Avance initiale (DA)">
+                <Input type="number" inputMode="decimal" className="text-right" value={form.openingAdvance ?? 0}
+                  onChange={e => setForm(f => ({ ...f, openingAdvance: Number(e.target.value) || 0 }))} />
+              </Field>
+            </div>
+            {(openDebt > 0 || openAdvance > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Date de la reprise">
+                  <Input type="date" value={(form.openingDate || todayISO()).slice(0, 10)}
+                    onChange={e => setForm(f => ({ ...f, openingDate: e.target.value }))} />
+                </Field>
+                <Field label="Note (facultatif)">
+                  <Input value={form.openingNotes || ''} placeholder="Ancien carnet, solde repris au…"
+                    onChange={e => setForm(f => ({ ...f, openingNotes: e.target.value }))} />
+                </Field>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </Modal>
   );

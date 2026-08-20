@@ -33,12 +33,12 @@ import {
   X, Search, ChevronRight, ChevronDown, Receipt, Wallet, CreditCard,
   FileBarChart, Printer, IdCard, LayoutDashboard, History, ShoppingBag,
   AlertTriangle, TrendingUp, CircleDollarSign, CalendarRange,
-  Package, ArrowUpRight, ArrowDownRight, Info,
+  Package, ArrowUpRight, ArrowDownRight, Info, Pencil, Trash2, Flag,
 } from 'lucide-react';
 import { cn, matchesSearch } from '@/src/lib/utils';
 import { money } from '@/src/components/biz/Kit';
 import {
-  ClientStatement, StatementLine, StatementKind, KIND_COLOR, KIND_LABEL,
+  ClientStatement, StatementLine, StatementPayment, StatementKind, KIND_COLOR, KIND_LABEL,
 } from '@/src/lib/clientStatement';
 
 // ─── Types de l'API du dossier ────────────────────────────────────────────────
@@ -67,6 +67,25 @@ export interface DossierSection {
   render: () => React.ReactNode;
 }
 
+/**
+ * L'OUVERTURE du compte, telle que le dossier doit la montrer et la laisser
+ * corriger. Elle n'est pas une vente : c'est ce que le client devait déjà (ou
+ * avait déjà versé) le jour où sa fiche a été créée.
+ */
+export interface DossierOpening {
+  /** Dette de reprise saisie à la création. */
+  debt: number;
+  /** Premier versement d'avance. */
+  advance: number;
+  date: string;
+  notes?: string;
+  /** Ce qui a déjà été réglé sur cette dette de reprise. */
+  paid?: number;
+  /** Reprendre l'écart fiche / pièces en dette initiale, d'un clic. */
+  onAdopt?: () => void;
+  onEdit?: () => void;
+}
+
 export interface DossierAdvance {
   /** Ce qu'il reste sur le compte d'avance. */
   available: number;
@@ -91,6 +110,14 @@ export interface ClientDossierProps {
   /** Plafond de crédit accordé, pour le signaler quand il est dépassé. */
   creditLimit?: number;
   advance?: DossierAdvance;
+  /** Ce que le compte portait à son ouverture, et de quoi le corriger. */
+  opening?: DossierOpening;
+  /** Corriger un règlement de l'historique. */
+  onEditPayment?: (payment: StatementPayment) => void;
+  /** Supprimer un règlement de l'historique. */
+  onDeletePayment?: (payment: StatementPayment) => void;
+  /** Réimprimer le reçu d'un règlement. */
+  onPrintPayment?: (payment: StatementPayment) => void;
   /** Rubriques propres à l'activité (rendez-vous de paiement…). */
   extraSections?: DossierSection[];
   initialSection?: string;
@@ -234,8 +261,9 @@ function ItemTable({ items }: { items: NonNullable<StatementLine['items']> }) {
 export default function ClientDossier(props: ClientDossierProps) {
   const {
     open, onClose, statement: st, badges, identity = [], recordedDebt, creditLimit,
-    advance, extraSections = [], initialSection = 'resume',
+    advance, opening, extraSections = [], initialSection = 'resume',
     onPayDebt, onSettleLine, onPrintReceipt, onReport, onPrintStatement,
+    onEditPayment, onDeletePayment, onPrintPayment,
     zClass = 'z-[90]', children,
   } = props;
 
@@ -329,7 +357,125 @@ export default function ClientDossier(props: ClientDossierProps) {
 
   const toggle = (id: string) => setExpanded(o => ({ ...o, [id]: !o[id] }));
 
+  /** Y a-t-il quoi que ce soit à faire sur une ligne de règlement ? */
+  const hasPaymentActions = !!(onEditPayment || onDeletePayment || onPrintPayment);
+
   // ── Rubriques ───────────────────────────────────────────────────────────────
+
+  /**
+   * ─── L'ouverture du compte ──────────────────────────────────────────────────
+   *
+   * Le bloc qui manquait. Un client repris « avec 40 000 DA de dette » voyait
+   * son dossier s'ouvrir sur un compte VIDE : le montant vivait dans une colonne
+   * de sa fiche, et le journal — la seule source que les écrans lisent — ne le
+   * connaissait pas. Il est maintenant une ligne du compte, et ce bloc la
+   * montre pour ce qu'elle est : une reprise, pas une vente.
+   */
+  const openingBlock = () => {
+    if (!opening) return null;
+    const paid = Math.max(0, opening.paid || 0);
+    const rest = Math.max(0, opening.debt - paid);
+    const nothing = opening.debt <= 0 && opening.advance <= 0;
+    return (
+      <Block icon={Flag} title="Ouverture du compte" tone="amber"
+        hint="Ce que le client devait — ou avait déjà versé — le jour de la reprise"
+        action={opening.onEdit && (
+          <button onClick={opening.onEdit}
+            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5">
+            <Pencil className="w-3.5 h-3.5" /> {nothing ? 'Saisir une reprise' : 'Modifier'}
+          </button>
+        )}>
+        {nothing ? (
+          <div className="px-5 py-5 flex flex-wrap items-center gap-3">
+            <p className="text-[11px] font-semibold text-slate-400 flex-1 min-w-[220px]">
+              Aucune reprise enregistrée : ce compte est né à zéro. Si le client devait déjà
+              quelque chose avant sa fiche, saisissez-le ici — il entrera dans son historique,
+              sur sa carte et dans les rapports.
+            </p>
+            {opening.onAdopt && (
+              <button onClick={opening.onAdopt}
+                className="px-4 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 text-[10px] font-black uppercase tracking-wider transition-all">
+                Reprendre l'écart en dette initiale
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-slate-100">
+            <div className="bg-white px-4 py-3">
+              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Dette initiale</p>
+              <p className="text-base font-black tabular-nums text-amber-600">{money(opening.debt)}</p>
+            </div>
+            <div className="bg-white px-4 py-3">
+              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Déjà réglé dessus</p>
+              <p className="text-base font-black tabular-nums text-emerald-600">{money(paid)}</p>
+            </div>
+            <div className="bg-white px-4 py-3">
+              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Reste de la reprise</p>
+              <p className={cn('text-base font-black tabular-nums', rest > 0 ? 'text-red-600' : 'text-slate-300')}>{money(rest)}</p>
+            </div>
+            <div className="bg-white px-4 py-3">
+              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">
+                {opening.advance > 0 ? 'Avance initiale' : 'Date de reprise'}
+              </p>
+              <p className="text-base font-black tabular-nums text-[#002d87]">
+                {opening.advance > 0 ? money(opening.advance) : shortDate(opening.date)}
+              </p>
+              {opening.advance > 0 && (
+                <p className="text-[10px] text-slate-400 font-semibold">au {shortDate(opening.date)}</p>
+              )}
+            </div>
+            {opening.notes && (
+              <div className="bg-white px-4 py-3 col-span-2 sm:col-span-4">
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Note de reprise</p>
+                <p className="text-[11px] font-semibold text-slate-600">{opening.notes}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </Block>
+    );
+  };
+
+  /**
+   * L'historique des règlements sur une feuille. Le dossier imprimait le relevé
+   * ENTIER ou rien : personne ne pouvait sortir la seule liste des encaissements
+   * d'un client — c'est pourtant le papier qu'on lui tend quand il conteste.
+   */
+  const printPayments = () => {
+    const rows = payments.map(p => `
+      <tr>
+        <td>${shortDate(p.date)}</td>
+        <td>${(p.label || 'Règlement').replace(/[<>]/g, '')}</td>
+        <td>${(p.mode || '').replace(/[<>]/g, '')}</td>
+        <td>${(p.reference || '—').replace(/[<>]/g, '')}</td>
+        <td class="num">${money(p.amount)}</td>
+      </tr>`).join('');
+    const win = window.open('', '_blank', 'width=900,height=700');
+    if (!win) return;
+    win.document.write(`<html><head><title>Règlements — ${st.client.name}</title><style>
+      *{box-sizing:border-box}
+      body{font-family:Arial,Helvetica,sans-serif;padding:28px;color:#0f172a}
+      h1{font-size:18px;margin:0;color:#002d87;text-transform:uppercase;letter-spacing:.06em}
+      h2{font-size:12px;margin:4px 0 18px;color:#64748b;font-weight:600}
+      table{width:100%;border-collapse:collapse;font-size:12px}
+      th{background:#f1f5f9;text-align:left;padding:8px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#475569}
+      td{padding:8px;border-bottom:1px solid #e2e8f0}
+      .num{text-align:right;font-variant-numeric:tabular-nums;font-weight:800;color:#047857}
+      tfoot td{border-top:2px solid #002d87;font-weight:900;padding-top:10px}
+    </style></head><body>
+      <h1>Historique des règlements — ${st.client.name}</h1>
+      <h2>${st.partLabel} · ${payments.length} règlement(s) · édité le ${new Date().toLocaleDateString('fr-FR')}</h2>
+      <table>
+        <thead><tr><th>Date</th><th>Libellé</th><th>Mode</th><th>Référence</th><th style="text-align:right">Montant</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5">Aucun règlement</td></tr>'}</tbody>
+        <tfoot><tr><td colspan="4">Total encaissé</td><td class="num">${money(st.totals.paid)}</td></tr></tfoot>
+      </table>
+    </body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
 
   const resume = () => (
     <div className="space-y-6">
@@ -351,6 +497,8 @@ export default function ClientDossier(props: ClientDossierProps) {
               : 'aucune opération'} />
         )}
       </div>
+
+      {openingBlock()}
 
       {/* Ce qui mérite d'être signalé plutôt que laissé à deviner. */}
       {(Math.abs(gap) >= 1 || overLimit || (advance && Math.abs(advance.gap || 0) >= 1)) && (
@@ -763,8 +911,21 @@ export default function ClientDossier(props: ClientDossierProps) {
         )}
       </div>
 
+      {openingBlock()}
+
+      {/* ── L'historique des règlements ─────────────────────────────────────
+          Il ne se lisait qu'en lecture seule : un montant saisi de travers ne
+          pouvait plus être repris, et le reçu d'un règlement d'il y a trois mois
+          était introuvable. Chaque ligne porte maintenant ses trois gestes —
+          corriger, supprimer, réimprimer — et la liste entière s'imprime. */}
       <Block icon={Wallet} title={`Règlements encaissés (${payments.length})`} tone="green"
-        hint="Chaque versement, à sa date et par son moyen de paiement">
+        hint="Chaque versement, à sa date et par son moyen de paiement"
+        action={payments.length > 0 ? (
+          <button onClick={printPayments}
+            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#002d87] text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5">
+            <Printer className="w-3.5 h-3.5" /> Imprimer la liste
+          </button>
+        ) : undefined}>
         {payments.length === 0 ? (
           <Empty icon={Wallet} message="Aucun règlement encaissé sur ce compte" />
         ) : (
@@ -777,6 +938,7 @@ export default function ClientDossier(props: ClientDossierProps) {
                   <th className="px-4 py-2.5">Mode</th>
                   <th className="px-4 py-2.5">Référence</th>
                   <th className="px-4 py-2.5 text-right">Montant</th>
+                  {hasPaymentActions ? <th className="px-4 py-2.5 text-center">Actions</th> : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -796,6 +958,30 @@ export default function ClientDossier(props: ClientDossierProps) {
                     <td className="px-4 py-2.5 text-right tabular-nums font-black text-emerald-600 whitespace-nowrap">
                       {money(p.amount)}
                     </td>
+                    {hasPaymentActions ? (
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-center gap-1">
+                          {onPrintPayment ? (
+                            <button onClick={() => onPrintPayment(p)} title="Imprimer le reçu"
+                              className="p-1.5 rounded-lg text-slate-300 hover:text-[#002d87] hover:bg-slate-100 transition-all">
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          ) : null}
+                          {onEditPayment ? (
+                            <button onClick={() => onEditPayment(p)} title="Corriger ce règlement"
+                              className="p-1.5 rounded-lg text-slate-300 hover:text-blue-600 hover:bg-blue-50 transition-all">
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          ) : null}
+                          {onDeletePayment ? (
+                            <button onClick={() => onDeletePayment(p)} title="Supprimer ce règlement"
+                              className="p-1.5 rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all">
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -803,6 +989,7 @@ export default function ClientDossier(props: ClientDossierProps) {
                 <tr className="text-[#002d87] font-black">
                   <td colSpan={4} className="px-4 py-3 uppercase text-[10px] tracking-widest">Total encaissé</td>
                   <td className="px-4 py-3 text-right tabular-nums text-emerald-600">{money(st.totals.paid)}</td>
+                  {hasPaymentActions ? <td /> : null}
                 </tr>
               </tfoot>
             </table>

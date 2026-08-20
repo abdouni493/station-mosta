@@ -248,6 +248,12 @@ create table if not exists public.clients (
   article          text,
   rc               text,
   advance_balance  numeric default 0,
+  -- Ouverture du compte : ce que le client devait (ou avait versé) le jour où sa
+  -- fiche a été créée. C'est une LIGNE de son journal, pas un simple compteur.
+  opening_debt     numeric default 0,
+  opening_advance  numeric default 0,
+  opening_date     text,
+  opening_notes    text,
   created_at       timestamptz default now()
 );
 

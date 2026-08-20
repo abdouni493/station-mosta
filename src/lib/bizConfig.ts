@@ -286,6 +286,22 @@ export interface BizContact {
   phone?: string;
   address?: string;
   createdAt: string;
+  /**
+   * ─── L'OUVERTURE DU COMPTE ─────────────────────────────────────────────────
+   * Ce que le client devait DÉJÀ, ou avait déjà versé, le jour où sa fiche a été
+   * créée. Une cafétéria ou un lavage reprend des comptes plus vieux que le
+   * logiciel : sans ces champs, il fallait inventer une fausse vente pour faire
+   * apparaître une créance de reprise — et le chiffre d'affaires s'en trouvait
+   * gonflé d'une marchandise jamais sortie.
+   */
+  openingDebt?: number;
+  /** Premier versement d'avance, pour un compte prépayé. */
+  openingAdvance?: number;
+  /** Date de la reprise — la création de la fiche à défaut. */
+  openingDate?: string;
+  openingNotes?: string;
+  /** Les règlements encaissés SUR la dette initiale, datés et par mode. */
+  openingPayments?: BizDocPayment[];
 }
 
 export interface BizAcompte { id: string; date: string; amount: number; description?: string; paid: boolean }
