@@ -286,5 +286,50 @@ console.log("Tous les comptes d'un coup disent la même chose qu'un par un");
   check('aucun client oublié', Object.keys(all).sort(), ['CL1', 'CL2']);
 }
 
+/**
+ * ─── Un règlement encaissé remplit la caisse de SON activité, UNE fois ────────
+ *
+ * L'écran Clients écrit deux choses pour un même règlement : la ligne de
+ * `client_transactions` (l'historique du client) et une ligne du grand livre qui
+ * dit sur quel compte l'argent est tombé. La caisse Carburant lit la première ;
+ * elle doit donc écarter la seconde, sinon le même billet entrerait deux fois.
+ *
+ * Et il tombe dans le coffre du CARBURANT — l'activité qui tient ce client —
+ * et non dans le tiroir commun, où il n'appartenait à personne.
+ */
+console.log("");
+console.log("Un règlement client entre dans la caisse Carburant, une seule fois");
+{
+  const withPayment = {
+    clients: [{
+      id: 'CL9', name: 'Transporteur', debt: 0, balance: 0, advanceBalance: 0,
+      transactionHistory: [
+        { id: 'PAY9', date: '2026-08-19', type: 'PAYMENT', amount: 12_000, mode: 'ESPECES' },
+        { id: 'REC9', date: '2026-08-19', type: 'RECHARGE', amount: 3_000, mode: 'ESPECES' },
+        // Réglé par chèque : l'argent est en banque, la caisse ne bouge pas.
+        { id: 'PAY8', date: '2026-08-19', type: 'PAYMENT', amount: 50_000, mode: 'CHEQUE' },
+      ],
+    }],
+    brigades: [], brigadeAccountings: [], purchases: [], expenses: [], suppliers: [],
+    treasuryTransactions: [
+      {
+        id: 'TX-PAY9', date: '2026-08-19T10:00:00.000Z', kind: 'SALE', amount: 12_000,
+        accountTo: 'CAISSE_CARBURANT', part: 'carburant',
+        refType: 'client_payment', refId: 'PAY9', createdAt: '2026-08-19T10:00:00.000Z',
+      },
+      {
+        id: 'TX-REC9', date: '2026-08-19T10:05:00.000Z', kind: 'SALE', amount: 3_000,
+        accountTo: 'CAISSE_CARBURANT', part: 'carburant',
+        refType: 'client_payment', refId: 'REC9', createdAt: '2026-08-19T10:05:00.000Z',
+      },
+    ],
+  };
+  const cash = computeCarburantCash(withPayment);
+  check('le règlement en espèces monte la caisse', cash.clientCash, 12_000);
+  check('la recharge en espèces aussi', cash.rechargeCash, 3_000);
+  check('le chèque, lui, ne touche pas le tiroir', cash.balance, 15_000);
+  check('aucune ligne en double', cash.lines.length, 2);
+}
+
 console.log(`\n${passed} vérification(s) passée(s), ${failed} échec(s).`);
 if (failed > 0) process.exit(1);

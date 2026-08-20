@@ -37,7 +37,7 @@ import {
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey, bizExpensePaidInCash, netCashOfSale } from '../lib/bizConfig';
 import { computeCarburantCash } from '../lib/carburantSales';
-import { moduleCaisseMovements } from '../lib/bizReporting';
+import { moduleCaisseMovements, docPaymentSlices } from '../lib/bizReporting';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
   Table, money, formatDate, PeriodFilter, Period, inPeriod,
@@ -379,17 +379,21 @@ export default function CaisseGenerale() {
       // vente de remplacement qui porte l'encaissement). Le journal comptait
       // `paid` en entier : il encaissait deux fois un échange, et gardait
       // l'argent d'un retour que la caisse, elle, avait bien rendu.
-      m.sales.filter(s => netCashOfSale(s) !== 0).forEach(s => out.push(cashRow({
-        id: `${key}-sale-${s.id}`, date: s.date, nature: 'Vente', part,
+      // `docPaymentSlices` : chaque versement entre au journal LE JOUR où il a été
+      // encaissé. Un client qui solde aujourd'hui une facture de mars faisait
+      // auparavant entrer l'argent à la date de la facture — la caisse du mois en
+      // cours ne bougeait pas, alors que les billets étaient bien dans le tiroir.
+      m.sales.forEach(s => docPaymentSlices(s, netCashOfSale(s)).forEach(l => out.push(cashRow({
+        id: `${key}-sale-${l.id}`, date: l.date, nature: 'Vente', part,
         label: `Vente ${s.ref} — ${s.clientName}`
           + (s.status === 'retournée' ? ' (retournée)' : s.status === 'échangée' ? ' (échangée)' : ''),
-        amount: netCashOfSale(s),
-      })));
-      m.reparations.filter(r => r.paid > 0).forEach(r => out.push(cashRow({
-        id: `${key}-rep-${r.id}`, date: r.date, nature: 'Vente', part,
+        amount: l.amount,
+      }))));
+      m.reparations.forEach(r => docPaymentSlices(r, r.paid).forEach(l => out.push(cashRow({
+        id: `${key}-rep-${l.id}`, date: l.date, nature: 'Vente', part,
         label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
-        amount: r.paid,
-      })));
+        amount: l.amount,
+      }))));
       m.purchases.forEach(p => out.push(cashRow({
         id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part,
         label: `Achat ${p.ref} — ${p.supplierName}`, amount: -p.paid,

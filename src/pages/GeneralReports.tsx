@@ -573,11 +573,17 @@ export default function GeneralReports() {
       }))).sort((a, b) => b.amount - a.amount);
 
     // ── Dettes clients ──
+    // Le reste dû vient du rapport Carburant, qui le reconstruit sur les PIÈCES
+    // du client (bons de brigade, factures magasin, règlements). La carte lisait
+    // la colonne `clients.debt` — un compteur que l'écran Clients n'utilise plus :
+    // un règlement encaissé laissait donc le rapport sur l'ancien encours.
     const clientDebtRows: DetailRow[] = [];
-    (app.clients || []).filter((c: any) => (c.debt || 0) > 0).forEach((c: any) => clientDebtRows.push({
-      id: `carb-${c.id}`, label: `👤 ${c.name}`, sub: c.phone || c.type, amount: c.debt, amountTone: 'red',
-      onDelete: () => dispatch({ type: 'DELETE_CLIENT', payload: c.id }),
-      confirmMessage: `Supprimer le client « ${c.name} » et tout son historique ? Cette action est définitive.`,
+    reports.carburant.clientDebts.forEach(d => clientDebtRows.push({
+      id: `carb-${d.id}`, label: `👤 ${d.name}`,
+      sub: [d.total ? `${money(d.total)} à crédit` : '', d.paid ? `${money(d.paid)} réglés` : ''].filter(Boolean).join(' · ') || 'd’après les pièces du compte',
+      amount: d.rest, amountTone: 'red',
+      onDelete: () => dispatch({ type: 'DELETE_CLIENT', payload: d.id }),
+      confirmMessage: `Supprimer le client « ${d.name} » et tout son historique ? Cette action est définitive.`,
     }));
     (['cafeteria', 'lavage'] as const).forEach(k => reports[k].clientDebts.forEach(d => clientDebtRows.push({
       id: `${k}-${d.id}`, label: `${reports[k].emoji} ${d.name}`, sub: d.ref, amount: d.rest, amountTone: 'red',

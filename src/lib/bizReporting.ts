@@ -10,10 +10,11 @@
  */
 import {
   ModuleState, ModuleKey, MODULES, prestationsOf, isReversedSale, netCashOfSale,
-  bizExpensePaidInCash,
+  bizExpensePaidInCash, BizDocPayment,
 } from './bizConfig';
 import { unpaidSupplierInvoices, purchasePaid, purchaseRest } from './supplierDebt';
 import { computeCarburantSales, computeCarburantCash, FuelBrigadeSale } from './carburantSales';
+import { clientLedgers } from './clientLedger';
 import { partCashLedgerLines, expensePartOf, isCashAccount } from '../store/AppContext';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -191,6 +192,38 @@ export const appExpensesOfPart = (key: ModuleKey | string, appExpenses: any[] = 
   (appExpenses || []).filter(e => expensePartOf(e) === key);
 
 /**
+ * ─── Les encaissements d'un document, À LEUR DATE ────────────────────────
+ *
+ * Le tiroir comptait le cumul `paid` d'un document à la date du DOCUMENT. Un
+ * client qui vient solder aujourd'hui une facture de mars faisait donc entrer
+ * l'argent … en mars : la caisse du mois en cours ne bougeait pas d'un dinar,
+ * alors que les billets étaient bien dans le tiroir.
+ *
+ * Chaque versement porté par le document (`payments`) devient donc SA propre
+ * ligne, au jour où il a été encaissé. Les documents antérieurs — ceux qui n'ont
+ * qu'un cumul — gardent l'ancienne lecture : une ligne unique à leur date, ce
+ * qui est exactement tout ce que l'on sait d'eux.
+ *
+ * Le TOTAL est inchangé dans tous les cas : seule la date de chaque ligne bouge,
+ * jamais le solde du tiroir.
+ */
+export function docPaymentSlices(
+  doc: { id: string; date: string; paid?: number; payments?: BizDocPayment[] },
+  net: number,
+): { id: string; date: string; amount: number }[] {
+  const paid = num(doc.paid);
+  const dated = (doc.payments || []).filter(p => num(p.amount) > 0);
+  const sum = dated.reduce((t, p) => t + num(p.amount), 0);
+  // Un document remboursé ou échangé ne rend pas le même montant que ce qu'il a
+  // encaissé : on ne déplie ses versements que si le net leur correspond encore.
+  const splittable = dated.length > 0
+    && Math.abs(sum - paid) < 0.005
+    && Math.abs(net - paid) < 0.005;
+  if (!splittable) return net !== 0 ? [{ id: doc.id, date: doc.date, amount: net }] : [];
+  return dated.map((p, i) => ({ id: `${doc.id}-p${p.id || i}`, date: p.date || doc.date, amount: num(p.amount) }));
+}
+
+/**
  * Le tiroir d'une partie commerciale, mouvement par mouvement — la SEULE
  * définition, partagée par le rapport de la partie et l'écran Caisse Générale.
  *
@@ -217,16 +250,18 @@ export function moduleCaisseMovements(
       amount: c.type === 'deposit' ? num(c.amount) : -num(c.amount),
     })),
     // L'argent rendu au client sur un retour est bien sorti du tiroir : c'est
-    // `netCashOfSale` qui le sait, pas le montant facturé.
-    ...st.sales.filter(x => netCashOfSale(x) !== 0).map(x => ({
-      id: `sale-${x.id}`, date: x.date, nature: 'Vente',
-      label: `Vente ${x.ref} — ${x.clientName}`, amount: netCashOfSale(x),
-    })),
-    ...(st.reparations || []).filter(r => num(r.paid) > 0).map(r => ({
-      id: `rep-${r.id}`, date: r.date, nature: 'Vente',
+    // `netCashOfSale` qui le sait, pas le montant facturé. Et chaque versement
+    // entre au tiroir le jour où il a été reçu (`docCashLines`), pas à la date
+    // de la facture qu'il solde.
+    ...st.sales.flatMap(x => docPaymentSlices(x, netCashOfSale(x)).map(l => ({
+      id: `sale-${l.id}`, date: l.date, nature: 'Vente',
+      label: `Vente ${x.ref} — ${x.clientName}`, amount: l.amount,
+    }))),
+    ...(st.reparations || []).flatMap(r => docPaymentSlices(r, num(r.paid)).map(l => ({
+      id: `rep-${l.id}`, date: l.date, nature: 'Vente',
       label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
-      amount: num(r.paid),
-    })),
+      amount: l.amount,
+    }))),
     ...st.purchases.filter(x => num(x.paid) > 0).map(x => ({
       id: `pur-${x.id}`, date: x.date, nature: 'Achat',
       label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
@@ -688,8 +723,23 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     items: (p.items || []).map((i: any) => ({ name: i.productName, qty: i.quantity, unitPrice: i.buyPrice, total: i.total ?? i.quantity * i.buyPrice })),
   })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  const clientDebts: DebtRow[] = clients.filter(c => (c.debt || 0) > 0)
-    .map(c => ({ id: c.id, ref: '—', name: c.name, date: '', total: c.debt, paid: 0, rest: c.debt }))
+  // ── Dettes clients — lues sur les PIÈCES, comme partout ailleurs ─────────
+  // On lisait la colonne `clients.debt` : un compteur tenu à la main, que rien ne
+  // rapproche des bons ni des règlements. L'écran Clients, lui, affiche depuis
+  // longtemps ce que disent les documents (`lib/clientLedger`) — les deux écrans
+  // annonçaient donc deux encours différents pour le même client, et un règlement
+  // encaissé ne faisait pas bouger le rapport d'un dinar.
+  const ledgers = clientLedgers(app);
+  const clientDebts: DebtRow[] = clients
+    .map(c => {
+      const l = ledgers[c.id];
+      const rest = Math.max(0, l ? l.debtFromDocuments : num(c.debt));
+      return {
+        id: c.id, ref: '—', name: c.name, date: l?.lastDate || '',
+        total: l ? l.chargedOnCredit : num(c.debt), paid: l ? l.paid : 0, rest,
+      };
+    })
+    .filter(d => d.rest > 0)
     .sort((a, b) => b.rest - a.rest);
 
   // ── Dettes fournisseurs — une ligne PAR FACTURE non soldée ────────────────

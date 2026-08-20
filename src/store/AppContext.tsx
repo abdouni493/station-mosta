@@ -1756,6 +1756,76 @@ async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccoun
   return accountings;
 }
 
+/**
+ * ─── Recharger un client SANS perdre son compte ─────────────────────────
+ *
+ * `mapClient` ne sait rendre que la LIGNE du client : ses rendez-vous et son
+ * historique de mouvements repartent vides, parce qu'ils vivent dans deux autres
+ * tables. Les relire ainsi — ce que faisaient l'abonnement temps réel ET le
+ * rafraîchissement d'une minute — remplaçait chaque client par une fiche sans
+ * mémoire :
+ *
+ *   • le règlement qu'on venait d'encaisser disparaissait de l'historique ;
+ *   • la caisse Carburant, qui compte les espèces remises par les clients sur
+ *     ce même historique (`lib/carburantSales`), reperdait le montant aussitôt ;
+ *   • le journal de la Caisse Générale n'en gardait aucune trace non plus.
+ *
+ * Et comme l'enregistrement d'un règlement met à jour `clients.debt`, il déclenchait
+ * lui-même l'événement qui l'effaçait de l'écran. Un client se recharge donc
+ * TOUJOURS avec ses pièces — exactement comme les bons de livraison et les achats,
+ * qui avaient déjà reçu ce traitement.
+ */
+async function loadClientsEnriched(): Promise<Client[]> {
+  const [rows, appts, txs] = await Promise.all([
+    db.getClients(),
+    dbSelectAll<any>('client_appointments').catch(() => []),
+    dbSelectAll<any>('client_transactions').catch(() => []),
+  ]);
+  return (rows as any[]).map(c => {
+    const m = mapClient(c);
+    m.appointments = (appts as any[]).filter(a => a.client_id === c.id)
+      .map(a => ({ id: a.id, saleId: a.sale_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
+    m.transactionHistory = (txs as any[]).filter(t => t.client_id === c.id)
+      .map(t => ({ id: t.id, date: t.date, type: t.type, amount: +t.amount, mode: t.mode, receiptNumber: t.receipt_number, receiptPhoto: t.receipt_photo_url, notes: t.notes }));
+    return m;
+  });
+}
+
+/** Même règle pour un fournisseur : ses échéances et ses règlements le suivent. */
+async function loadSuppliersEnriched(): Promise<Supplier[]> {
+  const [rows, appts, payments] = await Promise.all([
+    db.getSuppliers(),
+    supabase.from('supplier_appointments').select('*').then(r => r.data ?? []),
+    supabase.from('supplier_debt_payments').select('*').then(r => r.data ?? []),
+  ]);
+  return (rows as any[]).map(s => {
+    const m = mapSupplier(s);
+    m.appointments = (appts as any[]).filter(a => a.supplier_id === s.id)
+      .map(a => ({ id: a.id, purchaseId: a.purchase_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
+    m.debtPayments = (payments as any[]).filter(p => p.supplier_id === s.id)
+      .map(p => ({ id: p.id, purchaseId: p.purchase_id, deliveryNoteId: p.delivery_note_id, date: p.date, amount: +p.amount, totalDue: +p.total_due, rest: +p.rest, paymentMode: p.payment_mode, chequeNumber: p.cheque_number, notes: p.notes }));
+    return m;
+  });
+}
+
+/**
+ * Une vente magasin avec SES articles. Sans eux, le dossier d'un client affichait
+ * bien la facture mais plus rien à l'intérieur — et le récapitulatif
+ * « détail par article » du compte se vidait à chaque rafraîchissement.
+ */
+async function loadShopSalesEnriched(): Promise<ShopSale[]> {
+  const [rows, items] = await Promise.all([
+    dbSelectAll<any>('shop_sales'),
+    dbSelectAll<any>('shop_sale_items', { orderBy: 'sale_id', ascending: true }).catch(() => []),
+  ]);
+  return (rows as any[]).map(s => {
+    const m = mapShopSale(s);
+    m.items = (items as any[]).filter(i => i.sale_id === s.id)
+      .map(i => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, price: +i.price, tva: +(i.tva ?? 0) }));
+    return m;
+  });
+}
+
 /* ── Worker loaders that re-merge payroll sub-records ─────────────────────────
  * The realtime refetch slices below must rebuild workers WITH their acomptes,
  * absences, salaires and décalages — otherwise a live event replaces the
@@ -2645,33 +2715,15 @@ async function refetchEntityAfterAction(
       // ── Suppliers ─────────────────────────────────────────────────────────
       case 'ADD_SUPPLIER': case 'UPDATE_SUPPLIER': case 'DELETE_SUPPLIER':
       case 'ADD_SUPPLIER_PAYMENT': case 'ADD_SUPPLIER_APPOINTMENT': {
-        const raw = await db.getSuppliers();
-        const apptRaw = await supabase.from('supplier_appointments').select('*').then(r => r.data ?? []);
-        const debtRaw = await supabase.from('supplier_debt_payments').select('*').then(r => r.data ?? []);
-        const suppliers = (raw as any[]).map(s => {
-          const m = mapSupplier(s);
-          m.appointments = (apptRaw as any[]).filter(a => a.supplier_id === s.id).map(a => ({ id: a.id, purchaseId: a.purchase_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
-          m.debtPayments = (debtRaw as any[]).filter(p => p.supplier_id === s.id).map(p => ({ id: p.id, purchaseId: p.purchase_id, deliveryNoteId: p.delivery_note_id, date: p.date, amount: +p.amount, totalDue: +p.total_due, rest: +p.rest, paymentMode: p.payment_mode, chequeNumber: p.cheque_number, notes: p.notes }));
-          return m;
-        });
-        dispatch({ type: 'HYDRATE', payload: { suppliers } });
+        dispatch({ type: 'HYDRATE', payload: { suppliers: await loadSuppliersEnriched() } });
         break;
       }
       // ── Clients ───────────────────────────────────────────────────────────
       case 'ADD_CLIENT': case 'UPDATE_CLIENT': case 'DELETE_CLIENT':
       case 'ADD_CLIENT_PAYMENT': case 'ADD_CLIENT_APPOINTMENT': {
-        const raw = await db.getClients();
-        const apptRaw = await supabase.from('client_appointments').select('*').then(r => r.data ?? []);
         // Tout l'historique, sans plafond : un règlement d'il y a deux ans reste
-        // une ligne du compte du client.
-        const txRaw   = await dbSelectAll<any>('client_transactions');
-        const clients = (raw as any[]).map(c => {
-          const m = mapClient(c);
-          m.appointments      = (apptRaw as any[]).filter(a => a.client_id === c.id).map(a => ({ id: a.id, saleId: a.sale_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
-          m.transactionHistory = (txRaw as any[]).filter(t => t.client_id === c.id).map(t => ({ id: t.id, date: t.date, type: t.type, amount: +t.amount, mode: t.mode, receiptNumber: t.receipt_number, receiptPhoto: t.receipt_photo_url, notes: t.notes }));
-          return m;
-        });
-        dispatch({ type: 'HYDRATE', payload: { clients } });
+        // une ligne du compte du client (`loadClientsEnriched`).
+        dispatch({ type: 'HYDRATE', payload: { clients: await loadClientsEnriched() } });
         break;
       }
       // ── Products / Brands ─────────────────────────────────────────────────
@@ -2705,16 +2757,7 @@ async function refetchEntityAfterAction(
       }
       // ── Shop Sales ────────────────────────────────────────────────────────
       case 'ADD_SHOP_SALE': case 'UPDATE_SHOP_SALE': case 'DELETE_SHOP_SALE': {
-        const salesData = await dbSelectAll<any>('shop_sales');
-        const itemsData = await dbSelectAll<any>('shop_sale_items');
-        if (salesData) {
-          const shopSales = (salesData as any[]).map(s => {
-            const m = mapShopSale(s);
-            m.items = ((itemsData ?? []) as any[]).filter((i: any) => i.sale_id === s.id).map((i: any) => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, price: +i.price, tva: +(i.tva ?? 0) }));
-            return m;
-          });
-          dispatch({ type: 'HYDRATE', payload: { shopSales } });
-        }
+        dispatch({ type: 'HYDRATE', payload: { shopSales: await loadShopSalesEnriched() } });
         break;
       }
       // ── Delivery Notes ────────────────────────────────────────────────────
@@ -3330,8 +3373,10 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       brigade_chefs: async () => ({ brigadeChefs: await loadBrigadeChefsEnriched() }),
       gerants: async () => ({ gerants:         await loadGerantsEnriched() }),
       magasin_workers: async () => ({ magasinWorkers: await loadMagasinWorkersEnriched() }),
-      suppliers: async () => ({ suppliers:     ((await db.getSuppliers())    as any[]).map(mapSupplier) }),
-      clients:  async () => ({ clients:        ((await db.getClients())      as any[]).map(mapClient) }),
+      // Rebuild WITH sub-records — voir `loadClientsEnriched`. Mapper la seule
+      // ligne du client vidait son historique de règlements à chaque événement.
+      suppliers: async () => ({ suppliers:     await loadSuppliersEnriched() }),
+      clients:  async () => ({ clients:        await loadClientsEnriched() }),
       expenses: async () => ({ expenses:       ((await db.getExpenses())     as any[]).map(mapExpense) }),
       treasury_transactions: async () => {
         const treasuryTransactions = ((await db.getTreasuryTransactions()) as any[]).map(mapTreasuryTx);
@@ -3359,10 +3404,8 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const data = await dbSelectAll<any>('fuel_sales');
         return { fuelSales: (data as any[]).map(mapFuelSale) };
       },
-      shop_sales: async () => {
-        const data = await dbSelectAll<any>('shop_sales');
-        return { shopSales: (data as any[]).map(mapShopSale) };
-      },
+      // Idem : sans ses articles, une vente magasin ne dit plus ce qui a été pris.
+      shop_sales: async () => ({ shopSales: await loadShopSalesEnriched() }),
       delivery_notes: async () => {
         // Rebuild WITH sub-records — a lossy refetch here would drop `items`,
         // and later edits/deletes would then roll back only the first cuve.

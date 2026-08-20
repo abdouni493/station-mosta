@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, matchesSearch } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Client, bankBalanceOf, TreasuryTransaction, CAISSE_ID } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Client, bankBalanceOf, TreasuryTransaction, CAISSE_PART_ID } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
@@ -243,8 +243,13 @@ const Clients = () => {
     }
     // Payée autrement qu'en espèces, la recharge atterrit sur un compte
     // bancaire : sans compte choisi, l'argent n'irait nulle part.
+    //
+    // En espèces, elle tombe dans le coffre du CARBURANT — pas dans le tiroir
+    // commun. C'est l'activité qui tient ce client, c'est donc sa caisse qui
+    // grossit ; la caisse générale, elle, est la somme des trois activités
+    // (voir `Caisse Générale`), l'argent y est donc compté de toute façon.
     const rechargeAccount = rechargeForm.mode === 'ESPECES'
-      ? CAISSE_ID
+      ? CAISSE_PART_ID.carburant
       : rechargeForm.bankAccountId;
     if (!rechargeAccount) {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Choisissez le compte bancaire qui reçoit la recharge" } });
@@ -289,7 +294,7 @@ const Clients = () => {
     dispatch({ type: 'ADD_TREASURY_TX', payload: rechargeTx });
 
     const destinationLabel = rechargeForm.mode === 'ESPECES'
-      ? 'la caisse'
+      ? 'la caisse Carburant'
       : (liveBankAccounts.find(a => a.id === rechargeAccount)?.name || 'le compte choisi');
     dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: `Avance rechargée sur ${destinationLabel} : +${rechargeForm.amount.toLocaleString()} DA` } });
     setShowRecharge(false);
@@ -399,12 +404,14 @@ const Clients = () => {
     const destination = tpeAccount
       ? tpeAccount.id
       : paymentForm.mode === 'ESPECES'
-        ? CAISSE_ID
+        // Le coffre du CARBURANT, pas le tiroir commun : c'est l'activité qui
+        // tient ce client, et c'est sa caisse que le règlement doit remplir.
+        ? CAISSE_PART_ID.carburant
         : (paymentForm.bankAccountId || undefined);
     const destinationLabel = tpeAccount
       ? tpeAccount.name
       : paymentForm.mode === 'ESPECES'
-        ? 'la caisse'
+        ? 'la caisse Carburant'
         : (liveBankAccounts.find(a => a.id === destination)?.name || 'aucun compte');
 
     if (destination) {
@@ -1722,9 +1729,14 @@ const Clients = () => {
                       Payer Total
                     </button>
                   </div>
-                  {paymentForm.amount > selectedClient.debt && (
+                  {/* Le plafond de saisie est celui que le client peut RÉELLEMENT
+                      régler — le plus grand des deux encours (`payableDebt`). Comparé
+                      à la seule colonne `debt` de la fiche, un client dont la dette
+                      venait des brigades voyait le bouton « Valider » rester grisé :
+                      il était tout simplement impossible d'encaisser son règlement. */}
+                  {paymentForm.amount > payableDebt(selectedClient, ledger) && (
                     <p className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">
-                      Le montant dépasse la dette de {selectedClient.debt.toLocaleString()} DA
+                      Le montant dépasse la dette de {payableDebt(selectedClient, ledger).toLocaleString()} DA
                     </p>
                   )}
                 </div>
@@ -1759,10 +1771,11 @@ const Clients = () => {
                 {paymentForm.mode === "ESPECES" ? (
                   <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-100">
                     <p className="text-[9px] font-black text-emerald-700 uppercase ml-1 flex items-center gap-1.5">
-                      <Wallet className="w-3.5 h-3.5" /> Encaissé en caisse générale
+                      <Wallet className="w-3.5 h-3.5" /> Encaissé dans la caisse Carburant
                     </p>
                     <p className="text-[9px] font-bold text-emerald-600/70 italic leading-relaxed px-1 mt-1">
-                      Le montant entre dans la caisse et apparaît dans le journal de la Caisse Générale.
+                      Le montant entre dans le coffre de l'activité Carburant — celle qui tient ce
+                      client — et apparaît dans le journal de la Caisse Générale.
                     </p>
                   </div>
                 ) : (
@@ -1805,14 +1818,14 @@ const Clients = () => {
                 <button onClick={() => { setShowPayment(false); setSelectedSale(null); }} className="px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all italic">Annuler</button>
                 <button
                   onClick={() => handleRecordPayment(false)}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
+                  disabled={paymentForm.amount <= 0 || paymentForm.amount > payableDebt(selectedClient, ledger) || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
                   className="flex-1 min-w-[140px] px-4 py-2.5 bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:bg-emerald-50 transition-all flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 className="w-4 h-4" /> Valider
                 </button>
                 <button
                   onClick={() => handleRecordPayment(true)}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > selectedClient.debt || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
+                  disabled={paymentForm.amount <= 0 || paymentForm.amount > payableDebt(selectedClient, ledger) || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
                   className="flex-1 min-w-[180px] px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
                 >
                   <Printer className="w-4 h-4 text-yellow-400" /> Valider & Imprimer Reçu

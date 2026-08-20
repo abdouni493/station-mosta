@@ -1019,7 +1019,7 @@ export const db = {
   addSupplierDebtPayment:   (p: object) => dbInsert('supplier_debt_payments', p),
 
   // Clients
-  getClients:   () => dbSelect('clients'),
+  getClients:   () => dbSelectAll<any>('clients'),
   addClient:    (c: object) => dbInsert('clients', c),
   updateClient: (id: string, c: object) => dbUpdate('clients', id, c),
   deleteClient: (id: string) => dbDelete('clients', id),
@@ -1097,13 +1097,13 @@ export const db = {
   addBrigadeAccountingJustification: (j: object) => dbInsert('brigade_accounting_justifications', j),
 
   // Fuel Sales
-  getFuelSales:   () => dbSelect('fuel_sales'),
+  getFuelSales:   () => dbSelectAll<any>('fuel_sales'),
   addFuelSale:    (s: object) => dbInsert('fuel_sales', s),
   updateFuelSale: (id: string, s: object) => dbUpdate('fuel_sales', id, s),
   deleteFuelSale: (id: string) => dbDelete('fuel_sales', id),
 
   // Shop Sales
-  getShopSales:   () => dbSelect('shop_sales'),
+  getShopSales:   () => dbSelectAll<any>('shop_sales'),
   addShopSale:    (s: object) => dbInsert('shop_sales', s),
   updateShopSale: (id: string, s: object) => dbUpdate('shop_sales', id, s),
   deleteShopSale: (id: string) => dbDelete('shop_sales', id),
@@ -1162,13 +1162,19 @@ export const db = {
   updateBankAccount: (id: string, b: object) => dbUpdate('bank_accounts', id, b),
   deleteBankAccount: (id: string) => dbDelete('bank_accounts', id),
 
-  getTreasuryTransactions: async (limit = 2000) => {
-    const { data, error } = await supabase
-      .from('treasury_transactions').select('*')
-      .order('date', { ascending: false }).limit(limit);
-    if (error) { console.warn('[getTreasuryTransactions]', error.message); return []; }
-    return data ?? [];
-  },
+  /**
+   * TOUT le grand livre, paginé (`dbSelectAll`).
+   *
+   * La lecture s'arrêtait aux 2 000 lignes les plus récentes. Rien n'était perdu
+   * en base, mais les soldes — caisses et comptes bancaires — sont la SOMME de
+   * ces lignes : passé ce seuil, chaque écran de trésorerie annonçait un solde
+   * amputé de tout ce qui précédait, sans le moindre message.
+   */
+  getTreasuryTransactions: async () =>
+    dbSelectAll<any>('treasury_transactions', { orderBy: 'date' }).catch(err => {
+      console.warn('[getTreasuryTransactions]', err);
+      return [] as any[];
+    }),
   addTreasuryTransaction:    (t: object) => dbInsert('treasury_transactions', t),
   updateTreasuryTransaction: (id: string, t: object) => dbUpdate('treasury_transactions', id, t),
   deleteTreasuryTransaction: (id: string) => dbDelete('treasury_transactions', id),
@@ -1181,7 +1187,9 @@ export const db = {
   // et la dépense serait purement perdue. On réessaie donc une fois sans elle,
   // en le disant dans la console : la dépense est enregistrée, seule son
   // imputation attend la migration. Toute autre erreur remonte comme avant.
-  getExpenses:   () => dbSelect('expenses'),
+  // Paginé : les dépenses sortent des caisses, un plafond de lecture les
+  // aurait fait disparaître du solde sans rien signaler.
+  getExpenses:   () => dbSelectAll<any>('expenses'),
   addExpense:    (e: object) => writeExpense(() => dbInsert('expenses', e), e, rest => dbInsert('expenses', rest)),
   updateExpense: (id: string, e: object) => writeExpense(() => dbUpdate('expenses', id, e), e, rest => dbUpdate('expenses', id, rest)),
   deleteExpense: (id: string) => dbDelete('expenses', id),

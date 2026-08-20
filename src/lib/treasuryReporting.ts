@@ -18,7 +18,7 @@
 import { BizState, ModuleKey, MODULES, netCashOfSale, bizExpensePaidInCash } from './bizConfig';
 import { within } from './period';
 import { computeCarburantCash } from './carburantSales';
-import { moduleCaisseBalance } from './bizReporting';
+import { moduleCaisseBalance, docPaymentSlices } from './bizReporting';
 import { expensePartOf, cashEffectOf, treasuryEffectOf, partCashEffect } from '../store/AppContext';
 
 export const CAISSE_ID = 'CAISSE';
@@ -506,6 +506,31 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     }
   }
 
+  // Argent remis par les clients Carburant — règlements de dette ET recharges
+  // d'avance encaissés en espèces. La caisse de l'activité les compte
+  // (`computeCarburantCash`), le journal les ignorait : le solde de la caisse
+  // Carburant était donc plus haut que la somme des lignes censées l'expliquer.
+  // Celles qui ont déjà leur ligne au grand livre sont écartées, sinon le même
+  // billet entrerait deux fois.
+  for (const c of (app?.clients || [])) {
+    for (const t of (c.transactionHistory || [])) {
+      if (t.type !== 'PAYMENT' && t.type !== 'RECHARGE') continue;
+      if (ledgered.has(`client_payment:${t.id}`)) continue;
+      const mode = String(t.mode || 'ESPECES').toUpperCase();
+      if (mode !== 'ESPECES' && mode !== 'CASH') continue;
+      const amount = num(t.amount);
+      if (!amount) continue;
+      const isRecharge = t.type === 'RECHARGE';
+      push({
+        id: `cli-${t.id}`, date: t.date, part: 'carburant', isLedger: false,
+        nature: isRecharge ? 'Recharge client' : 'Règlement client',
+        label: isRecharge ? `Recharge avance — ${c.name}` : `Règlement dette — ${c.name}`,
+        amount,
+        reference: t.receiptNumber,
+      });
+    }
+  }
+
   // 3. Business parts (Cafétéria / Lavage).
   (Object.keys(MODULES) as ModuleKey[]).forEach(key => {
     const m = biz[key];
@@ -514,17 +539,20 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
     // `netCashOfSale` : une vente retournée n'a laissé dans le tiroir que ce qui
     // n'a pas été remboursé, une vente échangée rien du tout (le remplacement
     // porte l'encaissement). Le journal montre donc le mouvement RÉEL.
-    (m.sales || []).forEach(s => push({
-      id: `${key}-sale-${s.id}`, date: s.date, nature: 'Vente', part, isLedger: false,
+    // Et chaque versement est daté du jour où il est entré (`docPaymentSlices`),
+    // pas de celui de la facture qu'il solde — sans quoi un règlement encaissé
+    // aujourd'hui s'inscrivait dans une période déjà close.
+    (m.sales || []).forEach(s => docPaymentSlices(s, netCashOfSale(s)).forEach(l => push({
+      id: `${key}-sale-${l.id}`, date: l.date, nature: 'Vente', part, isLedger: false,
       label: `Vente ${s.ref} — ${s.clientName}`
         + (s.status === 'retournée' ? ' (retournée)' : s.status === 'échangée' ? ' (échangée)' : ''),
-      amount: netCashOfSale(s),
-    }));
-    (m.reparations || []).filter(r => r.paid > 0).forEach(r => push({
-      id: `${key}-rep-${r.id}`, date: r.date, nature: 'Vente', part, isLedger: false,
+      amount: l.amount,
+    })));
+    (m.reparations || []).forEach(r => docPaymentSlices(r, num(r.paid)).forEach(l => push({
+      id: `${key}-rep-${l.id}`, date: l.date, nature: 'Vente', part, isLedger: false,
       label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
-      amount: num(r.paid),
-    }));
+      amount: l.amount,
+    })));
     (m.purchases || []).forEach(p => push({
       id: `${key}-pur-${p.id}`, date: p.date, nature: 'Achat', part, isLedger: false,
       label: `Achat ${p.ref} — ${p.supplierName}`, amount: -num(p.paid),
