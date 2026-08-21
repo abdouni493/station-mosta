@@ -50,6 +50,7 @@ import ModuleComptoir from "./pages/modules/ModuleComptoir";
 import ModulePOS from "./pages/modules/ModulePOS";
 import ModuleSales from "./pages/modules/ModuleSales";
 import ModuleClients from "./pages/modules/ModuleClients";
+import ModuleMessages from "./pages/modules/ModuleMessages";
 import ModuleSuppliers from "./pages/modules/ModuleSuppliers";
 import ModuleWorkers from "./pages/modules/ModuleWorkers";
 import ModuleExpenses from "./pages/modules/ModuleExpenses";
@@ -82,6 +83,9 @@ function buildModuleRoutes(key: ModuleKey): ModuleRoute[] {
     add('inventaire', <ModuleInventaire moduleKey={key} />);
     add('purchases', <ModulePurchases moduleKey={key} />);
     add('clients', <ModuleClients moduleKey={key} />);
+    // Les rappels de passage et les envois WhatsApp n'ont de sens que pour une
+    // partie de service : une cafétéria ne rappelle personne pour un lavage.
+    add('messages', <ModuleMessages moduleKey={key} />);
     add('suppliers', <ModuleSuppliers moduleKey={key} />);
     add('workers', <ModuleWorkers moduleKey={key} />);
     add('expenses', <ModuleExpenses moduleKey={key} />);

@@ -51,6 +51,28 @@ import BrigadeDetailModal from "../components/BrigadeDetailModal";
 import BrigadeAccountingModal from "../components/BrigadeAccountingModal";
 import BrigadeFicheModal from "../components/BrigadeFicheModal";
 
+/**
+ * ─── L'ORDRE DE LA LISTE : la dernière brigade créée en tête ───────────────────
+ *
+ * L'écran affichait `[...brigades].reverse()`. Ce n'était pas un tri : la liste
+ * arrive déjà du serveur avec la plus récente en premier (`created_at` en ordre
+ * décroissant), donc la retourner mettait la PLUS ANCIENNE en tête — et une
+ * brigade créée dans la session, simplement ajoutée en fin de tableau, remontait
+ * par accident. Deux comportements contradictoires selon la provenance.
+ *
+ * On trie donc explicitement sur l'instant de création, avec les replis qui
+ * gardent les fiches anciennes à leur place : `created_at` posé par la base,
+ * sinon l'heure d'ouverture, sinon la journée couverte.
+ */
+const brigadeCreatedAt = (b: Brigade): number => {
+  const raw = b.createdAt || b.startDatetime || b.startTimestamp || b.date;
+  const t = raw ? new Date(raw).getTime() : NaN;
+  return Number.isNaN(t) ? 0 : t;
+};
+
+/** Comparateur « la plus récente d'abord ». */
+const byNewestFirst = (a: Brigade, b: Brigade): number => brigadeCreatedAt(b) - brigadeCreatedAt(a);
+
 const Brigades = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -541,6 +563,10 @@ const Brigades = () => {
       const newBrigade: Brigade = {
         ...(isEdit ? editingBrigade! : {} as Brigade),
         id: brigadeId,
+        // La base pose son propre `created_at` ; on l'inscrit aussi ici pour que
+        // la brigade tout juste saisie prenne SA place en tête de liste sans
+        // attendre le prochain chargement.
+        createdAt: isEdit ? editingBrigade!.createdAt : new Date().toISOString(),
         date: sDate,
         shift: sType,
         chefId: chefId || undefined,
@@ -1130,7 +1156,7 @@ const Brigades = () => {
 
       {/* Vue Gérant — désactivée, gérée par le bloc unifié ci-dessous */}
       {false && (() => {
-        const filteredBrigades = [...brigades].reverse().filter(matchesBrigadeFilters);
+        const filteredBrigades = brigades.filter(matchesBrigadeFilters).sort(byNewestFirst);
         return (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1268,7 +1294,7 @@ const Brigades = () => {
 
       {/* Grille de Brigades — toutes les rôles */}
       {(() => {
-        const filteredBrigades = [...brigades].reverse().filter(matchesBrigadeFilters);
+        const filteredBrigades = brigades.filter(matchesBrigadeFilters).sort(byNewestFirst);
         return (
         <div className="space-y-6">
           {/* Result count + active date/période summary */}

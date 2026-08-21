@@ -33,7 +33,7 @@
  *    marchandise, qui est bien sortie.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ShoppingBag, Search, Plus, Minus, X, User, UserPlus, Percent, Check, Package,
   PlayCircle, StopCircle, Lock, Beaker, Layers, Wallet, AlertTriangle, Printer,
@@ -421,8 +421,52 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   // ── Session totals (for the closing screen) ───────────────────────────────
   const sessionFigures = useMemo(() => figuresForSession(mySession, biz.state.sales), [mySession, biz.state.sales]);
 
+  /**
+   * ─── LE CURSEUR DANS LA RECHERCHE, ET NULLE PART AILLEURS ──────────────────
+   *
+   * Le caissier arrive au point de vente pour TAPER un nom de produit ou passer
+   * une douchette code-barres : le champ de recherche prend donc le curseur dès
+   * l'ouverture de l'écran, sans qu'il ait à le viser.
+   *
+   * Mais dès qu'il touche autre chose — une vignette produit, le panier, un
+   * bouton — le curseur doit LÂCHER le champ. Sinon la douchette continue d'y
+   * écrire pendant qu'il compose le panier à la souris, et les caractères
+   * tombent dans une recherche qu'il ne regarde plus. Un clic sur un bouton ou
+   * une autre saisie enlève le focus tout seul ; un clic sur une vignette ou une
+   * zone décorative, non — c'est ce cas que ce garde traite.
+   *
+   * Il revient uniquement quand l'utilisateur reclique DANS le champ.
+   */
+  const searchRef = React.useRef<HTMLInputElement | null>(null);
+  const posRootRef = React.useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // Un `requestAnimationFrame` : le champ n'existe qu'une fois la grille peinte.
+    const id = requestAnimationFrame(() => searchRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  useEffect(() => {
+    const root = posRootRef.current;
+    if (!root) return;
+    const release = (e: MouseEvent | TouchEvent) => {
+      const input = searchRef.current;
+      if (!input) return;
+      const target = e.target as Node | null;
+      // Clic DANS le champ (ou sur sa loupe) : on le laisse tranquille.
+      if (target && input.contains(target)) return;
+      if (document.activeElement === input) input.blur();
+    };
+    root.addEventListener('mousedown', release);
+    root.addEventListener('touchstart', release, { passive: true });
+    return () => {
+      root.removeEventListener('mousedown', release);
+      root.removeEventListener('touchstart', release);
+    };
+  }, []);
+
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div ref={posRootRef} className="space-y-4 animate-fade-in">
       <PageHeader icon={ShoppingBag} title="Point de vente" subtitle={`${cfg.label} — caisse & encaissement`}
         actions={<div className="flex items-center gap-2 flex-wrap">
           {/* Afficheur client — la fenêtre à poser sur le petit second écran du
@@ -516,7 +560,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           <div className="card-glass p-3 flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un produit…" className="input-field pl-9" />
+              <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un produit…" className="input-field pl-9" />
             </div>
             <Select value={category} onChange={e => setCategory(e.target.value)} className="!w-auto min-w-[170px]">
               <option value="all">Toutes catégories</option>

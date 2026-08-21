@@ -35,7 +35,9 @@ export type BizCollection =
   | 'sessions'
   | 'payRequests'
   | 'inventaires'
-  | 'roles';
+  | 'roles'
+  | 'messageTemplates'
+  | 'rappels';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -302,6 +304,17 @@ export interface BizContact {
   openingNotes?: string;
   /** Les règlements encaissés SUR la dette initiale, datés et par mode. */
   openingPayments?: BizDocPayment[];
+  /**
+   * ─── LE PARC DU CLIENT (Lavage & Réparation) ───────────────────────────────
+   * Un client de lavage revient avec SES voitures — souvent plusieurs (la
+   * sienne, celle de son épouse, l'utilitaire de la société). Les saisir à
+   * chaque passage faisait perdre l'historique du véhicule et obligeait à
+   * retaper la plaque à chaque fois.
+   *
+   * Une fiche d'intervention peut toujours porter un véhicule saisi à la main :
+   * ce champ ne remplace rien, il évite de retaper.
+   */
+  cars?: BizCar[];
 }
 
 export interface BizAcompte { id: string; date: string; amount: number; description?: string; paid: boolean }
@@ -610,12 +623,41 @@ export interface BizPayRequest {
 }
 
 export interface BizCar {
+  /**
+   * Identifiant de la voiture SUR LA FICHE DU CLIENT. Absent sur une voiture
+   * simplement saisie à la main dans une intervention (client de passage, ou
+   * véhicule qu'on ne rattache à personne) : ces deux cas doivent continuer de
+   * fonctionner exactement comme avant.
+   */
+  id?: string;
   name?: string;
   marque?: string;
   color?: string;
   year?: string;
+  /** Facultative : beaucoup de véhicules passent sans plaque lisible. */
   immatriculation?: string;
   description?: string;
+  /**
+   * Dernier kilométrage relevé, en km. Il vit sur la fiche du client et se
+   * corrige à chaque passage : c'est le relevé du jour qui fait foi, jamais
+   * celui d'il y a six mois.
+   */
+  kilometrage?: number;
+  /** Date du relevé de kilométrage ci-dessus, `YYYY-MM-DD`. */
+  kilometrageAt?: string;
+  createdAt?: string;
+}
+
+/** Étiquette lisible d'un véhicule — « Clio • Renault • 12345-116-31 ». */
+export function carLabel(c: BizCar | undefined | null): string {
+  if (!c) return '';
+  return [c.marque, c.name, c.immatriculation].filter(Boolean).join(' • ');
+}
+
+/** Description complète, telle qu'elle apparaît dans un message au client. */
+export function carFullLabel(c: BizCar | undefined | null): string {
+  if (!c) return '';
+  return [c.marque, c.name, c.color, c.year, c.immatriculation].filter(Boolean).join(' • ');
 }
 
 /** Nature of an intervention: a single kind, or several kinds at once. */
@@ -714,6 +756,91 @@ export function workerShareOf(r: BizReparation, workerId: string, rate: number):
   if (!lines.length) return (r.total * rate) / 100;
   return (lines.reduce((s, p) => s + (Number(p.amount) || 0), 0) * rate) / 100;
 }
+
+// ─── Messages aux clients : modèles et rappels ─────────────────────────────────
+/**
+ * Un MODÈLE DE MESSAGE enregistré par la station. L'utilisateur en écrit un une
+ * fois (« Bonjour {client}, votre {vehicule} est prête… »), le retrouve dans une
+ * liste, et peut toujours le retoucher avant l'envoi : le modèle remplit le
+ * champ, il ne le verrouille pas.
+ *
+ * Les jetons reconnus sont ceux de `MESSAGE_TOKENS` ci-dessous. Un jeton inconnu
+ * est laissé tel quel plutôt que remplacé par du vide — mieux vaut voir
+ * `{truc}` à la relecture que d'envoyer une phrase amputée.
+ */
+export interface BizMessageTemplate {
+  id: string;
+  name: string;
+  body: string;
+  /**
+   * `lavage` / `reparation` : modèle proposé en premier pour un rappel de cette
+   * nature. `libre` : modèle généraliste, toujours proposé.
+   */
+  usage?: 'lavage' | 'reparation' | 'libre';
+  createdAt: string;
+  createdBy?: string;
+}
+
+/** Les jetons qu'un modèle peut porter, et ce qu'ils valent à l'envoi. */
+export const MESSAGE_TOKENS: { token: string; label: string }[] = [
+  { token: '{client}',       label: 'Nom du client' },
+  { token: '{vehicule}',     label: 'Marque, modèle et plaque du véhicule' },
+  { token: '{marque}',       label: 'Marque du véhicule' },
+  { token: '{modele}',       label: 'Modèle du véhicule' },
+  { token: '{immatriculation}', label: "Plaque d'immatriculation" },
+  { token: '{kilometrage}',  label: 'Dernier kilométrage relevé' },
+  { token: '{derniere_visite}', label: 'Date du dernier passage' },
+  { token: '{prestation}',   label: 'Nature du dernier passage (lavage / réparation)' },
+  { token: '{station}',      label: 'Nom de la station' },
+  { token: '{telephone}',    label: 'Téléphone de la station' },
+];
+
+/**
+ * ─── LE SUIVI D'UN RAPPEL ──────────────────────────────────────────────────────
+ *
+ * Une alerte de rappel n'est PAS stockée : elle se DÉDUIT à chaque affichage des
+ * interventions terminées et des délais réglés (voir `src/lib/rappels.ts`). La
+ * stocker obligerait à la recalculer dès qu'un délai change, et une intervention
+ * corrigée laisserait une alerte fantôme.
+ *
+ * Ce qui doit survivre, en revanche, c'est ce que l'utilisateur en a FAIT :
+ * marquée lue, ou message parti. Cette collection ne porte que ça — une ligne
+ * par alerte traitée, avec un identifiant DÉTERMINISTE
+ * (`<intervention>:<nature>:<véhicule>`) pour que deux postes qui traitent la
+ * même alerte n'en fassent pas deux lignes.
+ */
+export interface BizRappel {
+  /** `${reparationId}:${kind}:${carKey}` — déterministe, jamais tiré au hasard. */
+  id: string;
+  reparationId: string;
+  kind: 'lavage' | 'reparation';
+  /** Identifiant (ou plaque) du véhicule concerné — vide si aucun. */
+  carKey: string;
+  clientId?: string;
+  /** `read` = classée sans envoi. `sent` = un message est parti. */
+  status: 'read' | 'sent';
+  at: string;
+  by?: string;
+  /** Ligne du journal d'envoi correspondante, quand un message est parti. */
+  messageId?: string;
+}
+
+/** Délais de rappel d'une partie — le lavage et la réparation sont indépendants. */
+export interface BizRappelConfig {
+  /** Rappeler un LAVAGE après ce nombre de jours. 0 ⇒ pas de rappel de lavage. */
+  lavageDays: number;
+  /** Rappeler une RÉPARATION après ce nombre de jours. 0 ⇒ aucun rappel. */
+  reparationDays: number;
+  /** Coupe tous les rappels sans perdre les délais réglés. */
+  enabled: boolean;
+}
+
+/** Réglage de départ : un lavage tous les mois, une révision tous les six mois. */
+export const DEFAULT_RAPPEL_CONFIG: BizRappelConfig = {
+  lavageDays: 30,
+  reparationDays: 180,
+  enabled: true,
+};
 
 // ─── Inventaire physique d'une partie ──────────────────────────────────────────
 /**
@@ -872,6 +999,10 @@ export interface ModuleState {
   payRequests: BizPayRequest[];
   /** Inventaires physiques de la partie — comptage, écarts et correction. */
   inventaires: BizInventaire[];
+  /** Modèles de messages enregistrés, réutilisables à l'envoi. */
+  messageTemplates: BizMessageTemplate[];
+  /** Alertes de rappel DÉJÀ traitées (lues ou envoyées) — voir `BizRappel`. */
+  rappels: BizRappel[];
   /**
    * Order of the "accès rapide" tiles of the point de vente: the products that
    * sell the most, pinned by the user so they open the grid. Each entry is a
@@ -889,6 +1020,13 @@ export interface ModuleState {
    * la trace de ce qu'il a RÉELLEMENT fait dans `BizPurchase.useAverageCost`.
    */
   avgCostEnabled?: boolean;
+  /**
+   * Délais de rappel de la partie (lavage et réparation, séparément). Absent ⇒
+   * `DEFAULT_RAPPEL_CONFIG`. C'est un réglage SCALAIRE : il n'a pas d'id, donc
+   * il se départage sur son propre horodatage (`rappelConfigUpd` dans
+   * `bizSync.ts`), sinon la copie du serveur l'écrase au prochain démarrage.
+   */
+  rappelConfig?: BizRappelConfig;
 }
 
 /**
@@ -953,6 +1091,7 @@ export const MODULE_INTERFACES: { id: string; label: string }[] = [
   { id: 'reparations', label: 'Réparations & Lavage' },
   { id: 'encaissements', label: 'Demandes d\'encaissement' },
   { id: 'clients', label: 'Clients' },
+  { id: 'messages', label: 'Messages clients' },
   { id: 'suppliers', label: 'Fournisseurs' },
   { id: 'workers', label: 'Employés' },
   { id: 'expenses', label: 'Dépenses' },
@@ -969,7 +1108,8 @@ export const INTERFACE_ACTIONS = ['voir', 'creer', 'modifier', 'supprimer'] as c
  * no "Production", Cafétéria has no "Réparations").
  *
  * The Lavage part also carries the point-de-vente and ventes screens that used
- * to live in the (now removed) Magasin part.
+ * to live in the (now removed) Magasin part, and the « Messages clients » screen
+ * (rappels de lavage / révision), which only makes sense there.
  *
  * Mirrors `buildModuleRoutes` in App.tsx.
  */
@@ -978,7 +1118,7 @@ export function interfacesForModule(key: ModuleKey): { id: string; label: string
   const ids = cfg.isService
     ? [
         'reparations', 'encaissements', 'pos', 'sales', 'stock', 'inventaire', 'purchases',
-        'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reports', 'feedbacks',
+        'clients', 'messages', 'suppliers', 'workers', 'expenses', 'caisse', 'reports', 'feedbacks',
       ]
     : [
         'stock', 'inventaire', 'purchases',

@@ -8,14 +8,14 @@
 import React, { useMemo, useState } from 'react';
 import {
   Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff,
-  AlertTriangle, Search, Pencil,
+  AlertTriangle, Search, Pencil, Car, Plus, Trash2,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
 import { useAppState } from '@/src/store/AppContext';
-import { BizProduct, BizContact, BizDocPayment } from '@/src/lib/bizConfig';
+import { BizProduct, BizContact, BizDocPayment, BizCar, MODULES, carLabel } from '@/src/lib/bizConfig';
 import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import { uploadFile } from '@/src/lib/supabase';
@@ -648,6 +648,116 @@ export function ProductModal({
   );
 }
 
+// ─── Le parc d'un client (Lavage & Réparation) ─────────────────────────────────
+/**
+ * ─── POURQUOI LES VOITURES VIVENT SUR LA FICHE DU CLIENT ───────────────────────
+ *
+ * Un lavage saisissait le véhicule DANS l'intervention : marque, modèle, plaque,
+ * couleur, retapés à chaque passage. Trois conséquences, toutes vécues :
+ *
+ *   • la même voiture s'écrivait de trois façons (« Clio », « clio », « CLIO »)
+ *     et son historique se retrouvait éparpillé sur trois orthographes ;
+ *   • un client qui gare deux voitures chez vous n'avait aucun moyen de dire
+ *     LAQUELLE passait aujourd'hui ;
+ *   • le kilométrage, qui n'a de sens que suivi dans le temps, n'était nulle
+ *     part.
+ *
+ * Le parc est donc porté par le CLIENT. L'intervention continue d'accepter un
+ * véhicule saisi à la main — un client de passage n'a pas de fiche — mais dès
+ * qu'un client est choisi, ses voitures se proposent d'elles-mêmes.
+ *
+ * Ce composant est volontairement autonome (il ne reçoit qu'une liste et un
+ * `onChange`) pour être posé à l'identique dans TOUTES les créations de client
+ * de la partie Lavage : l'écran Clients, le point de vente, la fiche
+ * d'intervention.
+ */
+export function CarsEditor({ cars, onChange }: { cars: BizCar[]; onChange: (next: BizCar[]) => void }) {
+  const patch = (id: string, key: keyof BizCar, value: any) =>
+    onChange(cars.map(c => (c.id === id ? { ...c, [key]: value } : c)));
+
+  const add = () => onChange([
+    ...cars,
+    { id: newId(), name: '', marque: '', color: '', year: '', immatriculation: '', createdAt: new Date().toISOString() },
+  ]);
+
+  return (
+    <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Car className="w-4 h-4 text-blue-600" />
+          <p className="text-[11px] font-black uppercase tracking-wider text-blue-800">
+            Véhicules du client {cars.length > 0 && <span className="text-blue-500">({cars.length})</span>}
+          </p>
+        </div>
+        <button type="button" className="btn-secondary !py-1.5 !px-3 text-xs" onClick={add}>
+          <Plus className="w-3.5 h-3.5" /> Ajouter un véhicule
+        </button>
+      </div>
+      <p className="text-[11px] font-semibold text-blue-900/60 leading-relaxed">
+        Un client peut en avoir plusieurs. Seule la <strong>marque ou le modèle</strong> est
+        nécessaire — l'immatriculation reste facultative. Le kilométrage se corrige à chaque
+        passage, depuis la fiche d'intervention.
+      </p>
+
+      {cars.length === 0 ? (
+        <p className="text-xs text-blue-900/50 italic py-1">Aucun véhicule enregistré.</p>
+      ) : (
+        <div className="space-y-2">
+          {cars.map((c, i) => (
+            <div key={c.id || i} className="rounded-xl bg-white border border-blue-200 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  Véhicule {i + 1}{carLabel(c) ? ` — ${carLabel(c)}` : ''}
+                </span>
+                <button type="button" title="Retirer ce véhicule"
+                  className="p-1.5 rounded-lg text-red-500 hover:bg-red-50"
+                  onClick={() => onChange(cars.filter(x => x !== c))}>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                <Input placeholder="Nom / modèle" value={c.name || ''}
+                  onChange={e => patch(c.id!, 'name', e.target.value)} />
+                <Input placeholder="Marque" value={c.marque || ''}
+                  onChange={e => patch(c.id!, 'marque', e.target.value)} />
+                <Input placeholder="Immatriculation (facultatif)" value={c.immatriculation || ''}
+                  onChange={e => patch(c.id!, 'immatriculation', e.target.value)} />
+                <Input placeholder="Couleur" value={c.color || ''}
+                  onChange={e => patch(c.id!, 'color', e.target.value)} />
+                <Input placeholder="Année" inputMode="numeric" value={c.year || ''}
+                  onChange={e => patch(c.id!, 'year', e.target.value)} />
+                <Input placeholder="Kilométrage" type="number" inputMode="numeric" min={0}
+                  value={c.kilometrage ?? ''}
+                  onChange={e => patch(c.id!, 'kilometrage', e.target.value === '' ? undefined : Number(e.target.value) || 0)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Nettoie le parc avant enregistrement : une ligne entièrement vide (ajoutée
+ * puis abandonnée) ne doit pas se retrouver dans la fiche, et chaque voiture
+ * conservée doit avoir un identifiant — c'est lui qui la relie à ses passages.
+ */
+export function cleanCars(cars: BizCar[] | undefined): BizCar[] | undefined {
+  const kept = (cars || [])
+    .map(c => ({
+      ...c,
+      id: c.id || newId(),
+      name: (c.name || '').trim(),
+      marque: (c.marque || '').trim(),
+      color: (c.color || '').trim(),
+      year: (c.year || '').trim(),
+      immatriculation: (c.immatriculation || '').trim(),
+    }))
+    .filter(c => c.name || c.marque || c.immatriculation);
+  return kept.length ? kept : undefined;
+}
+
 // ─── ContactModal (client / supplier) ──────────────────────────────────────────
 export function ContactModal({
   biz, coll, open, onClose, initial, onSaved,
@@ -657,9 +767,17 @@ export function ContactModal({
 }) {
   const isSupplier = coll === 'suppliers';
   const isEdit = !!initial?.id;
+  /**
+   * Le parc n'a de sens que pour un CLIENT d'une partie de service (Lavage &
+   * Réparation) : une cafétéria n'a que faire des voitures de ses clients, et un
+   * fournisseur encore moins. Ce même composant sert partout, donc c'est ici —
+   * et une seule fois — que la question se tranche.
+   */
+  const showCars = !isSupplier && !!MODULES[biz.module]?.isService;
   const blank = (): Partial<BizContact> => ({
     name: '', phone: '', address: '',
     openingDebt: 0, openingAdvance: 0, openingDate: todayISO(), openingNotes: '',
+    cars: [],
   });
   const [form, setForm] = useState<Partial<BizContact>>(initial || blank());
   React.useEffect(() => { setForm(initial || blank()); }, [initial, open]);
@@ -687,6 +805,10 @@ export function ContactModal({
       // Les règlements déjà encaissés sur cette reprise ne se perdent pas
       // parce qu'on rouvre la fiche pour corriger un numéro de téléphone.
       openingPayments: form.openingPayments,
+      // Le parc, nettoyé de ses lignes vides. Sur une partie sans véhicules, on
+      // reconduit ce que la fiche portait déjà plutôt que de l'effacer : le même
+      // client peut être modifié depuis un écran qui n'affiche pas le parc.
+      cars: showCars ? cleanCars(form.cars) : initial?.cars,
     };
     if (isEdit) biz.update(coll, contact); else biz.add(coll, contact);
     onSaved?.(contact);
@@ -704,6 +826,10 @@ export function ContactModal({
         <Field label="Nom" required><Input value={form.name || ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Nom complet" /></Field>
         <Field label="Téléphone"><Input value={form.phone || ''} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="0550 00 00 00" /></Field>
         <Field label="Adresse"><Textarea value={form.address || ''} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Adresse" /></Field>
+
+        {showCars && (
+          <CarsEditor cars={form.cars || []} onChange={cars => setForm(f => ({ ...f, cars }))} />
+        )}
 
         {!isSupplier && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">

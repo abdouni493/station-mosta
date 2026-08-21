@@ -22,6 +22,7 @@ import {
   RefreshCcw,
   ArrowRight,
   CreditCard,
+  MessageCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, litersFromDegrees } from "@/src/lib/utils";
@@ -35,6 +36,7 @@ import {
 } from "../lib/backup";
 import { useAuth } from "../hooks/useAuth";
 import { useNavigate } from "react-router-dom";
+import WhatsAppSettingsPanel from "../components/WhatsAppSettingsPanel";
 
 const Settings = () => {
   const { t, i18n } = useTranslation();
@@ -470,6 +472,7 @@ const Settings = () => {
     { id: "paie", label: "Paramètres Paie", icon: DollarSign },
     { id: "appearance", label: "Apparence & Langue", icon: Palette },
     { id: "tpe", label: "Caisse TPE", icon: CreditCard },
+    { id: "whatsapp", label: "WhatsApp", icon: MessageCircle },
     { id: "backup", label: "Sauvegarde & Système", icon: Database },
   ];
 
@@ -1198,6 +1201,17 @@ const Settings = () => {
                         </div>
                       </div>
                     </div>
+                  </motion.div>
+                )}
+
+                {/* ── WHATSAPP ──
+                    La mise en service du téléphone de la station tient tout
+                    entière dans ce panneau : instance, QR code, webhook. Voir
+                    `src/components/WhatsAppSettingsPanel.tsx` pour ce qu'il
+                    s'interdit d'afficher (clé, jeton, URL complète). */}
+                {activeSection === "whatsapp" && (
+                  <motion.div key="whatsapp" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                    <WhatsAppSettingsPanel />
                   </motion.div>
                 )}
 

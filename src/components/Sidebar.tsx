@@ -8,7 +8,7 @@ import {
   BarChart2, Archive, UserCog, DollarSign, Building2, ChevronRight, X,
   Wallet, CalendarCheck, Shield, UserCheck, Calendar,
   FlaskConical, Beaker, ShoppingBag, Car, Utensils, Coffee, Droplets, FileBarChart,
-  BellRing, Landmark, PiggyBank, MessageSquare, Star
+  BellRing, Landmark, PiggyBank, MessageSquare, MessageCircle, Star
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -16,6 +16,7 @@ import { useAppState, UserPermissions, ModuleWorkerSession, AppUserRole } from "
 import { useBizAll } from "../store/BizContext";
 import { useFeedbacks } from "../store/FeedbackContext";
 import { MODULES, ModuleKey } from "../lib/bizConfig";
+import { buildRappels, countDue } from "../lib/rappels";
 
 // --- Types ---
 
@@ -76,6 +77,7 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
     items.push({ label: "Inventaire",           icon: ClipboardList, path: `${b}/inventaire` });
     items.push({ label: "Achats",               icon: ShoppingCart,path: `${b}/purchases` });
     items.push({ label: "Clients",              icon: Users,       path: `${b}/clients` });
+    items.push({ label: "Messages clients",     icon: MessageCircle, path: `${b}/messages` });
     items.push({ label: "Fournisseurs",         icon: Truck,       path: `${b}/suppliers` });
     items.push({ label: "Employés",             icon: UsersRound,  path: `${b}/workers` });
     items.push({ label: "Dépenses",             icon: CreditCard,  path: `${b}/expenses` });
@@ -221,6 +223,19 @@ function useNavAlerts(): Record<string, number> {
       if (demandes > 0) out[`${base}/encaissements`] = demandes;
       if (interventions > 0) out[`${base}/reparations`] = interventions;
       if (unreadByPart[key] > 0) out[`${base}/feedbacks`] = unreadByPart[key];
+      // Rappels de passage ÉCHUS. Ils se déduisent des interventions et des
+      // délais réglés — rien n'est stocké — donc la pastille reste juste même
+      // si les délais changent, et disparaît dès que l'alerte est classée.
+      if (MODULES[key].isService) {
+        const due = countDue(buildRappels({
+          reparations: mod.reparations || [],
+          clients: mod.clients || [],
+          handled: mod.rappels || [],
+          config: mod.rappelConfig,
+          lookaheadDays: 0,
+        }));
+        if (due > 0) out[`${base}/messages`] = due;
+      }
     }
     // Partie Carburant : son écran de retours vit à la racine.
     if (unreadByPart.fuel > 0) out["/feedbacks"] = unreadByPart.fuel;
@@ -297,6 +312,7 @@ const PART_IFACE_NAV: Record<string, { label: string; icon: React.ElementType }>
   pos:         { label: "Point de vente",       icon: ShoppingBag },
   sales:       { label: "Ventes",               icon: Receipt },
   clients:     { label: "Clients",              icon: Users },
+  messages:    { label: "Messages clients",     icon: MessageCircle },
   suppliers:   { label: "Fournisseurs",         icon: Truck },
   workers:     { label: "Employés",             icon: UsersRound },
   expenses:    { label: "Dépenses",             icon: CreditCard },

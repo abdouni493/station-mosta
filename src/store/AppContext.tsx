@@ -299,6 +299,14 @@ export interface MagasinWorker {
 
 export interface Brigade {
   id: string;
+  /**
+   * Instant de CRÉATION de la fiche, tel que la base l'a posé (`created_at`).
+   * `date` ne dit que le jour couvert par la brigade : deux brigades saisies le
+   * même jour, ou une brigade d'hier enregistrée ce matin, ne se départagent
+   * que par celui-ci. C'est lui qui met la liste dans l'ordre « la dernière
+   * créée en tête ».
+   */
+  createdAt?: string;
   date: string;
   shift: 'Matin' | 'Soir' | 'Nuit';
   chefId: string;
@@ -1781,7 +1789,7 @@ function mapMagasinWorker(r: any): MagasinWorker {
   return { id: r.id, name: r.name, phone: r.phone, email: r.email, cin: r.cin, address: r.address, photo: r.photo_url, photoUrl: r.photo_url, status: r.status, baseSalary: +r.base_salary, salaryType: r.salary_type ?? undefined, workDays: r.work_days ?? undefined, cnasDate: r.cnas_date ?? undefined, hasAccess: r.has_access, username: r.username, authUserId: r.auth_user_id ?? undefined, permissions: r.permissions || {}, hireDate: r.hire_date, paymentRecord: [], acomptes: [], absences: [] };
 }
 function mapBrigade(r: any): Brigade {
-  return { id: r.id, date: r.date, shift: r.shift, chefId: r.chef_id, status: r.status, startTimestamp: r.start_timestamp, endTimestamp: r.end_timestamp, startTime: r.start_time, endTime: r.end_time, startDatetime: r.start_datetime, endDatetime: r.end_datetime, isActive: r.is_active, notes: r.notes, printedAt: r.printed_at, pompisteIds: [], startIndices: r.start_indices || {}, endIndices: r.end_indices || {}, startTankLevels: r.start_tank_levels || {}, endTankLevels: r.end_tank_levels || {}, pompisteData: r.pompiste_data || {}, pompisteAssignments: r.pompiste_assignments || [], startNozzleIndices: r.start_nozzle_indices || {}, endNozzleIndices: r.end_nozzle_indices || {}, activeNozzleIds: r.active_nozzle_ids || [], canReactivate: r.can_reactivate ?? false, pompistePumpAssignments: r.pompiste_pump_assignments || [], versements: r.versements || [] };
+  return { id: r.id, createdAt: r.created_at ?? undefined, date: r.date, shift: r.shift, chefId: r.chef_id, status: r.status, startTimestamp: r.start_timestamp, endTimestamp: r.end_timestamp, startTime: r.start_time, endTime: r.end_time, startDatetime: r.start_datetime, endDatetime: r.end_datetime, isActive: r.is_active, notes: r.notes, printedAt: r.printed_at, pompisteIds: [], startIndices: r.start_indices || {}, endIndices: r.end_indices || {}, startTankLevels: r.start_tank_levels || {}, endTankLevels: r.end_tank_levels || {}, pompisteData: r.pompiste_data || {}, pompisteAssignments: r.pompiste_assignments || [], startNozzleIndices: r.start_nozzle_indices || {}, endNozzleIndices: r.end_nozzle_indices || {}, activeNozzleIds: r.active_nozzle_ids || [], canReactivate: r.can_reactivate ?? false, pompistePumpAssignments: r.pompiste_pump_assignments || [], versements: r.versements || [] };
 }
 function mapBrigadeAccounting(r: any): BrigadeAccounting {
   return {

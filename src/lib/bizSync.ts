@@ -41,7 +41,7 @@ export const MERGE_COLLECTIONS: BizCollection[] = [
   'categories', 'marques', 'roles', 'products', 'purchases', 'sales',
   'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'productions',
   'fiches', 'comptoir', 'destructions', 'reparations', 'sessions', 'payRequests',
-  'inventaires',
+  'inventaires', 'messageTemplates', 'rappels',
 ];
 
 /** Une pierre tombale plus vieille que ça ne sert plus à rien : on l'oublie. */
@@ -55,6 +55,8 @@ export interface SyncMeta {
   posPinnedUpd?: string;
   /** Horodatage du dernier basculement de l'option « coût moyen pondéré ». */
   avgCostEnabledUpd?: string;
+  /** Horodatage du dernier réglage des délais de rappel client. */
+  rappelConfigUpd?: string;
 }
 
 export type SyncModuleState = ModuleState & SyncMeta;
@@ -180,6 +182,18 @@ export function mergeModuleState(base: SyncModuleState, incoming: SyncModuleStat
   } else {
     out.avgCostEnabled = !!base.avgCostEnabled;
     if (baseAvg) out.avgCostEnabledUpd = baseAvg;
+  }
+
+  // Délais de rappel des clients : un réglage sans id, donc départagé par son
+  // propre horodatage — comme les accès rapides et le coût moyen ci-dessus.
+  const baseRap = base.rappelConfigUpd || '';
+  const inRap = incoming.rappelConfigUpd || '';
+  if (inRap > baseRap) {
+    out.rappelConfig = incoming.rappelConfig;
+    out.rappelConfigUpd = inRap;
+  } else {
+    out.rappelConfig = base.rappelConfig;
+    if (baseRap) out.rappelConfigUpd = baseRap;
   }
 
   out.deletedIds = tombs;

@@ -156,6 +156,8 @@ function reducer(state: BizState, action: Action): BizState {
       if ('posPinned' in patch) patch.posPinnedUpd = nowIso();
       // Idem pour l'option « coût moyen pondéré » de la partie.
       if ('avgCostEnabled' in patch) patch.avgCostEnabledUpd = nowIso();
+      // Idem pour les délais de rappel des clients (lavage / réparation).
+      if ('rappelConfig' in patch) patch.rappelConfigUpd = nowIso();
       return { ...state, [action.module]: { ...mod, ...patch } };
     }
     case 'REPLACE':
@@ -204,7 +206,7 @@ const MERGED_COLLECTIONS: BizCollection[] = [
   'categories', 'marques', 'roles', 'products', 'purchases', 'sales',
   'clients', 'suppliers', 'workers', 'expenses', 'caisse', 'reparations',
   'productions', 'fiches', 'comptoir', 'destructions', 'sessions', 'payRequests',
-  'inventaires',
+  'inventaires', 'messageTemplates', 'rappels',
 ];
 
 

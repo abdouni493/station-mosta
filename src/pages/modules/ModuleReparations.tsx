@@ -17,7 +17,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import {
-  Car, Wrench, Droplets, Plus, Search, X, User, UserPlus, Wallet, Printer,
+  Car, Wrench, Droplets, Plus, Search, X, User, Wallet, Printer,
   Eye, Edit2, Trash2, Clock, Package, CheckCircle2, Hourglass, Layers, Percent, Tag,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
@@ -31,10 +31,11 @@ import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
-  RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Select, money, formatDate,
+  RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, money, formatDate,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 import { ContactModal, PayDebtModal, PayDebtMeta, withPayment, seedPayments, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
+import { ClientCarPicker } from './ClientCarPicker';
 
 const KIND_META: Record<BizRepKind, { label: string; icon: React.ElementType }> = {
   reparation: { label: 'Réparation', icon: Wrench },
@@ -645,6 +646,30 @@ function ReparationForm({
 
     if (isEdit) biz.update('reparations', rep); else biz.add('reparations', rep);
 
+    /**
+     * ─── LE KILOMÉTRAGE REMONTE SUR LA FICHE DU CLIENT ──────────────────────
+     * Le relevé n'a de valeur que suivi dans le temps : il est saisi ici, au
+     * moment où l'on a le compteur sous les yeux, et c'est la fiche du client
+     * qui le conserve. On n'écrit que si le chiffre a réellement changé — une
+     * intervention rouverte pour corriger un montant ne doit pas réécrire le
+     * parc du client pour rien.
+     *
+     * Un relevé PLUS PETIT que celui déjà enregistré est tout de même accepté :
+     * une faute de frappe se corrige, et un compteur remplacé repart de zéro.
+     */
+    if (client && car.id && typeof car.kilometrage === 'number') {
+      const parc = client.cars || [];
+      const known = parc.find(c => c.id === car.id);
+      if (known && known.kilometrage !== car.kilometrage) {
+        biz.update('clients', {
+          ...client,
+          cars: parc.map(c => (c.id === car.id
+            ? { ...c, kilometrage: car.kilometrage, kilometrageAt: repDate.slice(0, 10) }
+            : c)),
+        });
+      }
+    }
+
     // Stock is deducted only when the job is actually done, and only once:
     // a pending job that gets finalized deducts at that moment.
     const shouldDeduct = status === 'finalized' && (!isEdit || wasPending);
@@ -708,28 +733,18 @@ function ReparationForm({
             </Field>
           </div>
 
-          {/* Client — optional */}
-          <Field label="Client (optionnel)" hint={`Laissez vide pour enregistrer au nom d'un « ${PASSAGE} ».`}>
-            <div className="flex gap-2">
-              <Select value={clientId} onChange={e => setClientId(e.target.value)}>
-                <option value="">{PASSAGE}</option>
-                {clients.map(c => <option key={c.id} value={c.id}>{c.name} {c.phone ? `(${c.phone})` : ''}</option>)}
-              </Select>
-              <button className="btn-secondary !px-3 shrink-0" onClick={() => setShowClient(true)}><UserPlus className="w-4 h-4" /></button>
-            </div>
-          </Field>
-
-          {/* Car */}
-          <div>
-            <label className="label-field">Véhicule (optionnel)</label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              <Input placeholder="Nom / modèle" value={car.name || ''} onChange={e => setCar({ ...car, name: e.target.value })} />
-              <Input placeholder="Marque" value={car.marque || ''} onChange={e => setCar({ ...car, marque: e.target.value })} />
-              <Input placeholder="Couleur" value={car.color || ''} onChange={e => setCar({ ...car, color: e.target.value })} />
-              <Input placeholder="Année" value={car.year || ''} onChange={e => setCar({ ...car, year: e.target.value })} />
-              <Input placeholder="Immatriculation" value={car.immatriculation || ''} onChange={e => setCar({ ...car, immatriculation: e.target.value })} />
-            </div>
-          </div>
+          {/* ── Le client, puis SA voiture ─────────────────────────────────
+              Recherche par nom ou téléphone, parc du client proposé, et le
+              kilométrage relevé sur place. La saisie libre reste disponible :
+              un client de passage n'a pas de fiche. */}
+          <ClientCarPicker
+            clients={clients}
+            clientId={clientId}
+            onClientId={setClientId}
+            car={car}
+            onCar={setCar}
+            onCreateClient={() => setShowClient(true)}
+            passageLabel={PASSAGE} />
 
           {/* ── Prestations ─────────────────────────────────────────────────── */}
           <div className="rounded-2xl border border-slate-200 overflow-hidden">
@@ -958,7 +973,11 @@ function ReparationForm({
           </div>
         </div>
       </Modal>
-      <ContactModal biz={biz} coll="clients" open={showClient} onClose={() => setShowClient(false)} onSaved={c => setClientId(c.id)} />
+      {/* Un client créé depuis la fiche arrive parfois avec son parc : s'il n'a
+          qu'une voiture, elle est reprise d'office — sinon le choix reste à
+          faire dans la liste ci-dessus. */}
+      <ContactModal biz={biz} coll="clients" open={showClient} onClose={() => setShowClient(false)}
+        onSaved={c => { setClientId(c.id); if ((c.cars || []).length === 1) setCar({ ...c.cars![0] }); }} />
     </>
   );
 }

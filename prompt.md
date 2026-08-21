@@ -165,3 +165,29 @@ fix the interface design of payment button action interface make sure to make it
 
 fix the interface of client history for each part for carburant and cafeteria and lavage fix it make it display all the history for all the time for each client not just the current date 
 then create new option on the interface of button action of history let user can generate report with set starting date and ending date and let him generate the repport with possibility of print it make sure to make it display all the transactions and sells and payement and the total payement and rest and all the small details and make the design exactly like the template of print fiche journlaier then push all updates to repo
+
+
+
+fix the interface of brigades make it display the list of brigades from the last one created to the oldest 
+
+fix the interface of purchase carburant make the table display on the 3rd column make it display the columns of button actions next to fuupliers column and make the cuves and volume make then displayin on the last column
+
+
+fix interface of pos on the part of cafeteria and on the part of lavage make it when user open the interface then let it focus on the search text box automatically and when user click on anywehre on the interface then make it cancel the focus antil user click on the text box of seach again 
+
+fix the interface of clients on the part of lavage make it user can create the cars of that client with possibiity of create multiple cars on the same client let user typ the name and model of car and matriculation optional and the color and the year and kilometrage
+make this option ont the rest interfaces of create new client on the interfaces of lavage on the interface of create new repartation or lavage make sure to make on all the interface of create new client on the aprt of lavage add for it this option of posiblilty of create the cars
+then make sure to fix the interface of create new reparation of lavage make it when suer select cient that have this option of cars then make it when user select the client then make it load the cars of that client on list with option of select the cars that will do for them the reparation or that lave and make user can edit the kilometrage of the car 
+and make sure to make on the createion of reparation of lavage make for the selecting of clients make user can search about the client with name or phone number and let user select the client
+
+create new interface on the side bare part of lavage make it for send messages for clients make it like this : 
+let user can create new message for the clients with possibility of program the messages like this let user create new message let him search abou the client then let him program standard messages and save them onthe interface that will can use them with select the message or can create the message librement 
+make option on the interface messages user can parameter the time of alert for each created lavage or reparation let user make it for example after one month for reparation that will display alert on the interace of messages that will dipsay the clients that have to remember them to do the lavage or the reparation again and make sure to make the user can parameter the reparation independently and the lavage indepenedently and make sure to make it user can make the alerts as readed and do not display again and make another button for send the messages for that clients if there is client have more then one car then let the user select the cars of the message then make sure to make it display on the message automatically the informations of that car and make sure to make it program a messages proffetional automatically and user can edit them 
+
+make option on the interface of message make button for see the alert of clients cars that comes the date of alert for do the lavage or the reparation again and make user can send the messages for that alerted messages automatically and remove them from the alerts 
+
+then for integration of send messages for the clients i want to use the whatsapp messages analyse the file of session-whatsapp.md a deep analuse and analye the file of whatsapp_promp.md and analyse the file of whatsapp-nouveau-projet.md onthe main folder a deep analyse and make sure to apply that solution on this project 
+make sure also to create another md file onthe main folder after when u end everything make on it guide what i have to do step by step after you end the updates 
+
+then give me the full sql code that i ahve to run it for this new updates 
+then push the updates to repo without pull request make it merge the code directly

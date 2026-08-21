@@ -125,6 +125,11 @@ export const BACKUP_TABLES: BackupTableSpec[] = [
   // ici sauvegarderait un catalogue périmé sans que rien ne le signale.
   { table: 'biz_products',                     label: 'Catalogue produits (Cafétéria / Lavage)' },
   { table: 'biz_store',                        label: 'Données Cafétéria & Lavage (ventes, achats, employés…)' },
+  // Messages WhatsApp aux clients (migration 2026-08-22). Le journal se
+  // sauvegarde ; la file d'attente aussi, parce qu'une restauration faite après
+  // une panne de poste doit rendre les messages qui n'étaient pas encore partis.
+  { table: 'whatsapp_messages',                label: 'Journal des messages WhatsApp' },
+  { table: 'whatsapp_outbox',                  label: 'Messages WhatsApp en attente' },
 ];
 
 /** Le blob des parties commerciales : restauré par FUSION, jamais en écrasement. */

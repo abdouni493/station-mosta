@@ -272,12 +272,18 @@ export default function FuelPurchases() {
 
           {/* ── Desktop: the full table, every column at a glance ────────── */}
           <div className="hidden xl:block">
+            {/* ── L'ORDRE DES COLONNES ─────────────────────────────────────
+                Les boutons d'action suivent immédiatement le fournisseur : on
+                les atteint sans traverser toute la ligne des yeux. Les cuves et
+                le volume — la donnée qu'on consulte, jamais celle sur laquelle
+                on agit — passent en fin de tableau. */}
             <Table head={<>
               <th className="table-head">Date</th><th className="table-head">Facture</th><th className="table-head">BL</th>
-              <th className="table-head">Fournisseur</th><th className="table-head">Cuves</th>
-              <th className="table-head text-right">Volume</th><th className="table-head text-right">Total</th>
+              <th className="table-head">Fournisseur</th><th className="table-head">Actions</th>
+              <th className="table-head text-right">Total</th>
               <th className="table-head text-right">Payé</th><th className="table-head text-right">Reste</th>
-              <th className="table-head">Statut</th><th className="table-head text-right">Actions</th>
+              <th className="table-head">Statut</th>
+              <th className="table-head">Cuves</th><th className="table-head text-right">Volume</th>
             </>}>
               {filtered.map(p => {
                 const supplier = suppliers.find(s => s.id === p.supplierId);
@@ -291,8 +297,15 @@ export default function FuelPurchases() {
                     <td className="table-cell font-bold">{p.invoiceNumber || '—'}</td>
                     <td className="table-cell">{p.blNumber || '—'}</td>
                     <td className="table-cell">{supplier?.name || '—'}</td>
-                    <td className="table-cell text-xs text-slate-500 max-w-[180px]">{cuveNames || '—'}</td>
-                    <td className="table-cell tabular-nums text-right">{liters.toLocaleString('fr-FR')} L</td>
+                    <td className="table-cell">
+                      <RowActions>
+                        <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
+                        <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(p)} />
+                        {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(p)} />}
+                        {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer la dette" onClick={() => setPaying(p)} />}
+                        {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
+                      </RowActions>
+                    </td>
                     <td className="table-cell tabular-nums text-right font-bold">{money(p.total)}</td>
                     <td className="table-cell tabular-nums text-right text-emerald-600">{money(p.amountPaid)}</td>
                     <td className="table-cell tabular-nums text-right text-red-600">{money(p.rest)}</td>
@@ -307,15 +320,8 @@ export default function FuelPurchases() {
                         )}
                       </div>
                     </td>
-                    <td className="table-cell">
-                      <RowActions>
-                        <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
-                        <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(p)} />
-                        {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(p)} />}
-                        {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer la dette" onClick={() => setPaying(p)} />}
-                        {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
-                      </RowActions>
-                    </td>
+                    <td className="table-cell text-xs text-slate-500 max-w-[180px]">{cuveNames || '—'}</td>
+                    <td className="table-cell tabular-nums text-right">{liters.toLocaleString('fr-FR')} L</td>
                   </tr>
                 );
               })}
