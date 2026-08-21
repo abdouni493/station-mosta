@@ -110,25 +110,59 @@ Choisissez le poste de la station qui reste allumé toute la journée.
 **Il vous faut aussi :**
 
 - **Docker Desktop** installé sur ce poste (Windows 10/11 + WSL2, ~8 Go de RAM) ;
-- un **numéro WhatsApp dédié** — pas le portable personnel du gérant. Un numéro
-  banni par WhatsApp l'est **sans recours** ;
-- un compte **Tailscale** gratuit (plan Personal).
+- un **numéro WhatsApp dédié**, **différent de celui de l'école** — et pas le
+  portable personnel du gérant. Un numéro banni par WhatsApp l'est **sans
+  recours** ;
+- votre compte **Tailscale existant** — celui de l'école. **N'en créez pas un
+  second** : voir B1.
 
 Si le poste allumé n'est pas envisageable, la seule alternative est un
 hébergement payant type Railway (**7–10 $/mois**) : la bascule prend 20 minutes —
 changer `EVOLUTION_BASE_URL`, redéployer, rescanner le QR.
 
-## B1 — Compte Tailscale
+## B1 — Compte Tailscale : **vous en avez déjà un, n'en créez pas un second**
 
-1. Créez un compte gratuit sur **tailscale.com** (plan Personal).
-2. Console → **DNS** : relevez le **nom du tailnet**, de la forme
-   `tailXXXXXX.ts.net`. Notez-le, il sert partout.
-3. Toujours dans **DNS** : **MagicDNS actif**, puis **Enable HTTPS**.
+C'est la bonne nouvelle de ce guide. **Un seul compte Tailscale suffit pour tous
+vos projets.** Celui que vous avez ouvert pour l'école héberge autant de machines
+que nécessaire, et chacune obtient sa propre adresse publique :
 
-## B2 — Autoriser le Funnel (le passage qui coûte le plus cher si on l'oublie)
+```
+benzaoui-wa.tail6ac334.ts.net     ← l'école
+rclmc-wa.tail6ac334.ts.net        ← la station   (même compte, même tailnet)
+```
 
-Console → **Access controls**. Ajoutez ce bloc **à l'intérieur** de la politique
-qui s'y trouve déjà :
+Seule change la **première moitié** du nom — c'est-à-dire `TAILSCALE_HOSTNAME`.
+La seconde moitié, le nom du tailnet, **reste la même pour toujours**.
+
+Ce qui est donc **déjà fait et ne se refait pas** :
+
+| Étape de l'installation de l'école | À refaire ici ? |
+| --- | --- |
+| Créer le compte Tailscale | **Non** |
+| Activer **MagicDNS** | **Non** |
+| Activer les **certificats HTTPS** | **Non** |
+| Autoriser le **Funnel** dans les ACL | **Non** — l'attribut vise `autogroup:member`, donc tout nouveau nœud du même tailnet en hérite automatiquement |
+| Générer une **clé d'authentification** | **Non**, si la clé Reusable de l'école n'a pas expiré |
+
+Autrement dit : les étapes qui vous avaient coûté le plus de temps — les ACL,
+surtout — **sont derrière vous définitivement**. La station est plus simple à
+installer que l'école ne l'a été.
+
+**Ce que vous avez quand même à faire ici :**
+
+1. Console Tailscale → **DNS** : relevez le **nom du tailnet**
+   (`tailXXXXXX.ts.net`). Vous en avez besoin pour construire l'adresse.
+2. Vérifiez d'un coup d'œil, sur cette même page, que **MagicDNS** et **HTTPS**
+   sont bien actifs (ils le sont, sauf si quelqu'un les a désactivés depuis).
+3. Choisissez un **nom de nœud différent** de celui de l'école : `rclmc-wa`.
+   C'est obligatoire — deux projets ne peuvent pas partager une adresse.
+4. Prévoyez un **numéro WhatsApp différent** de celui de l'école. Une instance
+   lie **un** téléphone ; deux projets sur un même numéro mélangeraient les
+   conversations.
+
+## B2 — Le Funnel dans les ACL : **rien à faire, mais vérifiez-le**
+
+L'attribut que vous aviez ajouté pour l'école vise `autogroup:member` :
 
 ```jsonc
 "nodeAttrs": [
@@ -136,18 +170,31 @@ qui s'y trouve déjà :
 ],
 ```
 
-> ⚠️ Le fichier ne peut contenir **qu'un seul** objet de haut niveau. Coller ce
-> bloc *au-dessus* de la politique existante donne l'erreur
-> `invalid character '{' after top-level value`. Les tailnets récents utilisent
-> `grants`, les anciens `acls` : **ne mettez pas les deux**.
+`autogroup:member`, c'est **tout membre de votre tailnet** — donc le nœud de la
+station en hérite **automatiquement**, sans que vous touchiez aux ACL.
 
-**Sans cet attribut, tout paraîtra fonctionner** — le conteneur démarre, obtient
-même son certificat, affiche « Funnel on: https://… » — et l'adresse ne résoudra
-nulle part. C'est le piège le plus coûteux du montage.
+Vous n'avez donc rien à ajouter. Vous le **vérifierez** à l'étape B5, une fois le
+conteneur démarré, avec la commande qui fait foi.
 
-## B3 — Clé d'authentification
+> **Si et seulement si** cette vérification échoue : Console → **Access
+> controls**, et collez le bloc ci-dessus **à l'intérieur** de la politique
+> existante. Le fichier ne peut contenir **qu'un seul** objet de haut niveau —
+> le coller *au-dessus* donne `invalid character '{' after top-level value`. Les
+> tailnets récents utilisent `grants`, les anciens `acls` : **ne mettez pas les
+> deux**.
 
-**Settings → Keys → Generate auth key.**
+**Sans cet attribut, tout paraîtrait fonctionner** — le conteneur démarre, obtient
+même son certificat, affiche « Funnel on: https://… » — et l'adresse ne résoudrait
+nulle part. C'est le piège le plus coûteux du montage, et la seule raison pour
+laquelle cette étape existe encore ici alors qu'il n'y a rien à faire.
+
+## B3 — Clé d'authentification : **réutilisez celle de l'école**
+
+**Settings → Keys.** Si la clé **Reusable** créée pour l'école y figure encore et
+n'a pas expiré, **reprenez-la telle quelle** — c'est exactement ce pour quoi elle
+a été cochée Reusable.
+
+Sinon, **Generate auth key** :
 
 - cochez **Reusable** ;
 - **surtout pas Ephemeral** : un nœud éphémère disparaît dès qu'il se déconnecte
@@ -155,6 +202,11 @@ nulle part. C'est le piège le plus coûteux du montage.
   l'application n'atteint plus rien.
 
 Copiez la clé (`tskey-auth-…`), elle ne se réaffiche pas.
+
+> **La clé d'authentification se partage entre projets ; la clé API de la
+> passerelle, non.** `EVOLUTION_API_KEY` et `POSTGRES_PASSWORD` doivent être
+> **propres à la station** (étape B4) : deux organisations ne doivent pas
+> partager un secret.
 
 ## B4 — Renseigner les secrets du poste
 
@@ -188,6 +240,15 @@ aurez besoin à l'étape B7, et lors d'un changement de poste.
 docker compose -f evolution/docker-compose.funnel.yml up -d
 docker compose -f evolution/docker-compose.funnel.yml logs -f tailscale
 ```
+
+> **Le port local vaut 8082, et pas 8081.** Le montage de l'école occupe déjà
+> 8081. Sur deux machines séparées cela n'aurait aucune importance ; mais si les
+> deux piles se retrouvaient un jour sur le même poste, le second conteneur
+> refuserait de démarrer avec une erreur de port qui ne dit rien de la vraie
+> cause. Le nom de projet Compose est distinct pour la même raison
+> (`name: rclmc-wa`) — et celui-là est autrement plus grave : deux montages
+> portant le même nom **partagent les mêmes volumes**, donc la même session
+> WhatsApp et la même base.
 
 Le nom obtenu doit être **exactement** `rclmc-wa.tailXXXXXX.ts.net`.
 

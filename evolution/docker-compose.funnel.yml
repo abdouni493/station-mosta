@@ -28,7 +28,13 @@ services:
       # Publié sur 127.0.0.1 UNIQUEMENT : le diagnostic local reste possible,
       # rien n'est exposé au réseau de la station. Le trafic public passe
       # exclusivement par le Funnel.
-      - "127.0.0.1:8081:8080"
+      #
+      # 8082 et non 8081 : le montage de l'école (benzaoui) occupe déjà 8081.
+      # Sur DEUX machines séparées cela n'aurait aucune importance, mais si les
+      # deux piles se retrouvent un jour sur le même poste, le second conteneur
+      # refuserait de démarrer — avec une erreur de port qui ne dit rien de la
+      # vraie cause. Un numéro distinct coûte zéro et supprime le piège.
+      - "127.0.0.1:8082:8080"
     environment:
       # Doit valoir EXACTEMENT `EVOLUTION_BASE_URL` côté application : c'est la
       # valeur inscrite dans le champ `server_url` de chaque webhook, et
