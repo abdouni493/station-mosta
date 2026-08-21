@@ -6,7 +6,7 @@
     }
   ],
   "functions": {
-    "api/whatsapp/[...path].ts": {
+    "api/whatsapp/*.ts": {
       "maxDuration": 60
     }
   }
