@@ -177,17 +177,20 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
   // Les totaux de l'en-tête se lisent sur les MÊMES relevés que les cartes :
   // un chiffre de tête qui ne se retrouve pas dans le détail ne sert à rien.
   const totals = useMemo(() => {
-    let debt = 0, ops = 0, charged = 0, paid = 0, debtors = 0;
+    let debt = 0, ops = 0, charged = 0, paid = 0, debtors = 0, advance = 0;
     for (const c of clients) {
       const st = statements[c.id];
       if (!st) continue;
-      debt += st.closingDebt;
+      // La dette NETTE : ce qu'on peut réellement réclamer. L'avance déjà
+      // versée par le client est son argent, pas une créance de la station.
+      debt += st.netDebt;
+      advance += st.advanceLeft;
       ops += st.allLines.length;
       charged += st.totals.charged;
       paid += st.totals.paid;
-      if (st.closingDebt > 0) debtors++;
+      if (st.netDebt > 0) debtors++;
     }
-    return { debt, ops, charged, paid, debtors };
+    return { debt, ops, charged, paid, debtors, advance };
   }, [clients, statements]);
 
   return (
@@ -203,7 +206,9 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
         <StatCard icon={Receipt} label="Total consommé" value={money(totals.charged)} tone="green"
           sub={`${money(totals.paid)} encaissés`} />
         <StatCard icon={CircleDollarSign} label="Dettes clients" value={money(totals.debt)} tone="red"
-          sub="reste dû, d'après les documents" />
+          sub={totals.advance > 0
+            ? `reste dû, ${money(totals.advance)} d'avances déduites`
+            : "reste dû, d'après les documents"} />
       </div>
 
       {/* ── Rechercher un client ─────────────────────────────────────────
@@ -249,7 +254,11 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map((c, index) => {
             const st = statements[c.id];
-            const debt = st?.closingDebt || 0;
+            // Ce que le client doit une fois son avance imputée — la carte
+            // annonçait la dette brute et taisait l'avance : elle réclamait de
+            // l'argent que la station détenait déjà.
+            const debt = st?.netDebt || 0;
+            const advanceLeft = st?.advanceLeft || 0;
             return (
               <motion.div
                 key={c.id}
@@ -286,6 +295,11 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                         debt > 0 ? 'bg-red-50 text-red-700 border-red-100' : 'bg-green-50 text-green-700 border-green-100')}>
                         {debt > 0 ? 'Débiteur' : 'Soldé'}
                       </span>
+                      {advanceLeft > 0 && (
+                        <span className="text-[8px] font-black uppercase px-2.5 py-1 rounded-full leading-none border inline-block bg-teal-50 text-teal-700 border-teal-100">
+                          Avance {money(advanceLeft)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -330,9 +344,11 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                               onClick={() => { setEditing(c); setShowForm(true); setActionMenuOpen(null); }}
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-amber-700 hover:bg-amber-50 flex items-center gap-3 transition-colors"
                             >
-                              <Flag className="w-4 h-4 text-amber-500" /> Dette initiale
+                              <Flag className="w-4 h-4 text-amber-500" /> Reprise (dette / avance)
                             </button>
                           )}
+                          {/* Rien à encaisser d'un client dont l'avance couvre
+                              déjà tout ce qu'il a pris. */}
                           {debt > 0 && perm.modifier && (
                             <button
                               onClick={() => { setPaying(c); setActionMenuOpen(null); }}
@@ -414,10 +430,15 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
                     <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total règlements</p>
                     <p className="text-[13px] font-black text-emerald-700 tabular-nums leading-none truncate">{money(st?.totals.paid || 0)}</p>
                   </div>
-                  <div className={cn('rounded-2xl border p-3 text-center', debt > 0 ? 'bg-red-50/70 border-red-100' : 'bg-slate-50 border-slate-100')}>
-                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total dettes</p>
-                    <p className={cn('text-[13px] font-black tabular-nums leading-none truncate', debt > 0 ? 'text-red-600' : 'text-slate-400')}>
-                      {money(debt)}
+                  <div className={cn('rounded-2xl border p-3 text-center',
+                    debt > 0 ? 'bg-red-50/70 border-red-100'
+                      : advanceLeft > 0 ? 'bg-teal-50/70 border-teal-100' : 'bg-slate-50 border-slate-100')}>
+                    <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">
+                      {debt > 0 || advanceLeft <= 0 ? 'Total dettes' : 'Avance détenue'}
+                    </p>
+                    <p className={cn('text-[13px] font-black tabular-nums leading-none truncate',
+                      debt > 0 ? 'text-red-600' : advanceLeft > 0 ? 'text-teal-700' : 'text-slate-400')}>
+                      {money(debt > 0 || advanceLeft <= 0 ? debt : advanceLeft)}
                     </p>
                   </div>
                 </div>
@@ -461,6 +482,7 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
           title={`Payer la dette — ${paying.name}`}
           total={statements[paying.id]?.totals.charged || 0}
           alreadyPaid={statements[paying.id]?.totals.paid || 0}
+          advanceHeld={statements[paying.id]?.advanceHeld || 0}
           onPay={(amount, meta) => settleDebt(paying, amount, meta)}
         />
       )}
@@ -747,6 +769,17 @@ function BizClientDossier({
           paid: openingPaid,
           onEdit: onEditOpening,
         }}
+        // ── Le compte d'avance ────────────────────────────────────────────
+        // Il n'était JAMAIS transmis : la rubrique « Compte d'avance » et la
+        // tuile « Avance disponible » n'existaient pas pour un client de
+        // cafétéria ou de lavage. L'avance saisie à l'ouverture de sa fiche
+        // était donc écrite en base, et invisible partout — pas de mouvement,
+        // pas de solde, pas de déduction sur ce qu'il devait.
+        advance={op.advance > 0 ? {
+          available: st.advanceLeft,
+          recharged: st.totals.advanceRecharged,
+          used: st.totals.advanceUsed,
+        } : undefined}
         onEditPayment={canEdit ? (payment) => {
           const found = locatePayment(payment);
           if (!found) {

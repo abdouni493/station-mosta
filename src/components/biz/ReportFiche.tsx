@@ -294,7 +294,11 @@ export const ModuleFiche = React.forwardRef<HTMLDivElement, { report: PartReport
                 <thead><tr style={theadRow}><TH>Client</TH><TH align="right">Reste</TH></tr></thead>
                 <tbody>
                   {r.clientDebts.length === 0 ? (<tr><TD color="#94a3b8">Aucune</TD><TD align="right">0</TD></tr>) :
-                    r.clientDebts.map((d, i) => (<tr key={d.id} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}><TD>{d.name}</TD><TD align="right" bold color="#dc2626">{da(d.rest)} DA</TD></tr>))}
+                    r.clientDebts.map((d, i) => (
+                      <tr key={d.id} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
+                        <TD>{d.name}{d.ref === 'AVANCE' ? ' — avance détenue' : d.ref === 'REPRISE' ? ' — dette initiale' : ''}</TD>
+                        <TD align="right" bold color={d.rest < 0 ? '#0d9488' : '#dc2626'}>{da(d.rest)} DA</TD>
+                      </tr>))}
                 </tbody>
               </table>
             </div>
@@ -458,7 +462,12 @@ export const GlobalFiche = React.forwardRef<HTMLDivElement, { global: GlobalRepo
                 <thead><tr style={theadRow}><TH>Client</TH><TH>Activité</TH><TH align="right">Reste</TH></tr></thead>
                 <tbody>
                   {allClientDebts.length === 0 ? (<tr><TD color="#94a3b8">Aucune</TD><TD /><TD align="right">0</TD></tr>) :
-                    allClientDebts.map((d, i) => (<tr key={d.id + i} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}><TD>{d.name}</TD><TD color="#94a3b8">{d.part}</TD><TD align="right" bold color="#dc2626">{da(d.rest)} DA</TD></tr>))}
+                    allClientDebts.map((d, i) => (
+                      <tr key={d.id + i} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
+                        <TD>{d.name}{d.ref === 'AVANCE' ? ' — avance détenue' : d.ref === 'REPRISE' ? ' — dette initiale' : ''}</TD>
+                        <TD color="#94a3b8">{d.part}</TD>
+                        <TD align="right" bold color={d.rest < 0 ? '#0d9488' : '#dc2626'}>{da(d.rest)} DA</TD>
+                      </tr>))}
                 </tbody>
               </table>
             </div>

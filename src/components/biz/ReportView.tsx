@@ -124,9 +124,20 @@ export function DebtTable({ rows, tone }: { rows: PartReport['clientDebts']; ton
           <td className="table-cell">{d.name}</td>
           <td className="table-cell whitespace-nowrap">{fmtDate(d.date)}</td>
           <td className="table-cell tabular-nums text-right">{money(d.total)}</td>
-          <td className={cn('table-cell tabular-nums text-right font-bold', tone === 'client' ? 'text-red-600' : 'text-amber-600')}>{money(d.rest)}</td>
+          {/* Une AVANCE est une ligne au crédit : elle vient en déduction du
+              total, et se lit en vert pour qu'on ne la prenne pas pour une
+              créance de plus. */}
+          <td className={cn('table-cell tabular-nums text-right font-bold',
+            d.rest < 0 ? 'text-teal-600' : tone === 'client' ? 'text-red-600' : 'text-amber-600')}>{money(d.rest)}</td>
         </tr>
       ))}
+      <tr className="bg-slate-50">
+        <td className="table-cell font-black uppercase text-[10px] tracking-widest" colSpan={4}>Total</td>
+        <td className={cn('table-cell tabular-nums text-right font-black',
+          tone === 'client' ? 'text-red-600' : 'text-amber-600')}>
+          {money(Math.max(0, rows.reduce((t, d) => t + d.rest, 0)))}
+        </td>
+      </tr>
     </Table>
   );
 }
@@ -749,7 +760,8 @@ export default function ReportView({ report: r }: { report: PartReport }) {
 
       {/* Debt + alert cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <MetricCard icon={Users} tone="red" label="Dettes clients" value={money(r.clientDebtTotal)} count={r.clientDebts.length} onClick={() => setDetail('clientDebts')} />
+        <MetricCard icon={Users} tone="red" label="Dettes clients" value={money(r.clientDebtTotal)} count={r.clientDebts.length} onClick={() => setDetail('clientDebts')}
+          sub={r.clientAdvanceTotal > 0 ? `${money(r.clientAdvanceTotal)} d'avances clients déduites` : undefined} />
         <MetricCard icon={Truck} tone="amber" label="Dettes fournisseurs" value={money(r.supplierDebtTotal)} count={r.supplierDebts.length} onClick={() => setDetail('supplierDebts')} />
         <MetricCard icon={AlertTriangle} tone="red" label="Alertes stock" value={String(r.stockAlerts.length)} sub="produits sous seuil" count={r.stockAlerts.length} onClick={() => setDetail('stock')} />
         <MetricCard icon={CalendarClock} tone="purple" label="Expirations proches" value={String(r.expiryAlerts.length)} sub="≤ 15 jours" count={r.expiryAlerts.length} onClick={() => setDetail('expiry')} />

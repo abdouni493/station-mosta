@@ -156,5 +156,54 @@ section("Cafétéria — le même dossier, sans compte d'avance");
   check('le reste dû de la partie', bst.closingDebt === 200);
 }
 
+// ─── Un compte ouvert SUR UNE AVANCE ──────────────────────────────────────────
+//
+// Le cas qui ne rendait rien. Une fiche créée « sur avance » écrivait bien le
+// montant en base, mais le dossier n'en montrait aucune trace : pas de ligne au
+// journal, pas de rubrique d'avance côté Cafétéria et Lavage, et un « reste dû »
+// qui réclamait au client l'argent qu'il venait pourtant de verser.
+section("Cafétéria — un compte ouvert sur une avance de 20 000");
+{
+  const prepaid: any = {
+    id: 'k9', name: 'Prépayé Café', createdAt: '2026-08-01T08:00:00',
+    openingDebt: 0, openingAdvance: 20000, openingDate: '2026-08-01',
+  };
+  const state: any = {
+    clients: [prepaid],
+    sales: [{
+      id: 'sv9', ref: 'V-9', clientId: 'k9', clientName: 'Prépayé Café', date: '2026-08-10',
+      items: [{ productId: 'p1', productName: 'Café', qty: 10, unitPrice: 500 }],
+      subtotal: 5000, reduction: 0, total: 5000, paid: 0, rest: 5000, status: 'crédit', payments: [],
+    }],
+    reparations: [],
+  };
+  const bst = bizClientStatement(state, prepaid, 'Cafétéria');
+  const draw = (rubrique: string) => flat(renderToStaticMarkup(
+    <ClientDossier
+      open onClose={() => {}} statement={bst} initialSection={rubrique}
+      opening={{ debt: 0, advance: 20000, date: '2026-08-01', paid: 0 }}
+      advance={{
+        available: bst.advanceLeft,
+        recharged: bst.totals.advanceRecharged,
+        used: bst.totals.advanceUsed,
+      }} /> as any));
+
+  const journal = draw('journal');
+  check("l'avance initiale FIGURE au journal", /Avance initiale/.test(journal));
+  check('avec la vente, cela fait deux lignes', /Journal des opérations \(2\)/.test(journal));
+
+  const resume = draw('resume');
+  check('la reprise est montrée comme une avance', /Avance initiale/.test(resume));
+  check('et elle est dite portée au crédit du compte', /portée au crédit du compte/.test(resume));
+  check("le reste dû dit ce que l'avance a absorbé", /pris sur son avance/.test(resume));
+
+  const avance = draw('avance');
+  check("la rubrique d'avance existe enfin pour une partie", /Mouvements du compte d'avance/.test(avance));
+  check('elle montre ce qui a été imputé', /imputés sur ce qu'il doit/.test(avance));
+
+  check('le compte ne réclame plus rien', bst.netDebt === 0);
+  check('et il reste 15 000 au client', bst.advanceLeft === 15000);
+}
+
 console.log(`\n${passed} vérification(s) passée(s), ${failed} échec(s).`);
 if (failed > 0) process.exit(1);

@@ -360,8 +360,14 @@ export function computeWorkingCapital(
   const receivableRows: WCRow[] = parts.flatMap(p => p.clientDebts.map(d => ({
     id: `rec-${p.key}-${d.id}`,
     label: d.name,
-    sub: [d.ref && d.ref !== '—' ? `Facture ${d.ref}` : null,
-      d.total ? `Total ${fmt(d.total)} · payé ${fmt(d.paid)}` : null].filter(Boolean).join(' · ') || undefined,
+    // Une ligne AVANCE est une créance NÉGATIVE : l'argent du client, que la
+    // station détient déjà. Décrite comme une facture, elle se lisait « Total
+    // −20 000 · payé 0 » — un charabia sur ce qui est pourtant la seule ligne
+    // du tableau qui joue dans l'autre sens.
+    sub: d.ref === 'AVANCE'
+      ? `Avance détenue ${fmt(-d.total)} — imputée sur ce qu'il doit`
+      : [d.ref && d.ref !== '—' ? `Facture ${d.ref}` : null,
+        d.total ? `Total ${fmt(d.total)} · payé ${fmt(d.paid)}` : null].filter(Boolean).join(' · ') || undefined,
     date: d.date || undefined,
     amount: d.rest,
     partKey: p.key,

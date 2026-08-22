@@ -42,6 +42,19 @@ export type ClientEntryKind =
    * montant saisi à la création restait invisible partout.
    */
   | 'ouverture'
+  /**
+   * L'AVANCE d'ouverture — le pendant exact de la ligne ci-dessus, du bon côté
+   * du compte : ce que le client avait DÉJÀ versé le jour de la reprise.
+   *
+   * Elle portait jusqu'ici la nature `recharge`, et c'est ce qui faussait tout :
+   * une recharge est de l'argent qui entre AUJOURD'HUI, elle compte donc dans
+   * les règlements encaissés. La reprise, elle, n'encaisse rien — l'argent a été
+   * reçu avant le logiciel, exactement comme la dette initiale a été contractée
+   * avant lui. Confondues, l'écran annonçait un « total encaissé » gonflé de
+   * chaque avance de reprise, et le même dinar était compté deux fois le jour où
+   * le client venait vraiment payer.
+   */
+  | 'avance'
   /** Ligne d'historique ancienne, sans document rattaché. */
   | 'vente';
 
@@ -105,6 +118,25 @@ export interface ClientLedger {
   debtFromDocuments: number;
   /** Ce que les documents disent de l'avance : recharges − consommation. */
   advanceFromDocuments: number;
+  /**
+   * L'avance encore DÉTENUE — `advanceFromDocuments` sans jamais passer sous
+   * zéro. Une avance négative ne veut rien dire : elle signale une consommation
+   * qui a débordé le dépôt, et ce débordement est déjà porté par la dette.
+   */
+  advanceHeld: number;
+  /**
+   * Ce que le client doit RÉELLEMENT : sa dette, moins l'argent que la station
+   * détient déjà pour lui.
+   *
+   * Les deux vivaient dans deux colonnes qui ne se rencontraient jamais : un
+   * client repris avec 20 000 DA d'avance et qui prenait pour 5 000 DA
+   * apparaissait « débiteur de 5 000 » sur sa carte, dans la Caisse Générale et
+   * dans les rapports — alors que la station tenait déjà son argent. On lui
+   * réclamait ce qu'il avait payé d'avance.
+   */
+  netDebt: number;
+  /** Ce qui reste au client une fois sa dette imputée sur son avance. */
+  advanceLeft: number;
   counts: { bons: number; magasin: number; reglements: number; recharges: number };
   /**
    * Ce que la colonne `clients.debt` annonce. Elle n'est qu'un COMPTEUR tenu au
@@ -225,7 +257,7 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
     entries.push({
       id: `open-adv-${clientId}`,
       date: opening.date,
-      kind: 'recharge',
+      kind: 'avance',
       label: "Avance initiale — ouverture du compte",
       charged: 0,
       paid: opening.advance,
@@ -428,6 +460,13 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
   const paid = sum(e => (e.kind === 'reglement' ? e.paid : 0));
 
   const debtFromDocuments = chargedOnCredit - paid;
+  const advanceFromDocuments = recharged - chargedOnAdvance;
+  // L'imputation, une bonne fois : l'avance détenue éteint la dette à
+  // concurrence de ce qu'elle vaut, et ce qui survit d'un côté ou de l'autre
+  // est le solde réel du compte.
+  const advanceHeld = Math.max(0, advanceFromDocuments);
+  const netDebt = Math.max(0, debtFromDocuments - advanceHeld);
+  const advanceLeft = Math.max(0, advanceHeld - Math.max(0, debtFromDocuments));
   const recordedDebt = num(client?.debt);
 
   return {
@@ -438,12 +477,18 @@ export function clientLedger(app: any, clientId: string): ClientLedger {
     paid,
     recharged,
     debtFromDocuments,
-    advanceFromDocuments: recharged - chargedOnAdvance,
+    advanceFromDocuments,
+    advanceHeld,
+    netDebt,
+    advanceLeft,
     counts: {
       bons: entries.filter(e => e.kind === 'bon').length,
       magasin: entries.filter(e => e.kind === 'magasin').length,
       reglements: entries.filter(e => e.kind === 'reglement').length,
-      recharges: entries.filter(e => e.kind === 'recharge').length,
+      // La reprise d'avance EST un dépôt sur le compte prépayé : la compter
+      // ailleurs qu'ici laisserait la rubrique « Avance » annoncer zéro
+      // mouvement sur un compte qui en porte un.
+      recharges: entries.filter(e => e.kind === 'recharge' || e.kind === 'avance').length,
     },
     recordedDebt,
     debtGap: recordedDebt - debtFromDocuments,
@@ -483,7 +528,7 @@ function emptyLedger(): ClientLedger {
   return {
     entries: [],
     charged: 0, chargedOnCredit: 0, chargedOnAdvance: 0, paid: 0, recharged: 0,
-    debtFromDocuments: 0, advanceFromDocuments: 0,
+    debtFromDocuments: 0, advanceFromDocuments: 0, advanceHeld: 0, netDebt: 0, advanceLeft: 0,
     counts: { bons: 0, magasin: 0, reglements: 0, recharges: 0 },
     recordedDebt: 0, debtGap: 0,
     firstDate: '', lastDate: '', shadowsDropped: 0,

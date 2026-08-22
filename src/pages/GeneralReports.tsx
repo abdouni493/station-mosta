@@ -584,12 +584,17 @@ export default function GeneralReports() {
       // repère on cherchait en vain le document qui l'expliquerait.
       const client = (app.clients || []).find((c: any) => c.id === d.id);
       const opening = Math.max(0, Number(client?.openingDebt) || 0);
+      // Et l'AVANCE, dite elle aussi : `d.rest` est déjà net de ce que la
+      // station détient pour ce client, mais un total qu'on ne peut pas
+      // recomposer à partir de sa propre sous-ligne n'est pas vérifiable.
+      const advance = Math.max(0, Number(client?.openingAdvance) || 0);
       clientDebtRows.push({
         id: `carb-${d.id}`, label: `👤 ${d.name}`, date: d.date || undefined,
         sub: [
           d.total ? `${money(d.total)} à crédit` : '',
           d.paid ? `${money(d.paid)} réglés` : '',
           opening > 0 ? `dont ${money(opening)} de dette initiale` : '',
+          advance > 0 ? `${money(advance)} d'avance déduits` : '',
         ].filter(Boolean).join(' · ') || 'd’après les pièces du compte',
         amount: d.rest, amountTone: 'red',
         onDelete: () => dispatch({ type: 'DELETE_CLIENT', payload: d.id }),
@@ -600,8 +605,10 @@ export default function GeneralReports() {
       id: `${k}-${d.id}`, label: `${reports[k].emoji} ${d.name}`, date: d.date || undefined,
       sub: d.ref === 'REPRISE'
         ? `Dette initiale à l'ouverture du compte — ${money(d.total)}${d.paid ? `, ${money(d.paid)} déjà réglés` : ''}`
-        : [d.ref, d.total ? `${money(d.total)} facturés` : '', d.paid ? `${money(d.paid)} réglés` : ''].filter(Boolean).join(' · '),
-      amount: d.rest, amountTone: 'red',
+        : d.ref === 'AVANCE'
+          ? `Avance versée à l'ouverture du compte — ${money(-d.total)} détenus, imputés sur ce qu'il doit`
+          : [d.ref, d.total ? `${money(d.total)} facturés` : '', d.paid ? `${money(d.paid)} réglés` : ''].filter(Boolean).join(' · '),
+      amount: d.rest, amountTone: d.ref === 'AVANCE' ? 'green' : 'red',
     })));
     clientDebtRows.sort((a, b) => b.amount - a.amount);
 
@@ -670,7 +677,7 @@ export default function GeneralReports() {
       netGain:      { title: 'Total des gains', icon: CircleDollarSign, subtitle: 'Décomposition par activité', rows: netRows, total: global.netGain, totalLabel: 'Gain net', note: `Ventes ${money(global.salesTotal)} − coût des marchandises vendues ${money(global.cogs)} = marge brute ${money(global.grossMargin)}, moins les dépenses, salaires, destructions et pertes. Le gain d'un produit fabriqué est son prix de vente MOINS le coût de ses ingrédients — jamais le prix de vente entier. Lignes calculées — non supprimables.` },
       stockValue:   { title: 'Valeur du stock', icon: Boxes, subtitle: "Produits en stock valorisés au prix d'achat", rows: stockRows, total: global.stockValue, totalLabel: 'Valeur totale' },
       destructions: { title: 'Destructions', icon: Flame, subtitle: 'Marchandise perdue (périmée, cassée, volée) — stock & comptoir', rows: destructionRows, total: global.destroyedValue, totalLabel: 'Coût total des pertes', note: 'Le coût des destructions est déduit du bénéfice net. Supprimer une ligne ne remet PAS la quantité en stock — utilisez « Récupérer » depuis la Gestion de stock.' },
-      clientDebt:   { title: 'Dettes clients', icon: Users, subtitle: 'Encours clients (toutes dates)', rows: clientDebtRows, total: global.clientDebtTotal, totalLabel: 'Total encours', note: "Le reste dû de chaque client est reconstruit sur ses PIÈCES — bons de brigade, factures, interventions, règlements — et sur la DETTE INITIALE saisie à l'ouverture de sa fiche. Cette reprise ne s'appuie sur aucun document : elle se corrige depuis l'écran Clients de l'activité concernée (« Dette initiale »)." },
+      clientDebt:   { title: 'Dettes clients', icon: Users, subtitle: 'Encours clients (toutes dates)', rows: clientDebtRows, total: global.clientDebtTotal, totalLabel: 'Total encours', note: "Le reste dû de chaque client est reconstruit sur ses PIÈCES — bons de brigade, factures, interventions, règlements — et sur la DETTE INITIALE saisie à l'ouverture de sa fiche. L'AVANCE qu'il a versée vient en déduction : c'est son argent, pas une créance de la station. Ni l'une ni l'autre ne s'appuie sur un document — elles se corrigent depuis l'écran Clients de l'activité concernée (« Dette initiale »)." },
       supplierDebt: { title: 'Dettes fournisseurs', icon: Truck, subtitle: 'Encours fournisseurs (toutes dates)', rows: supplierDebtRows, total: global.supplierDebtTotal, totalLabel: 'Total encours' },
       alerts:       { title: 'Alertes', icon: AlertTriangle, subtitle: 'Stock bas et péremptions', rows: alertRows, total: alertRows.reduce((s, r) => s + r.amount, 0), totalLabel: 'Valeur concernée', note: 'Alertes calculées — non supprimables.' },
       banks:        { title: 'Comptes bancaires', icon: Landmark, subtitle: 'Solde de chaque compte et ce que la période y a fait', rows: bankRows, total: treasury.bankTotal, totalLabel: 'Total en banque', note: `Sur la période : ${money(treasury.bankOpening)} au départ, +${money(treasury.bankIn)} reçus, −${money(treasury.bankOut)} sortis. Le solde d'un compte est son solde d'ouverture plus TOUS ses mouvements, quelle que soit la période affichée. Ouvrez « Caisse & Banques » pour l'historique complet d'un compte.` },

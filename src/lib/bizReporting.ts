@@ -140,7 +140,14 @@ export interface PartReport {
   productionCost: number;
   lossValue: number;
   destroyedValue: number;
-  clientDebtTotal: number;      // encours (toutes dates)
+  clientDebtTotal: number;      // encours (toutes dates), avances clients déduites
+  /**
+   * L'argent que les clients ont versé D'AVANCE et que la partie détient
+   * encore. C'est une dette envers eux, pas une créance : elle vient en
+   * déduction de `clientDebtTotal` et se montre à côté, jamais confondue avec
+   * la caisse — l'avance de reprise a été encaissée avant le logiciel.
+   */
+  clientAdvanceTotal: number;
   supplierDebtTotal: number;    // encours (toutes dates)
   stockValue: number;
   caisseBalance: number;
@@ -411,6 +418,38 @@ export function openingDebtRest(c: {
   return { debt, paid, rest: Math.max(0, debt - paid) };
 }
 
+/**
+ * ─── Ce qu'un client de partie a DÉJÀ VERSÉ, et qu'on lui doit ───────────────
+ *
+ * Le pendant exact de la reprise ci-dessus, de l'autre côté du compte. Il
+ * n'existait nulle part : l'avance saisie à l'ouverture d'une fiche de
+ * cafétéria ou de lavage était écrite, affichée sur le formulaire… et ignorée
+ * par tout le reste. Le client repayait donc une seconde fois ce qu'il avait
+ * déjà payé, et la station comptait parmi ses créances un argent qu'elle
+ * détenait déjà.
+ */
+export function openingAdvance(c: { openingAdvance?: number }): number {
+  return Math.max(0, num(c?.openingAdvance));
+}
+
+/**
+ * Le compte d'un client de partie, les deux plateaux de la balance réunis.
+ *
+ * `gross` est ce que ses pièces réclament (reprise non soldée + factures et
+ * interventions ouvertes) ; `advance` ce que la station tient pour lui. Ce
+ * qu'on peut réellement lui demander, c'est la différence — et ce qui lui
+ * reste, c'est l'autre.
+ */
+export function clientNetPosition(
+  c: { openingDebt?: number; openingAdvance?: number; openingPayments?: { amount?: number }[] },
+  grossDocumentRest: number,
+): { gross: number; advance: number; applied: number; net: number; left: number } {
+  const gross = Math.max(0, num(grossDocumentRest)) + openingDebtRest(c as any).rest;
+  const advance = openingAdvance(c as any);
+  const applied = Math.min(advance, gross);
+  return { gross, advance, applied, net: gross - applied, left: advance - applied };
+}
+
 // ─── Module (biz) report ─────────────────────────────────────────────────────
 /**
  * `txs` — le grand livre de la station. Sans lui, la caisse d'une partie
@@ -524,6 +563,20 @@ export function computeModuleReport(
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // ── Debts (outstanding, all dates) ──
+  //
+  // Le reste dû de chaque client, document par document — puis, en déduction,
+  // l'AVANCE qu'il a versée à l'ouverture de sa fiche. Sans cette dernière
+  // ligne, la partie réclamait une créance dont elle tenait déjà l'argent : un
+  // client repris avec 20 000 DA d'avance et 5 000 DA de factures ouvertes
+  // figurait au rapport pour 5 000 DA de dette.
+  const openDocRest = new Map<string, number>();
+  const bumpRest = (clientId: string | undefined, rest: number) => {
+    if (!clientId || rest <= 0) return;
+    openDocRest.set(clientId, (openDocRest.get(clientId) || 0) + rest);
+  };
+  for (const x of st.sales) bumpRest(x.clientId, num(x.rest));
+  for (const r of (st.reparations || [])) bumpRest(r.clientId, num(r.rest));
+
   const clientDebts: DebtRow[] = [
     // La REPRISE du compte est une créance comme une autre : elle figure au
     // même titre qu'une facture ouverte, avec sa date de reprise pour repère.
@@ -537,7 +590,21 @@ export function computeModuleReport(
     }).filter(r => r.rest > 0),
     ...st.sales.filter(s => s.rest > 0).map(s => ({ id: s.id, ref: s.ref, name: s.clientName, date: s.date, total: s.total, paid: s.paid, rest: s.rest })),
     ...(st.reparations || []).filter(r => r.rest > 0).map(r => ({ id: r.id, ref: r.ref, name: r.clientName, date: r.date, total: r.total, paid: r.paid, rest: r.rest })),
+    // L'avance détenue, en ligne NÉGATIVE : le tableau continue de montrer chaque
+    // pièce pour ce qu'elle vaut, et son total dit enfin ce qu'on peut réclamer.
+    ...(st.clients || []).map(c => {
+      const pos = clientNetPosition(c as any, openDocRest.get(c.id) || 0);
+      return {
+        id: `adv-${c.id}`, ref: 'AVANCE', name: c.name,
+        date: (c as any).openingDate || c.createdAt || '',
+        total: -pos.advance, paid: 0, rest: -pos.applied,
+      };
+    }).filter(r => r.rest < 0),
   ].sort((a, b) => b.rest - a.rest);
+
+  /** L'argent des clients que la partie détient encore, avance non consommée. */
+  const clientAdvanceTotal = (st.clients || []).reduce(
+    (t, c) => t + clientNetPosition(c as any, openDocRest.get(c.id) || 0).left, 0);
   const supplierDebts: DebtRow[] = st.purchases.filter(p => p.rest > 0)
     .map(p => ({ id: p.id, ref: p.ref, name: p.supplierName, date: p.date, total: p.total, paid: p.paid, rest: p.rest }))
     .sort((a, b) => b.rest - a.rest);
@@ -648,7 +715,7 @@ export function computeModuleReport(
   const productionCost = productionsInRange.reduce((s, x) => s + x.totalCost, 0);
   const lossValue = productionsInRange.reduce((s, x) => s + x.lossValue, 0);
   const destroyedValue = destructionsInRange.reduce((s, x) => s + x.value, 0);
-  const clientDebtTotal = clientDebts.reduce((s, x) => s + x.rest, 0);
+  const clientDebtTotal = Math.max(0, clientDebts.reduce((s, x) => s + x.rest, 0));
   const supplierDebtTotal = supplierDebts.reduce((s, x) => s + x.rest, 0);
   const stockValue = st.products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0);
 
@@ -664,7 +731,7 @@ export function computeModuleReport(
     salesTotal, salesPaid, returnsTotal, refundedTotal, restockedCost,
     purchasesTotal, purchasesPaid, cogs, grossMargin,
     expensesTotal, salariesPaid, acomptesPeriod, productionValue, productionCost, lossValue, destroyedValue,
-    clientDebtTotal, supplierDebtTotal, stockValue, caisseBalance, netGain,
+    clientDebtTotal, clientAdvanceTotal, supplierDebtTotal, stockValue, caisseBalance, netGain,
     sales, purchases, salesByProduct, clientDebts, supplierDebts, expenses, expensesByCategory,
     stockAlerts, expiryAlerts, workers, caisse, destructions, productions, returns,
     stockLines: st.products
@@ -767,11 +834,17 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
   // longtemps ce que disent les documents (`lib/clientLedger`) — les deux écrans
   // annonçaient donc deux encours différents pour le même client, et un règlement
   // encaissé ne faisait pas bouger le rapport d'un dinar.
+  //
+  // L'AVANCE du client vient en déduction, comme dans les parties commerciales :
+  // un transporteur prépayé qui a laissé 200 000 DA au comptoir et pris pour
+  // 60 000 DA de gasoil ne doit rien — la station lui doit encore 140 000. Elle
+  // le comptait pourtant parmi ses débiteurs, parce que la dette et l'avance
+  // vivaient dans deux colonnes qui ne se rencontraient jamais.
   const ledgers = clientLedgers(app);
   const clientDebts: DebtRow[] = clients
     .map(c => {
       const l = ledgers[c.id];
-      const rest = Math.max(0, l ? l.debtFromDocuments : num(c.debt));
+      const rest = l ? l.netDebt : Math.max(0, num(c.debt));
       return {
         id: c.id, ref: '—', name: c.name, date: l?.lastDate || '',
         total: l ? l.chargedOnCredit : num(c.debt), paid: l ? l.paid : 0, rest,
@@ -779,6 +852,9 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     })
     .filter(d => d.rest > 0)
     .sort((a, b) => b.rest - a.rest);
+  /** Les avances encore détenues pour le compte des clients carburant. */
+  const clientAdvanceTotal = clients.reduce(
+    (t, c) => t + (ledgers[c.id]?.advanceLeft || 0), 0);
 
   // ── Dettes fournisseurs — une ligne PAR FACTURE non soldée ────────────────
   // On lisait la colonne `suppliers.balance`, que l'écran Achats Carburant n'a
@@ -903,7 +979,7 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     salesTotal, salesPaid, returnsTotal: 0, refundedTotal: 0, restockedCost: 0,
     purchasesTotal, purchasesPaid, cogs, grossMargin,
     expensesTotal, salariesPaid, acomptesPeriod, productionValue: 0, productionCost: 0, lossValue: 0, destroyedValue: 0,
-    clientDebtTotal, supplierDebtTotal, stockValue,
+    clientDebtTotal, clientAdvanceTotal, supplierDebtTotal, stockValue,
     // Le solde vient du MÊME calcul que l'écran Caisse Générale.
     caisseBalance: cash.balance, netGain,
     sales, purchases, salesByProduct, clientDebts, supplierDebts, expenses, expensesByCategory,
@@ -931,6 +1007,8 @@ export interface GlobalReport {
   /** Coût des marchandises vendues — ce que les ventes ont réellement coûté. */
   cogs: number;
   grossMargin: number; clientDebtTotal: number; supplierDebtTotal: number; stockValue: number;
+  /** Les avances clients détenues par la station, toutes activités confondues. */
+  clientAdvanceTotal: number;
   destroyedValue: number; lossValue: number; netGain: number;
   /** Retours & échanges — CA annulé et argent rendu, toutes parties confondues. */
   returnsTotal: number; refundedTotal: number; restockedCost: number;
@@ -953,6 +1031,7 @@ export function consolidate(parts: PartReport[], from: string, to: string): Glob
     cogs: sum(p => p.cogs),
     grossMargin: sum(p => p.grossMargin),
     clientDebtTotal: sum(p => p.clientDebtTotal),
+    clientAdvanceTotal: sum(p => p.clientAdvanceTotal),
     supplierDebtTotal: sum(p => p.supplierDebtTotal),
     stockValue: sum(p => p.stockValue),
     destroyedValue: sum(p => p.destroyedValue),

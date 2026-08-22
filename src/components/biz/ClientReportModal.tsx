@@ -158,8 +158,13 @@ export default function ClientReportModal({
             sub={`${statement.payments.length} règlement(s)`} tone="green" />
           <Tile icon={CircleDollarSign} label="Reste période" value={money(statement.totals.rest)}
             sub={`Crédit ${money(statement.totals.credit)}`} tone="amber" />
-          <Tile icon={CircleDollarSign} label="Dette de clôture" value={money(statement.closingDebt)}
-            sub={`Ouverture ${money(statement.openingDebt)}`} tone="red" />
+          {/* La tuile de clôture dit ce que le client doit RÉELLEMENT : son
+              avance déduite. Elle annonçait la dette brute, et le relevé
+              réclamait donc un argent que la station détenait déjà. */}
+          <Tile icon={CircleDollarSign} label="Dette de clôture" value={money(statement.netDebt)}
+            sub={statement.advanceHeld > 0
+              ? `Ouverture ${money(statement.openingDebt)} · avance ${money(statement.advanceHeld)} déduite`
+              : `Ouverture ${money(statement.openingDebt)}`} tone="red" />
         </div>
 
         {/* ── Journal ─────────────────────────────────────────────────── */}

@@ -839,8 +839,15 @@ export function ContactModal({
             </div>
             <p className="text-[11px] font-semibold text-amber-900/70 leading-relaxed">
               Ce que le client doit déjà — ou a déjà versé — avant sa première vente ici.
-              Le montant devient la première ligne de son historique : il compte dans sa dette,
-              sur sa carte, dans la caisse et dans les rapports.
+              Le montant devient la première ligne de son historique et compte sur sa carte,
+              dans la Caisse Générale et dans les rapports. La <b>dette</b> est une créance de
+              plus ; l'<b>avance</b> est son argent : elle vient en déduction de ce qu'il doit,
+              et lui reste acquise tant qu'il n'a rien pris.
+            </p>
+            <p className="text-[11px] font-semibold text-amber-900/70 leading-relaxed">
+              Ni l'une ni l'autre ne fait bouger le tiroir aujourd'hui : ce sont des soldes
+              REPRIS, contractés ou encaissés avant que la station ne tienne ce compte. Seuls
+              les règlements saisis ensuite entrent en caisse.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Dette initiale (DA)">
@@ -898,9 +905,15 @@ const todayISO = () => {
 };
 
 export function PayDebtModal({
-  open, onClose, total, alreadyPaid, onPay, title = 'Payer la dette',
+  open, onClose, total, alreadyPaid, advanceHeld = 0, onPay, title = 'Payer la dette',
 }: {
   open: boolean; onClose: () => void; total: number; alreadyPaid: number;
+  /**
+   * L'avance que la station détient DÉJÀ pour ce client. Elle ne figurait pas
+   * ici : la fenêtre réclamait la dette entière à un client qui avait payé
+   * d'avance, et le caissier encaissait une seconde fois le même argent.
+   */
+  advanceHeld?: number;
   /**
    * `meta` porte le mode, la référence et la DATE de l'encaissement : sans elle
    * un relevé de compte ne peut pas dire quand l'argent est entré.
@@ -908,7 +921,10 @@ export function PayDebtModal({
   onPay: (amount: number, meta: PayDebtMeta) => void;
   title?: string;
 }) {
-  const rest = Math.max(0, total - alreadyPaid);
+  const advance = Math.max(0, Number(advanceHeld) || 0);
+  const gross = Math.max(0, total - alreadyPaid);
+  /** Ce qu'il reste à ENCAISSER : la dette, son avance déduite. */
+  const rest = Math.max(0, gross - advance);
   const [amount, setAmount] = useState<number>(rest);
   const [mode, setMode] = useState<string>('Espèces');
   const [reference, setReference] = useState('');
@@ -933,6 +949,13 @@ export function PayDebtModal({
           <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Déjà payé</p><p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{fc(alreadyPaid)}</p></div>
           <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Reste</p><p className="font-black text-red-600 tabular-nums text-sm sm:text-base">{fc(rest)}</p></div>
         </div>
+        {advance > 0 && (
+          <div className="rounded-xl bg-teal-50 border border-teal-200 p-3 text-[11px] font-semibold text-teal-900 leading-relaxed">
+            La station détient déjà <b>{fc(advance)}</b> d'avance pour ce client :
+            {' '}{fc(Math.min(advance, gross))} en sont imputés sur les {fc(gross)} de ses documents ouverts.
+            Ne lui réclamez que le reste.
+          </div>
+        )}
         <Field label="Montant à payer cette fois (DA)">
           <Input type="number" inputMode="decimal" value={amount}
             onChange={e => setAmount(Number(e.target.value))} max={rest} className="text-right" />

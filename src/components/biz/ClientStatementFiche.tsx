@@ -102,6 +102,20 @@ export const ClientStatementFiche = React.forwardRef<
                 <TD bold color={C.blue900}>DETTE À LA CLÔTURE</TD>
                 <TD align="right" bold color={s.closingDebt > 0 ? '#b91c1c' : '#15803d'}>{da(s.closingDebt)} DA</TD>
               </tr>
+              {/* L'imputation de l'avance : sans elle, le relevé réclamait au
+                  client une somme dont la station tenait déjà l'argent. */}
+              {s.advanceHeld > 0 && s.closingDebt > 0 ? (
+                <>
+                  <tr style={{ background: '#f8fafc' }}>
+                    <TD>− Avance détenue, imputée</TD>
+                    <TD align="right" bold color="#0d9488">{da(Math.min(s.advanceHeld, s.closingDebt))} DA</TD>
+                  </tr>
+                  <tr style={totalRow}>
+                    <TD bold color={C.blue900}>RESTE À RÉGLER</TD>
+                    <TD align="right" bold color={s.netDebt > 0 ? '#b91c1c' : '#15803d'}>{da(s.netDebt)} DA</TD>
+                  </tr>
+                </>
+              ) : null}
             </tbody>
           </table>
 
@@ -118,6 +132,12 @@ export const ClientStatementFiche = React.forwardRef<
                   <tr style={{ background: '#f8fafc' }}><TD>+ Recharges de la période</TD><TD align="right" bold color="#047857">{da(s.totals.advanceRecharged)} DA</TD></tr>
                   <tr style={{ background: '#fff' }}><TD>− Consommé sur l'avance</TD><TD align="right" bold color="#b45309">{da(s.totals.advanceUsed)} DA</TD></tr>
                   <tr style={totalRow}><TD bold color={C.blue900}>SOLDE À LA CLÔTURE</TD><TD align="right" bold color="#047857">{da(s.closingAdvance)} DA</TD></tr>
+                  {s.advanceHeld > s.advanceLeft ? (
+                    <tr style={{ background: '#fff' }}>
+                      <TD>dont imputé sur ce que le client doit</TD>
+                      <TD align="right" bold color="#0d9488">{da(s.advanceHeld - s.advanceLeft)} DA</TD>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
@@ -268,19 +288,27 @@ export const ClientStatementFiche = React.forwardRef<
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             padding: '13px 16px', borderRadius: 8, color: '#fff',
-            background: s.closingDebt > 0
+            background: s.netDebt > 0
               ? 'linear-gradient(135deg,#991b1b,#dc2626)'
-              : 'linear-gradient(135deg,#065f46,#047857)',
+              : s.advanceLeft > 0
+                ? 'linear-gradient(135deg,#115e59,#0d9488)'
+                : 'linear-gradient(135deg,#065f46,#047857)',
           }}>
             <div>
               <p style={{ margin: 0, fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 1 }}>
-                {s.closingDebt > 0 ? 'Solde restant dû par le client' : 'Compte soldé'}
+                {s.netDebt > 0
+                  ? 'Solde restant dû par le client'
+                  : s.advanceLeft > 0 ? 'Avance restant au client' : 'Compte soldé'}
               </p>
               <p style={{ margin: '2px 0 0 0', fontSize: 9, opacity: 0.85 }}>
-                Dette d'ouverture {da(s.openingDebt)} DA + crédit {da(s.totals.credit)} DA − règlements {da(s.totals.paid)} DA
+                Dette d'ouverture {da(s.openingDebt)} DA + crédit {da(s.totals.credit)} DA
+                {' '}− règlements {da(s.totals.paid)} DA
+                {s.advanceHeld > 0 ? ` − avance détenue ${da(s.advanceHeld)} DA` : ''}
               </p>
             </div>
-            <p style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>{da(s.closingDebt)} DA</p>
+            <p style={{ margin: 0, fontSize: 26, fontWeight: 900 }}>
+              {da(s.netDebt > 0 ? s.netDebt : s.advanceLeft)} DA
+            </p>
           </div>
         </Part>
 

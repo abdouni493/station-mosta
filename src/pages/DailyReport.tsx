@@ -13,6 +13,7 @@ import { useAppState, useAppDispatch, useModulePermission } from "../store/AppCo
 import { computeCarburantSales, derivedPumpStats, derivedTankSales } from "../lib/carburantSales";
 import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
 import { brigadeNozzleRows, brigadePompisteGroups, justifiedByPompiste } from "../lib/brigadeCalc";
+import { clientLedgers } from "../lib/clientLedger";
 import Skeleton from "../components/Skeleton";
 
 /* ─── Brand palette (mirrors the Sidebar) ─── */
@@ -288,8 +289,12 @@ const DailyReport = () => {
     const netProfit    = totalRevenue - totalCost;
 
     /* 8. DEBTS */
-    const clientDebts  = clients.filter(c => c.debt > 0)
-                                .reduce((a, c) => a + c.debt, 0);
+    // Le compteur `clients.debt` de la fiche ignore et la reprise d'ouverture
+    // et l'AVANCE versée : il annonçait une créance sur un client qui avait
+    // déjà payé. On lit ce que ses pièces disent, avance imputée — la même
+    // source que l'écran Clients, la Caisse Générale et les rapports.
+    const ledgers      = clientLedgers(app);
+    const clientDebts  = clients.reduce((a, c) => a + Math.max(0, ledgers[c.id]?.netDebt ?? c.debt), 0);
 
     /* 9. WORKER PAYMENTS (in range, by paymentDate) */
     const collectWorker = (list: any[], type: string) => list.flatMap((w: any) =>

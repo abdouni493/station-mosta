@@ -33,11 +33,12 @@ import { BizSale, BizReparation, BizContact, BizDocPayment, ModuleState, prestat
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 export type StatementKind =
-  | 'ouverture'
+  | 'ouverture' | 'avance'
   | 'bon' | 'magasin' | 'vente' | 'intervention' | 'reglement' | 'recharge' | 'retour';
 
 export const KIND_LABEL: Record<StatementKind, string> = {
   ouverture: 'Dette initiale',
+  avance: 'Avance initiale',
   bon: 'Bon carburant',
   magasin: 'Vente magasin',
   vente: 'Vente',
@@ -50,6 +51,10 @@ export const KIND_LABEL: Record<StatementKind, string> = {
 /** Couleur d'impression d'une nature d'opération sur la fiche. */
 export const KIND_COLOR: Record<StatementKind, string> = {
   ouverture: '#b45309',
+  // Les deux reprises se lisent en paire : la dette en ambre, l'avance en
+  // sarcelle — proche du vert des règlements sans se confondre avec eux, parce
+  // que ce n'en est justement pas un.
+  avance: '#0d9488',
   bon: '#1d4ed8', magasin: '#0e7490', vente: '#0e7490', intervention: '#7c3aed',
   reglement: '#15803d', recharge: '#047857', retour: '#b45309',
 };
@@ -143,6 +148,16 @@ export interface ClientStatement {
   /** Dette une fois la période passée. */
   closingDebt: number;
   closingAdvance: number;
+  /** L'avance encore détenue à la clôture — jamais négative. */
+  advanceHeld: number;
+  /**
+   * Ce que le client doit RÉELLEMENT à la clôture : sa dette, moins l'argent
+   * que la station détient déjà pour lui. Sans cette imputation, un client
+   * prépayé apparaissait débiteur de ce qu'il avait pourtant payé d'avance.
+   */
+  netDebt: number;
+  /** Ce qui lui reste d'avance une fois sa dette imputée dessus. */
+  advanceLeft: number;
   totals: {
     /** Total consommé sur la période. */
     charged: number;
@@ -155,6 +170,12 @@ export interface ClientStatement {
     /** Part de la consommation prise sur l'avance. */
     advanceUsed: number;
     advanceRecharged: number;
+    /**
+     * L'avance de REPRISE de la période — comptée à part des recharges, parce
+     * qu'elle n'a fait entrer aucun argent dans le tiroir : le client l'avait
+     * versée avant que la station ne tienne ce compte.
+     */
+    advanceOpening: number;
     /** Mouvement net de la dette sur la période. */
     debtMovement: number;
     /** Nombre de documents (hors règlements et recharges). */
@@ -195,11 +216,12 @@ const qtyFmt = (n: number) => n.toLocaleString('fr-FR', { maximumFractionDigits:
 function fuelLine(e: ClientEntry): StatementLine {
   const kind: StatementKind =
     e.kind === 'ouverture' ? 'ouverture'
-      : e.kind === 'bon' ? 'bon'
-        : e.kind === 'magasin' ? 'magasin'
-          : e.kind === 'reglement' ? 'reglement'
-            : e.kind === 'recharge' ? 'recharge'
-              : 'vente';
+      : e.kind === 'avance' ? 'avance'
+        : e.kind === 'bon' ? 'bon'
+          : e.kind === 'magasin' ? 'magasin'
+            : e.kind === 'reglement' ? 'reglement'
+              : e.kind === 'recharge' ? 'recharge'
+                : 'vente';
 
   const qtyLabel = e.liters
     ? `${qtyFmt(e.liters)} L`
@@ -218,7 +240,8 @@ function fuelLine(e: ClientEntry): StatementLine {
     charged: e.charged,
     // Un bon à crédit n'encaisse rien ; une facture magasin encaisse ce qui a
     // été réglé sur place ; un règlement encaisse son montant.
-    paid: (e.kind === 'reglement' || e.kind === 'recharge') ? e.paid : num(e.paidOnDocument),
+    paid: (e.kind === 'reglement' || e.kind === 'recharge' || e.kind === 'avance')
+      ? e.paid : num(e.paidOnDocument),
     rest: num(e.rest ?? ((e.kind === 'bon' || e.kind === 'ouverture') ? Math.max(0, e.debtEffect) : 0)),
     debtEffect: e.debtEffect,
     advanceEffect: e.advanceEffect,
@@ -430,8 +453,8 @@ function openingLines(client: BizContact | null): StatementLine[] {
     out.push({
       id: `open-adv-${client?.id || ''}`,
       date: op.date,
-      kind: 'recharge',
-      kindLabel: KIND_LABEL.recharge,
+      kind: 'avance',
+      kindLabel: KIND_LABEL.avance,
       label: "Avance initiale — ouverture du compte",
       mode: 'Ouverture',
       notes: op.notes,
@@ -470,15 +493,23 @@ export function bizClientStatement(
     client: { id, name: client?.name || '', phone: client?.phone, address: client?.address },
     partLabel,
     from, to, allLines: lines,
-    // Rien ne consomme encore l'avance d'un client de partie : ce qu'il a versé
-    // à l'ouverture est ce dont il dispose. On le passe quand même par le même
-    // chemin que le Carburant pour que la rubrique « Avance » du dossier
-    // s'affiche — et se remplisse toute seule le jour où une vente s'y imputera.
+    // Aucune vente de partie ne s'impute encore sur l'avance ligne par ligne :
+    // ce que le client a versé à l'ouverture est donc ce dont il dispose. Ce
+    // qu'il doit par ailleurs s'impute dessus au niveau du COMPTE
+    // (`netDebt` / `advanceLeft`), là où les deux soldes se rencontrent enfin.
     currentAdvance: op.advance > 0 ? op.advance : undefined,
   });
 }
 
 // ─── Assemblage commun ────────────────────────────────────────────────────────
+/**
+ * Ce qui n'est PAS un document du compte : ni marchandise, ni prestation. Un
+ * règlement solde une pièce, une recharge alimente un prépayé, une avance de
+ * reprise reporte un solde — aucun des trois ne se compte comme une opération
+ * facturée.
+ */
+const NON_DOCUMENT = new Set<StatementKind>(['reglement', 'recharge', 'avance']);
+
 function assemble(input: {
   client: StatementParty;
   partLabel: string;
@@ -503,12 +534,23 @@ function assemble(input: {
   const credit = lines.reduce((s, l) => s + Math.max(0, l.debtEffect), 0);
   const advanceUsed = -lines.reduce((s, l) => s + Math.min(0, l.advanceEffect), 0);
   const advanceRecharged = lines.reduce((s, l) => s + Math.max(0, l.advanceEffect), 0);
+  const advanceOpening = lines
+    .filter(l => l.kind === 'avance')
+    .reduce((s, l) => s + Math.max(0, l.advanceEffect), 0);
 
   // Les règlements sont les lignes du journal qui portent de l'argent entrant —
   // pour toutes les activités, sans exception : c'est ce qui garantit que le
   // total encaissé du tableau des règlements est bien celui du journal.
+  //
+  // L'AVANCE DE REPRISE est la seule exception, et c'est elle qui faussait le
+  // compte : le client l'a bien versée, mais avant que la station ne tienne ce
+  // compte — aucun billet n'est entré au tiroir le jour de la saisie. Comptée
+  // parmi les encaissements, elle gonflait le « total encaissé » de la carte,
+  // du dossier et de la fenêtre d'encaissement, et le même argent était compté
+  // une seconde fois le jour où le client venait vraiment payer. Elle reste au
+  // journal, au crédit du compte, mais hors du tableau des règlements.
   const payments: StatementPayment[] = lines
-    .filter(l => l.paid !== 0)
+    .filter(l => l.paid !== 0 && l.kind !== 'avance')
     .map(l => ({
       id: `${l.id}-pay`,
       lineId: l.id,
@@ -559,6 +601,16 @@ function assemble(input: {
   const closingAdvance = input.currentAdvance === undefined ? 0 : currentAdvance - advanceAfter;
   const openingAdvance = closingAdvance - (advanceRecharged - advanceUsed);
 
+  // ── L'IMPUTATION DE L'AVANCE SUR LA DETTE ─────────────────────────────────
+  // Les deux soldes vivaient côte à côte sans jamais se rencontrer : la station
+  // réclamait 5 000 DA à un client dont elle détenait déjà 20 000 DA d'avance.
+  // C'est le même compte : ce qui est détenu éteint ce qui est dû, et seul le
+  // reliquat — d'un côté ou de l'autre — est un vrai solde.
+  const closingDebt = openingDebt + debtMovement;
+  const advanceHeld = Math.max(0, closingAdvance);
+  const netDebt = Math.max(0, closingDebt - advanceHeld);
+  const advanceLeft = Math.max(0, advanceHeld - Math.max(0, closingDebt));
+
   return {
     client: input.client,
     partLabel: input.partLabel,
@@ -568,11 +620,15 @@ function assemble(input: {
     payments,
     openingDebt,
     openingAdvance,
-    closingDebt: openingDebt + debtMovement,
+    closingDebt,
     closingAdvance,
+    advanceHeld,
+    netDebt,
+    advanceLeft,
     totals: {
       charged, paid, rest, credit, advanceUsed, advanceRecharged, debtMovement,
-      documents: lines.filter(l => l.kind !== 'reglement' && l.kind !== 'recharge').length,
+      advanceOpening,
+      documents: lines.filter(l => !NON_DOCUMENT.has(l.kind)).length,
     },
     byKind,
     byMode,

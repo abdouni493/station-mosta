@@ -37,7 +37,7 @@ import {
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey, bizExpensePaidInCash, netCashOfSale } from '../lib/bizConfig';
 import { computeCarburantCash } from '../lib/carburantSales';
-import { moduleCaisseMovements, docPaymentSlices, openingDebtRest } from '../lib/bizReporting';
+import { moduleCaisseMovements, docPaymentSlices, openingDebtRest, clientNetPosition } from '../lib/bizReporting';
 import { clientLedgers, clientOpening } from '../lib/clientLedger';
 import { fuelClientStatement, bizClientStatement, KIND_COLOR } from '../lib/clientStatement';
 import {
@@ -471,6 +471,12 @@ export default function CaisseGenerale() {
       id: string; name: string; part: TreasuryPart; partLabel: string;
       charged: number; paid: number; rest: number;
       opening: number; openingRest: number; ops: number; last: string;
+      /**
+       * L'avance que la station détient ENCORE pour ce client, une fois sa
+       * dette imputée dessus. Elle n'était lue nulle part : un client prépayé
+       * figurait ici parmi les débiteurs, pour un argent qu'il avait déjà versé.
+       */
+      advance: number;
     }[] = [];
 
     // ── Carburant ──────────────────────────────────────────────────────────
@@ -481,7 +487,10 @@ export default function CaisseGenerale() {
       const op = clientOpening(c as any);
       rows.push({
         id: c.id, name: c.name, part: 'carburant', partLabel: 'Carburant',
-        charged: l.charged, paid: l.paid, rest: Math.max(0, l.debtFromDocuments),
+        charged: l.charged, paid: l.paid,
+        // La dette NETTE : ce que la station peut réellement réclamer.
+        rest: l.netDebt,
+        advance: l.advanceLeft,
         opening: op.debt,
         // La reprise est la plus ancienne dette du compte : elle se solde en
         // premier, ce qui reste dessus est donc ce qu'aucun règlement n'a couvert.
@@ -531,13 +540,17 @@ export default function CaisseGenerale() {
       for (const c of (m.clients || [])) {
         const cur = agg.get(c.id) || { charged: 0, paid: 0, rest: 0, ops: 0, last: '' };
         const o = openingDebtRest(c as any);
+        // L'avance versée à l'ouverture s'impute sur ce qu'il doit : le reste
+        // réclamable est la différence, et le reliquat lui appartient encore.
+        const pos = clientNetPosition(c as any, cur.rest);
         rows.push({
           id: c.id, name: c.name, part: key as TreasuryPart, partLabel: MODULES[key].label,
           charged: cur.charged + o.debt,
           paid: cur.paid + o.paid,
-          rest: cur.rest + o.rest,
+          rest: pos.net,
+          advance: pos.left,
           opening: o.debt, openingRest: o.rest,
-          ops: cur.ops + (o.debt > 0 ? 1 : 0),
+          ops: cur.ops + (o.debt > 0 ? 1 : 0) + (pos.advance > 0 ? 1 : 0),
           last: cur.last,
         });
       }
@@ -549,6 +562,8 @@ export default function CaisseGenerale() {
   const debtTotals = useMemo(() => ({
     rest: clientDebts.reduce((t, r) => t + r.rest, 0),
     opening: clientDebts.reduce((t, r) => t + r.openingRest, 0),
+    /** L'argent des clients que la station détient — une dette envers eux. */
+    advance: clientDebts.reduce((t, r) => t + r.advance, 0),
     debtors: clientDebts.filter(r => r.rest > 0.004).length,
     byPart: (['carburant', 'cafeteria', 'lavage'] as const).map(k => ({
       part: k,
@@ -559,7 +574,9 @@ export default function CaisseGenerale() {
   /** Les créances affichées : les débiteurs, filtrés par le champ de recherche. */
   const visibleDebts = useMemo(() => {
     const q = debtSearch.trim().toLowerCase();
-    const base = clientDebts.filter(r => (showAllDebtors ? true : r.rest > 0.004));
+    // Un client en avance n'est pas « rien » : il a un solde, du bon côté. Il
+    // reste donc visible sans avoir à déplier toute la base.
+    const base = clientDebts.filter(r => (showAllDebtors ? true : r.rest > 0.004 || r.advance > 0.004));
     return q ? base.filter(r => r.name.toLowerCase().includes(q) || r.partLabel.toLowerCase().includes(q)) : base;
   }, [clientDebts, debtSearch, showAllDebtors]);
 
@@ -854,6 +871,17 @@ export default function CaisseGenerale() {
           ))}
         </div>
 
+        {debtTotals.advance > 0 && (
+          <div className="px-5 py-2.5 flex items-start gap-2.5 bg-teal-50 border-b border-teal-100">
+            <Wallet className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
+            <p className="text-[11px] font-semibold text-teal-900 leading-relaxed">
+              La station détient <b>{money(debtTotals.advance)}</b> d'<b>avances clients</b> —
+              de l'argent déjà versé, qui n'est PAS une créance : il vient en déduction de ce
+              que ces clients doivent, et le total à recouvrer ci-dessus en tient compte.
+            </p>
+          </div>
+        )}
+
         {debtTotals.opening > 0 && (
           <div className="px-5 py-2.5 flex items-start gap-2.5 bg-amber-50 border-b border-amber-100">
             <Flag className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -873,13 +901,14 @@ export default function CaisseGenerale() {
                 <th className="px-5 py-2.5 text-right">Consommé</th>
                 <th className="px-5 py-2.5 text-right">Réglé</th>
                 <th className="px-5 py-2.5 text-right">Dette initiale</th>
+                <th className="px-5 py-2.5 text-right">Avance détenue</th>
                 <th className="px-5 py-2.5 text-right">Reste dû</th>
                 <th className="px-5 py-2.5 text-center">Compte</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {visibleDebts.length === 0 ? (
-                <tr><td colSpan={7} className="px-5 py-8 text-center text-xs font-bold text-slate-400">
+                <tr><td colSpan={8} className="px-5 py-8 text-center text-xs font-bold text-slate-400">
                   {clientDebts.length === 0 ? 'Aucun client enregistré' : 'Aucun client ne doit quoi que ce soit'}
                 </td></tr>
               ) : visibleDebts.slice(0, 60).map(r => (
@@ -904,6 +933,11 @@ export default function CaisseGenerale() {
                             <span className="block text-[10px] text-amber-500">reste {money(r.openingRest)}</span>
                           )}
                         </span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-5 py-2.5 text-right tabular-nums font-bold">
+                    {r.advance > 0.004
+                      ? <span className="text-teal-600">{money(r.advance)}</span>
                       : <span className="text-slate-300">—</span>}
                   </td>
                   <td className={`px-5 py-2.5 text-right tabular-nums font-black ${r.rest > 0.004 ? 'text-red-600' : 'text-slate-300'}`}>

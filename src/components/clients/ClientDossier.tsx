@@ -309,9 +309,13 @@ export default function ClientDossier(props: ClientDossierProps) {
     return matchesSearch(query, l.label, l.ref, l.kindLabel, l.status, l.notes, l.mode, l.reference, l.qtyLabel);
   }), [lines, kindFilter, query]);
 
-  /** Les documents seuls — ce que le client a effectivement pris. */
+  /**
+   * Les documents seuls — ce que le client a effectivement pris. Ni un
+   * règlement, ni une recharge, ni une AVANCE de reprise : aucun des trois ne
+   * sort de marchandise, et la rubrique « Achats » les comptait pourtant.
+   */
   const documents = useMemo(
-    () => lines.filter(l => l.kind !== 'reglement' && l.kind !== 'recharge'),
+    () => lines.filter(l => l.kind !== 'reglement' && l.kind !== 'recharge' && l.kind !== 'avance'),
     [lines]);
 
   const payments = st.payments;
@@ -352,8 +356,21 @@ export default function ClientDossier(props: ClientDossierProps) {
   }, [documents]);
 
   const debtFromDocs = st.closingDebt;
+  /**
+   * ─── Ce que le client doit VRAIMENT ─────────────────────────────────────
+   *
+   * Le dossier affichait la dette brute et l'avance dans deux tuiles voisines
+   * qui ne se parlaient pas : un client repris avec 20 000 DA d'avance et
+   * 5 000 DA de factures ouvertes s'annonçait « débiteur de 5 000 » alors que
+   * la station tenait déjà son argent. On lui réclamait ce qu'il avait payé.
+   */
+  const advanceHeld = Math.max(0, st.advanceHeld || 0);
+  const netDebt = Math.max(0, st.netDebt ?? Math.max(0, debtFromDocs - advanceHeld));
+  const advanceLeft = Math.max(0, st.advanceLeft ?? (advanceHeld - Math.min(advanceHeld, Math.max(0, debtFromDocs))));
+  /** L'avance a-t-elle absorbé une partie de la dette ? */
+  const advanceApplied = Math.max(0, advanceHeld - advanceLeft);
   const gap = recordedDebt === undefined ? 0 : recordedDebt - debtFromDocs;
-  const overLimit = creditLimit !== undefined && creditLimit > 0 && debtFromDocs > creditLimit;
+  const overLimit = creditLimit !== undefined && creditLimit > 0 && netDebt > creditLimit;
 
   const toggle = (id: string) => setExpanded(o => ({ ...o, [id]: !o[id] }));
 
@@ -389,8 +406,8 @@ export default function ClientDossier(props: ClientDossierProps) {
           <div className="px-5 py-5 flex flex-wrap items-center gap-3">
             <p className="text-[11px] font-semibold text-slate-400 flex-1 min-w-[220px]">
               Aucune reprise enregistrée : ce compte est né à zéro. Si le client devait déjà
-              quelque chose avant sa fiche, saisissez-le ici — il entrera dans son historique,
-              sur sa carte et dans les rapports.
+              quelque chose — ou avait déjà versé une avance — avant sa fiche, saisissez-le ici :
+              le montant entrera dans son historique, sur sa carte et dans les rapports.
             </p>
             {opening.onAdopt && (
               <button onClick={opening.onAdopt}
@@ -400,30 +417,47 @@ export default function ClientDossier(props: ClientDossierProps) {
             )}
           </div>
         ) : (
+          /* Les deux plateaux de la reprise, côte à côte. L'avance initiale
+             n'avait qu'une demi-case, et seulement quand aucune date n'avait à
+             s'afficher : un compte ouvert sur un versement se lisait donc comme
+             un compte ouvert sur une ardoise, trois cellules à zéro en tête. */
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-slate-100">
+            {opening.debt > 0 ? (<>
+              <div className="bg-white px-4 py-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Dette initiale</p>
+                <p className="text-base font-black tabular-nums text-amber-600">{money(opening.debt)}</p>
+              </div>
+              <div className="bg-white px-4 py-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Déjà réglé dessus</p>
+                <p className="text-base font-black tabular-nums text-emerald-600">{money(paid)}</p>
+              </div>
+              <div className="bg-white px-4 py-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Reste de la reprise</p>
+                <p className={cn('text-base font-black tabular-nums', rest > 0 ? 'text-red-600' : 'text-slate-300')}>{money(rest)}</p>
+              </div>
+            </>) : null}
+            {opening.advance > 0 && (
+              <div className="bg-white px-4 py-3">
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Avance initiale</p>
+                <p className="text-base font-black tabular-nums text-teal-600">{money(opening.advance)}</p>
+                <p className="text-[10px] text-slate-400 font-semibold">portée au crédit du compte</p>
+              </div>
+            )}
             <div className="bg-white px-4 py-3">
-              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Dette initiale</p>
-              <p className="text-base font-black tabular-nums text-amber-600">{money(opening.debt)}</p>
+              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Date de reprise</p>
+              <p className="text-base font-black tabular-nums text-[#002d87]">{shortDate(opening.date)}</p>
             </div>
-            <div className="bg-white px-4 py-3">
-              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Déjà réglé dessus</p>
-              <p className="text-base font-black tabular-nums text-emerald-600">{money(paid)}</p>
-            </div>
-            <div className="bg-white px-4 py-3">
-              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Reste de la reprise</p>
-              <p className={cn('text-base font-black tabular-nums', rest > 0 ? 'text-red-600' : 'text-slate-300')}>{money(rest)}</p>
-            </div>
-            <div className="bg-white px-4 py-3">
-              <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">
-                {opening.advance > 0 ? 'Avance initiale' : 'Date de reprise'}
-              </p>
-              <p className="text-base font-black tabular-nums text-[#002d87]">
-                {opening.advance > 0 ? money(opening.advance) : shortDate(opening.date)}
-              </p>
-              {opening.advance > 0 && (
-                <p className="text-[10px] text-slate-400 font-semibold">au {shortDate(opening.date)}</p>
-              )}
-            </div>
+            {opening.advance > 0 && (
+              <div className="bg-white px-4 py-3 col-span-2 sm:col-span-4">
+                <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">
+                  Cette avance a été versée AVANT l'ouverture de la fiche : elle n'entre dans aucune
+                  caisse aujourd'hui — l'argent était déjà là. Elle est portée au crédit du compte,
+                  {advanceApplied > 0
+                    ? ` et ${money(advanceApplied)} en ont déjà été imputés sur ce que le client doit.`
+                    : " et viendra en déduction de ce que le client prendra."}
+                </p>
+              </div>
+            )}
             {opening.notes && (
               <div className="bg-white px-4 py-3 col-span-2 sm:col-span-4">
                 <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Note de reprise</p>
@@ -484,9 +518,11 @@ export default function ClientDossier(props: ClientDossierProps) {
           sub={`${st.totals.documents} document(s) — ${documents.length ? `du ${shortDate(documents[documents.length - 1].date)} à aujourd'hui` : 'aucun'}`} />
         <Tile icon={Wallet} label="Total encaissé" value={money(st.totals.paid)} tone="green"
           sub={`${payments.length} règlement(s)`} />
-        <Tile icon={CircleDollarSign} label="Reste dû" value={money(debtFromDocs)}
-          tone={debtFromDocs > 0 ? 'red' : 'green'}
-          sub={debtFromDocs > 0 ? "d'après les pièces du compte" : 'compte soldé'} />
+        <Tile icon={CircleDollarSign} label="Reste dû" value={money(netDebt)}
+          tone={netDebt > 0 ? 'red' : 'green'}
+          sub={advanceApplied > 0
+            ? `${money(debtFromDocs)} dus − ${money(advanceApplied)} pris sur son avance`
+            : debtFromDocs > 0 ? "d'après les pièces du compte" : 'compte soldé'} />
         {advance ? (
           <Tile icon={Wallet} label="Avance disponible" value={money(advance.available)} tone="amber"
             sub={`${money(advance.recharged)} déposés — ${money(advance.used)} consommés`} />
@@ -522,8 +558,8 @@ export default function ClientDossier(props: ClientDossierProps) {
               <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
               <div className="text-[11px] font-semibold text-red-900 leading-relaxed">
                 <span className="font-black uppercase tracking-wider block text-[10px] mb-0.5">Plafond de crédit dépassé</span>
-                Le client doit {money(debtFromDocs)} pour un plafond de {money(creditLimit || 0)} —
-                {' '}{money(debtFromDocs - (creditLimit || 0))} au-delà.
+                Le client doit {money(netDebt)} pour un plafond de {money(creditLimit || 0)} —
+                {' '}{money(netDebt - (creditLimit || 0))} au-delà.
               </div>
             </div>
           )}
@@ -1009,6 +1045,14 @@ export default function ClientDossier(props: ClientDossierProps) {
           <p className="text-[11px] font-bold opacity-80 mt-2">
             {money(advance?.recharged || 0)} déposés — {money(advance?.used || 0)} consommés en bons
           </p>
+          {/* Ce que l'avance a déjà éteint : sans cette ligne, un client dont
+              l'avance couvre ses factures voit un solde d'avance intact et une
+              dette qui, elle, a bel et bien disparu. */}
+          {advanceApplied > 0 && (
+            <p className="text-[11px] font-bold opacity-80 mt-1">
+              dont {money(advanceApplied)} imputés sur ce qu'il doit — reste {money(advanceLeft)} à lui
+            </p>
+          )}
         </div>
         {advance?.onRecharge && (
           <button onClick={advance.onRecharge}
@@ -1035,7 +1079,9 @@ export default function ClientDossier(props: ClientDossierProps) {
                     </div>
                     <div className="min-w-0">
                       <p className="text-xs font-black text-[#002d87] truncate">
-                        {isIn ? "Dépôt sur le compte d'avance" : m.label}
+                        {/* La reprise garde son nom : ce n'est pas un dépôt du
+                            jour, c'est un solde apporté à l'ouverture. */}
+                        {m.kind === 'avance' ? m.label : isIn ? "Dépôt sur le compte d'avance" : m.label}
                       </p>
                       <p className="text-[10px] text-slate-400 font-bold truncate">
                         {[shortDate(m.date), m.mode, m.reference, m.notes].filter(Boolean).join(' · ')}

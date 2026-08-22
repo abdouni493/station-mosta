@@ -127,8 +127,17 @@ const Clients = () => {
   /** La feuille A4 du relevé, imprimée depuis le dossier. */
   const dossierFicheRef = React.useRef<HTMLDivElement>(null);
 
-  // Form States
-  const [clientForm, setClientForm] = useState<Partial<Client>>({
+  /**
+   * ─── Une fiche vierge ──────────────────────────────────────────────────
+   *
+   * Trois boutons ouvraient « Nouveau client » et remettaient le formulaire à
+   * zéro chacun à sa façon — aucun des trois ne réinitialisait la REPRISE.
+   * Après avoir ouvert la fiche d'un client prépayé pour la modifier, créer un
+   * client repartait donc avec l'avance initiale du précédent déjà inscrite :
+   * un compte naissait avec l'argent de quelqu'un d'autre au crédit, sans que
+   * rien à l'écran ne le signale. Le formulaire n'a plus qu'un seul état vide.
+   */
+  const blankClientForm = (): Partial<Client> => ({
     name: "",
     type: "PARTICULIER",
     paymentMode: "CASH",
@@ -150,6 +159,9 @@ const Clients = () => {
     article: "",
     rc: ""
   });
+
+  // Form States
+  const [clientForm, setClientForm] = useState<Partial<Client>>(blankClientForm);
 
   const [rechargeForm, setRechargeForm] = useState({
     amount: 0,
@@ -598,8 +610,10 @@ const Clients = () => {
     setSelectedClient(client);
     setSelectedSale(null);
     setPaymentForm({
-      // Ce que ses PIÈCES réclament, pas le compteur de sa fiche.
-      amount: Math.max(0, ledgers[client.id]?.debtFromDocuments ?? client.debt),
+      // Ce que ses PIÈCES réclament, pas le compteur de sa fiche — et son
+      // avance déduite : proposer la dette brute à un client qui a déjà versé
+      // revenait à lui faire payer deux fois le même carburant.
+      amount: Math.max(0, ledgers[client.id]?.netDebt ?? client.debt),
       date: new Date().toISOString().split("T")[0],
       mode: "ESPECES", chequeNumber: "", bankAccountId: liveBankAccounts[0]?.id || "", notes: "",
     });
@@ -756,6 +770,12 @@ const Clients = () => {
           {
             label: "Avance disponible", value: `${advanceLeft.toLocaleString()} DA`,
             hint: `${ledger.recharged.toLocaleString()} déposés − ${ledger.chargedOnAdvance.toLocaleString()} consommés`,
+          },
+          {
+            label: "Reste dû, avance déduite", value: `${ledger.netDebt.toLocaleString()} DA`,
+            hint: ledger.advanceHeld > 0
+              ? `${ledger.debtFromDocuments.toLocaleString()} dus − ${Math.min(ledger.advanceHeld, ledger.debtFromDocuments).toLocaleString()} pris sur son avance`
+              : "aucune avance à imputer",
           },
         ],
       },
@@ -940,24 +960,7 @@ const Clients = () => {
         <button
           onClick={() => { 
             setSelectedClient(null); 
-            setClientForm({ 
-              name: "",
-              type: "PARTICULIER", 
-              paymentMode: "CASH", 
-              balance: 0, 
-              debt: 0,
-              phone: "",
-              email: "",
-              cin: "",
-              address: "",
-              contactPerson: "",
-              creditLimit: 0,
-              paymentDelay: 0,
-              nif: "",
-              nis: "",
-              article: "",
-              rc: ""
-            }); 
+            setClientForm(blankClientForm());
             setShowModal(true); 
           }}
           className="h-14 px-8 bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] text-[#FFB800] border border-blue-900 hover:border-[#FFB800] rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-950/20 hover:scale-105 transition-all flex items-center gap-3 italic"
@@ -1062,7 +1065,11 @@ const Clients = () => {
                 // Le compte du client, relu sur ses pièces : c'est lui qui donne
                 // les chiffres de la carte, jamais les colonnes de la fiche.
                 const cl = ledgers[c.id] || clientLedger(state, c.id);
-                const cDebt = cl.debtFromDocuments;
+                // La dette NETTE : ce qu'on peut réellement réclamer une fois
+                // l'avance du client imputée. La carte annonçait la brute et
+                // affichait l'avance à côté, sans jamais les rapprocher — un
+                // client prépayé y figurait comme débiteur de son propre argent.
+                const cDebt = cl.netDebt;
                 return (
                 <motion.div
                   key={c.id}
@@ -1143,7 +1150,7 @@ const Clients = () => {
                               onClick={() => { setSelectedClient(c); openOpeningEditor(c); setActionMenuOpen(null); }}
                               className="w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider text-amber-700 hover:bg-amber-50 flex items-center gap-3 transition-colors"
                             >
-                              <Flag className="w-4 h-4 text-amber-500" /> Dette initiale
+                              <Flag className="w-4 h-4 text-amber-500" /> Reprise (dette / avance)
                             </button>
                             )}
                             {c.paymentMode === "ADVANCE" && (
@@ -1223,10 +1230,18 @@ const Clients = () => {
                       <p className="text-[13px] font-black text-emerald-700 tabular-nums leading-none truncate">{cl.paid.toLocaleString()}</p>
                       <p className="text-[8px] font-bold text-emerald-400 mt-0.5">DA</p>
                     </div>
-                    <div className={cn("rounded-2xl border p-3 text-center", cDebt > 0 ? "bg-red-50/70 border-red-100" : "bg-slate-50 border-slate-100")}>
-                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">Total dettes</p>
-                      <p className={cn("text-[13px] font-black tabular-nums leading-none truncate", cDebt > 0 ? "text-red-600" : "text-slate-400")}>
-                        {cDebt.toLocaleString()}
+                    {/* Dette nette, ou — quand le client est en avance — ce que
+                        la station lui doit encore. Les deux ne peuvent pas être
+                        vrais en même temps : l'un est le reliquat de l'autre. */}
+                    <div className={cn("rounded-2xl border p-3 text-center",
+                      cDebt > 0 ? "bg-red-50/70 border-red-100"
+                        : cl.advanceLeft > 0 ? "bg-teal-50/70 border-teal-100" : "bg-slate-50 border-slate-100")}>
+                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-tight">
+                        {cDebt > 0 || cl.advanceLeft <= 0 ? 'Total dettes' : 'Avance détenue'}
+                      </p>
+                      <p className={cn("text-[13px] font-black tabular-nums leading-none truncate",
+                        cDebt > 0 ? "text-red-600" : cl.advanceLeft > 0 ? "text-teal-700" : "text-slate-400")}>
+                        {(cDebt > 0 || cl.advanceLeft <= 0 ? cDebt : cl.advanceLeft).toLocaleString()}
                       </p>
                       <p className={cn("text-[8px] font-bold mt-0.5", cDebt > 0 ? "text-red-300" : "text-slate-300")}>DA</p>
                     </div>
@@ -1241,7 +1256,7 @@ const Clients = () => {
                   icon={Building2}
                   title="Aucun client trouvé"
                   description="Ajustez vos filtres ou créez un nouveau client."
-                  action={() => { setSelectedClient(null); setClientForm({ type: "PARTICULIER", paymentMode: "CASH" }); setShowModal(true); }}
+                  action={() => { setSelectedClient(null); setClientForm(blankClientForm()); setShowModal(true); }}
                   actionLabel="AJOUTER UN CLIENT"
                 />
               </div>
@@ -1277,14 +1292,14 @@ const Clients = () => {
                           icon={Building2}
                           title="Aucun client trouvé"
                           description="Ajustez vos filtres ou créez un nouveau client."
-                          action={() => { setSelectedClient(null); setClientForm({ type: "PARTICULIER", paymentMode: "CASH" }); setShowModal(true); }}
+                          action={() => { setSelectedClient(null); setClientForm(blankClientForm()); setShowModal(true); }}
                           actionLabel="AJOUTER UN CLIENT"
                         />
                       </td>
                     </tr>
                   ) : filteredClients.map((c, index) => {
                     const cl = ledgers[c.id] || clientLedger(state, c.id);
-                    const cDebt = cl.debtFromDocuments;
+                    const cDebt = cl.netDebt;
                     return (
                     <motion.tr
                       key={c.id}
@@ -1533,7 +1548,8 @@ const Clients = () => {
                               <input type="number" className="input-field bg-white border-red-100 text-red-950 font-black h-13 shadow-inner" value={clientForm.openingDebt ?? 0} onChange={e => setClientForm({...clientForm, openingDebt: parseFloat(e.target.value) || 0})} />
                               <p className="text-[9px] font-bold text-red-700/60 leading-relaxed ml-1">
                                 Ce que le client devait DÉJÀ avant sa fiche. Elle entre dans son historique,
-                                sur sa carte, dans la Caisse Générale et dans les rapports.
+                                sur sa carte, dans la Caisse Générale et dans les rapports — sans faire
+                                entrer d'argent en caisse : la somme a été engagée avant ce compte.
                               </p>
                             </div>
                           </motion.div>
@@ -1555,6 +1571,8 @@ const Clients = () => {
                             </div>
                             <p className="text-[9px] font-bold text-green-700/70 italic leading-relaxed">
                               Les ventes et consommations boutique et carburant seront automatiquement imputées sur ce compte d'avance.
+                              L'avance initiale ouvre l'historique du client, se déduit de ce qu'il doit et se retrouve
+                              dans la Caisse Générale et dans les rapports.
                             </p>
                           </motion.div>
                         ) : (
@@ -1923,6 +1941,17 @@ const Clients = () => {
                     <span className="text-red-600 font-black text-right">{ledger.debtFromDocuments.toLocaleString()} DA</span>
                     <span className="text-emerald-600">Déjà réglé (cumul)</span>
                     <span className="text-emerald-700 text-right">{ledger.paid.toLocaleString()} DA</span>
+                    {/* L'avance que la station DÉTIENT déjà pour ce client : la
+                        lui réclamer une seconde fois, c'est encaisser deux fois
+                        le même argent. Elle n'apparaissait pas ici. */}
+                    {ledger.advanceHeld > 0 && (
+                      <>
+                        <span className="text-teal-600">Avance détenue, imputée</span>
+                        <span className="text-teal-700 font-black text-right">
+                          −{Math.min(ledger.advanceHeld, ledger.debtFromDocuments).toLocaleString()} DA
+                        </span>
+                      </>
+                    )}
                     {/* Le compteur de la fiche n'est montré QUE s'il diverge :
                         le taire laisserait croire à une erreur de saisie quand
                         c'est en réalité une reprise d'ouverture. */}
@@ -1934,7 +1963,7 @@ const Clients = () => {
                     )}
                     <span className="text-slate-500 border-t pt-2">Reste après ce règlement</span>
                     <span className="text-blue-900 font-black text-right border-t pt-2">
-                      {Math.max(0, ledger.debtFromDocuments - (paymentForm.amount || 0)).toLocaleString()} DA
+                      {Math.max(0, ledger.netDebt - (paymentForm.amount || 0)).toLocaleString()} DA
                     </span>
                   </div>
                   {selectedSale && (
@@ -2179,8 +2208,11 @@ const Clients = () => {
               <div className="flex-1 overflow-y-auto p-8 space-y-5 custom-scrollbar bg-white">
                 <div className="p-4 rounded-2xl bg-amber-50 border border-amber-100 text-[11px] font-semibold text-amber-900 leading-relaxed">
                   Ce que le client devait — ou avait déjà versé — le jour où sa fiche a été créée.
-                  Ce montant devient la <b>première ligne de son historique</b> : il compte dans sa
-                  dette, sur sa carte, dans la Caisse Générale et dans les rapports.
+                  Ce montant devient la <b>première ligne de son historique</b> : il compte sur sa
+                  carte, dans la Caisse Générale et dans les rapports. La <b>dette</b> est une
+                  créance de plus ; l'<b>avance</b> est son argent — elle vient en déduction de ce
+                  qu'il doit. Ni l'une ni l'autre ne fait entrer d'argent en caisse aujourd'hui :
+                  ce sont des soldes repris, pas des encaissements du jour.
                 </div>
 
                 <div className="space-y-2">
