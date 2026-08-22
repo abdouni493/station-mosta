@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Diagnostic de bout en bout de la passerelle WhatsApp. Ne modifie RIEN.
 

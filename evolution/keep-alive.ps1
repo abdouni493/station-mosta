@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Vérifie — et, avec -Apply, met en place — ce qui rend le poste apte à héberger
     la passerelle WhatsApp en service continu.
@@ -175,18 +175,62 @@ if (-not $docker) {
   }
 
   # ── 4. Montage concurrent ──────────────────────────────────────────────────
-  #    Deux fichiers compose du meme dossier resolvent le MEME nom de projet,
-  #    donc les MEMES volumes. Les demarrer ensemble met deux passerelles et deux
-  #    bases sur les memes donnees.
+  #    LE DANGER N'EST PAS qu'une autre passerelle tourne sur ce poste. Plusieurs
+  #    organisations cohabitent tres bien, chacune avec son projet Compose, ses
+  #    propres volumes et son propre port : c'est meme le montage en place ici,
+  #    ou l'ecole (projet « evolution », port 8081) voisine avec la station
+  #    (projet « rclmc-wa », port 8082).
+  #
+  #    Le danger, c'est qu'un AUTRE conteneur monte NOS volumes : deux passerelles
+  #    sur la meme session WhatsApp la corrompent. C'est le cas quand deux
+  #    fichiers compose resolvent le meme nom de projet.
+  #
+  #    On compare donc les VOLUMES, pas les noms. La premiere version de ce
+  #    controle signalait la simple presence d'un second montage — un faux
+  #    signalement, et un faux signalement apprend a ignorer le rapport.
   Write-Head '4. Montage concurrent'
-  $others = docker ps --format '{{.Names}}' 2>$null |
-            Where-Object { $_ -match 'evolution' -and $_ -notmatch '^rclmc-wa-' }
-  if ($others) {
-    Write-Bad 'Un autre montage Evolution tourne sur ce poste :'
-    $others | ForEach-Object { Write-Fix $_ }
-    Write-Fix 'Arretez-le : deux passerelles sur les memes volumes corrompent la session.'
+  $ourVolumes = @('rclmc-wa_evolution_instances', 'rclmc-wa_postgres_data', 'rclmc-wa_tailscale_state')
+  $intruders = @()
+  $neighbours = @()
+  # Le gabarit ne contient AUCUN guillemet interne : sous Windows, docker.exe
+  # reanalyse ses arguments et avale les guillemets doubles, si bien qu'un
+  # `{{if eq .Type "volume"}}` arrive au moteur de gabarit ampute et echoue
+  # (« function volume not defined »). Le controle ne controlait alors plus rien,
+  # en silence. Un montage lie (bind) rend un `.Name` vide : il suffit donc de
+  # lister les noms et d'ignorer les vides.
+  foreach ($name in (docker ps --format '{{.Names}}' 2>$null)) {
+    if ($name -like 'rclmc-wa-*') { continue }
+    $mounts = (docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' $name 2>$null) -join ' '
+    if (-not $mounts.Trim()) { continue }
+    $clash = $false
+    foreach ($v in $ourVolumes) {
+      if ($mounts -match [regex]::Escape($v)) { $intruders += "$name monte $v"; $clash = $true; break }
+    }
+    if (-not $clash -and $mounts -match 'evolution|tailscale') { $neighbours += $name }
+  }
+
+  if ($intruders) {
+    Write-Bad 'Un autre conteneur monte NOS volumes :'
+    $intruders | ForEach-Object { Write-Fix $_ }
+    Write-Fix 'Arretez-le : deux passerelles sur la meme session WhatsApp la corrompent.'
+  } elseif ($neighbours) {
+    Write-Ok "Aucun conflit de volumes ($($neighbours.Count) autre(s) montage(s) sur ce poste, volumes distincts)."
   } else {
     Write-Ok 'Aucun montage concurrent.'
+  }
+
+  # ── 4 bis. Conflit de port ─────────────────────────────────────────────────
+  #    L'autre conflit reel : deux passerelles sur le meme port local. Le second
+  #    conteneur refuse alors de demarrer, avec une erreur qui ne dit rien de la
+  #    vraie cause.
+  $portOwner = docker ps --format '{{.Names}} {{.Ports}}' 2>$null |
+               Where-Object { $_ -match '127\.0\.0\.1:8082->' -and $_ -notmatch '^rclmc-wa-' }
+  if ($portOwner) {
+    Write-Bad 'Le port local 8082 est deja pris :'
+    $portOwner | ForEach-Object { Write-Fix $_ }
+    Write-Fix 'Changez le port publie dans docker-compose.funnel.yml.'
+  } else {
+    Write-Ok 'Port local 8082 libre.'
   }
 }
 

@@ -188,13 +188,26 @@ même son certificat, affiche « Funnel on: https://… » — et l'adresse ne r
 nulle part. C'est le piège le plus coûteux du montage, et la seule raison pour
 laquelle cette étape existe encore ici alors qu'il n'y a rien à faire.
 
-## B3 — Clé d'authentification : **réutilisez celle de l'école**
+## B3 — Clé d'authentification : ⚠️ **il faut en générer une neuve**
 
-**Settings → Keys.** Si la clé **Reusable** créée pour l'école y figure encore et
-n'a pas expiré, **reprenez-la telle quelle** — c'est exactement ce pour quoi elle
-a été cochée Reusable.
+**Settings → Keys.** Constaté sur votre tailnet le 2026-08-23 :
 
-Sinon, **Generate auth key** :
+```
+You don't have any valid auth keys
+2 recently invalidated auth keys
+```
+
+**Toutes vos clés ont été invalidées** — y compris celle de l'école. Il n'y a
+donc rien à réutiliser : `evolution/.env` a été laissé avec
+`TAILSCALE_AUTHKEY=` **vide**, exprès. Une clé morte ferait échouer le conteneur
+à l'authentification avec un message qui ne désigne pas la cause ; un champ vide,
+lui, est refusé tout de suite et nommément par `start-gateway.ps1`.
+
+> Cela n'affecte **pas** l'école : une clé d'authentification ne sert qu'au
+> PREMIER enregistrement d'un nœud. `benzaoui-wa` est déjà enregistré, connecté,
+> et son expiration est désactivée — il continue de fonctionner.
+
+**Generate auth key** :
 
 - cochez **Reusable** ;
 - **surtout pas Ephemeral** : un nœud éphémère disparaît dès qu'il se déconnecte
@@ -234,12 +247,29 @@ Remplissez les cinq valeurs. Pour générer les deux chaînes aléatoires :
 Ce fichier n'entre **jamais** dans Git. Notez ces valeurs ailleurs : vous en
 aurez besoin à l'étape B7, et lors d'un changement de poste.
 
-## B5 — Démarrer la passerelle
+## B5 — Démarrer la passerelle : **une seule commande**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File evolution\start-gateway.ps1
+```
+
+Ce script fait tout ce que les paragraphes ci-dessous décrivent, **et vérifie les
+deux pannes qui ressemblent à une réussite** — le nom de nœud suffixé et le
+Funnel non accordé. Il refuse de toucher à Docker tant que `evolution/.env` est
+incomplet, en nommant la ligne manquante.
+
+Si vous préférez à la main :
 
 ```powershell
 docker compose -f evolution/docker-compose.funnel.yml up -d
 docker compose -f evolution/docker-compose.funnel.yml logs -f tailscale
 ```
+
+> **L'école tourne sur ce même poste** — vérifié : ses conteneurs
+> `evolution-tailscale`, `evolution-funnel` et `evolution-funnel-postgres` sont
+> en marche. La cohabitation est sûre, et elle a été contrôlée : les volumes sont
+> distincts (`evolution_*` d'un côté, `rclmc-wa_*` de l'autre) et les ports aussi
+> (8081 / 8082). `keep-alive.ps1` le revérifie à chaque passage.
 
 > **Le port local vaut 8082, et pas 8081.** Le montage de l'école occupe déjà
 > 8081. Sur deux machines séparées cela n'aurait aucune importance ; mais si les
