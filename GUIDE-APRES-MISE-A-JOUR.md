@@ -90,6 +90,36 @@ remplis automatiquement avec les informations du client et de sa voiture.
 
 # PARTIE B — L'envoi WhatsApp
 
+> ## ✅ État au 2026-08-23 — la partie B est FAITE, sauf le scan du QR
+>
+> La passerelle de la station est **installée, démarrée et jointe depuis
+> l'extérieur**. Vérifié, pas supposé :
+>
+> | Contrôle | Résultat |
+> | --- | --- |
+> | Nœud Tailscale | `rclmc-wa.tail6ac334.ts.net` — **sans suffixe `-1`** |
+> | Attribut `funnel` | accordé par le plan de contrôle |
+> | Certificat TLS | obtenu (ACME dns-01) |
+> | Passerelle en local | Evolution API 2.3.7 sur `127.0.0.1:8082` |
+> | **Joignable depuis l'extérieur** | **oui** — l'application déployée l'atteint, `error: null` |
+> | Instance `rclmc` | créée |
+> | Webhook | **Jeton vérifié** |
+> | Journal + file d'attente | `storageConfigured: true` |
+> | Session WhatsApp | **fermée — c'est le seul point restant** |
+>
+> Le contrôle « joignable depuis l'extérieur » a été fait **par l'application
+> hébergée**, qui est hors du tailnet. C'est la seule preuve qui vaille : depuis
+> ce poste, MagicDNS résout vers l'IP interne et un `curl` réussit même si le
+> chemin public est mort.
+>
+> **Il vous reste exactement deux gestes**, décrits en [B8](#b8--connecter-le-téléphone)
+> et [B10](#b10--désactiver-lexpiration-de-la-clé-) : scanner le QR avec le
+> téléphone de la station, et désactiver l'expiration de la clé du nœud
+> (elle expire le **2027-02-19**).
+>
+> Les sections ci-dessous restent la procédure complète — pour un déménagement,
+> une réinstallation, ou une seconde station.
+
 ## B0 — Lisez ceci avant de commencer
 
 Ce montage envoie depuis **le vrai numéro WhatsApp de la station**, sans passer

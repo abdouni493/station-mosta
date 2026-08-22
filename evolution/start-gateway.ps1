@@ -121,13 +121,31 @@ if ($LASTEXITCODE -ne 0) {
 }
 Ok 'moteur Docker en marche.'
 
-# Un montage concurrent partagerait les memes volumes.
-$others = docker ps --format '{{.Names}}' 2>$null | Where-Object { $_ -match 'evolution' -and $_ -notmatch '^rclmc-wa-' }
-if ($others) {
-  Warn 'Un autre montage Evolution tourne sur ce poste :'
-  $others | ForEach-Object { Fix $_ }
-  Fix "S'il partage les memes volumes, arretez-le d'abord."
+# Un voisin n'est pas un conflit : plusieurs organisations cohabitent tres bien
+# sur un meme poste, chacune avec son projet Compose et ses propres volumes.
+# Le conflit, c'est qu'un autre conteneur monte NOS volumes — deux passerelles
+# sur la meme session WhatsApp la corrompent. On compare donc les volumes.
+#
+# Le gabarit ne porte AUCUN guillemet interne : sous Windows, docker.exe les
+# avale, et `{{if eq .Type "volume"}}` echouerait sur « function volume not
+# defined » — le controle ne controlerait alors plus rien, en silence.
+$ourVolumes = @('rclmc-wa_evolution_instances', 'rclmc-wa_postgres_data', 'rclmc-wa_tailscale_state')
+$intruders = @()
+foreach ($name in (docker ps --format '{{.Names}}' 2>$null)) {
+  if ($name -like 'rclmc-wa-*') { continue }
+  $mounts = (docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' $name 2>$null) -join ' '
+  if (-not $mounts.Trim()) { continue }
+  foreach ($v in $ourVolumes) {
+    if ($mounts -match [regex]::Escape($v)) { $intruders += "$name monte $v"; break }
+  }
 }
+if ($intruders) {
+  Bad 'Un autre conteneur monte NOS volumes :'
+  $intruders | ForEach-Object { Fix $_ }
+  Fix 'Arretez-le : deux passerelles sur la meme session WhatsApp la corrompent.'
+  exit 1
+}
+Ok 'aucun conteneur etranger ne monte nos volumes.'
 
 # =====================================================================================
 #  3. DEMARRAGE
