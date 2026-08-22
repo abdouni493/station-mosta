@@ -25,24 +25,43 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 
-const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '');
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+/**
+ * ─── LES RÉGLAGES SONT LUS À L'APPEL, JAMAIS AU CHARGEMENT ─────────────────────
+ *
+ * Ces deux valeurs étaient des constantes de module. En ESM, les imports sont
+ * évalués AVANT le corps du fichier qui les importe : le `dotenv.config()` de
+ * `server.ts` tournait donc APRÈS que ce module ait déjà figé un
+ * `process.env.SUPABASE_SERVICE_ROLE_KEY` vide.
+ *
+ * Conséquence en développement : la persistance se déclarait indisponible alors
+ * que le `.env` était parfaitement renseigné — donc pas de journal, et surtout
+ * pas de file d'attente, silencieusement. Chez l'hébergeur le défaut ne se
+ * voyait pas (les variables y sont posées avant le chargement de la fonction),
+ * ce qui en faisait exactement le genre de panne qui n'apparaît qu'une fois sur
+ * le poste de la station.
+ *
+ * Une lecture paresseuse supprime la dépendance à l'ordre d'initialisation —
+ * c'est déjà ce que fait `gatewayEnv()` dans `env.ts`.
+ */
+const supabaseUrl = (): string =>
+  (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '');
+const serviceKey = (): string => process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 /** La persistance est-elle utilisable ? */
 export function storageConfigured(): boolean {
-  return !!(SUPABASE_URL && SERVICE_KEY);
+  return !!(supabaseUrl() && serviceKey());
 }
 
 /** Un appel PostgREST authentifié par la clé de service. */
 async function rest(path: string, init: RequestInit & { prefer?: string } = {}): Promise<any> {
   if (!storageConfigured()) throw new Error('SUPABASE_SERVICE_ROLE_KEY absente');
   const headers: Record<string, string> = {
-    apikey: SERVICE_KEY,
-    Authorization: `Bearer ${SERVICE_KEY}`,
+    apikey: serviceKey(),
+    Authorization: `Bearer ${serviceKey()}`,
     'Content-Type': 'application/json',
   };
   if (init.prefer) headers.Prefer = init.prefer;
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { ...init, headers: { ...headers, ...(init.headers as any) } });
+  const res = await fetch(`${supabaseUrl()}/rest/v1/${path}`, { ...init, headers: { ...headers, ...(init.headers as any) } });
   const text = await res.text();
   if (!res.ok) throw new Error(`[supabase ${res.status}] ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : null;
@@ -139,10 +158,10 @@ export async function enqueue(row: Omit<OutboxRow, 'status' | 'attempts'>): Prom
 export async function pendingCount(): Promise<number> {
   if (!storageConfigured()) return 0;
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/whatsapp_outbox?status=eq.pending&select=id`, {
+    const res = await fetch(`${supabaseUrl()}/rest/v1/whatsapp_outbox?status=eq.pending&select=id`, {
       headers: {
-        apikey: SERVICE_KEY,
-        Authorization: `Bearer ${SERVICE_KEY}`,
+        apikey: serviceKey(),
+        Authorization: `Bearer ${serviceKey()}`,
         Prefer: 'count=exact',
         Range: '0-0',
       },

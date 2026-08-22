@@ -24,10 +24,27 @@ const trim = (v: string | undefined): string => (v || '').trim();
 /** Sans slash final : `SERVER_URL` est comparé AU CARACTÈRE PRÈS par le webhook. */
 export const stripSlash = (u: string): string => u.replace(/\/+$/, '');
 
-/** Ce que la passerelle exige pour qu'un envoi soit seulement tentable. */
+/**
+ * Ce que la passerelle exige pour qu'un envoi soit seulement tentable.
+ *
+ * ─── POURQUOI `TUNNEL_PUBLIC_URL` FAIT OFFICE DE REPLI ─────────────────────────
+ * L'adresse de la passerelle est écrite à DEUX endroits : `TUNNEL_PUBLIC_URL`
+ * dans `evolution/.env` (elle devient le `SERVER_URL` du conteneur) et
+ * `EVOLUTION_BASE_URL` côté application. Ces deux valeurs doivent être
+ * identiques AU CARACTÈRE PRÈS : la première est estampillée dans le champ
+ * `server_url` de chaque webhook, la seconde est ce à quoi l'application le
+ * compare. Un slash final en trop d'un seul côté, et tous les accusés de remise
+ * repartent en 403.
+ *
+ * Deux valeurs qui doivent rester égales finissent toujours par diverger. Sur le
+ * poste de développement, où le même fichier sert aux deux, on lit donc
+ * `TUNNEL_PUBLIC_URL` à défaut d'`EVOLUTION_BASE_URL` : il n'y a plus qu'une
+ * seule valeur à tenir juste. Chez l'hébergeur, `EVOLUTION_BASE_URL` reste la
+ * variable à renseigner — le conteneur, lui, n'y est pas.
+ */
 export function gatewayEnv(): GatewayEnv {
   return {
-    baseUrl: stripSlash(trim(process.env.EVOLUTION_BASE_URL)),
+    baseUrl: stripSlash(trim(process.env.EVOLUTION_BASE_URL) || trim(process.env.TUNNEL_PUBLIC_URL)),
     apiKey: trim(process.env.EVOLUTION_API_KEY),
     instance: trim(process.env.EVOLUTION_INSTANCE) || 'station',
     webhookToken: trim(process.env.EVOLUTION_WEBHOOK_TOKEN),
