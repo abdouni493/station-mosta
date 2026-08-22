@@ -168,6 +168,39 @@ async function sessionRoute(req: RouteRequest): Promise<RouteResponse> {
   const action = String(req.body?.action || '');
   const resolved = webhookUrl(req.host, req.proto);
 
+  /**
+   * ─── UN DÉPLOIEMENT DE PRÉVISUALISATION NE DOIT PAS TOUCHER À LA PRODUCTION ──
+   *
+   * Il n'y a QU'UNE passerelle, QU'UNE instance et QU'UN emplacement de webhook,
+   * et le webhook est stocké SUR LA PASSERELLE — pas dans l'application. Or les
+   * variables d'environnement sont déclarées « Production and Preview » : chaque
+   * déploiement de branche parle donc à la MÊME passerelle.
+   *
+   * Deux gestes y deviennent destructeurs pour la production :
+   *
+   *   • `setup` réécrirait le webhook vers l'adresse de la PRÉVISUALISATION.
+   *     Les messages continueraient de partir, et plus aucun accusé de remise
+   *     ne reviendrait en production — les statuts resteraient bloqués, sans
+   *     la moindre erreur nulle part. C'est le piège le plus muet du montage,
+   *     déjà rencontré au passage de localhost à la production ;
+   *   • `logout` délierait le téléphone de la station.
+   *
+   * `connect` et `restart` restent autorisés : ils visent la même instance sans
+   * rien réécrire de durable.
+   */
+  const isPreview = String(process.env.VERCEL_ENV || '') === 'preview';
+  if (isPreview && (action === 'setup' || action === 'logout')) {
+    return {
+      status: 409,
+      body: {
+        error: `L'action « ${action} » est refusée depuis un déploiement de prévisualisation.`,
+        remedy: action === 'setup'
+          ? "Ce bouton réécrirait l'adresse du webhook vers CETTE prévisualisation : la production continuerait d'envoyer, mais ne recevrait plus aucun accusé de remise, sans qu'aucune erreur ne le signale. Faites-le depuis le domaine de production."
+          : 'Ce bouton délierait le téléphone de la station, pour tout le monde. Faites-le depuis le domaine de production.',
+      },
+    };
+  }
+
   try {
     let qr: { qrBase64: string | null; pairingCode: string | null } = { qrBase64: null, pairingCode: null };
     switch (action) {
