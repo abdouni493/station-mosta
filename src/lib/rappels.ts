@@ -115,8 +115,17 @@ function kindsOf(rep: BizReparation): ('lavage' | 'reparation')[] {
   return [...set];
 }
 
-/** Le délai réglé pour une nature. `0` ou moins ⇒ cette nature ne rappelle pas. */
-function delayFor(cfg: BizRappelConfig, kind: 'lavage' | 'reparation'): number {
+/**
+ * Le délai réglé pour une nature. `0` ou moins ⇒ cette nature ne rappelle pas.
+ *
+ * Un délai PROPRE AU VÉHICULE (`car.rappelLavageDays` / `car.rappelReparationDays`,
+ * posé sur la fiche du client) l'emporte sur le délai de la partie : il permet de
+ * régler la cadence voiture par voiture. Un `0` porté par le véhicule coupe donc
+ * SA nature pour LUI seul, sans toucher au réglage général.
+ */
+function delayFor(cfg: BizRappelConfig, kind: 'lavage' | 'reparation', car?: BizCar | null): number {
+  const own = kind === 'lavage' ? car?.rappelLavageDays : car?.rappelReparationDays;
+  if (typeof own === 'number' && Number.isFinite(own)) return own;
   return kind === 'lavage' ? cfg.lavageDays : cfg.reparationDays;
 }
 
@@ -161,38 +170,46 @@ export function buildRappels(input: BuildRappelsInput): RappelAlert[] {
   // ── 1 & 3. Le DERNIER passage par (véhicule, nature) ───────────────────────
   // On parcourt tout l'historique et on ne retient, pour chaque couple, que
   // l'intervention la plus récente. Les précédentes sont périmées par elle.
-  const latest = new Map<string, { rep: BizReparation; kind: 'lavage' | 'reparation'; day: string; carKey: string }>();
+  const latest = new Map<string, {
+    rep: BizReparation; kind: 'lavage' | 'reparation'; day: string; carKey: string;
+    /** Le véhicule de la FICHE (quand l'intervention s'y rattache) : c'est lui
+     *  qui porte le délai propre au véhicule et le kilométrage à jour. */
+    parcCar?: BizCar;
+  }>();
 
   for (const rep of input.reparations || []) {
     if (rep.status !== 'finalized') continue;
     const day = dayOf(rep.date);
     if (!day) continue;
+    // Un rappel s'adresse à quelqu'un : sans client identifié, personne à qui
+    // écrire — l'alerte n'aurait aucune suite possible.
+    if (!rep.clientId) continue;
     const carKey = carKeyOf(rep.car);
+    // Le véhicule de la fiche du client, quand l'intervention s'y rattache par
+    // son id : il porte l'éventuel délai de rappel PROPRE À CE VÉHICULE.
+    const client = clientById.get(rep.clientId);
+    const parcCar = (client?.cars || []).find(c => c.id && c.id === rep.car?.id);
     for (const kind of kindsOf(rep)) {
-      if (delayFor(cfg, kind) <= 0) continue;
-      // Un rappel s'adresse à quelqu'un : sans client identifié, personne à
-      // qui écrire — l'alerte n'aurait aucune suite possible.
-      if (!rep.clientId) continue;
+      if (delayFor(cfg, kind, parcCar) <= 0) continue;
       const key = `${rep.clientId}|${carKey}|${kind}`;
       const prev = latest.get(key);
-      if (!prev || day > prev.day) latest.set(key, { rep, kind, day, carKey });
+      if (!prev || day > prev.day) latest.set(key, { rep, kind, day, carKey, parcCar });
     }
   }
 
   // ── 2, 4 & 5. Ce qui reste devient une alerte ──────────────────────────────
   const out: RappelAlert[] = [];
-  for (const { rep, kind, day, carKey } of latest.values()) {
+  for (const { rep, kind, day, carKey, parcCar } of latest.values()) {
     const id = rappelId(rep.id, kind, carKey);
     if (handled.has(id)) continue;
 
-    const dueDate = addDays(day, delayFor(cfg, kind));
+    const dueDate = addDays(day, delayFor(cfg, kind, parcCar));
     const daysLeft = daysBetween(today, dueDate);
     if (daysLeft > lookahead) continue;
 
     const client = rep.clientId ? clientById.get(rep.clientId) : undefined;
     // Le kilométrage le plus frais : celui de la fiche du client s'il a été
     // relevé depuis, sinon celui figé sur l'intervention.
-    const parcCar = (client?.cars || []).find(c => c.id && c.id === rep.car?.id);
     const km = parcCar?.kilometrage ?? rep.car?.kilometrage;
 
     out.push({

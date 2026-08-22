@@ -275,6 +275,73 @@ section('11. Un modèle rempli — et ce qui arrive aux jetons inconnus');
   check('un texte propre ne signale rien', missingTokens('Bonjour Belaid.'), []);
 }
 
+// ─── 12. Le délai PROPRE À CHAQUE VÉHICULE ────────────────────────────────────
+section('12. Un délai posé sur un véhicule l\'emporte sur le réglage de la partie');
+{
+  // La Clio (v1) est réglée à 7 jours de lavage, propre à elle ; la Hilux (v2)
+  // n'a rien et suit le défaut de la partie (30 jours).
+  const clientPerCar: BizContact = {
+    id: 'cl1', name: 'Belaid Karim', phone: '0550 12 34 56', createdAt: '2025-01-01',
+    cars: [
+      { id: 'v1', name: 'Clio', marque: 'Renault', rappelLavageDays: 7 },
+      { id: 'v2', name: 'Hilux', marque: 'Toyota' },
+    ],
+  };
+  const alerts = buildRappels({
+    reparations: [
+      rep({ id: 'r1', car: { id: 'v1' }, date: '2026-08-01T10:00:00' }),
+      rep({ id: 'r2', car: { id: 'v2' }, date: '2026-08-01T10:00:00' }),
+    ],
+    clients: [clientPerCar], handled: [], config: CFG, today: TODAY, lookaheadDays: 60,
+  });
+  const clio = alerts.find(a => a.reparationId === 'r1');
+  const hilux = alerts.find(a => a.reparationId === 'r2');
+  check('la Clio revient à 7 jours (son délai propre)', clio?.dueDate, '2026-08-08');
+  check('la Hilux garde le défaut de 30 jours', hilux?.dueDate, '2026-08-31');
+}
+
+section('12 bis. Un délai de 0 sur un véhicule le fait taire, lui seul');
+{
+  const clientMute: BizContact = {
+    id: 'cl1', name: 'Belaid Karim', phone: '0550 12 34 56', createdAt: '2025-01-01',
+    cars: [
+      { id: 'v1', name: 'Clio', marque: 'Renault', rappelLavageDays: 0 },
+      { id: 'v2', name: 'Hilux', marque: 'Toyota' },
+    ],
+  };
+  const alerts = buildRappels({
+    reparations: [
+      rep({ id: 'r1', car: { id: 'v1' }, date: '2026-01-01T10:00:00' }),
+      rep({ id: 'r2', car: { id: 'v2' }, date: '2026-08-01T10:00:00' }),
+    ],
+    clients: [clientMute], handled: [], config: CFG, today: TODAY, lookaheadDays: 60,
+  });
+  check('une seule alerte : la Clio muette est écartée', alerts.length, 1);
+  check('et c\'est la Hilux', alerts[0]?.reparationId, 'r2');
+}
+
+section('12 ter. Le lavage et la réparation d\'un véhicule se règlent séparément');
+{
+  const clientMixte: BizContact = {
+    id: 'cl1', name: 'Belaid Karim', phone: '0550 12 34 56', createdAt: '2025-01-01',
+    cars: [{ id: 'v1', name: 'Clio', marque: 'Renault', rappelLavageDays: 15, rappelReparationDays: 90 }],
+  };
+  const alerts = buildRappels({
+    reparations: [rep({
+      id: 'r1', kind: 'mixte', car: { id: 'v1' }, date: '2026-08-01T10:00:00',
+      prestations: [
+        { id: 'p1', kind: 'lavage', label: 'Lavage', amount: 800, workerIds: [] },
+        { id: 'p2', kind: 'reparation', label: 'Vidange', amount: 4500, workerIds: [] },
+      ],
+    })],
+    clients: [clientMixte], handled: [], config: CFG, today: TODAY, lookaheadDays: 3650,
+  });
+  const lav = alerts.find(a => a.kind === 'lavage');
+  const rpr = alerts.find(a => a.kind === 'reparation');
+  check('le lavage propre au véhicule : 15 jours', lav?.dueDate, '2026-08-16');
+  check('la réparation propre au véhicule : 90 jours', rpr?.dueDate, '2026-10-30');
+}
+
 // ─── Bilan ────────────────────────────────────────────────────────────────────
 console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} cas passés, ${failed} en échec.`);
 if (failed > 0) process.exit(1);

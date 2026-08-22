@@ -8,14 +8,17 @@
 import React, { useMemo, useState } from 'react';
 import {
   Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff,
-  AlertTriangle, Search, Pencil, Car, Plus, Trash2,
+  AlertTriangle, Search, Pencil, Car, Plus, Trash2, Clock,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, formatCurrency } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
 import { useAppState } from '@/src/store/AppContext';
-import { BizProduct, BizContact, BizDocPayment, BizCar, MODULES, carLabel } from '@/src/lib/bizConfig';
+import {
+  BizProduct, BizContact, BizDocPayment, BizCar, BizRappelConfig, DEFAULT_RAPPEL_CONFIG,
+  MODULES, carLabel,
+} from '@/src/lib/bizConfig';
 import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import { uploadFile } from '@/src/lib/supabase';
@@ -671,9 +674,19 @@ export function ProductModal({
  * de la partie Lavage : l'écran Clients, le point de vente, la fiche
  * d'intervention.
  */
-export function CarsEditor({ cars, onChange }: { cars: BizCar[]; onChange: (next: BizCar[]) => void }) {
+export function CarsEditor({ cars, onChange, defaults }: {
+  cars: BizCar[];
+  onChange: (next: BizCar[]) => void;
+  /** Délais de rappel de la partie — affichés en repère (« Défaut : 30 j »). */
+  defaults?: BizRappelConfig;
+}) {
+  const cfg = defaults || DEFAULT_RAPPEL_CONFIG;
   const patch = (id: string, key: keyof BizCar, value: any) =>
     onChange(cars.map(c => (c.id === id ? { ...c, [key]: value } : c)));
+
+  /** Un champ « jours » vide efface l'override (retour au délai de la partie). */
+  const patchDays = (id: string, key: 'rappelLavageDays' | 'rappelReparationDays', raw: string) =>
+    patch(id, key, raw === '' ? undefined : Math.max(0, Number(raw) || 0));
 
   const add = () => onChange([
     ...cars,
@@ -730,6 +743,38 @@ export function CarsEditor({ cars, onChange }: { cars: BizCar[]; onChange: (next
                   value={c.kilometrage ?? ''}
                   onChange={e => patch(c.id!, 'kilometrage', e.target.value === '' ? undefined : Number(e.target.value) || 0)} />
               </div>
+
+              {/* ── Le rappel PROPRE À CE VÉHICULE ─────────────────────────────
+                  Chaque voiture se rappelle à SA cadence : laissez vide pour
+                  suivre le délai de la partie, mettez 0 pour ne jamais rappeler
+                  ce véhicule, ou un nombre de jours qui l'emporte pour lui seul. */}
+              <div className="rounded-lg bg-amber-50/70 border border-amber-200 p-2.5 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">
+                    Rappel propre à ce véhicule
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Lavage (jours)</label>
+                    <Input type="number" inputMode="numeric" min={0} className="text-right"
+                      placeholder={`Défaut : ${cfg.lavageDays} j`}
+                      value={c.rappelLavageDays ?? ''}
+                      onChange={e => patchDays(c.id!, 'rappelLavageDays', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Réparation (jours)</label>
+                    <Input type="number" inputMode="numeric" min={0} className="text-right"
+                      placeholder={`Défaut : ${cfg.reparationDays} j`}
+                      value={c.rappelReparationDays ?? ''}
+                      onChange={e => patchDays(c.id!, 'rappelReparationDays', e.target.value)} />
+                  </div>
+                </div>
+                <p className="text-[10px] font-semibold text-amber-900/60 leading-relaxed">
+                  Vide = délai de la partie. <strong>0</strong> = ce véhicule ne reçoit aucun rappel de cette nature.
+                </p>
+              </div>
             </div>
           ))}
         </div>
@@ -744,6 +789,9 @@ export function CarsEditor({ cars, onChange }: { cars: BizCar[]; onChange: (next
  * conservée doit avoir un identifiant — c'est lui qui la relie à ses passages.
  */
 export function cleanCars(cars: BizCar[] | undefined): BizCar[] | undefined {
+  /** Un délai propre au véhicule : un entier ≥ 0, ou rien (retour au défaut). */
+  const cleanDays = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : undefined;
   const kept = (cars || [])
     .map(c => ({
       ...c,
@@ -753,6 +801,8 @@ export function cleanCars(cars: BizCar[] | undefined): BizCar[] | undefined {
       color: (c.color || '').trim(),
       year: (c.year || '').trim(),
       immatriculation: (c.immatriculation || '').trim(),
+      rappelLavageDays: cleanDays(c.rappelLavageDays),
+      rappelReparationDays: cleanDays(c.rappelReparationDays),
     }))
     .filter(c => c.name || c.marque || c.immatriculation);
   return kept.length ? kept : undefined;
@@ -828,7 +878,8 @@ export function ContactModal({
         <Field label="Adresse"><Textarea value={form.address || ''} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Adresse" /></Field>
 
         {showCars && (
-          <CarsEditor cars={form.cars || []} onChange={cars => setForm(f => ({ ...f, cars }))} />
+          <CarsEditor cars={form.cars || []} onChange={cars => setForm(f => ({ ...f, cars }))}
+            defaults={biz.state.rappelConfig || DEFAULT_RAPPEL_CONFIG} />
         )}
 
         {!isSupplier && (

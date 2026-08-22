@@ -645,6 +645,20 @@ export interface BizCar {
   kilometrage?: number;
   /** Date du relevé de kilométrage ci-dessus, `YYYY-MM-DD`. */
   kilometrageAt?: string;
+  /**
+   * ─── LE RAPPEL PROPRE À CE VÉHICULE ────────────────────────────────────────
+   * Un délai de rappel PARTICULIER à cette voiture, en jours, qui l'emporte sur
+   * le délai réglé pour toute la partie. Une berline qu'on lave chaque semaine
+   * et un utilitaire qu'on ne revoit qu'au trimestre n'ont pas la même cadence :
+   * ces champs laissent la régler VÉHICULE PAR VÉHICULE.
+   *
+   * Absent (`undefined`) ⇒ le véhicule suit le délai de la partie
+   * (`rappelConfig`). `0` ⇒ ce véhicule ne reçoit PAS de rappel de cette nature.
+   * Le lavage et la réparation se règlent séparément, comme au niveau de la
+   * partie.
+   */
+  rappelLavageDays?: number;
+  rappelReparationDays?: number;
   createdAt?: string;
 }
 

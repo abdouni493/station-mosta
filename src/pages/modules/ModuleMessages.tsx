@@ -455,8 +455,11 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
       {showConfig && (
         <RappelConfigModal
           config={config}
+          clients={clients}
+          canEdit={perm.modifier}
           onClose={() => setShowConfig(false)}
-          onSave={next => { biz.patch({ rappelConfig: next }); setShowConfig(false); toast.success('Délais enregistrés.'); }} />
+          onSave={next => { biz.patch({ rappelConfig: next }); toast.success('Délais par défaut enregistrés.'); }}
+          onSaveClient={client => { biz.update('clients', client); void biz.flush(); }} />
       )}
 
       {showTemplateForm && (
@@ -558,56 +561,239 @@ function AlertList({ alerts, perm, onSend, onRead, emptyTitle, emptyMessage }: {
 
 // ─── Les délais de rappel ──────────────────────────────────────────────────────
 
-function RappelConfigModal({ config, onClose, onSave }: {
-  config: BizRappelConfig; onClose: () => void; onSave: (c: BizRappelConfig) => void;
+/**
+ * ─── LES DÉLAIS DE RAPPEL ───────────────────────────────────────────────────────
+ *
+ * Deux réglages, dans deux onglets :
+ *
+ *   • PAR DÉFAUT — le délai de toute la partie (lavage et réparation, séparément),
+ *     et l'interrupteur qui coupe les rappels sans perdre les délais.
+ *   • PAR CLIENT — on cherche un client, on voit SES véhicules, et on règle le
+ *     délai VOITURE PAR VOITURE. Un délai propre à un véhicule l'emporte sur le
+ *     réglage par défaut ; laissé vide, le véhicule suit le défaut ; mis à 0, il
+ *     ne reçoit plus de rappel de cette nature.
+ */
+function RappelConfigModal({ config, clients, canEdit, onClose, onSave, onSaveClient }: {
+  config: BizRappelConfig;
+  clients: BizContact[];
+  canEdit: boolean;
+  onClose: () => void;
+  onSave: (c: BizRappelConfig) => void;
+  onSaveClient: (client: BizContact) => void;
 }) {
+  const [tab, setTab] = useState<'client' | 'defaut'>('client');
+
+  // ── Réglages par défaut ────────────────────────────────────────────────────
   const [enabled, setEnabled] = useState(config.enabled);
   const [lavage, setLavage] = useState(String(config.lavageDays));
   const [reparation, setReparation] = useState(String(config.reparationDays));
 
+  // ── Par client / véhicule ──────────────────────────────────────────────────
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState<BizContact | null>(null);
+  const [draftCars, setDraftCars] = useState<BizCar[]>([]);
+
+  const results: BizContact[] = useMemo(() => {
+    const q = query.trim();
+    if (!q) return [];
+    return clients.filter((c: BizContact) => matchesSearch(q, c.name, c.phone)).slice(0, 20);
+  }, [clients, query]);
+
+  const pickClient = (c: BizContact) => {
+    setSelected(c);
+    setDraftCars((c.cars || []).map((v: BizCar) => ({ ...v })));
+    setQuery('');
+  };
+
+  const patchCarDays = (id: string, key: 'rappelLavageDays' | 'rappelReparationDays', raw: string) =>
+    setDraftCars(cars => cars.map(v => (v.id === id
+      ? { ...v, [key]: raw === '' ? undefined : Math.max(0, Number(raw) || 0) }
+      : v)));
+
+  const resetCar = (id: string) =>
+    setDraftCars(cars => cars.map(v => (v.id === id
+      ? { ...v, rappelLavageDays: undefined, rappelReparationDays: undefined }
+      : v)));
+
+  const saveClient = () => {
+    if (!selected) return;
+    onSaveClient({ ...selected, cars: draftCars });
+    toast.success(`Rappels de ${selected.name} enregistrés.`);
+    setSelected(null);
+    setDraftCars([]);
+  };
+
+  const footer = tab === 'defaut'
+    ? (<>
+        <button className="btn-ghost" onClick={onClose}>Fermer</button>
+        {canEdit && (
+          <button className="btn-primary" onClick={() => onSave({
+            enabled,
+            lavageDays: Math.max(0, Number(lavage) || 0),
+            reparationDays: Math.max(0, Number(reparation) || 0),
+          })}>Enregistrer les défauts</button>
+        )}
+      </>)
+    : (<>
+        <button className="btn-ghost" onClick={onClose}>Fermer</button>
+        {canEdit && selected && (
+          <button className="btn-primary" onClick={saveClient}>
+            <Check className="w-4 h-4" /> Enregistrer les rappels de {selected.name}
+          </button>
+        )}
+      </>);
+
   return (
-    <Modal open onClose={onClose} icon={Settings2} size="lg" formScale
+    <Modal open onClose={onClose} icon={Settings2} size="xl" formScale fullHeight
       title="Délais de rappel"
-      subtitle="Le lavage et la réparation se règlent séparément"
-      footer={<>
-        <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={() => onSave({
-          enabled,
-          lavageDays: Math.max(0, Number(lavage) || 0),
-          reparationDays: Math.max(0, Number(reparation) || 0),
-        })}>Enregistrer</button>
-      </>}>
+      subtitle="Un délai pour toute la partie, ou un délai propre à chaque véhicule"
+      footer={footer}>
       <div className="space-y-4">
-        <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
-          <div>
-            <p className="text-sm font-bold text-slate-700">Rappels actifs</p>
-            <p className="text-xs text-slate-400">Coupe toutes les alertes sans perdre les délais réglés</p>
+        <Tabs active={tab} onChange={t => setTab(t as 'client' | 'defaut')} tabs={[
+          { id: 'client', label: 'Par client / véhicule', icon: Car },
+          { id: 'defaut', label: 'Réglage par défaut', icon: Settings2 },
+        ]} />
+
+        {/* ── PAR CLIENT / VÉHICULE ─────────────────────────────────────────── */}
+        {tab === 'client' && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+              <p className="text-[11px] font-black uppercase tracking-wider text-slate-500">
+                Chercher un client
+              </p>
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input className="input-field pl-9" placeholder="Nom ou téléphone du client…"
+                  value={query} onChange={e => setQuery(e.target.value)} />
+              </div>
+
+              {query.trim() && results.length > 0 && (
+                <div className="rounded-xl border border-slate-200 bg-white max-h-56 overflow-y-auto custom-scrollbar">
+                  {results.map((c: BizContact) => (
+                    <button key={c.id} type="button"
+                      className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0"
+                      onClick={() => pickClient(c)}>
+                      <span className="text-sm font-bold text-slate-700">{c.name}</span>
+                      {c.phone && <span className="text-[11px] font-semibold text-slate-400 ml-2">{c.phone}</span>}
+                      <span className="ml-2 text-[10px] font-black uppercase tracking-wider text-blue-500">
+                        {(c.cars?.length || 0)} véhicule{(c.cars?.length || 0) > 1 ? 's' : ''}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {query.trim() && results.length === 0 && (
+                <p className="text-[11px] font-semibold text-slate-400 italic px-1">Aucun client trouvé.</p>
+              )}
+            </div>
+
+            {!selected ? (
+              <EmptyState icon={Users} title="Aucun client sélectionné"
+                message="Cherchez un client ci-dessus pour régler le rappel de chacun de ses véhicules." />
+            ) : (
+              <div className="rounded-2xl border border-blue-200 bg-blue-50/40 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-sm font-black text-slate-700 truncate">{selected.name}</p>
+                    <p className="text-[11px] font-semibold text-slate-400 truncate">
+                      {selected.phone || 'Aucun téléphone'}
+                      {` • ${draftCars.length} véhicule${draftCars.length > 1 ? 's' : ''}`}
+                    </p>
+                  </div>
+                  <button type="button" className="p-1.5 rounded-lg text-slate-400 hover:bg-white"
+                    onClick={() => { setSelected(null); setDraftCars([]); }} title="Changer de client">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {draftCars.length === 0 ? (
+                  <p className="text-xs text-blue-900/60 italic py-1">
+                    Ce client n'a aucun véhicule enregistré. Ajoutez-en depuis sa fiche (écran Clients).
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {draftCars.map((v: BizCar) => {
+                      const overridden = typeof v.rappelLavageDays === 'number' || typeof v.rappelReparationDays === 'number';
+                      return (
+                        <div key={v.id} className="rounded-xl bg-white border border-blue-200 p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-black text-slate-700 flex items-center gap-1.5 min-w-0">
+                              <Car className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                              <span className="truncate">{carLabel(v) || 'Véhicule'}</span>
+                            </p>
+                            {overridden && (
+                              <button type="button" className="text-[10px] font-black text-slate-400 hover:text-red-600 shrink-0 flex items-center gap-1"
+                                onClick={() => resetCar(v.id!)} title="Revenir au délai de la partie">
+                                <RefreshCcw className="w-3 h-3" /> Défaut
+                              </button>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Lavage (jours)</label>
+                              <Input type="number" min={0} inputMode="numeric" className="text-right"
+                                placeholder={`Défaut : ${config.lavageDays} j`}
+                                value={v.rappelLavageDays ?? ''}
+                                onChange={e => patchCarDays(v.id!, 'rappelLavageDays', e.target.value)} />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Réparation (jours)</label>
+                              <Input type="number" min={0} inputMode="numeric" className="text-right"
+                                placeholder={`Défaut : ${config.reparationDays} j`}
+                                value={v.rappelReparationDays ?? ''}
+                                onChange={e => patchCarDays(v.id!, 'rappelReparationDays', e.target.value)} />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <p className="text-[11px] font-semibold text-blue-900/60 leading-relaxed">
+                      Vide = le véhicule suit le délai par défaut de la partie. <strong>0</strong> = ce véhicule
+                      ne reçoit aucun rappel de cette nature. N'oubliez pas d'enregistrer.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          <Switch checked={enabled} onChange={setEnabled} />
-        </div>
+        )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="Rappeler un LAVAGE après (jours)"
-            hint="0 = aucun rappel de lavage. Un mois (30) convient à la plupart des clients.">
-            <Input type="number" min={0} inputMode="numeric" className="text-right"
-              value={lavage} onChange={e => setLavage(e.target.value)} />
-          </Field>
-          <Field label="Rappeler une RÉPARATION après (jours)"
-            hint="0 = aucun rappel de réparation. Six mois (180) correspond à une révision.">
-            <Input type="number" min={0} inputMode="numeric" className="text-right"
-              value={reparation} onChange={e => setReparation(e.target.value)} />
-          </Field>
-        </div>
+        {/* ── RÉGLAGE PAR DÉFAUT ────────────────────────────────────────────── */}
+        {tab === 'defaut' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
+              <div>
+                <p className="text-sm font-bold text-slate-700">Rappels actifs</p>
+                <p className="text-xs text-slate-400">Coupe toutes les alertes sans perdre les délais réglés</p>
+              </div>
+              <Switch checked={enabled} onChange={setEnabled} />
+            </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-[11px] font-black uppercase tracking-wider text-slate-500 mb-1.5">Comment c'est calculé</p>
-          <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">
-            L'échéance part du <strong>dernier passage</strong> de chaque véhicule, pour chaque
-            nature. Un client qui lave sa voiture toutes les semaines ne reçoit donc qu'un seul
-            rappel — celui de sa dernière visite — et jamais un par passage. Une alerte classée ou
-            envoyée ne revient plus ; une nouvelle visite en recrée une, à la nouvelle échéance.
-          </p>
-        </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Rappeler un LAVAGE après (jours)"
+                hint="0 = aucun rappel de lavage. Un mois (30) convient à la plupart des clients.">
+                <Input type="number" min={0} inputMode="numeric" className="text-right"
+                  value={lavage} onChange={e => setLavage(e.target.value)} />
+              </Field>
+              <Field label="Rappeler une RÉPARATION après (jours)"
+                hint="0 = aucun rappel de réparation. Six mois (180) correspond à une révision.">
+                <Input type="number" min={0} inputMode="numeric" className="text-right"
+                  value={reparation} onChange={e => setReparation(e.target.value)} />
+              </Field>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-[11px] font-black uppercase tracking-wider text-slate-500 mb-1.5">Comment c'est calculé</p>
+              <p className="text-[11px] font-semibold text-slate-500 leading-relaxed">
+                L'échéance part du <strong>dernier passage</strong> de chaque véhicule, pour chaque
+                nature. Ce délai par défaut s'applique à tout véhicule qui n'a pas son délai propre
+                (onglet « Par client / véhicule »). Un client qui lave sa voiture toutes les semaines
+                ne reçoit qu'un seul rappel — celui de sa dernière visite. Une alerte classée ou
+                envoyée ne revient plus ; une nouvelle visite en recrée une, à la nouvelle échéance.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );
