@@ -9,7 +9,7 @@
  * L'équivalent pour le poste de développement est dans `server.ts`.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { handleWhatsApp } from '../_lib/router';
+import { handleWhatsApp } from '../_lib/router.js';
 
 export default async function handler(req: any, res: any) {
   const raw = req.query?.path;

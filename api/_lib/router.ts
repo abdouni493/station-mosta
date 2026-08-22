@@ -22,13 +22,13 @@
 import {
   GatewayError, connectInstance, createInstance, currentWebhook, logoutInstance,
   remedyFor, restartInstance, sendText, sessionState, setWebhook,
-} from './evolution';
-import { baseUrlHost, gatewayEnv, isConfigured, maskInstance, webhookUrl } from './env';
+} from './evolution.js';
+import { baseUrlHost, gatewayEnv, isConfigured, maskInstance, webhookUrl } from './env.js';
 import {
   EXPIRY_DAYS, MAX_ATTEMPTS, enqueue, expireOld, journal, markStatus, outboxDeferred,
   outboxFailed, outboxSent, pendingCount, storageConfigured, takePending,
-} from './store';
-import { PACING, SendOutcome, nextDelayMs, normalizePhone, sleep } from '../../src/lib/whatsappCore';
+} from './store.js';
+import { PACING, SendOutcome, nextDelayMs, normalizePhone, sleep } from '../../src/lib/whatsappCore.js';
 
 export interface RouteRequest {
   /** Chemin SANS le préfixe `/api/whatsapp`, ex. `send`, `outbox/flush`. */

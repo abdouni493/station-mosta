@@ -4,7 +4,7 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { createServer as createHttpServer } from "http";
 import dotenv from "dotenv";
-import { handleWhatsApp } from "./api/_lib/router";
+import { handleWhatsApp } from "./api/_lib/router.js";
 
 dotenv.config();
 // Le poste de développement lit aussi les secrets de la passerelle, qui ne sont

@@ -23,8 +23,23 @@ async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch {
-    // Une réponse qui n'est pas du JSON, c'est presque toujours la page HTML de
-    // l'application : la route n'existe pas sur cet hébergement.
+    // ─── UNE RÉPONSE QUI N'EST PAS DU JSON ────────────────────────────────
+    //
+    // Il y a DEUX causes, et les confondre coûte une soirée : la route absente
+    // (l'hébergeur rend la page HTML de l'application, en 200 ou en 404), et la
+    // fonction qui EXISTE mais s'écroule au chargement — l'hébergeur rend alors
+    // sa propre page d'erreur en texte brut, avec un statut 5xx.
+    //
+    // Ce message annonçait la première dans les deux cas. Devant une fonction
+    // qui plantait, il envoyait donc redéployer et revérifier les variables
+    // d'environnement — c'est-à-dire précisément là où le défaut n'était pas.
+    if (res.status >= 500) {
+      throw new Error(
+        `La fonction /api/whatsapp a échoué au démarrage (erreur ${res.status} de l'hébergeur). `
+        + "Ce n'est pas un problème de variables d'environnement : le code de la fonction n'a pas pu "
+        + "être chargé. Ouvrez les journaux du déploiement (Vercel → Logs) pour lire la cause exacte.",
+      );
+    }
     throw new Error(
       "La route /api/whatsapp n'est pas servie par cet hébergement. Redéployez le projet : les fonctions du dossier `api/` doivent être déployées avec l'application.",
     );

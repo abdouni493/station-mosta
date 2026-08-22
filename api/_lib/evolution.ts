@@ -23,7 +23,7 @@
  * ne doit pas être écartée de la reprise alors qu'elle en a largement le temps.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { GatewayEnv, gatewayEnv } from './env';
+import { GatewayEnv, gatewayEnv } from './env.js';
 
 /** Erreur portant la CAUSE SYSTÈME jusqu'à l'écran — jamais la clé API. */
 export class GatewayError extends Error {

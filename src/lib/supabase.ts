@@ -883,11 +883,35 @@ export async function dbDelete(tableName: string, id: string) {
  */
 const PAGE_SIZE = 1000;
 
+/**
+ * ─── LES TABLES SANS HORODATAGE DE CRÉATION ───────────────────────────────────
+ *
+ * Trois tables de sous-enregistrements n'ont jamais eu de colonne `created_at` :
+ * elles sont écrites en même temps que leur parent, qui en porte une. Les
+ * ordonner dessus déclenche une 400 de PostgREST (« column … does not exist »).
+ *
+ * Le repli qui suivait cette 400 était PIRE que le défaut qu'il rattrapait : il
+ * retombait sur `dbSelect`, qui ne pagine pas — donc exactement le plafond de
+ * 1000 lignes que cette fonction existe pour contourner. Les justifications de
+ * brigade, qui portent la consommation carburant de TOUS les clients, s'y
+ * faisaient silencieusement tronquer au bout de quelques mois : l'écran Clients
+ * perdait des bons sans que rien ne le dise.
+ *
+ * On ordonne donc ces tables par `id` — une clé primaire, donc un ordre stable,
+ * ce qui est tout ce que la pagination demande. Une requête de moins, et plus
+ * aucune ligne perdue.
+ */
+const NO_CREATED_AT = new Set([
+  'brigade_accounting_justifications',
+  'client_appointments',
+  'shop_sale_items',
+]);
+
 export async function dbSelectAll<T>(
   tableName: string,
   opts?: { orderBy?: string; ascending?: boolean; eq?: Record<string, unknown> },
 ): Promise<T[]> {
-  const orderBy = opts?.orderBy || 'created_at';
+  const orderBy = opts?.orderBy || (NO_CREATED_AT.has(tableName) ? 'id' : 'created_at');
   const ascending = opts?.ascending ?? false;
   const out: any[] = [];
 
@@ -901,10 +925,12 @@ export async function dbSelectAll<T>(
 
     const { data, error } = await q;
     if (error) {
-      // La colonne d'ordre n'existe pas sur cette table : on retombe sur la
-      // lecture simple plutôt que de faire échouer tout le chargement.
-      if (page === 0 && /column .* does not exist|42703/i.test(error.message || '')) {
-        return dbSelect<T>(tableName, opts?.eq);
+      // La colonne d'ordre n'existe pas : on repagine sur `id` plutôt que de
+      // retomber sur `dbSelect`, qui ne pagine pas et tronquerait à 1000 lignes.
+      // Ce n'est plus qu'un filet — les tables connues sont déclarées ci-dessus.
+      if (page === 0 && orderBy !== 'id' && /column .* does not exist|42703/i.test(error.message || '')) {
+        console.warn(`[dbSelectAll:${tableName}] pas de colonne « ${orderBy} » — tri sur « id »`);
+        return dbSelectAll<T>(tableName, { ...opts, orderBy: 'id' });
       }
       console.error(`[dbSelectAll:${tableName}]`, error);
       throw new Error(`[select ${tableName}] ${error.message}`);
