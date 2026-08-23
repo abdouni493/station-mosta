@@ -10,7 +10,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Landmark, Plus, Edit2, Trash2, ArrowLeftRight, History, Wallet,
-  ArrowDownCircle, ArrowUpCircle, PiggyBank, Building2, TrendingUp,
+  ArrowDownCircle, ArrowUpCircle, PiggyBank, Building2, TrendingUp, RefreshCw,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
@@ -19,6 +19,7 @@ import {
   BankAccount, TreasuryTransaction, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
   accountLabelOf, bankBalanceOf, caisseBalanceOf, partOfCashAccount,
 } from '../store/AppContext';
+import { repairBrigadeBankLines } from '../lib/brigadeBankLines';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
   EmptyState, CardGrid, GlassCard, RowActions, ActionBtn, Table,
@@ -28,7 +29,10 @@ import {
 const todayISO = () => new Date().toISOString().split('T')[0];
 
 export default function BankAccounts() {
-  const { bankAccounts, treasuryTransactions, currentUserName } = useAppState();
+  const {
+    bankAccounts, treasuryTransactions, currentUserName,
+    brigades = [], brigadeAccountings = [], pompistes = [],
+  } = useAppState();
   const dispatch = useAppDispatch();
   const perm = useModulePermission('Comptes Bancaires');
 
@@ -53,6 +57,43 @@ export default function BankAccounts() {
     setToDelete(null);
   };
 
+  // ── Ce qui manque encore au grand livre ─────────────────────────────────────
+  // Les brigades enregistrées AVANT que les justifications TPE / TAG n'écrivent
+  // leur ligne bancaire ont bien leurs pièces, mais aucune trace en banque :
+  // c'est exactement l'argent qu'on cherchait dans l'historique sans l'y
+  // trouver. On mesure l'écart en continu, et le bouton ne le comble QUE là où
+  // il manque — relancer la vérification une seconde fois n'ajoute rien.
+  const repair = useMemo(() => repairBrigadeBankLines(
+    brigadeAccountings
+      .filter(a => (a.justifications || []).length > 0)
+      .map(a => {
+        const b = brigades.find(x => x.id === a.brigadeId);
+        return {
+          brigadeId: a.brigadeId,
+          date: b?.endDatetime || b?.date || new Date().toISOString(),
+          label: b?.date,
+          justifications: (a.justifications || []) as any[],
+          createdBy: a.createdBy || currentUserName,
+        };
+      })
+      // Une brigade supprimée n'a plus à porter d'argent en banque.
+      .filter(s => brigades.some(b => b.id === s.brigadeId)),
+    treasuryTransactions,
+    { pompisteName: pid => pompistes.find(p => p.id === pid)?.name },
+  ), [brigadeAccountings, brigades, treasuryTransactions, pompistes, currentUserName]);
+
+  const runRepair = () => {
+    if (repair.add.length === 0) {
+      toast.success(repair.unbanked > 0
+        ? `Rien à rattraper — ${repair.unbanked} justification(s) TPE/TAG n'ont aucun compte désigné`
+        : 'Les comptes bancaires portent déjà toutes les brigades');
+      return;
+    }
+    repair.add.forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
+    toast.success(
+      `${repair.add.length} encaissement(s) TPE/TAG rattachés — ${money(repair.amount)} sur ${repair.brigades} brigade(s)`);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={Landmark} title="Comptes Bancaires" subtitle="Finance — soldes, virements & historique"
@@ -65,6 +106,34 @@ export default function BankAccounts() {
         <StatCard icon={Landmark} label="Total en banque" value={money(totalBank)} tone="green" />
         <StatCard icon={PiggyBank} label="Caisse générale" value={money(caisse)} tone="amber" />
       </div>
+
+      {/* ── Encaissements de brigade absents du grand livre ────────────────────
+          Les brigades justifiées au TPE / TAG créditent désormais leur compte à
+          l'enregistrement. Celles saisies avant ne l'avaient jamais fait : leur
+          argent manquait à l'historique du compte, et le solde était d'autant
+          plus bas. Le bandeau ne s'affiche que s'il reste quelque chose à
+          rattraper, et disparaît une fois le rattrapage passé. */}
+      {(repair.add.length > 0 || repair.unbanked > 0) && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-black text-amber-900">
+              {repair.add.length > 0
+                ? `${repair.add.length} encaissement(s) TPE / TAG de brigade absents des comptes`
+                : `${repair.unbanked} justification(s) TPE / TAG sans compte bancaire`}
+            </p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              {repair.add.length > 0
+                ? `${money(repair.amount)} justifiés sur ${repair.brigades} brigade(s) — ajoutez-les à l'historique de leur compte.`
+                : "Rouvrez ces brigades et choisissez le compte crédité : sans lui, l'argent n'entre nulle part."}
+            </p>
+          </div>
+          {repair.add.length > 0 && perm.creer && (
+            <button className="btn-primary shrink-0" onClick={runRepair}>
+              <RefreshCw className="w-4 h-4" /> Rattacher aux comptes
+            </button>
+          )}
+        </div>
+      )}
 
       {accounts.length === 0 ? (
         <EmptyState icon={Landmark} title="Aucun compte bancaire"

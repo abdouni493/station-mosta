@@ -39,11 +39,12 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, matchesSearch } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID, TreasuryTransaction } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
 import { toNum } from "../lib/brigadeCalc";
 import { clientChargeDelta } from "../lib/clientLedger";
+import { brigadeBankLines, isBankJustification } from "../lib/brigadeBankLines";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Skeleton from "../components/Skeleton";
@@ -72,6 +73,29 @@ const brigadeCreatedAt = (b: Brigade): number => {
 
 /** Comparateur « la plus récente d'abord ». */
 const byNewestFirst = (a: Brigade, b: Brigade): number => brigadeCreatedAt(b) - brigadeCreatedAt(a);
+
+/**
+ * Une justification saisie à l'étape 7 de l'assistant.
+ *
+ * Le type est nommé ici, et non écrit dans le `useState` : les listes tirées de
+ * `Object.entries` / `Object.values` retombaient sinon sur `unknown`, et rien
+ * n'aurait relevé un oubli sur ces objets — à commencer par le compte bancaire
+ * d'un TPE, dont l'absence vidait déjà le solde d'un compte en silence.
+ */
+interface WizardJustification {
+  id: string;
+  type: 'TAG' | 'TPE' | 'CLIENT_CREDIT' | 'CLIENT_AVANCE';
+  /** Pour un TAG / TPE : le compte bancaire crédité à l'enregistrement. */
+  bankAccountId?: string;
+  description: string;
+  liters: number;
+  amount: number;
+  byLiters?: boolean;   // when true, amount = liters × prix du carburant sélectionné
+  fuelType?: string;    // carburant choisi pour le calcul par litres
+  clientId?: string;
+  clientName?: string;
+  clientRestCredit?: number;
+}
 
 const Brigades = () => {
   const { t } = useTranslation();
@@ -201,20 +225,8 @@ const Brigades = () => {
   const [wizEndNozzleIndices, setWizEndNozzleIndices] = useState<Record<string, number>>({});
   // Step 7 comptabilité
   const [pompistePayments, setPompistePayments] = useState<Record<string, number>>({}); // cash given
-  const [pompisteJustifications, setPompisteJustifications] = useState<Record<string, Array<{
-    id: string;
-    type: 'TAG' | 'TPE' | 'CLIENT_CREDIT' | 'CLIENT_AVANCE';
-    /** Pour un TPE : le compte bancaire du terminal, crédité à l'enregistrement. */
-    bankAccountId?: string;
-    description: string;
-    liters: number;
-    amount: number;
-    byLiters?: boolean;   // when true, amount = liters × prix du carburant sélectionné
-    fuelType?: string;    // carburant choisi pour le calcul par litres
-    clientId?: string;
-    clientName?: string;
-    clientRestCredit?: number;
-  }>>>({});
+  const [pompisteJustifications, setPompisteJustifications] =
+    useState<Record<string, WizardJustification[]>>({});
   // Step 7 client search / new-client UI (per pompiste)
   const [justifClientSearch, setJustifClientSearch] = useState<Record<string, string>>({});
   const [showNewClientForm, setShowNewClientForm] = useState<string | null>(null);
@@ -427,7 +439,34 @@ const Brigades = () => {
     });
   }, [presentAssignments, pompistePumps, pumps, pumpNozzles, tanks, wizEndNozzleIndices, settings, retourCuveByTank, pompistes, editingBrigade]);
 
+  /**
+   * Les justifications TPE / TAG qui n'ont pas encore choisi leur compte.
+   *
+   * Une justification encaissée compte pour de l'argent RENTRÉ dans le rapport
+   * Carburant. Sans compte bancaire désigné, aucune ligne n'entre au grand
+   * livre : la recette existait à l'écran et nulle part en banque. On refuse
+   * donc l'enregistrement plutôt que de perdre l'argent en silence.
+   */
+  const unbankedJustifs = useMemo(() => {
+    if (bankAccounts.length === 0) return [] as { pompiste: string; label: string }[];
+    const entries = Object.entries(pompisteJustifications) as [string, WizardJustification[]][];
+    return entries.flatMap(([pid, list]) =>
+      (list || [])
+        .filter(j => isBankJustification({ justificationType: j.type }) && (j.amount || 0) > 0 && !j.bankAccountId)
+        .map(j => ({
+          pompiste: pompistes.find(p => p.id === pid)?.name || 'Pompiste',
+          label: j.description || j.type,
+        })));
+  }, [pompisteJustifications, bankAccounts, pompistes]);
+
   const handleStartBrigade = (forcedStatus?: 'Clôturée' | 'En attente') => {
+    if (unbankedJustifs.length > 0) {
+      const first = unbankedJustifs[0];
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message:
+        `Choisissez le compte bancaire de la justification « ${first.label} » (${first.pompiste})`
+        + (unbankedJustifs.length > 1 ? ` — ${unbankedJustifs.length} justifications sans compte` : '') } });
+      return;
+    }
     setIsSubmitting(true);
     setTimeout(() => {
       const chef = brigadeChefs.find(c => c.id === chefId);
@@ -490,7 +529,6 @@ const Brigades = () => {
       const decalageSummary: Record<string, any> = {};
       const accJustifications: BrigadeAccountingJustification[] = [];
       const accountingId = existingAccounting?.id || newId();
-      const tpeCredits: Array<{ accountId: string; amount: number; pompisteId: string }> = [];
       let totalTheoretical = 0;
       let totalCash = 0;
       let totalJustif = 0;
@@ -529,6 +567,10 @@ const Brigades = () => {
           const jPrice = j.byLiters ? (settings.fuelPrices[jFuel as any] || 0) : 0;
           const jLiters = j.byLiters ? (j.liters || 0) : 0;
           if (j.type === 'TAG' || j.type === 'TPE') {
+            // TAG comme TPE : l'argent est entré en BANQUE, sur le compte du
+            // terminal choisi. Les lignes du grand livre sont écrites plus bas,
+            // depuis ces justifications (voir `brigadeBankLines`), pour qu'une
+            // création et une modification suivent exactement la même règle.
             accJustifications.push({
               id: j.id, accountingId, clientId: '', amount: j.amount,
               justificationType: j.type, clientName: j.description || j.clientName,
@@ -536,10 +578,6 @@ const Brigades = () => {
               trackId: s.trackId, pompisteId: s.pompisteId,
               bankAccountId: j.bankAccountId,
             });
-            // A TPE justification credits the bank account of THAT terminal.
-            if (j.type === 'TPE' && j.bankAccountId && j.amount > 0) {
-              tpeCredits.push({ accountId: j.bankAccountId, amount: j.amount, pompisteId: s.pompisteId });
-            }
           } else {
             accJustifications.push({
               id: j.id, accountingId, clientId: j.clientId || '', amount: j.amount,
@@ -695,28 +733,21 @@ const Brigades = () => {
       };
       dispatch({ type: (isEdit && existingAccounting) ? 'UPDATE_BRIGADE_ACCOUNTING' : 'ADD_BRIGADE_ACCOUNTING', payload: accounting });
 
-      // ── TPE : l'argent justifié entre sur le compte bancaire de CE terminal ──
+      // ── TPE / TAG : l'argent justifié entre sur le compte bancaire choisi ────
       // Les lignes de la brigade sont réécrites à chaque enregistrement pour que
-      // les soldes restent exacts même après modification.
+      // les soldes restent exacts même après modification. Une ligne par
+      // justification : l'historique du compte montre alors QUI a encaissé quoi.
       treasuryTransactions
         .filter(t => t.refType === 'brigade' && t.refId === brigadeId)
         .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
-      tpeCredits.forEach(credit => {
-        const pompisteName = pompistes.find(x => x.id === credit.pompisteId)?.name || 'Pompiste';
-        const tx: TreasuryTransaction = {
-          id: newId(),
-          date: endDatetime,
-          kind: 'TPE',
-          amount: credit.amount,
-          description: `TPE brigade du ${sDate} — ${pompisteName}`,
-          accountTo: credit.accountId,
-          part: 'carburant',
-          refType: 'brigade', refId: brigadeId,
-          createdBy: currentUserName,
-          createdAt: new Date().toISOString(),
-        };
-        dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
-      });
+      brigadeBankLines({
+        brigadeId,
+        date: endDatetime,
+        label: sDate,
+        justifications: accJustifications,
+        pompisteName: pid => pompistes.find(x => x.id === pid)?.name,
+        createdBy: currentUserName,
+      }).forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
       // Les espèces réellement remises alimentent la caisse générale.
       if (totalCash > 0) {
         dispatch({
@@ -904,7 +935,7 @@ const Brigades = () => {
     });
     setPompistePayments(payments);
 
-    const justifMap: Record<string, NonNullable<typeof pompisteJustifications[string]>> = {};
+    const justifMap: Record<string, WizardJustification[]> = {};
     (acc?.justifications || []).forEach(j => {
       const pid = j.pompisteId || '';
       if (!pid) return;
@@ -915,6 +946,11 @@ const Brigades = () => {
       (justifMap[pid] = justifMap[pid] || []).push({
         id: j.id,
         type: type as any,
+        // Le compte bancaire du terminal DOIT revenir avec la justification.
+        // Sans lui, réenregistrer la brigade effaçait ses lignes de banque puis
+        // n'en réécrivait aucune : le solde du compte perdait le montant du TPE
+        // à chaque simple correction, sans qu'aucune pièce ne l'explique.
+        bankAccountId: j.bankAccountId || undefined,
         description: j.notes || ((type === 'TAG' || type === 'TPE') ? (j.clientName || '') : ''),
         liters: j.liters || 0,
         amount: j.amount || 0,
@@ -2460,20 +2496,27 @@ const Brigades = () => {
 
                               {/* Justification buttons */}
                               <div className="flex flex-wrap gap-2">
-                                <button onClick={() => addJustif({ id: newId(), type: 'TAG', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel })} className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700 text-[10px] font-black uppercase hover:bg-purple-200">+ TAG</button>
-                                {/* Un TPE par compte bancaire : l'argent justifié part vers CE compte. */}
+                                {/* TAG comme TPE : l'argent justifié ARRIVE EN BANQUE. Les deux
+                                    naissent donc avec un compte (le premier de la liste), que la
+                                    fiche ci-dessous laisse changer à tout moment. Un TAG n'en avait
+                                    aucun : son montant comptait comme encaissé dans le rapport
+                                    Carburant sans qu'un seul dinar n'entre sur un compte. */}
                                 {bankAccounts.length === 0 ? (
                                   <span className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-[10px] font-black uppercase"
                                     title="Créez un compte bancaire dans Finance → Comptes Bancaires">
-                                    TPE — aucun compte bancaire
+                                    TPE / TAG — aucun compte bancaire
                                   </span>
-                                ) : bankAccounts.map(acc => (
-                                  <button key={acc.id}
-                                    onClick={() => addJustif({ id: newId(), type: 'TPE', description: 'TPE ' + acc.name, liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, bankAccountId: acc.id })}
-                                    className="px-3 py-1.5 rounded-lg bg-cyan-100 text-cyan-700 text-[10px] font-black uppercase hover:bg-cyan-200">
-                                    + TPE {acc.name}
-                                  </button>
-                                ))}
+                                ) : (<>
+                                  <button onClick={() => addJustif({ id: newId(), type: 'TAG', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, bankAccountId: bankAccounts[0].id })}
+                                    className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700 text-[10px] font-black uppercase hover:bg-purple-200">+ TAG</button>
+                                  {bankAccounts.map(acc => (
+                                    <button key={acc.id}
+                                      onClick={() => addJustif({ id: newId(), type: 'TPE', description: 'TPE ' + acc.name, liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, bankAccountId: acc.id })}
+                                      className="px-3 py-1.5 rounded-lg bg-cyan-100 text-cyan-700 text-[10px] font-black uppercase hover:bg-cyan-200">
+                                      + TPE {acc.name}
+                                    </button>
+                                  ))}
+                                </>)}
                                 <button onClick={() => setShowNewClientForm(showNewClientForm === `credit-${s.pompisteId}` ? null : `credit-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-orange-100 text-orange-700 text-[10px] font-black uppercase hover:bg-orange-200">+ Crédit Client</button>
                                 <button onClick={() => setShowNewClientForm(showNewClientForm === `avance-${s.pompisteId}` ? null : `avance-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-teal-100 text-teal-700 text-[10px] font-black uppercase hover:bg-teal-200">+ Avance Client</button>
                               </div>
@@ -2573,6 +2616,33 @@ const Brigades = () => {
                                         <div className="h-8 flex items-center px-2 bg-white rounded-lg text-xs font-black text-slate-700 truncate border border-slate-100">👤 {j.clientName} {j.clientRestCredit !== undefined && <span className="text-[9px] text-slate-400 ml-1">({j.clientRestCredit.toLocaleString('fr-FR')})</span>}</div>
                                       )}
 
+                                      {/* Compte crédité (TAG / TPE) — la ligne qui entrera au
+                                          grand livre et fera monter le solde de CE compte. */}
+                                      {(j.type === 'TAG' || j.type === 'TPE') && (
+                                        <div>
+                                          <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Compte crédité</label>
+                                          {bankAccounts.length === 0 ? (
+                                            <p className="text-[10px] font-bold text-orange-600">
+                                              Aucun compte bancaire — créez-en un dans Finance → Comptes Bancaires.
+                                            </p>
+                                          ) : (
+                                            <select
+                                              value={j.bankAccountId || ''}
+                                              onChange={e => patch({ bankAccountId: e.target.value || undefined })}
+                                              className={cn("input-field h-9 text-xs font-bold w-full",
+                                                !j.bankAccountId && "border-red-300 text-red-600")}>
+                                              <option value="">— Choisir le compte —</option>
+                                              {bankAccounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
+                                            </select>
+                                          )}
+                                          {bankAccounts.length > 0 && !j.bankAccountId && (
+                                            <p className="text-[9px] font-bold text-red-500 mt-1">
+                                              Sans compte, ce montant n'entrera sur aucun solde bancaire.
+                                            </p>
+                                          )}
+                                        </div>
+                                      )}
+
                                       {/* Description (always) */}
                                       <input placeholder="Description" value={j.description} onChange={e => patch({ description: e.target.value })} className="input-field h-9 text-xs font-bold w-full" />
 
@@ -2623,6 +2693,34 @@ const Brigades = () => {
                               <p>Total justifications:</p><p className="text-right font-black">{totalJust.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               <p>Solde restant:</p><p className={cn("text-right font-black", Math.abs(solde) < 0.01 ? "text-green-300" : "text-red-300")}>{solde.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                             </div>
+
+                            {/* ── Ce qui va ENTRER EN BANQUE ──────────────────────────
+                                L'utilisateur doit lire, avant d'enregistrer, le montant
+                                exact qu'il retrouvera dans l'historique de chaque compte. */}
+                            {(() => {
+                              const byAccount = new Map<string, number>();
+                              const lists = Object.values(pompisteJustifications) as WizardJustification[][];
+                              lists.forEach(list =>
+                                (list || []).forEach(j => {
+                                  if (j.type !== 'TAG' && j.type !== 'TPE') return;
+                                  if (!j.bankAccountId || !(j.amount > 0)) return;
+                                  byAccount.set(j.bankAccountId, (byAccount.get(j.bankAccountId) || 0) + j.amount);
+                                }));
+                              if (byAccount.size === 0) return null;
+                              return (
+                                <div className="pt-2 mt-2 border-t border-white/15 space-y-1">
+                                  <p className="text-[9px] font-black uppercase tracking-widest text-blue-200">Encaissé en banque (TPE / TAG)</p>
+                                  {[...byAccount.entries()].map(([id, amount]) => (
+                                    <div key={id} className="flex items-center justify-between gap-2 text-[11px] font-bold">
+                                      <span className="truncate">{bankAccounts.find(a => a.id === id)?.name || 'Compte'}</span>
+                                      <span className="text-right font-black text-emerald-300 shrink-0">
+                                        +{amount.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })()}
@@ -2764,6 +2862,7 @@ const Brigades = () => {
             currentUserName={currentUserName}
             existingAccounting={brigadeAccountings.find(a => a.brigadeId === selectedBrigade.id)}
             treasuryTransactions={treasuryTransactions}
+            bankAccounts={bankAccounts}
             dispatch={dispatch}
             onClose={() => { setShowAccountingModal(false); setSelectedBrigade(null); }}
           />

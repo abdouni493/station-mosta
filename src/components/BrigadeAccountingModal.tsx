@@ -8,19 +8,29 @@ import { cn, newId, degreesFromLiters, matchesSearch } from "@/src/lib/utils";
 import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, StationSettings,
   Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType,
-  TreasuryTransaction, CAISSE_ID,
+  TreasuryTransaction, BankAccount, CAISSE_ID,
 } from "../store/AppContext";
 import {
   brigadeActiveNozzles, brigadeNozzleRows, brigadeTankRows, brigadePompisteGroups, justifiedByPompiste,
 } from "../lib/brigadeCalc";
 import { brigadeTankDeltas } from "../lib/brigadeTanks";
 import { clientChargeDelta } from "../lib/clientLedger";
+import { brigadeBankLines, brigadeBankLineIds, unbankedJustifications } from "../lib/brigadeBankLines";
 
 interface Justification {
   id: string;
   clientId: string;
   amount: number;
   justificationType: 'CLIENT' | 'TAG' | 'TPE';
+  /**
+   * Le compte bancaire crédité par un TAG / TPE.
+   *
+   * Il manquait ici : cette fenêtre relisait les justifications d'une brigade,
+   * les réenregistrait SANS leur compte, et l'argent encaissé au terminal
+   * disparaissait des soldes bancaires à la première ouverture de la
+   * comptabilité — sans que rien ne le signale.
+   */
+  bankAccountId?: string;
   clientName?: string;
   fuelType?: string;
   liters?: number;
@@ -48,6 +58,8 @@ interface Props {
    * ici au lieu de rester sur celui saisi à la clôture.
    */
   treasuryTransactions?: TreasuryTransaction[];
+  /** Les comptes bancaires : un TAG / TPE justifié crédite celui du terminal. */
+  bankAccounts?: BankAccount[];
   dispatch: React.Dispatch<any>;
   onClose: () => void;
 }
@@ -57,7 +69,7 @@ type VerEntry = { verified: boolean; corrected: boolean; correctedValue?: number
 const BrigadeAccountingModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, settings,
   clients, tracks, currentUserRole, currentUserName, existingAccounting,
-  treasuryTransactions = [], dispatch, onClose
+  treasuryTransactions = [], bankAccounts = [], dispatch, onClose
 }) => {
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
 
@@ -76,6 +88,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     (existingAccounting?.justifications || []).map(j => ({
       id: j.id, clientId: j.clientId, amount: j.amount,
       justificationType: j.justificationType || 'CLIENT',
+      bankAccountId: j.bankAccountId,
       clientName: j.clientName, fuelType: j.fuelType, liters: j.liters,
       pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
     }))
@@ -83,6 +96,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
   // TPE / Tag justification entry mode
   const [justifMode, setJustifMode] = useState<'CLIENT' | 'TAG' | 'TPE'>('CLIENT');
   const [tpeClientName, setTpeClientName] = useState('');
+  const [tpeBankAccountId, setTpeBankAccountId] = useState(bankAccounts[0]?.id || '');
   const [tpeFuelType, setTpeFuelType] = useState(Object.keys(settings.fuelPrices)[0] || 'SUPER');
   const [tpeLiters, setTpeLiters] = useState<number | ''>('');
   const [tpeTrackId, setTpeTrackId] = useState('');
@@ -245,6 +259,8 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       clientName: tpeClientName || undefined,
       amount,
       justificationType: justifMode,
+      // TAG comme TPE : l'argent est encaissé sur un compte bancaire.
+      bankAccountId: tpeBankAccountId || undefined,
       fuelType: tpeFuelType,
       liters: +tpeLiters,
       pricePerLiter: tpePricePerLiter,
@@ -263,10 +279,21 @@ const BrigadeAccountingModal: React.FC<Props> = ({
         id: j.id, accountingId: '', clientId: j.clientId || '', amount: j.amount,
         clientType: client?.type, paymentMode: client?.paymentMode,
         justificationType: j.justificationType || 'CLIENT',
+        bankAccountId: j.bankAccountId,
         clientName: j.clientName, fuelType: j.fuelType, liters: j.liters,
         pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
       };
     });
+
+    // Un TAG / TPE sans compte désigné compterait comme encaissé dans le rapport
+    // Carburant sans qu'un dinar n'entre en banque : on refuse plutôt que de le
+    // perdre en silence. Sans aucun compte enregistré, il n'y a rien à choisir.
+    const unbanked = bankAccounts.length > 0 ? unbankedJustifications(justObjs) : [];
+    if (unbanked.length > 0) {
+      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message:
+        `Choisissez le compte bancaire de ${unbanked.length} justification(s) TPE / TAG` } });
+      return;
+    }
 
     const accounting: BrigadeAccounting = {
       id: existingAccounting?.id || newId(),
@@ -428,6 +455,24 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     (treasuryTransactions || [])
       .filter(t => t.refType === 'brigade' && t.refId === brigade.id && t.kind === 'BRIGADE')
       .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
+
+    // ── Les TPE / TAG entrent en BANQUE ─────────────────────────────────────
+    // Cette fenêtre n'écrivait aucune ligne bancaire : une justification saisie
+    // ici gonflait « encaissé » du rapport Carburant, et l'historique du compte
+    // ne montrait rien. Les lignes de la brigade sont réécrites entièrement,
+    // exactement comme le fait l'assistant, pour qu'un montant corrigé ici soit
+    // le montant que le compte affiche.
+    brigadeBankLineIds(treasuryTransactions, brigade.id)
+      .forEach(id => dispatch({ type: 'DELETE_TREASURY_TX', payload: id }));
+    brigadeBankLines({
+      brigadeId: brigade.id,
+      date: brigade.endDatetime || brigade.date,
+      label: brigade.date,
+      justifications: justObjs,
+      pompisteName: pid => pompistes.find(p => p.id === pid)?.name,
+      createdBy: currentUserName,
+    }).forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
+
     if (cashReceived > 0) {
       dispatch({
         type: 'ADD_TREASURY_TX',
@@ -960,6 +1005,27 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                         {justifMode === 'TAG' ? 'Bon / Tag' : 'Transaction TPE'}
                       </p>
 
+                      {/* Compte crédité — c'est LUI qui reçoit l'argent du terminal.
+                          Sans ce choix, la justification comptait comme encaissée
+                          sans qu'aucun solde bancaire ne bouge. */}
+                      <div>
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Compte bancaire crédité</label>
+                        {bankAccounts.length === 0 ? (
+                          <p className="text-[10px] font-bold text-orange-600">
+                            Aucun compte bancaire — créez-en un dans Finance → Comptes Bancaires.
+                          </p>
+                        ) : (
+                          <select
+                            value={tpeBankAccountId}
+                            onChange={e => setTpeBankAccountId(e.target.value)}
+                            className="w-full px-3 py-2.5 border border-amber-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                          >
+                            <option value="">— Choisir le compte —</option>
+                            {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                          </select>
+                        )}
+                      </div>
+
                       {/* Optional client name */}
                       <div>
                         <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Nom du Client (optionnel)</label>
@@ -1059,7 +1125,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                           style={{ background: isTPE ? '#f59e0b20' : '#dbeafe', color: isTPE ? '#b45309' : '#1e40af' }}>
                           {j.justificationType === 'TPE' ? '💳' : j.justificationType === 'TAG' ? '🏷️' : '👤'}
                         </div>
-                        <div className="flex-1">
+                        <div className="flex-1 min-w-0">
                           <p className="font-black text-slate-800 text-sm">
                             {isTPE ? (j.clientName || `Sans nom · ${j.fuelType}`) : (client?.name || j.clientId)}
                           </p>
@@ -1067,6 +1133,20 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                             <p className="text-[10px] text-slate-400">{j.liters?.toFixed(2)} L × {j.pricePerLiter?.toFixed(2)} DA/L</p>
                           ) : (
                             <p className="text-[10px] text-slate-400">{client?.type} · {client?.paymentMode}</p>
+                          )}
+                          {/* Le compte crédité se change ici : une justification reprise
+                              d'une ancienne brigade n'en porte encore aucun. */}
+                          {isTPE && bankAccounts.length > 0 && (
+                            <select
+                              value={j.bankAccountId || ''}
+                              onChange={e => setJustifications(prev => prev.map(x =>
+                                x.id === j.id ? { ...x, bankAccountId: e.target.value || undefined } : x))}
+                              className={cn("mt-1 w-full px-2 py-1 rounded-lg border text-[10px] font-bold outline-none bg-white",
+                                j.bankAccountId ? "border-amber-200 text-slate-600" : "border-red-300 text-red-600")}
+                            >
+                              <option value="">— Compte à choisir —</option>
+                              {bankAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                            </select>
                           )}
                         </div>
                         <p className="font-black text-blue-700">{j.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</p>

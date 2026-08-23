@@ -37,7 +37,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   ShoppingBag, Search, Plus, Minus, X, User, UserPlus, Percent, Check, Package,
   PlayCircle, StopCircle, Lock, Beaker, Layers, Wallet, AlertTriangle, Printer,
-  Star, ArrowUp, ArrowDown, ListOrdered, Zap, Users, Monitor, MonitorOff,
+  Star, ArrowUp, ArrowDown, ListOrdered, Zap, Users, Monitor, MonitorOff, ScanLine,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
@@ -52,6 +52,7 @@ import { useBizSessions } from '@/src/hooks/useBizSessions';
 import { PageHeader, Badge, Select, Field, Input, Textarea, Modal, money, formatDate } from '@/src/components/biz/Kit';
 import { useCustomerDisplay, CustomerDisplayState } from '@/src/components/biz/CustomerDisplay';
 import { ContactModal, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
+import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 
 type LineKind = 'comptoir' | 'product' | 'fiche';
 
@@ -91,6 +92,12 @@ interface Source {
   detailUnit?: string;
   fiche?: BizFiche;
   imageUrl?: string;
+  /**
+   * Le code-barres du produit, pour que la douchette et la caméra retrouvent la
+   * vignette. Une production du comptoir ou une fiche technique n'en portent
+   * pas : elles ne sont pas étiquetées en rayon.
+   */
+  barcode?: string;
   /** Stable key used by the "accès rapide" pinning. */
   pinKey: string;
   /**
@@ -130,6 +137,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const [showOpen, setShowOpen] = useState(false);
   const [showClose, setShowClose] = useState(false);
   const [showOrganize, setShowOrganize] = useState(false);
+  // Lecture d'un code-barres à la caméra, pour ajouter l'article au panier.
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState('');
   const [askPrint, setAskPrint] = useState<BizSale | null>(null);
   // Afficheur client — la fenêtre posée sur le second écran du poste.
   const [showDisplay, setShowDisplay] = useState(false);
@@ -177,6 +187,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           unitCost: p.purchasePrice || 0,
           detail: true, detailCapacity: p.detailCapacity, detailUnit: p.detailUnit,
           imageUrl: p.imageUrl,
+          barcode: p.barcode,
           pinKey: posPinKey('product', p.id),
         });
       } else {
@@ -185,6 +196,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           unit: p.unit, kind: 'product', categoryName: p.categoryName,
           unitCost: p.purchasePrice || 0,
           imageUrl: p.imageUrl,
+          barcode: p.barcode,
           pinKey: posPinKey('product', p.id),
         });
       }
@@ -229,7 +241,9 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const filtered = useMemo(() => source
     .filter(s =>
-      matchesSearch(search, s.name) &&
+      // Le code-barres entre dans la recherche : la douchette USB écrit dans ce
+      // même champ, et le produit doit se trouver sur son code comme sur son nom.
+      matchesSearch(search, s.name, s.barcode) &&
       (category === 'all' || s.categoryName === category))
     .sort((a, b) => rank(a) - rank(b)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -291,6 +305,40 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     // Detail products ask for the quantity to sell, in the detail unit.
     if (s.detail) { setDetailPrompt(s); return; }
     pushLine(s, 1);
+  };
+
+  /**
+   * Un code-barres lu à la caméra (ou tapé sur une douchette) : l'article part
+   * DIRECTEMENT au panier — c'est tout l'intérêt du scan à la caisse.
+   *
+   * Un code inconnu n'est jamais silencieux : il est déposé dans la recherche
+   * pour que le caissier voie ce qu'il vient de lire, et le dise en un mot au
+   * responsable du stock. Un produit vendu au détail ouvre sa demande de
+   * quantité comme lorsqu'on touche sa vignette.
+   */
+  const scanToCart = (code: string): boolean => {
+    if (!mySession) {
+      toast.error('Ouvrez votre session de travail pour vendre');
+      return false;
+    }
+    const clean = code.trim();
+    const found = source.find(s => (s.barcode || '').trim() === clean);
+    if (!found) {
+      setSearch(clean);
+      setScanNote(`Code ${clean} inconnu — aucun produit ne le porte.`);
+      toast.error(`Code ${clean} inconnu au catalogue`);
+      return false;
+    }
+    setScanNote(`${found.name} ajouté au panier`);
+    if (found.detail) {
+      // La quantité au détail se saisit : la fenêtre du scanner s'efface.
+      setScanning(false);
+      setDetailPrompt(found);
+      return true;
+    }
+    pushLine(found, 1);
+    toast.success(`${found.name} ajouté`);
+    return true;
   };
 
   const inc = (id: string) => setCart(prev => prev.map(l => l.id === id ? { ...l, qty: l.qty + 1 } : l));
@@ -560,8 +608,25 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           <div className="card-glass p-3 flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un produit…" className="input-field pl-9" />
+              <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Rechercher un produit ou scanner son code…" className="input-field pl-9"
+                // Une douchette USB écrit ici puis envoie « Entrée ». Le panier ne
+                // se remplit QUE sur un code-barres exact : valider une recherche
+                // par nom ajouterait au hasard le premier produit de la liste.
+                onKeyDown={e => {
+                  if (e.key !== 'Enter') return;
+                  const code = search.trim();
+                  if (!code || !source.some(s => (s.barcode || '').trim() === code)) return;
+                  e.preventDefault();
+                  if (scanToCart(code)) setSearch('');
+                }} />
             </div>
+            {/* Scanner : le code lu tombe DIRECTEMENT dans le panier. La fenêtre
+                reste ouverte pour enchaîner les articles d'un même client. */}
+            <button className="btn-primary shrink-0" onClick={() => { setScanNote(''); setScanning(true); }}
+              title="Scanner un code-barres avec la caméra et l'ajouter au panier">
+              <ScanLine className="w-4 h-4" /> Scanner
+            </button>
             <Select value={category} onChange={e => setCategory(e.target.value)} className="!w-auto min-w-[170px]">
               <option value="all">Toutes catégories</option>
               {categories.map(c => <option key={c} value={c}>{c}</option>)}
@@ -775,6 +840,18 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           </div>
         </div>
       </div>
+
+      {/* Scanner : les articles entrent au panier les uns après les autres,
+          la fenêtre reste ouverte tant que le client dépose sa marchandise. */}
+      <BarcodeScannerModal
+        open={scanning}
+        continuous
+        title="Scanner un article"
+        subtitle="Chaque code lu entre directement dans le panier"
+        lastResult={scanNote}
+        onClose={() => setScanning(false)}
+        onDetect={scanToCart}
+      />
 
       {/* Detail quantity prompt */}
       {detailPrompt && (

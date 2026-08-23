@@ -42,7 +42,7 @@ const BrigadeDetailModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, tracks,
   shopSales, settings, accounting: initialAccounting, clients, initialSection, onClose
 }) => {
-  const { brigadeAccountings } = useAppState();
+  const { brigadeAccountings, bankAccounts = [] } = useAppState();
   const [activeSection, setActiveSection] = useState(initialSection || 'info');
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
   const accounting = initialAccounting || brigadeAccountings.find(a => a.brigadeId === brigade.id);
@@ -643,6 +643,17 @@ const BrigadeDetailModal: React.FC<Props> = ({
                                     {pompiste && <span>{pompiste.name}</span>}
                                     {j.liters ? <span>{j.liters.toLocaleString('fr-FR')} L</span> : null}
                                   </div>
+                                  {/* Où l'argent est ALLÉ : un TAG / TPE crédite un compte
+                                      bancaire, et la fiche doit le nommer — c'est là qu'on
+                                      vérifie que la ligne existe bien dans son historique. */}
+                                  {(j.justificationType === 'TAG' || j.justificationType === 'TPE') && (
+                                    <p className={cn('text-[9px] font-black mt-1',
+                                      j.bankAccountId ? 'text-emerald-600' : 'text-red-500')}>
+                                      {j.bankAccountId
+                                        ? `→ ${bankAccounts.find(a => a.id === j.bankAccountId)?.name || 'Compte bancaire'}`
+                                        : 'Aucun compte crédité — argent absent des soldes bancaires'}
+                                    </p>
+                                  )}
                                 </div>
                                 <span className="font-black text-blue-700">{j.amount.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA</span>
                               </div>

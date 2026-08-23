@@ -1497,6 +1497,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
         brigadeDecalageAlerts: (state.brigadeDecalageAlerts || []).filter(a => a.brigadeId !== action.payload),
         brigadeAccountings: (state.brigadeAccountings || []).filter(a => a.brigadeId !== action.payload),
         fuelSales: (state.fuelSales || []).filter(s => s.brigadeId !== action.payload),
+        // L'argent d'une brigade supprimée s'en va avec elle : ses espèces et ses
+        // encaissements TPE / TAG. Ils restaient au grand livre, et la caisse
+        // comme les comptes bancaires gardaient indéfiniment la recette d'une
+        // brigade dont plus aucune pièce n'existait.
+        treasuryTransactions: (state.treasuryTransactions || []).filter(
+          t => !(t.refType === 'brigade' && t.refId === action.payload)),
       };
 
     case 'ADD_FUEL_SALE':    return { ...state, fuelSales: [...state.fuelSales, action.payload] };
@@ -2193,6 +2199,12 @@ async function cleanBrigadeDependencies(brigadeId: string): Promise<void> {
   }
   // 6. Delete brigade_accounting rows
   await supabase.from('brigade_accounting').delete().eq('brigade_id', brigadeId);
+  // 7. Les lignes du grand livre écrites par cette brigade — les espèces remises
+  //    ET les encaissements TPE / TAG. Sans ce ménage, la brigade disparaissait
+  //    de l'écran mais son argent restait sur la caisse et sur les comptes
+  //    bancaires, sans plus aucune pièce pour l'expliquer.
+  await supabase.from('treasury_transactions').delete()
+    .eq('ref_type', 'brigade').eq('ref_id', brigadeId);
 }
 
 // ─── Supabase sync function (standalone, not a hook) ─────────────────────────
@@ -2860,6 +2872,19 @@ async function refetchEntityAfterAction(
           m.pompisteIds = (assignRaw as any[]).filter(a => a.brigade_id === b.id).map(a => a.pompiste_id);
           return m;
         });
+        // Supprimer une brigade emporte ses lignes de trésorerie côté base
+        // (`cleanBrigadeDependencies`) : les soldes doivent se relire dans le
+        // même mouvement, sinon les comptes gardent à l'écran l'argent d'une
+        // brigade qui n'existe plus.
+        if (action.type === 'DELETE_BRIGADE') {
+          const treasuryTransactions = ((await db.getTreasuryTransactions()) as any[]).map(mapTreasuryTx);
+          const accounts = ((await db.getBankAccounts()) as any[]).map(mapBankAccount);
+          dispatch({ type: 'HYDRATE', payload: {
+            brigades, treasuryTransactions,
+            bankAccounts: accounts.map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) })),
+          } });
+          break;
+        }
         dispatch({ type: 'HYDRATE', payload: { brigades } });
         break;
       }

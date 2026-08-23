@@ -16,7 +16,7 @@ import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore 
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
   Flame, RotateCcw, Trash, User, Beaker, ShoppingBag, FileWarning, Upload, CloudOff, Loader2,
-  RefreshCw, CheckCircle2, History, Scale,
+  RefreshCw, CheckCircle2, History, Scale, ScanLine,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
@@ -33,6 +33,7 @@ import {
   Field, Input, Textarea, money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 import { ProductModal, printBarcode } from './_shared';
+import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 import ProductHistoryModal from '@/src/components/biz/ProductHistoryModal';
 
 /** Destructions belonging to the stock screen (legacy rows are comptoir ones). */
@@ -66,6 +67,9 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const [destructionToDelete, setDestructionToDelete] = useState<BizDestruction | null>(null);
   const [dPeriod, setDPeriod] = useState<Period>('all');
   const [dFrom, setDFrom] = useState(''); const [dTo, setDTo] = useState('');
+  /** Recherche d'un produit en scannant son étiquette. */
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState('');
 
   const filtered = useMemo(() => {
     return products.filter(p =>
@@ -288,6 +292,13 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
       {tab === 'catalogue' && <>
       <div className="card-glass p-4 flex flex-wrap items-center gap-3">
         <SearchInput value={search} onChange={setSearch} placeholder="Nom ou code-barres…" />
+        {/* Scanner l'article en rayon plutôt que de chercher son nom : le code lu
+            ouvre directement sa fiche, et dit franchement quand aucun produit ne
+            le porte — c'est ainsi qu'on repère une étiquette jamais enregistrée. */}
+        <button className="btn-secondary shrink-0" onClick={() => setScanning(true)}
+          title="Scanner un code-barres avec la caméra">
+          <ScanLine className="w-4 h-4" /> Scanner
+        </button>
         <Select value={cat} onChange={e => setCat(e.target.value)} className="!w-auto min-w-[160px]">
           <option value="all">Toutes catégories</option>
           {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -654,6 +665,31 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
       )}
 
       <ProductModal biz={biz} open={showForm} onClose={() => setShowForm(false)} initial={editing} />
+
+      {/* Scanner du catalogue : le code lu ouvre la fiche du produit. S'il
+          n'existe pas, il reste dans la recherche — l'écran vide dit alors
+          exactement quelle étiquette n'a jamais été enregistrée. */}
+      <BarcodeScannerModal
+        open={scanning}
+        title="Scanner un produit"
+        subtitle="Le code lu ouvre la fiche du produit"
+        lastResult={scanNote}
+        onClose={() => setScanning(false)}
+        onDetect={code => {
+          const clean = code.trim();
+          const found = products.find(p => (p.barcode || '').trim() === clean);
+          setSearch(clean);
+          if (!found) {
+            setScanNote(`Code ${clean} inconnu — aucun produit du catalogue ne le porte.`);
+            toast.error(`Code ${clean} inconnu`);
+            return false;
+          }
+          setScanNote('');
+          setScanning(false);
+          setViewing(found);
+          return true;
+        }}
+      />
 
       <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Package} size="lg"
         title={viewing?.name || ''} subtitle="Détails du produit">

@@ -8,7 +8,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff,
-  AlertTriangle, Search, Pencil, Car, Plus, Trash2, Clock,
+  AlertTriangle, Search, Pencil, Car, Plus, Trash2, Clock, ScanLine,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, formatCurrency } from '@/src/lib/utils';
@@ -21,6 +21,7 @@ import {
 } from '@/src/lib/bizConfig';
 import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
+import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 import { uploadFile } from '@/src/lib/supabase';
 
 // ─── Barcode helpers ──────────────────────────────────────────────────────────
@@ -278,6 +279,9 @@ export function ProductModal({
   const [saving, setSaving] = useState(false);
   /** Liste des produits ressemblants, masquée dès que l'utilisateur l'écarte. */
   const [hideSuggestions, setHideSuggestions] = useState(false);
+  /** Lecture du code-barres à la caméra plutôt qu'à la main. */
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState('');
 
   React.useEffect(() => { setForm(initial || emptyProduct()); setHideSuggestions(false); }, [initial, open]);
 
@@ -530,9 +534,13 @@ export function ProductModal({
         </div>
 
         <div className="sm:col-span-2">
-          <Field label="Code-barres" hint="Générez un code si le produit n'en possède pas.">
+          <Field label="Code-barres"
+            hint="Scannez le code du produit avec la caméra, ou générez-en un s'il n'en possède pas.">
             <div className="flex gap-2">
               <Input value={form.barcode || ''} onChange={e => set('barcode', e.target.value)} placeholder="Code-barres" />
+              <button type="button" title="Scanner avec la caméra" className="btn-primary !px-3 shrink-0" onClick={() => { setScanNote(''); setScanning(true); }}>
+                <ScanLine className="w-4 h-4" />
+              </button>
               <button type="button" title="Générer" className="btn-secondary !px-3 shrink-0" onClick={() => set('barcode', genBarcode())}>
                 <RefreshCw className="w-4 h-4" />
               </button>
@@ -541,6 +549,7 @@ export function ProductModal({
               </button>
             </div>
           </Field>
+          {scanNote && <p className="mt-1.5 text-[11px] font-bold text-amber-700">{scanNote}</p>}
         </div>
 
         <Field label="Marque">
@@ -647,6 +656,29 @@ export function ProductModal({
           </>
         )}
       </div>
+
+      {/* ── Lecture du code-barres à la caméra ───────────────────────────────
+          Le code lu remplit le champ. S'il appartient DÉJÀ à un autre produit,
+          on le dit au lieu de laisser deux fiches partager le même code : le
+          point de vente ne saurait plus laquelle vendre. */}
+      {scanning && (
+        <BarcodeScannerModal
+          open
+          title="Scanner le code du produit"
+          subtitle="Présentez l'étiquette devant la caméra"
+          onClose={() => setScanning(false)}
+          onDetect={code => {
+            const owner = biz.state.products.find(
+              (p: BizProduct) => p.id !== form.id && (p.barcode || '').trim() === code);
+            set('barcode', code);
+            setScanNote(owner
+              ? `Ce code appartient déjà à « ${owner.name} » — changez-le, ou reprenez cette fiche.`
+              : '');
+            if (owner) toast.error(`Code déjà utilisé par « ${owner.name} »`);
+            else toast.success(`Code-barres ${code}`);
+          }}
+        />
+      )}
     </Modal>
   );
 }
