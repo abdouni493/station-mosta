@@ -79,8 +79,14 @@ export default function BankAccounts() {
       // Une brigade supprimée n'a plus à porter d'argent en banque.
       .filter(s => brigades.some(b => b.id === s.brigadeId)),
     treasuryTransactions,
-    { pompisteName: pid => pompistes.find(p => p.id === pid)?.name },
-  ), [brigadeAccountings, brigades, treasuryTransactions, pompistes, currentUserName]);
+    {
+      pompisteName: pid => pompistes.find(p => p.id === pid)?.name,
+      // Les comptes servent à RELIRE celui qu'une justification a perdu : son
+      // libellé le nomme encore (« TPE Naftal card »), même quand la colonne a
+      // été remise à NULL par une modification de brigade.
+      accounts: bankAccounts,
+    },
+  ), [brigadeAccountings, brigades, treasuryTransactions, pompistes, bankAccounts, currentUserName]);
 
   const runRepair = () => {
     if (repair.add.length === 0) {
@@ -89,9 +95,32 @@ export default function BankAccounts() {
         : 'Les comptes bancaires portent déjà toutes les brigades');
       return;
     }
+
+    // ── 1. Le compte retrouvé est réécrit sur la PIÈCE ────────────────────
+    // Sans cela, la prochaine modification de la brigade repartirait d'une
+    // justification toujours sans compte, et referait disparaître la ligne
+    // qu'on vient de créer.
+    let pieces = 0;
+    repair.recovered.forEach((byJustif, brigadeId) => {
+      const acc = brigadeAccountings.find(a => a.brigadeId === brigadeId);
+      if (!acc) return;
+      dispatch({
+        type: 'UPDATE_BRIGADE_ACCOUNTING',
+        payload: {
+          ...acc,
+          justifications: (acc.justifications || []).map(j =>
+            byJustif.has(j.id) ? { ...j, bankAccountId: byJustif.get(j.id) } : j),
+        },
+      });
+      pieces += byJustif.size;
+    });
+
+    // ── 2. Les lignes manquantes entrent au grand livre ───────────────────
     repair.add.forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
     toast.success(
-      `${repair.add.length} encaissement(s) TPE/TAG rattachés — ${money(repair.amount)} sur ${repair.brigades} brigade(s)`);
+      `${repair.add.length} encaissement(s) TPE/TAG rattachés — ${money(repair.amount)} sur ${repair.brigades} brigade(s)`
+      + (pieces ? ` · ${pieces} compte(s) retrouvé(s) dans le libellé` : ''),
+      { duration: 7000 });
   };
 
   return (

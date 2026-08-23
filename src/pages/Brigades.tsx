@@ -44,7 +44,7 @@ import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
 import { toNum } from "../lib/brigadeCalc";
 import { clientChargeDelta } from "../lib/clientLedger";
-import { brigadeBankLines, isBankJustification } from "../lib/brigadeBankLines";
+import { brigadeBankLines, isBankJustification, accountOfJustification } from "../lib/brigadeBankLines";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Skeleton from "../components/Skeleton";
@@ -452,7 +452,10 @@ const Brigades = () => {
     const entries = Object.entries(pompisteJustifications) as [string, WizardJustification[]][];
     return entries.flatMap(([pid, list]) =>
       (list || [])
-        .filter(j => isBankJustification({ justificationType: j.type }) && (j.amount || 0) > 0 && !j.bankAccountId)
+        .filter(j => isBankJustification({ justificationType: j.type }) && (j.amount || 0) > 0
+          // Le libellé peut encore nommer le compte : n'est bloquant que ce qui
+          // reste VRAIMENT introuvable.
+          && !accountOfJustification({ id: j.id, amount: j.amount, bankAccountId: j.bankAccountId, clientName: j.description }, bankAccounts))
         .map(j => ({
           pompiste: pompistes.find(p => p.id === pid)?.name || 'Pompiste',
           label: j.description || j.type,
@@ -747,6 +750,7 @@ const Brigades = () => {
         justifications: accJustifications,
         pompisteName: pid => pompistes.find(x => x.id === pid)?.name,
         createdBy: currentUserName,
+        accounts: bankAccounts,
       }).forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
       // Les espèces réellement remises alimentent la caisse générale.
       if (totalCash > 0) {
@@ -950,7 +954,13 @@ const Brigades = () => {
         // Sans lui, réenregistrer la brigade effaçait ses lignes de banque puis
         // n'en réécrivait aucune : le solde du compte perdait le montant du TPE
         // à chaque simple correction, sans qu'aucune pièce ne l'explique.
-        bankAccountId: j.bankAccountId || undefined,
+        //
+        // Le LIBELLÉ sert de filet quand la colonne a déjà été perdue : une
+        // brigade réenregistrée avant cette correction a vu son
+        // `bank_account_id` remis à NULL en base, mais « TPE Naftal card » est
+        // resté écrit dans la pièce. Rouvrir une telle brigade la répare donc
+        // d'elle-même.
+        bankAccountId: accountOfJustification(j, bankAccounts),
         description: j.notes || ((type === 'TAG' || type === 'TPE') ? (j.clientName || '') : ''),
         liters: j.liters || 0,
         amount: j.amount || 0,

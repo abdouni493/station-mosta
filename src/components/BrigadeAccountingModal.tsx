@@ -15,7 +15,9 @@ import {
 } from "../lib/brigadeCalc";
 import { brigadeTankDeltas } from "../lib/brigadeTanks";
 import { clientChargeDelta } from "../lib/clientLedger";
-import { brigadeBankLines, brigadeBankLineIds, unbankedJustifications } from "../lib/brigadeBankLines";
+import {
+  brigadeBankLines, brigadeBankLineIds, unbankedJustifications, accountOfJustification,
+} from "../lib/brigadeBankLines";
 
 interface Justification {
   id: string;
@@ -88,7 +90,9 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     (existingAccounting?.justifications || []).map(j => ({
       id: j.id, clientId: j.clientId, amount: j.amount,
       justificationType: j.justificationType || 'CLIENT',
-      bankAccountId: j.bankAccountId,
+      // Le libellé rattrape le compte des brigades dont la colonne a été perdue
+      // (« TPE Naftal card » est resté écrit sur la pièce).
+      bankAccountId: accountOfJustification(j, bankAccounts),
       clientName: j.clientName, fuelType: j.fuelType, liters: j.liters,
       pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
     }))
@@ -288,7 +292,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     // Un TAG / TPE sans compte désigné compterait comme encaissé dans le rapport
     // Carburant sans qu'un dinar n'entre en banque : on refuse plutôt que de le
     // perdre en silence. Sans aucun compte enregistré, il n'y a rien à choisir.
-    const unbanked = bankAccounts.length > 0 ? unbankedJustifications(justObjs) : [];
+    const unbanked = bankAccounts.length > 0 ? unbankedJustifications(justObjs, bankAccounts) : [];
     if (unbanked.length > 0) {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message:
         `Choisissez le compte bancaire de ${unbanked.length} justification(s) TPE / TAG` } });
@@ -471,6 +475,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       justifications: justObjs,
       pompisteName: pid => pompistes.find(p => p.id === pid)?.name,
       createdBy: currentUserName,
+      accounts: bankAccounts,
     }).forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
 
     if (cashReceived > 0) {
