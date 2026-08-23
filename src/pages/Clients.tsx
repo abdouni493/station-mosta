@@ -507,10 +507,6 @@ const Clients = () => {
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Montant invalide" } });
       return;
     }
-    if (paymentForm.amount > payableDebt(selectedClient, ledger)) {
-      dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message: "Le montant dépasse la dette du client" } });
-      return;
-    }
     // A TPE règlement is cashed on a bank account (the terminal's account): the
     // account must be chosen so the money lands somewhere in the ledger.
     const tpeAccount = paymentForm.mode === "TPE"
@@ -528,31 +524,18 @@ const Clients = () => {
       return;
     }
 
-    // L'opération d'origine, citée sur le reçu quand le règlement a été lancé
-    // depuis une ligne du journal du client.
-    const invoiceRef = selectedSale
-      ? (selectedSale.label || `Facture #${String(selectedSale.id || '').substring(0, 8).toUpperCase()}`)
-      : '';
-    const tpeRef = tpeAccount ? `TPE ${tpeAccount.name}` : '';
-    const payment = {
-      id: newId(),
-      date: paymentForm.date,
-      type: "PAYMENT" as const,
-      amount: paymentForm.amount,
-      mode: paymentForm.mode,
-      receiptNumber: paymentForm.chequeNumber,
-      notes: [invoiceRef, tpeRef, paymentForm.notes].filter(Boolean).join(' — '),
-    };
-    const debtBefore = selectedClient.debt;
+    // ── LE TROP-PERÇU DEVIENT UNE AVANCE ────────────────────────────────────
+    // Un client qui vient régler 2 500 DA sur 1 000 DA de dette ne se voit plus
+    // refuser son argent : les 1 000 DA soldent la dette (un PAYMENT), les
+    // 1 500 DA restants rechargent son avance (une RECHARGE). Les deux écrivent
+    // leur ligne de trésorerie sur le MÊME compte, si bien que la caisse
+    // Carburant et les rapports comptent l'intégralité de ce qui est entré.
+    const debtCap = Math.max(0, ledger.debtFromDocuments);
+    const debtPortion = Math.min(paymentForm.amount, debtCap);
+    const advancePortion = Math.max(0, paymentForm.amount - debtPortion);
 
-    dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment } });
-
-    // ── Le règlement entre dans le grand livre, QUEL QUE SOIT son mode ────────
-    // Seul le TPE écrivait sa ligne : un client qui réglait sa dette en espèces
-    // faisait disparaître la créance sans que l'argent n'arrive nulle part. La
-    // caisse restait donc plus basse que le tiroir, et le rapport annonçait un
-    // découvert. Chaque mode atterrit maintenant sur son compte : la caisse pour
-    // les espèces, le compte bancaire choisi pour le TPE, le chèque et le virement.
+    // Où va l'argent — un seul compte pour les deux volets. La caisse pour les
+    // espèces, le compte bancaire choisi pour le TPE, le chèque et le virement.
     const destination = tpeAccount
       ? tpeAccount.id
       : paymentForm.mode === 'ESPECES'
@@ -566,39 +549,96 @@ const Clients = () => {
         ? 'la caisse Carburant'
         : (liveBankAccounts.find(a => a.id === destination)?.name || 'aucun compte');
 
-    if (destination) {
-      const tx: TreasuryTransaction = {
+    // L'opération d'origine, citée sur le reçu quand le règlement a été lancé
+    // depuis une ligne du journal du client.
+    const invoiceRef = selectedSale
+      ? (selectedSale.label || `Facture #${String(selectedSale.id || '').substring(0, 8).toUpperCase()}`)
+      : '';
+    const tpeRef = tpeAccount ? `TPE ${tpeAccount.name}` : '';
+    const debtBefore = selectedClient.debt;
+
+    /** Écrit une opération du compte (PAYMENT / RECHARGE) et sa ligne de caisse. */
+    const writeMovement = (
+      type: 'PAYMENT' | 'RECHARGE', amount: number, label: string, extraNote = '',
+    ) => {
+      const movement = {
         id: newId(),
-        date: new Date(paymentForm.date).toISOString(),
-        kind: tpeAccount ? 'TPE' : 'SALE',
-        amount: paymentForm.amount,
-        description: [
-          `Règlement dette client — ${selectedClient.name}`,
-          invoiceRef,
-          PAYMENT_MODE_LABEL[paymentForm.mode] || paymentForm.mode,
-        ].filter(Boolean).join(' · '),
-        accountTo: destination,
-        part: 'carburant',
-        refType: 'client_payment',
-        refId: payment.id,
-        chequeNumber: paymentForm.mode === 'CHEQUE' ? (paymentForm.chequeNumber || undefined) : undefined,
-        createdBy: currentUserName,
-        createdAt: new Date().toISOString(),
+        date: paymentForm.date,
+        type,
+        amount,
+        mode: paymentForm.mode,
+        receiptNumber: paymentForm.chequeNumber,
+        notes: [invoiceRef, tpeRef, extraNote, paymentForm.notes].filter(Boolean).join(' — '),
       };
-      dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
+      dispatch({ type: 'ADD_CLIENT_PAYMENT', payload: { clientId: selectedClient.id, payment: movement } });
+      if (destination) {
+        const tx: TreasuryTransaction = {
+          id: newId(),
+          date: new Date(paymentForm.date).toISOString(),
+          kind: tpeAccount ? 'TPE' : 'SALE',
+          amount,
+          description: [
+            label,
+            selectedClient.name,
+            invoiceRef,
+            PAYMENT_MODE_LABEL[paymentForm.mode] || paymentForm.mode,
+          ].filter(Boolean).join(' · '),
+          accountTo: destination,
+          part: 'carburant',
+          refType: 'client_payment',
+          refId: movement.id,
+          chequeNumber: paymentForm.mode === 'CHEQUE' ? (paymentForm.chequeNumber || undefined) : undefined,
+          createdBy: currentUserName,
+          createdAt: new Date().toISOString(),
+        };
+        dispatch({ type: 'ADD_TREASURY_TX', payload: tx });
+      }
+      return movement;
+    };
+
+    // ── Le règlement entre dans le grand livre, QUEL QUE SOIT son mode ────────
+    // Seul le TPE écrivait sa ligne autrefois : un client qui réglait en espèces
+    // faisait disparaître la créance sans que l'argent n'arrive nulle part.
+    const history = [...(selectedClient.transactionHistory || [])];
+    let receiptTx: NonNullable<Client['transactionHistory']>[number] | null = null;
+    if (debtPortion > 0) {
+      receiptTx = writeMovement('PAYMENT', debtPortion, 'Règlement dette client');
+      history.push(receiptTx as any);
+    }
+    if (advancePortion > 0) {
+      const rec = writeMovement('RECHARGE', advancePortion, "Avance client (trop-perçu)", "Trop-perçu porté en avance");
+      history.push(rec as any);
+      if (!receiptTx) receiptTx = rec as any;
     }
 
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: destination
-      ? `Règlement encaissé sur ${destinationLabel} : -${paymentForm.amount.toLocaleString()} DA`
-      : `Règlement enregistré: -${paymentForm.amount.toLocaleString()} DA` } });
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'success', message: advancePortion > 0
+      ? `Encaissé sur ${destinationLabel} : ${paymentForm.amount.toLocaleString()} DA — dont ${advancePortion.toLocaleString()} DA portés en avance`
+      : (destination
+        ? `Règlement encaissé sur ${destinationLabel} : -${paymentForm.amount.toLocaleString()} DA`
+        : `Règlement enregistré: -${paymentForm.amount.toLocaleString()} DA`) } });
 
     const updatedClient: Client = {
       ...selectedClient,
-      debt: Math.max(0, debtBefore - paymentForm.amount),
-      transactionHistory: [...(selectedClient.transactionHistory || []), payment],
+      debt: Math.max(0, debtBefore - debtPortion),
+      balance: selectedClient.balance + advancePortion,
+      advanceBalance: (selectedClient.advanceBalance ?? selectedClient.balance) + advancePortion,
+      transactionHistory: history,
     };
     setSelectedClient(updatedClient);
-    if (andPrint) printReceipt(updatedClient, payment, debtBefore);
+    // Le reçu porte le montant TOTAL remis et, le cas échéant, la mention de
+    // l'avance créée — le client repart avec une trace de tout ce qu'il a versé.
+    if (andPrint && receiptTx) {
+      printReceipt(
+        updatedClient,
+        {
+          ...receiptTx,
+          amount: paymentForm.amount,
+          notes: [receiptTx.notes, advancePortion > 0 ? `Dont ${advancePortion.toLocaleString()} DA en avance` : '']
+            .filter(Boolean).join(' — '),
+        } as any,
+        debtBefore,
+      );
+    }
 
     setShowPayment(false);
     setSelectedSale(null);
@@ -684,6 +724,27 @@ const Clients = () => {
   const ledger = useMemo(
     () => clientLedger(state, selectedClient?.id || ''),
     [state, selectedClient?.id]);
+
+  /**
+   * Ce que le règlement en cours de saisie laissera derrière lui. Un versement
+   * supérieur à la dette solde d'abord ce qui est dû, puis PORTE LE RESTE EN
+   * AVANCE : le champ « avance après » montre l'argent que le client conserve à
+   * son crédit, exactement ce que `handleRecordPayment` va enregistrer.
+   */
+  const paymentPreview = useMemo(() => {
+    const amount = Math.max(0, paymentForm.amount || 0);
+    const debtCap = Math.max(0, ledger.debtFromDocuments);
+    const debtPortion = Math.min(amount, debtCap);
+    const advancePortion = Math.max(0, amount - debtPortion);
+    const newDebtFromDocs = Math.max(0, debtCap - debtPortion);
+    const newAdvanceHeld = ledger.advanceHeld + advancePortion;
+    return {
+      debtPortion,
+      advancePortion,
+      netDebtAfter: Math.max(0, newDebtFromDocs - newAdvanceHeld),
+      advanceLeftAfter: Math.max(0, newAdvanceHeld - newDebtFromDocs),
+    };
+  }, [ledger, paymentForm.amount]);
 
   /**
    * Le compte de CHAQUE client, pour la liste.
@@ -1963,8 +2024,18 @@ const Clients = () => {
                     )}
                     <span className="text-slate-500 border-t pt-2">Reste après ce règlement</span>
                     <span className="text-blue-900 font-black text-right border-t pt-2">
-                      {Math.max(0, ledger.netDebt - (paymentForm.amount || 0)).toLocaleString()} DA
+                      {paymentPreview.netDebtAfter.toLocaleString()} DA
                     </span>
+                    {/* Le trop-perçu porté en avance : le client garde cet argent
+                        à son crédit, il apparaît dès qu'on saisit plus que sa dette. */}
+                    {paymentPreview.advanceLeftAfter > 0 && (
+                      <>
+                        <span className="text-teal-600">Avance après ce règlement</span>
+                        <span className="text-teal-700 font-black text-right">
+                          +{paymentPreview.advanceLeftAfter.toLocaleString()} DA
+                        </span>
+                      </>
+                    )}
                   </div>
                   {selectedSale && (
                     <p className="text-[9px] font-bold text-slate-400 italic leading-relaxed pt-1">
@@ -1995,9 +2066,9 @@ const Clients = () => {
                       à la seule colonne `debt` de la fiche, un client dont la dette
                       venait des brigades voyait le bouton « Valider » rester grisé :
                       il était tout simplement impossible d'encaisser son règlement. */}
-                  {paymentForm.amount > payableDebt(selectedClient, ledger) && (
-                    <p className="text-[9px] font-black text-red-600 uppercase tracking-widest ml-1">
-                      Le montant dépasse la dette de {payableDebt(selectedClient, ledger).toLocaleString()} DA
+                  {paymentPreview.advancePortion > 0 && (
+                    <p className="text-[9px] font-black text-teal-600 uppercase tracking-widest ml-1 leading-relaxed not-italic">
+                      Trop-perçu de {paymentPreview.advancePortion.toLocaleString()} DA porté en avance
                     </p>
                   )}
                 </div>
@@ -2079,14 +2150,14 @@ const Clients = () => {
                 <button onClick={() => { setShowPayment(false); setSelectedSale(null); }} className="px-4 py-2.5 text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 transition-all italic">Annuler</button>
                 <button
                   onClick={() => handleRecordPayment(false)}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > payableDebt(selectedClient, ledger) || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
+                  disabled={paymentForm.amount <= 0 || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
                   className="flex-1 min-w-[140px] px-4 py-2.5 bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:bg-emerald-50 transition-all flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 className="w-4 h-4" /> Valider
                 </button>
                 <button
                   onClick={() => handleRecordPayment(true)}
-                  disabled={paymentForm.amount <= 0 || paymentForm.amount > payableDebt(selectedClient, ledger) || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
+                  disabled={paymentForm.amount <= 0 || (paymentForm.mode !== "ESPECES" && !paymentForm.bankAccountId)}
                   className="flex-1 min-w-[180px] px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-700 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
                 >
                   <Printer className="w-4 h-4 text-yellow-400" /> Valider & Imprimer Reçu

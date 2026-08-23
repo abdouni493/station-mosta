@@ -887,6 +887,10 @@ export function ContactModal({
       // Les règlements déjà encaissés sur cette reprise ne se perdent pas
       // parce qu'on rouvre la fiche pour corriger un numéro de téléphone.
       openingPayments: form.openingPayments,
+      // Idem pour les dépôts d'avance (trop-perçus portés au crédit) : rouvrir
+      // la fiche pour une correction ne doit pas effacer l'argent que le client
+      // a laissé d'avance.
+      advancePayments: form.advancePayments,
       // Le parc, nettoyé de ses lignes vides. Sur une partie sans véhicules, on
       // reconduit ce que la fiche portait déjà plutôt que de l'effacer : le même
       // client peut être modifié depuis un écran qui n'affiche pas le parc.
@@ -988,7 +992,7 @@ const todayISO = () => {
 };
 
 export function PayDebtModal({
-  open, onClose, total, alreadyPaid, advanceHeld = 0, onPay, title = 'Payer la dette',
+  open, onClose, total, alreadyPaid, advanceHeld = 0, allowAdvance = false, onPay, title = 'Payer la dette',
 }: {
   open: boolean; onClose: () => void; total: number; alreadyPaid: number;
   /**
@@ -997,6 +1001,13 @@ export function PayDebtModal({
    * d'avance, et le caissier encaissait une seconde fois le même argent.
    */
   advanceHeld?: number;
+  /**
+   * Autorise un ENCAISSEMENT SUPÉRIEUR à la dette : le trop-perçu devient une
+   * avance au crédit du client. Réservé au règlement d'un COMPTE entier (écran
+   * Clients) — un règlement sur une facture unique reste plafonné à son reste,
+   * car un trop-perçu n'aurait aucune pièce où s'imputer.
+   */
+  allowAdvance?: boolean;
   /**
    * `meta` porte le mode, la référence et la DATE de l'encaissement : sans elle
    * un relevé de compte ne peut pas dire quand l'argent est entré.
@@ -1016,6 +1027,8 @@ export function PayDebtModal({
     setAmount(rest); setMode('Espèces'); setReference(''); setDate(todayISO());
   }, [rest, open]);
   const newRest = Math.max(0, rest - (Number(amount) || 0));
+  /** Le trop-perçu qui deviendra une avance — seulement là où c'est permis. */
+  const surplus = allowAdvance ? Math.max(0, (Number(amount) || 0) - rest) : 0;
 
   return (
     <Modal open={open} onClose={onClose} icon={Wallet} size="lg" formScale title={title} subtitle="Encaissement d'un règlement partiel ou total"
@@ -1041,8 +1054,16 @@ export function PayDebtModal({
         )}
         <Field label="Montant à payer cette fois (DA)">
           <Input type="number" inputMode="decimal" value={amount}
-            onChange={e => setAmount(Number(e.target.value))} max={rest} className="text-right" />
+            onChange={e => setAmount(Number(e.target.value))}
+            max={allowAdvance ? undefined : rest} className="text-right" />
         </Field>
+        {surplus > 0 && (
+          <div className="rounded-xl bg-teal-50 border border-teal-200 p-3 text-[11px] font-semibold text-teal-900 leading-relaxed">
+            Le client verse <b>{fc(surplus)}</b> de plus que sa dette :
+            {' '}ce trop-perçu est enregistré comme une <b>avance</b> à son crédit,
+            {' '}qu'il pourra utiliser sur ses prochains achats.
+          </div>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Field label="Mode de règlement">
             <Select value={mode} onChange={e => setMode(e.target.value)}>
@@ -1060,6 +1081,12 @@ export function PayDebtModal({
           <span className="text-sm font-semibold text-blue-200">Nouveau reste</span>
           <span className="text-2xl font-black tabular-nums text-[#FFB800]">{fc(newRest)}</span>
         </div>
+        {surplus > 0 && (
+          <div className="rounded-2xl bg-teal-600 text-white p-4 sm:p-5 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-teal-100">Avance créée</span>
+            <span className="text-2xl font-black tabular-nums text-white">{fc(surplus)}</span>
+          </div>
+        )}
       </div>
     </Modal>
   );

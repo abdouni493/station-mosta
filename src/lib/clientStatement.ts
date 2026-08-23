@@ -468,11 +468,40 @@ function openingLines(client: BizContact | null): StatementLine[] {
   return out;
 }
 
+/**
+ * Les DÉPÔTS D'AVANCE d'un client de partie, rendus en lignes de journal.
+ *
+ * Le trop-perçu d'un règlement (ou une avance déposée d'elle-même) est de
+ * l'argent qui entre vraiment au tiroir — à la différence de l'avance de
+ * reprise, versée avant le logiciel. Il est donc porté comme une RECHARGE : il
+ * crédite l'avance du client (`advanceEffect > 0`) et compte parmi les
+ * encaissements de la période, exactement comme au Carburant.
+ */
+function advanceDepositLines(client: BizContact | null): StatementLine[] {
+  return (client?.advancePayments || [])
+    .filter((p: BizDocPayment) => num(p?.amount) > 0)
+    .map((p: BizDocPayment) => ({
+      id: `adv-${p.id}`,
+      date: p.date || (client as any)?.openingDate || '',
+      kind: 'recharge' as StatementKind,
+      kindLabel: KIND_LABEL.recharge,
+      label: "Dépôt d'avance",
+      mode: p.mode || 'Espèces',
+      reference: p.reference,
+      notes: p.notes,
+      charged: 0,
+      paid: num(p.amount),
+      rest: 0,
+      debtEffect: 0,
+      advanceEffect: num(p.amount),
+    }));
+}
+
 /** Le relevé d'un client d'une partie (Cafétéria, Lavage & Réparation). */
 export function bizClientStatement(
   state: ModuleState, client: BizContact | null, partLabel: string, from = '', to = '',
 ): ClientStatement {
-  const lines: StatementLine[] = [...openingLines(client)];
+  const lines: StatementLine[] = [...openingLines(client), ...advanceDepositLines(client)];
   const id = client?.id || '';
 
   for (const s of (state?.sales || [])) {
@@ -489,15 +518,19 @@ export function bizClientStatement(
   }
 
   const op = clientOpening(client as any);
+  // Ce que le client détient AUJOURD'HUI : l'avance de reprise plus tous les
+  // dépôts (trop-perçus) faits depuis. Aucune vente de partie ne s'impute encore
+  // sur l'avance ligne par ligne ; ce qu'il doit par ailleurs s'impute dessus au
+  // niveau du COMPTE (`netDebt` / `advanceLeft`), là où les deux soldes se
+  // rencontrent enfin.
+  const deposited = (client?.advancePayments || [])
+    .reduce((t, p) => t + Math.max(0, num(p?.amount)), 0);
+  const heldAdvance = op.advance + deposited;
   return assemble({
     client: { id, name: client?.name || '', phone: client?.phone, address: client?.address },
     partLabel,
     from, to, allLines: lines,
-    // Aucune vente de partie ne s'impute encore sur l'avance ligne par ligne :
-    // ce que le client a versé à l'ouverture est donc ce dont il dispose. Ce
-    // qu'il doit par ailleurs s'impute dessus au niveau du COMPTE
-    // (`netDebt` / `advanceLeft`), là où les deux soldes se rencontrent enfin.
-    currentAdvance: op.advance > 0 ? op.advance : undefined,
+    currentAdvance: heldAdvance > 0 ? heldAdvance : undefined,
   });
 }
 

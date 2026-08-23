@@ -280,6 +280,17 @@ export function moduleCaisseMovements(
         label: `Règlement dette initiale — ${c.name}`, amount: num(x.amount),
         reference: x.reference,
       }))),
+    // Un DÉPÔT D'AVANCE est de l'argent que le client remet en trop : il entre au
+    // tiroir le jour où il est versé, exactement comme un règlement. Sans cette
+    // ligne, le trop-perçu créditait l'avance du client mais la caisse restait
+    // plus basse que le tiroir réel.
+    ...(st.clients || []).flatMap(c => ((c as any).advancePayments || [])
+      .filter((x: any) => num(x?.amount) > 0)
+      .map((x: any) => ({
+        id: `adv-pay-${x.id}`, date: x.date || (c as any).openingDate || c.createdAt, nature: 'Avance',
+        label: `Dépôt d'avance — ${c.name}`, amount: num(x.amount),
+        reference: x.reference,
+      }))),
     ...st.purchases.filter(x => num(x.paid) > 0).map(x => ({
       id: `pur-${x.id}`, date: x.date, nature: 'Achat',
       label: `Achat ${x.ref} — ${x.supplierName}`, amount: -num(x.paid),
@@ -433,19 +444,38 @@ export function openingAdvance(c: { openingAdvance?: number }): number {
 }
 
 /**
+ * ─── L'AVANCE DÉPOSÉE APRÈS L'OUVERTURE ──────────────────────────────────────
+ *
+ * Le trop-perçu d'un règlement — ou une avance déposée d'elle-même — que le
+ * client a versé APRÈS que la station a commencé à tenir son compte. À la
+ * différence de l'avance de reprise (`openingAdvance`), cet argent est bien
+ * entré au tiroir : il compte donc dans la caisse de la partie
+ * (`moduleCaisseMovements`) au même titre qu'un règlement.
+ */
+export function advanceDeposited(c: { advancePayments?: { amount?: number }[] }): number {
+  return (c?.advancePayments || []).reduce((t, x) => t + Math.max(0, num(x?.amount)), 0);
+}
+
+/** Toute l'avance qu'un client détient : reprise + dépôts postérieurs. */
+export function clientAdvanceHeld(c: { openingAdvance?: number; advancePayments?: { amount?: number }[] }): number {
+  return openingAdvance(c) + advanceDeposited(c);
+}
+
+/**
  * Le compte d'un client de partie, les deux plateaux de la balance réunis.
  *
  * `gross` est ce que ses pièces réclament (reprise non soldée + factures et
- * interventions ouvertes) ; `advance` ce que la station tient pour lui. Ce
- * qu'on peut réellement lui demander, c'est la différence — et ce qui lui
- * reste, c'est l'autre.
+ * interventions ouvertes) ; `advance` ce que la station tient pour lui —
+ * l'avance de reprise ET les trop-perçus déposés depuis. Ce qu'on peut
+ * réellement lui demander, c'est la différence — et ce qui lui reste, c'est
+ * l'autre.
  */
 export function clientNetPosition(
-  c: { openingDebt?: number; openingAdvance?: number; openingPayments?: { amount?: number }[] },
+  c: { openingDebt?: number; openingAdvance?: number; openingPayments?: { amount?: number }[]; advancePayments?: { amount?: number }[] },
   grossDocumentRest: number,
 ): { gross: number; advance: number; applied: number; net: number; left: number } {
   const gross = Math.max(0, num(grossDocumentRest)) + openingDebtRest(c as any).rest;
-  const advance = openingAdvance(c as any);
+  const advance = clientAdvanceHeld(c as any);
   const applied = Math.min(advance, gross);
   return { gross, advance, applied, net: gross - applied, left: advance - applied };
 }

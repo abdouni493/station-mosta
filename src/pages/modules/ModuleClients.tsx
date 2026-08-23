@@ -95,6 +95,7 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
     let left = amount;
     const byDate = (a: { date: string }, b: { date: string }) =>
       new Date(a.date).getTime() - new Date(b.date).getTime();
+    const stamp = () => `${meta.date}T${new Date().toTimeString().slice(0, 8)}`;
 
     const openSales = (biz.state.sales || [])
       .filter((x: BizSale) => x.clientId === client.id && Number(x.rest) > 0
@@ -105,6 +106,13 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
       .sort(byDate);
 
     let settled = 0;
+    // Les deux journaux du client vivent sur SA fiche (`openingPayments`,
+    // `advancePayments`) : on les accumule ici pour n'écrire la fiche qu'UNE
+    // fois. Deux `biz.update('clients', …)` séparés se remplaceraient l'un
+    // l'autre — l'UPDATE du store écrit l'objet entier, il ne fusionne pas.
+    const openingPayments = [...(client.openingPayments || [])];
+    const advancePayments = [...(client.advancePayments || [])];
+    let clientTouched = false;
 
     // ── La DETTE INITIALE d'abord ──────────────────────────────────────────
     // C'est la plus ancienne dette du compte : la règle du « plus ancien au
@@ -116,20 +124,11 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
     const openRest = Math.max(0, op.debt - openPaid);
     if (left > 0.004 && openRest > 0) {
       const part = Math.min(left, openRest);
-      biz.update('clients', {
-        ...client,
-        openingPayments: [
-          ...(client.openingPayments || []),
-          {
-            id: newId(),
-            date: `${meta.date}T${new Date().toTimeString().slice(0, 8)}`,
-            amount: part,
-            mode: meta.mode,
-            reference: meta.reference,
-            by: currentUserName,
-          },
-        ],
+      openingPayments.push({
+        id: newId(), date: stamp(), amount: part,
+        mode: meta.mode, reference: meta.reference, by: currentUserName,
       });
+      clientTouched = true;
       left -= part; settled += part;
     }
 
@@ -150,8 +149,27 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
       left -= part; settled += part;
     }
 
+    // ── LE TROP-PERÇU DEVIENT UNE AVANCE ────────────────────────────────────
+    // Ce qui reste une fois toutes les dettes soldées n'est plus « sans document
+    // à solder » : c'est de l'argent que le client a bien remis. Il devient une
+    // avance à son crédit — utilisable sur ses prochains achats — et entre dans
+    // la caisse de la partie comme n'importe quel règlement (voir
+    // `moduleCaisseMovements` / `clientNetPosition`, lib/bizReporting).
+    let advanceCreated = 0;
+    if (left > 0.004) {
+      advanceCreated = left;
+      advancePayments.push({
+        id: newId(), date: stamp(), amount: left,
+        mode: meta.mode, reference: meta.reference, by: currentUserName,
+      });
+      clientTouched = true;
+      settled += left; left = 0;
+    }
+
+    if (clientTouched) biz.update('clients', { ...client, openingPayments, advancePayments });
+
     setPaying(null);
-    if (settled <= 0) { toast.error('Ce client n’a aucun document à solder'); return; }
+    if (settled <= 0) { toast.error('Ce client n’a aucune dette ni avance à enregistrer'); return; }
 
     // On ATTEND le verdict du serveur avant d’annoncer l’encaissement : un
     // règlement qui n’existerait que dans ce navigateur serait perdu au premier
@@ -167,10 +185,10 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
       toast.error(`Règlement NON enregistré sur le serveur — ${res.error}`);
       return;
     }
-    // Ce qui n'a pas trouvé de document est DIT, jamais encaissé dans le vide :
-    // un trop-perçu sans pièce ne s'expliquerait nulle part.
-    toast.success(left > 0.004
-      ? `${money(settled)} encaissés — ${money(left)} sans document à solder`
+    // Le trop-perçu n'est plus « sans document à solder » : il est porté à
+    // l'avance du client, et le message le dit clairement.
+    toast.success(advanceCreated > 0.004
+      ? `${money(settled)} encaissés — dont ${money(advanceCreated)} portés en avance`
       : `${money(settled)} encaissés sur le compte de ${client.name}`);
   };
 
@@ -483,6 +501,7 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
           total={statements[paying.id]?.totals.charged || 0}
           alreadyPaid={statements[paying.id]?.totals.paid || 0}
           advanceHeld={statements[paying.id]?.advanceHeld || 0}
+          allowAdvance
           onPay={(amount, meta) => settleDebt(paying, amount, meta)}
         />
       )}
@@ -547,6 +566,13 @@ function BizClientDossier({
       const pay = (client.openingPayments || []).find((x: BizDocPayment) => x.id === payId);
       return pay ? { origin: 'opening', pay } : null;
     }
+    // Un dépôt d'avance (trop-perçu) : sa ligne porte `adv-<payId>` et vit sur la
+    // fiche du client, pas sur un document.
+    if (lineId.startsWith('adv-')) {
+      const payId = lineId.slice('adv-'.length);
+      const pay = (client.advancePayments || []).find((x: BizDocPayment) => x.id === payId);
+      return pay ? { origin: 'advance', pay } : null;
+    }
     const cut = lineId.lastIndexOf('-pay-');
     if (cut < 0) return null;
     const docId = lineId.slice(0, cut);
@@ -583,6 +609,8 @@ function BizClientDossier({
 
     if (editingPay.origin === 'opening') {
       biz.update('clients', { ...client, openingPayments: (client.openingPayments || []).map(patch) });
+    } else if (editingPay.origin === 'advance') {
+      biz.update('clients', { ...client, advancePayments: (client.advancePayments || []).map(patch) });
     } else {
       const doc = editingPay.doc;
       const next = (doc.payments || []).map(patch);
@@ -607,6 +635,11 @@ function BizClientDossier({
       biz.update('clients', {
         ...client,
         openingPayments: (client.openingPayments || []).filter((x: BizDocPayment) => x.id !== payToDelete.pay.id),
+      });
+    } else if (payToDelete.origin === 'advance') {
+      biz.update('clients', {
+        ...client,
+        advancePayments: (client.advancePayments || []).filter((x: BizDocPayment) => x.id !== payToDelete.pay.id),
       });
     } else {
       const doc = payToDelete.doc;
@@ -775,7 +808,7 @@ function BizClientDossier({
         // cafétéria ou de lavage. L'avance saisie à l'ouverture de sa fiche
         // était donc écrite en base, et invisible partout — pas de mouvement,
         // pas de solde, pas de déduction sur ce qu'il devait.
-        advance={op.advance > 0 ? {
+        advance={(st.advanceHeld > 0 || op.advance > 0) ? {
           available: st.advanceLeft,
           recharged: st.totals.advanceRecharged,
           used: st.totals.advanceUsed,
@@ -831,7 +864,9 @@ function BizClientDossier({
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-[11px] font-semibold text-slate-500 leading-relaxed">
               {editingPay.origin === 'opening'
                 ? 'Versement encaissé sur la dette initiale du client.'
-                : `Versement rattaché à ${editingPay.doc?.ref || 'un document'} — le reste dû sera recalculé.`}
+                : editingPay.origin === 'advance'
+                  ? "Dépôt d'avance (trop-perçu) porté au crédit du client."
+                  : `Versement rattaché à ${editingPay.doc?.ref || 'un document'} — le reste dû sera recalculé.`}
               {' '}Montant d'origine : <b className="text-[#002d87]">{money(Number(editingPay.pay?.amount) || 0)}</b>.
             </div>
           )}

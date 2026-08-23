@@ -203,6 +203,46 @@ section("Lavage — 8 000 de dette reprise et 3 000 d'avance");
   check('seul le règlement entre en caisse', moduleCaisseBalance(state, 'lavage' as any), 2000);
 }
 
+// ─── 6b. Cafétéria — un trop-perçu devient une avance ────────────────────────
+section('Cafétéria — dette de 1 000, le client règle 2 500');
+{
+  // L'état APRÈS le passage de `settleDebt` : la vente à crédit est soldée, et
+  // les 1 500 DA en trop sont portés à `advancePayments` (le dépôt d'avance).
+  const client: any = {
+    id: 'k2', name: 'Client Généreux', createdAt: '2026-08-01T08:00:00',
+    openingDebt: 0, openingAdvance: 0, openingDate: '2026-08-01',
+    advancePayments: [{ id: 'ad1', date: '2026-08-12T11:00:00', amount: 1500, mode: 'Espèces' }],
+  };
+  const state: any = {
+    ...EMPTY_MODULE(),
+    clients: [client],
+    sales: [{
+      id: 's2', ref: 'V-2', clientId: 'k2', clientName: 'Client Généreux', date: '2026-08-10T10:00:00',
+      items: [{ productName: 'Sandwich', qty: 5, unitPrice: 200 }],
+      total: 1000, paid: 1000, rest: 0, status: 'payée',
+      payments: [{ id: 'sp1', date: '2026-08-12T11:00:00', amount: 1000, mode: 'Espèces' }],
+    }],
+  };
+
+  const st = bizClientStatement(state, client, 'Cafétéria');
+  check('le dépôt d’avance est une ligne du journal',
+    st.allLines.filter(l => l.kind === 'recharge').length, 1);
+  check('encaissé = 1 000 de la vente + 1 500 d’avance', st.totals.paid, 2500);
+  check('plus aucune dette', st.netDebt, 0);
+  check('le client détient 1 500 d’avance', st.advanceLeft, 1500);
+
+  const pos = clientNetPosition(client, 0);
+  check('la position nette : rien à réclamer', pos.net, 0);
+  check('avance disponible', pos.left, 1500);
+
+  const report = computeModuleReport(state, 'cafeteria' as any, '2026-01-01', '2026-12-31');
+  check('la partie ne réclame plus rien', report.clientDebtTotal, 0);
+  check('elle détient 1 500 d’avance', report.clientAdvanceTotal, 1500);
+
+  // Les 2 500 sont bien entrés au tiroir : le règlement ET le trop-perçu.
+  check('le tiroir compte l’intégralité versée', moduleCaisseBalance(state, 'cafeteria' as any), 2500);
+}
+
 // ─── 6. Le lecteur de l'avance ───────────────────────────────────────────────
 section("L'avance se lit toujours, même mal renseignée");
 {

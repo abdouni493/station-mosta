@@ -305,6 +305,17 @@ export interface BizContact {
   /** Les règlements encaissés SUR la dette initiale, datés et par mode. */
   openingPayments?: BizDocPayment[];
   /**
+   * ─── LES DÉPÔTS D'AVANCE ────────────────────────────────────────────────────
+   * L'argent que le client verse EN PLUS de ce qu'il doit — le trop-perçu d'un
+   * règlement, ou une avance déposée d'elle-même. Contrairement à
+   * `openingAdvance` (une avance versée AVANT le logiciel, déjà encaissée hors du
+   * tiroir), un dépôt d'avance est de l'argent qui entre AUJOURD'HUI : il gonfle
+   * l'avance détenue par le client ET la caisse de la partie, exactement comme
+   * une recharge d'avance au Carburant. Daté, par mode, pour qu'il apparaisse au
+   * relevé au jour où il est tombé.
+   */
+  advancePayments?: BizDocPayment[];
+  /**
    * ─── LE PARC DU CLIENT (Lavage & Réparation) ───────────────────────────────
    * Un client de lavage revient avec SES voitures — souvent plusieurs (la
    * sienne, celle de son épouse, l'utilitaire de la société). Les saisir à
