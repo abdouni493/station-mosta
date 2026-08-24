@@ -524,6 +524,52 @@ export function advanceColumnsDisagree(
   return num(client.advanceBalance) - num(client.balance);
 }
 
+/**
+ * ─── Ce qu'un client doit, TEL QUE L'ÉCRAN CLIENTS L'ANNONCE ──────────────────
+ *
+ * Deux chiffres se disputaient le mot « dette » :
+ *
+ *   • `clients.debt` — un COMPTEUR, monté à la main à chaque bon et descendu à
+ *     chaque règlement. Il ne sait rien d'une reprise d'ouverture, ni d'une
+ *     brigade corrigée après coup, ni de l'avance que la station détient déjà ;
+ *   • `clientLedger().netDebt` — ce que les PIÈCES du compte disent, une fois
+ *     l'avance imputée. C'est lui, et lui seul, que l'écran Clients affiche.
+ *
+ * Les deux écrans qui justifient une brigade « au client » lisaient le premier :
+ * on y voyait 12 000 DA là où la fiche du client en annonçait 4 000, et rien
+ * n'expliquait l'écart. Ils lisent désormais le même journal — d'où cette
+ * fonction, pour que « la dette du client » n'ait plus qu'une définition dans
+ * toute l'application.
+ *
+ * `ledger` absent (compte jamais relu), on retombe sur le compteur plutôt que
+ * d'annoncer zéro : mieux vaut un chiffre approché qu'un client qui paraît
+ * soldé alors qu'il doit.
+ */
+export interface ClientStanding {
+  /** Reste dû, avance déduite — le chiffre « Dette » de l'écran Clients. */
+  debt: number;
+  /** Avance encore disponible, comme la fiche du client l'affiche. */
+  advance: number;
+  /** Ce qu'il reste à consommer sous le plafond (`Infinity` : pas de plafond). */
+  restCredit: number;
+  /** Le compte a-t-il été relu sur ses pièces ? Faux = repli sur les colonnes. */
+  fromDocuments: boolean;
+}
+
+export function clientStanding(
+  client: { debt?: number; balance?: number; advanceBalance?: number; creditLimit?: number } | null | undefined,
+  ledger?: ClientLedger | null,
+): ClientStanding {
+  const debt = ledger ? Math.max(0, ledger.netDebt) : Math.max(0, num(client?.debt));
+  const limit = num(client?.creditLimit);
+  return {
+    debt,
+    advance: advanceAvailable(client),
+    restCredit: limit > 0 ? limit - debt : Infinity,
+    fromDocuments: !!ledger,
+  };
+}
+
 function emptyLedger(): ClientLedger {
   return {
     entries: [],

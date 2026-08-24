@@ -14,7 +14,7 @@ import {
   brigadeActiveNozzles, brigadeNozzleRows, brigadeTankRows, brigadePompisteGroups, justifiedByPompiste,
 } from "../lib/brigadeCalc";
 import { brigadeTankDeltas } from "../lib/brigadeTanks";
-import { clientChargeDelta } from "../lib/clientLedger";
+import { clientChargeDelta, clientStanding, ClientLedger } from "../lib/clientLedger";
 import {
   brigadeBankLines, brigadeBankLineIds, unbankedJustifications, accountOfJustification,
 } from "../lib/brigadeBankLines";
@@ -62,16 +62,27 @@ interface Props {
   treasuryTransactions?: TreasuryTransaction[];
   /** Les comptes bancaires : un TAG / TPE justifié crédite celui du terminal. */
   bankAccounts?: BankAccount[];
+  /**
+   * Le compte de chaque client, relu sur ses pièces — celui-là même que l'écran
+   * Clients affiche. Cette fenêtre ne montrait AUCUN solde : on justifiait « au
+   * client » sans savoir ce qu'il devait déjà, et le seul chiffre visible
+   * ailleurs (la colonne `clients.debt`) n'était pas celui de sa fiche.
+   */
+  clientAccounts?: Record<string, ClientLedger>;
   dispatch: React.Dispatch<any>;
   onClose: () => void;
 }
+
+/** Un montant en dinars, au dinar près. */
+const money0 = (v: number): string =>
+  `${(Number.isFinite(v) ? v : 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA`;
 
 type VerEntry = { verified: boolean; corrected: boolean; correctedValue?: number };
 
 const BrigadeAccountingModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, settings,
   clients, tracks, currentUserRole, currentUserName, existingAccounting,
-  treasuryTransactions = [], bankAccounts = [], dispatch, onClose
+  treasuryTransactions = [], bankAccounts = [], clientAccounts = {}, dispatch, onClose
 }) => {
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
 
@@ -241,6 +252,9 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     if (!clientSearch.trim()) return clients.slice(0, 8);
     return clients.filter(c => matchesSearch(clientSearch, c.name, c.phone, c.cin)).slice(0, 8);
   }, [clients, clientSearch]);
+
+  /** Ce qu'un client doit et détient — le même chiffre que l'écran Clients. */
+  const standingOf = (c: Client) => clientStanding(c, clientAccounts[c.id]);
 
   const addJustification = () => {
     if (!selectedClientId || !currentClientAmount || +currentClientAmount <= 0) return;
@@ -979,15 +993,67 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                       </div>
                       {clientSearch && (
                         <div className="space-y-1">
-                          {filteredClients.map(c => (
+                          {filteredClients.map(c => {
+                            // Ce que le client doit AUJOURD'HUI, lu sur ses pièces :
+                            // le même montant que sa fiche, et que le relevé imprimé.
+                            const st = standingOf(c);
+                            return (
                             <button key={c.id} onClick={() => { setSelectedClientId(c.id); setClientSearch(c.name); }}
-                              className={cn("w-full px-3 py-2 text-left rounded-lg text-sm font-bold transition-colors", selectedClientId === c.id ? "bg-blue-200 text-blue-900" : "hover:bg-blue-100 text-slate-700")}>
-                              {c.name} <span className="text-[10px] text-slate-400 ml-2">{c.type} · {c.paymentMode}</span>
+                              className={cn("w-full px-3 py-2 text-left rounded-lg text-sm font-bold transition-colors flex items-center justify-between gap-2", selectedClientId === c.id ? "bg-blue-200 text-blue-900" : "hover:bg-blue-100 text-slate-700")}>
+                              <span className="min-w-0 truncate">
+                                {c.name} <span className="text-[10px] text-slate-400 ml-2">{c.type} · {c.paymentMode}</span>
+                              </span>
+                              <span className="text-right shrink-0 leading-tight">
+                                <span className={cn("block text-[10px] font-black", st.debt > 0 ? "text-red-600" : "text-slate-400")}>
+                                  Dette {money0(st.debt)}
+                                </span>
+                                {st.advance > 0 && (
+                                  <span className="block text-[9px] font-bold text-emerald-600">Avance {money0(st.advance)}</span>
+                                )}
+                              </span>
                             </button>
-                          ))}
+                            );
+                          })}
                           {filteredClients.length === 0 && <p className="text-xs text-slate-400 px-3">Aucun client trouvé</p>}
                         </div>
                       )}
+                      {/* ─── Le compte du client choisi ───────────────────────
+                          Avant de porter un montant à son crédit, on lit ce
+                          qu'il doit déjà et ce qu'il a versé d'avance. Sans ce
+                          rappel, on justifiait à l'aveugle — et le seul chiffre
+                          que l'application montrait par ailleurs venait d'un
+                          compteur que la fiche du client contredisait. */}
+                      {selectedClientId && (() => {
+                        const c = clients.find(x => x.id === selectedClientId);
+                        if (!c) return null;
+                        const st = standingOf(c);
+                        const after = st.debt + (+currentClientAmount || 0);
+                        return (
+                          <div className="p-3 rounded-xl bg-white border border-blue-200 space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Reste dû</span>
+                              <span className={cn("font-black", st.debt > 0 ? "text-red-600" : "text-slate-400")}>{money0(st.debt)}</span>
+                            </div>
+                            {st.advance > 0 && (
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Avance disponible</span>
+                                <span className="font-black text-emerald-600">{money0(st.advance)}</span>
+                              </div>
+                            )}
+                            {+currentClientAmount > 0 && (
+                              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Après ce bon</span>
+                                <span className="font-black text-blue-800">{money0(after)}</span>
+                              </div>
+                            )}
+                            {c.creditLimit > 0 && after > c.creditLimit && (
+                              <p className="flex items-center gap-1 text-[10px] font-black uppercase text-red-600">
+                                <AlertTriangle className="w-3 h-3" /> Plafond {money0(c.creditLimit)} dépassé de {money0(after - c.creditLimit)}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {selectedClientId && (
                         <div className="flex gap-2 items-center">
                           <input type="number" step="0.01" placeholder="Montant (DA)"
@@ -1137,7 +1203,14 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                           {isTPE ? (
                             <p className="text-[10px] text-slate-400">{j.liters?.toFixed(2)} L × {j.pricePerLiter?.toFixed(2)} DA/L</p>
                           ) : (
-                            <p className="text-[10px] text-slate-400">{client?.type} · {client?.paymentMode}</p>
+                            <p className="text-[10px] text-slate-400">
+                              {client?.type} · {client?.paymentMode}
+                              {client && (
+                                <span className={cn("ml-1.5 font-black", standingOf(client).debt > 0 ? "text-red-500" : "text-slate-400")}>
+                                  · Dette {money0(standingOf(client).debt)}
+                                </span>
+                              )}
+                            </p>
                           )}
                           {/* Le compte crédité se change ici : une justification reprise
                               d'une ancienne brigade n'en porte encore aucun. */}

@@ -43,7 +43,7 @@ import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, 
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
 import { toNum } from "../lib/brigadeCalc";
-import { clientChargeDelta } from "../lib/clientLedger";
+import { clientChargeDelta, clientLedgers, clientStanding, ClientLedger, ClientStanding } from "../lib/clientLedger";
 import { brigadeBankLines, isBankJustification, accountOfJustification } from "../lib/brigadeBankLines";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
@@ -71,6 +71,10 @@ const brigadeCreatedAt = (b: Brigade): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
+/** Un montant en dinars, au dinar près — le format des chiffres de l'assistant. */
+const money0 = (v: number): string =>
+  `${(Number.isFinite(v) ? v : 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DA`;
+
 /** Comparateur « la plus récente d'abord ». */
 const byNewestFirst = (a: Brigade, b: Brigade): number => brigadeCreatedAt(b) - brigadeCreatedAt(a);
 
@@ -94,13 +98,13 @@ interface WizardJustification {
   fuelType?: string;    // carburant choisi pour le calcul par litres
   clientId?: string;
   clientName?: string;
-  clientRestCredit?: number;
 }
 
 const Brigades = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [], bankAccounts = [], treasuryTransactions = [] } = useAppState();
+  const appState = useAppState();
+  const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [], bankAccounts = [], treasuryTransactions = [] } = appState;
   const perm = useModulePermission('Brigades');
   const dispatch = useAppDispatch();
 
@@ -150,6 +154,29 @@ const Brigades = () => {
 
   // Fiche modal state
   const [showFicheModal, setShowFicheModal] = useState(false);
+
+  /**
+   * ─── LE COMPTE DES CLIENTS, RELU SUR LEURS PIÈCES ───────────────────────────
+   *
+   * Justifier une brigade « au client » demandait de savoir ce que ce client
+   * doit. Les deux écrans qui le font — l'assistant de création (étape
+   * Comptabilité) et la fenêtre Comptabilité d'une brigade déjà fermée —
+   * lisaient la colonne `clients.debt` : un compteur, qui ignore la dette de
+   * reprise, l'avance déjà versée et toute brigade corrigée après coup. Le
+   * caissier voyait donc ici un montant que la fiche du client démentait.
+   *
+   * Le journal du client fait foi, exactement comme sur l'écran Clients. On ne
+   * le relit que quand une des deux fenêtres est ouverte : le calcul parcourt
+   * toutes les comptabilités de la station, et la liste des brigades n'en a
+   * aucun besoin.
+   */
+  const clientAccounts: Record<string, ClientLedger> = useMemo(
+    () => ((showModal || showAccountingModal) ? clientLedgers(appState) : {}),
+    [showModal, showAccountingModal, clients, brigadeAccountings, brigades, shopSales],
+  );
+
+  /** Ce qu'un client doit et détient — le même chiffre que l'écran Clients. */
+  const standingOf = (c: Client): ClientStanding => clientStanding(c, clientAccounts[c.id]);
 
   // Filters
   const [filterChef, setFilterChef] = useState('');
@@ -2534,8 +2561,12 @@ const Brigades = () => {
                               {/* Client search panel (credit or avance) */}
                               {(showNewClientForm === `credit-${s.pompisteId}` || showNewClientForm === `avance-${s.pompisteId}`) && (() => {
                                 const isAvance = showNewClientForm === `avance-${s.pompisteId}`;
+                                // Un client dont la colonne `advance_balance` est restée à zéro
+                                // alors que ses pièces montrent une avance disparaissait de cette
+                                // liste : il devenait impossible de justifier sur son propre
+                                // argent. Les deux sources ouvrent désormais la porte.
                                 const matches = clients
-                                  .filter(c => !isAvance || (c.advanceBalance || 0) > 0)
+                                  .filter(c => !isAvance || standingOf(c).advance > 0 || (clientAccounts[c.id]?.advanceLeft || 0) > 0)
                                   .filter(c => matchesSearch(searchVal, c.name, c.phone))
                                   .slice(0, 5);
                                 return (
@@ -2544,20 +2575,36 @@ const Brigades = () => {
                                       <Search className="w-4 h-4 text-slate-400" />
                                       <input placeholder="Rechercher client (nom / téléphone)" value={searchVal} onChange={e => setJustifClientSearch(prev => ({ ...prev, [s.pompisteId]: e.target.value }))} className="flex-1 input-field h-9 text-xs font-bold" />
                                     </div>
-                                    {matches.map(c => (
+                                    {matches.map(c => {
+                                      // Les mêmes chiffres que la fiche du client, au dinar près.
+                                      const st = standingOf(c);
+                                      return (
                                       <button key={c.id} onClick={() => {
-                                        const litersDefault = 0;
-                                        addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: litersDefault, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: c.id, clientName: c.name, clientRestCredit: isAvance ? (c.advanceBalance || 0) : (c.creditLimit - c.debt) });
+                                        addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: c.id, clientName: c.name });
                                         setShowNewClientForm(null);
                                         setJustifClientSearch(prev => ({ ...prev, [s.pompisteId]: '' }));
-                                      }} className="w-full text-left p-2 bg-white rounded-lg border border-slate-100 hover:border-blue-300 flex items-center justify-between">
-                                        <div>
-                                          <p className="text-xs font-black text-slate-800">{c.name}</p>
+                                      }} className="w-full text-left p-2 bg-white rounded-lg border border-slate-100 hover:border-blue-300 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <p className="text-xs font-black text-slate-800 truncate">{c.name}</p>
                                           <p className="text-[9px] text-slate-400">{c.phone || 'N/A'}</p>
                                         </div>
-                                        <p className="text-[9px] font-black text-slate-500">{isAvance ? `Avance: ${(c.advanceBalance || 0).toLocaleString('fr-FR')}` : `Reste crédit: ${(c.creditLimit - c.debt).toLocaleString('fr-FR')}`}</p>
+                                        <div className="text-right shrink-0 leading-tight">
+                                          {isAvance ? (<>
+                                            <p className="text-[9px] font-black text-emerald-600">Avance {money0(st.advance)}</p>
+                                            {st.debt > 0 && <p className="text-[8px] font-bold text-red-500">Dette {money0(st.debt)}</p>}
+                                          </>) : (<>
+                                            <p className={cn("text-[9px] font-black", st.debt > 0 ? "text-red-500" : "text-slate-400")}>Dette {money0(st.debt)}</p>
+                                            {Number.isFinite(st.restCredit) && (
+                                              <p className={cn("text-[8px] font-bold", st.restCredit < 0 ? "text-red-500" : "text-slate-400")}>
+                                                {st.restCredit < 0 ? `Hors plafond ${money0(-st.restCredit)}` : `Reste crédit ${money0(st.restCredit)}`}
+                                              </p>
+                                            )}
+                                            {st.advance > 0 && <p className="text-[8px] font-bold text-emerald-600">Avance {money0(st.advance)}</p>}
+                                          </>)}
+                                        </div>
                                       </button>
-                                    ))}
+                                      );
+                                    })}
                                     {matches.length === 0 && <p className="text-[10px] text-slate-400 font-bold text-center py-1">Aucun client</p>}
                                     <button onClick={() => { setNewClientDraft({ name: searchVal, phone: '', type: 'PARTICULIER', paymentMode: isAvance ? 'ADVANCE' : 'CREDIT' }); setShowNewClientForm(`new-${isAvance ? 'avance' : 'credit'}-${s.pompisteId}`); }} className="w-full p-2 rounded-lg border-2 border-dashed border-blue-200 text-blue-600 text-[10px] font-black uppercase hover:bg-blue-50">+ Nouveau client</button>
                                   </div>
@@ -2586,7 +2633,7 @@ const Brigades = () => {
                                         if (!newClientDraft.name.trim()) return;
                                         const nc: Client = { id: newId(), name: newClientDraft.name.trim(), phone: newClientDraft.phone, balance: 0, debt: 0, creditLimit: 0, paymentDelay: 0, type: newClientDraft.type, paymentMode: newClientDraft.paymentMode, advanceBalance: 0, transactionHistory: [] };
                                         dispatch({ type: 'ADD_CLIENT', payload: nc });
-                                        addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: nc.id, clientName: nc.name, clientRestCredit: 0 });
+                                        addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: nc.id, clientName: nc.name });
                                         setShowNewClientForm(null);
                                       }} className="flex-1 py-2 rounded-lg bg-[#001f5c] text-white text-[10px] font-black uppercase">Créer & ajouter</button>
                                     </div>
@@ -2621,10 +2668,25 @@ const Brigades = () => {
                                         <button onClick={() => removeJustif(j.id)} className="text-red-400 hover:text-red-600 shrink-0"><X className="w-3.5 h-3.5" /></button>
                                       </div>
 
-                                      {/* Client name (credit/avance) */}
-                                      {(j.type === 'CLIENT_CREDIT' || j.type === 'CLIENT_AVANCE') && (
-                                        <div className="h-8 flex items-center px-2 bg-white rounded-lg text-xs font-black text-slate-700 truncate border border-slate-100">👤 {j.clientName} {j.clientRestCredit !== undefined && <span className="text-[9px] text-slate-400 ml-1">({j.clientRestCredit.toLocaleString('fr-FR')})</span>}</div>
-                                      )}
+                                      {/* Le compte du client, en toutes lettres. La ligne
+                                          n'affichait qu'un nombre entre parenthèses — sans
+                                          dire s'il s'agissait d'une dette, d'une avance ou
+                                          d'un reste de plafond — et ce nombre venait du
+                                          compteur de la fiche, pas de ses pièces. */}
+                                      {(j.type === 'CLIENT_CREDIT' || j.type === 'CLIENT_AVANCE') && (() => {
+                                        const c = clients.find(x => x.id === j.clientId);
+                                        const st = c ? standingOf(c) : null;
+                                        return (
+                                          <div className="min-h-8 flex flex-wrap items-center gap-x-2 gap-y-0.5 px-2 py-1.5 bg-white rounded-lg text-xs font-black text-slate-700 border border-slate-100">
+                                            <span className="truncate">👤 {j.clientName}</span>
+                                            {st && (j.type === 'CLIENT_AVANCE' ? (
+                                              <span className="text-[9px] font-black text-emerald-600">Avance {money0(st.advance)}</span>
+                                            ) : (
+                                              <span className={cn("text-[9px] font-black", st.debt > 0 ? "text-red-500" : "text-slate-400")}>Dette {money0(st.debt)}</span>
+                                            ))}
+                                          </div>
+                                        );
+                                      })()}
 
                                       {/* Compte crédité (TAG / TPE) — la ligne qui entrera au
                                           grand livre et fera monter le solde de CE compte. */}
@@ -2873,6 +2935,7 @@ const Brigades = () => {
             existingAccounting={brigadeAccountings.find(a => a.brigadeId === selectedBrigade.id)}
             treasuryTransactions={treasuryTransactions}
             bankAccounts={bankAccounts}
+            clientAccounts={clientAccounts}
             dispatch={dispatch}
             onClose={() => { setShowAccountingModal(false); setSelectedBrigade(null); }}
           />
