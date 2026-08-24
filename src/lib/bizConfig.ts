@@ -90,11 +90,149 @@ export interface BizProduct {
    * Gestion de stock et dans les Achats, mais n'apparaît PAS au point de vente.
    */
   isRawMaterial?: boolean;
+  /**
+   * ─── LES RÉFÉRENCES DE LA PIÈCE ───────────────────────────────────────────
+   * Une même pièce porte PLUSIEURS numéros : celui du constructeur (origine),
+   * celui de l'équipementier qui la fabrique, celui du catalogue du fournisseur.
+   * Le client, lui, arrive avec UN de ces numéros — rarement le vôtre. Les
+   * garder tous sur la fiche, c'est retrouver la pièce quel que soit le numéro
+   * annoncé, au lieu de fouiller le rayon.
+   */
+  refs?: BizProductRef[];
+  /**
+   * ─── LES VÉHICULES QUE LA PIÈCE ÉQUIPE ────────────────────────────────────
+   * L'autre façon de chercher une pièce, et de loin la plus fréquente au
+   * comptoir : par la voiture. « Clio 4, 2015, boîte automatique » doit rendre
+   * les filtres, plaquettes et courroies qui lui vont, sans que le magasinier
+   * ait à connaître une seule référence.
+   */
+  cars?: BizProductCar[];
   createdAt: string;
 }
 
 /** Un produit ne s'affiche au point de vente que s'il n'est pas une matière première. */
 export const isSellableProduct = (p: Pick<BizProduct, 'isRawMaterial'>) => !p.isRawMaterial;
+
+// ─── Références & compatibilité véhicule d'un produit ──────────────────────────
+
+/** Boîte de vitesses d'un véhicule compatible. Absente ⇒ les deux conviennent. */
+export type BizGearbox = 'auto' | 'manuelle';
+
+export const GEARBOX_LABEL: Record<BizGearbox, string> = {
+  auto: 'Boîte automatique',
+  manuelle: 'Boîte manuelle',
+};
+
+/** Un numéro sous lequel la pièce est connue. */
+export interface BizProductRef {
+  id: string;
+  /** Le numéro lui-même — « 7701 478 261 », « W 75/3 ». */
+  ref: string;
+  /** Qui le publie : « Origine », « Renault », « Bosch », « Mann »… */
+  brand?: string;
+  /** Précision libre : « boîte de 4 », « jusqu'à 2016 »… */
+  note?: string;
+}
+
+/** Un véhicule que la pièce équipe. */
+export interface BizProductCar {
+  id: string;
+  /** Modèle — « Clio 4 », « Symbol », « Partner ». */
+  name?: string;
+  /** Constructeur — « Renault », « Peugeot ». */
+  marque?: string;
+  /** Année ou plage d'années, en texte libre : « 2015 », « 2012-2019 ». */
+  year?: string;
+  /** Vide ⇒ la pièce va sur les deux boîtes. */
+  gearbox?: BizGearbox;
+  /** Motorisation, finition, tout ce qui restreint la compatibilité. */
+  description?: string;
+}
+
+/** « Bosch — 0 451 103 316 » : une référence telle qu'elle se lit. */
+export function productRefLabel(r: BizProductRef | undefined | null): string {
+  if (!r) return '';
+  return [r.brand, r.ref].filter(Boolean).join(' — ');
+}
+
+/** « Renault Clio 4 • 2015 • Boîte automatique » — un véhicule compatible. */
+export function productCarLabel(c: BizProductCar | undefined | null): string {
+  if (!c) return '';
+  const head = [c.marque, c.name].filter(Boolean).join(' ');
+  return [head, c.year, c.gearbox ? GEARBOX_LABEL[c.gearbox] : ''].filter(Boolean).join(' • ');
+}
+
+/**
+ * Un numéro tapé sans ses séparateurs. « 7701 478 261 » se note de six façons
+ * selon le catalogue (espaces, points, tirets) et se tape presque toujours d'un
+ * bloc : sans cette forme compacte, la référence enregistrée avec ses espaces
+ * resterait introuvable.
+ */
+const compactRef = (s: string): string => (s || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+/**
+ * Les années couvertes par un millésime écrit comme dans un catalogue.
+ *
+ * POURQUOI CE DÉPLIAGE EXISTE
+ * Une compatibilité se note « 2012-2019 » : c'est juste, et c'est illisible pour
+ * une recherche. Le client, lui, annonce l'année de SA voiture — « une Clio 4 de
+ * 2015 ». Sans déplier la plage, « clio 2015 » ne rendait RIEN alors que la
+ * pièce était sur l'étagère, et le magasinier concluait qu'il ne l'avait pas.
+ *
+ * Une année seule reste elle-même. Une plage ouverte (« 2012- ») court jusqu'à
+ * l'année en cours. Le dépliage est plafonné à 40 ans : au-delà, la saisie est
+ * une faute de frappe, pas un millésime.
+ */
+export function expandYears(raw: string | undefined | null): string[] {
+  const value = (raw || '').trim();
+  if (!value) return [];
+
+  const range = value.match(/^(\d{4})\s*[-–/à]\s*(\d{4})?$/);
+  if (!range) return [value];
+
+  const from = Number(range[1]);
+  const to = range[2] ? Number(range[2]) : new Date().getFullYear();
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from || to - from > 40) return [value];
+
+  const out: string[] = [value];
+  for (let y = from; y <= to; y++) out.push(String(y));
+  return out;
+}
+
+/**
+ * Tout ce sur quoi un produit doit pouvoir se retrouver : son nom, son
+ * code-barres, TOUTES ses références (telles quelles ET compactées) et TOUS les
+ * véhicules qu'il équipe.
+ *
+ * Une seule liste, partagée par la Gestion de stock, les Achats et le point de
+ * vente — c'est ce qui garantit qu'une pièce trouvée sur un écran l'est aussi
+ * sur les deux autres.
+ */
+export function productSearchFields(p: Partial<BizProduct> | undefined | null): string[] {
+  if (!p) return [];
+  const out: string[] = [p.name || '', p.barcode || '', p.marqueName || '', p.categoryName || ''];
+
+  for (const r of p.refs || []) {
+    if (!r) continue;
+    out.push(r.ref || '', r.brand || '', r.note || '');
+    const compact = compactRef(r.ref || '');
+    if (compact && compact !== (r.ref || '').toLowerCase()) out.push(compact);
+  }
+
+  for (const c of p.cars || []) {
+    if (!c) continue;
+    out.push(c.marque || '', c.name || '', c.description || '');
+    // « 2012-2019 » déplié année par année : le client annonce l'année de SA
+    // voiture, pas la plage du catalogue.
+    out.push(...expandYears(c.year));
+    // Les deux orthographes de la boîte : on cherche « auto » comme
+    // « automatique », et « manuelle » comme « manuel ».
+    if (c.gearbox === 'auto') out.push('auto automatique');
+    if (c.gearbox === 'manuelle') out.push('manuel manuelle');
+  }
+
+  return out.filter(Boolean);
+}
 
 /**
  * Quantité de stock ramenée au millième.

@@ -44,7 +44,8 @@ import { newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizSale, BizLineItem, BizSession, BizFiche, BizProduct, BizDiscountType,
   detailPrice, discountOf, posPinKey, isSellableProduct, roundQty, formatQty,
-  isReversedSale, netCashOfSale,
+  isReversedSale, netCashOfSale, BizProductRef, BizProductCar,
+  productRefLabel, productCarLabel, productSearchFields,
 } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
@@ -98,6 +99,21 @@ interface Source {
    * pas : elles ne sont pas étiquetées en rayon.
    */
   barcode?: string;
+  /**
+   * ─── CE SUR QUOI LA VIGNETTE SE RETROUVE ──────────────────────────────────
+   * Tous les mots qui doivent faire sortir cet article : son nom, son code, et
+   * — pour une pièce détachée — chacune de ses références et chacun des
+   * véhicules qu'elle équipe. Au comptoir, le client n'annonce pas un nom de
+   * rayon : il annonce « Clio 4 de 2015 » ou lit un numéro sur son ancienne
+   * pièce, et c'est cela que le caissier tape.
+   *
+   * Une production du comptoir ou une fiche technique n'en portent pas.
+   */
+  searchFields?: string[];
+  /** Les références de la pièce, montrées sous son nom sur la vignette. */
+  refs?: BizProductRef[];
+  /** Les véhicules compatibles, montrés sous les références. */
+  cars?: BizProductCar[];
   /** Stable key used by the "accès rapide" pinning. */
   pinKey: string;
   /**
@@ -123,6 +139,12 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   // La session de l'employé CONNECTÉ — jamais celle d'un collègue. `otherOpen`
   // sert seulement à informer (l'admin voit qui tient une caisse en ce moment).
   const { mySession, otherOpen } = useBizSessions(moduleKey);
+
+  /**
+   * Pièces détachées : seule la partie Lavage & Réparation en vend, et donc
+   * seule elle cherche par référence ou par véhicule.
+   */
+  const isLavage = moduleKey === 'lavage';
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
@@ -188,6 +210,8 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           detail: true, detailCapacity: p.detailCapacity, detailUnit: p.detailUnit,
           imageUrl: p.imageUrl,
           barcode: p.barcode,
+          searchFields: productSearchFields(p),
+          refs: p.refs, cars: p.cars,
           pinKey: posPinKey('product', p.id),
         });
       } else {
@@ -197,6 +221,8 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
           unitCost: p.purchasePrice || 0,
           imageUrl: p.imageUrl,
           barcode: p.barcode,
+          searchFields: productSearchFields(p),
+          refs: p.refs, cars: p.cars,
           pinKey: posPinKey('product', p.id),
         });
       }
@@ -243,7 +269,10 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     .filter(s =>
       // Le code-barres entre dans la recherche : la douchette USB écrit dans ce
       // même champ, et le produit doit se trouver sur son code comme sur son nom.
-      matchesSearch(search, s.name, s.barcode) &&
+      // Un produit du catalogue apporte en plus SES références et LES VÉHICULES
+      // qu'il équipe : « clio 4 2015 » ou « 7701478261 » sortent la pièce sans
+      // que le caissier ait à connaître son nom de rayon.
+      matchesSearch(search, s.name, s.barcode, ...(s.searchFields || [])) &&
       (category === 'all' || s.categoryName === category))
     .sort((a, b) => rank(a) - rank(b)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -609,7 +638,10 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Rechercher un produit ou scanner son code…" className="input-field pl-9"
+                placeholder={isLavage
+                  ? 'Nom, code-barres, référence ou véhicule (« clio 4 2015 »)…'
+                  : 'Rechercher un produit ou scanner son code…'}
+                className="input-field pl-9"
                 // Une douchette USB écrit ici puis envoie « Entrée ». Le panier ne
                 // se remplit QUE sur un code-barres exact : valider une recherche
                 // par nom ajouterait au hasard le premier produit de la liste.
@@ -691,6 +723,22 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
                       </div>
                     )}
                     <p className="font-bold text-slate-700 text-xs leading-tight line-clamp-2">{s.name}</p>
+                    {/* Ce qui a fait sortir la vignette. Un rayon de pièces
+                        détachées compte dix filtres qui portent presque le même
+                        nom : c'est la référence — ou la voiture — qui dit
+                        laquelle est la bonne, pas le nom. */}
+                    {!!s.refs?.length && (
+                      <p className="text-[9px] font-mono text-violet-600 leading-tight line-clamp-1"
+                        title={s.refs.map(productRefLabel).join(' · ')}>
+                        {s.refs.map(productRefLabel).join(' · ')}
+                      </p>
+                    )}
+                    {!!s.cars?.length && (
+                      <p className="text-[9px] font-bold text-blue-600 leading-tight line-clamp-1"
+                        title={s.cars.map(productCarLabel).join(' · ')}>
+                        {s.cars.map(productCarLabel).join(' · ')}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center justify-between gap-1 mt-1">
                     <span className="font-black text-[#002d87] text-xs tabular-nums">

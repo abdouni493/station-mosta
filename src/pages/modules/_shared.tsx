@@ -8,16 +8,17 @@
 import React, { useMemo, useState } from 'react';
 import {
   Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff,
-  AlertTriangle, Search, Pencil, Car, Plus, Trash2, Clock, ScanLine,
+  AlertTriangle, Search, Pencil, Car, Plus, Trash2, Clock, ScanLine, Hash,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId, formatCurrency } from '@/src/lib/utils';
+import { newId, formatCurrency, matchesSearch } from '@/src/lib/utils';
 const fc = (n: number) => formatCurrency(Number.isFinite(n) ? n : 0);
 import { BizApi } from '@/src/store/BizContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
   BizProduct, BizContact, BizDocPayment, BizCar, BizRappelConfig, DEFAULT_RAPPEL_CONFIG,
-  MODULES, carLabel,
+  MODULES, carLabel, BizProductRef, BizProductCar, BizGearbox, GEARBOX_LABEL,
+  productRefLabel, productCarLabel, productSearchFields,
 } from '@/src/lib/bizConfig';
 import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
@@ -124,7 +125,203 @@ export function emptyProduct(): Partial<BizProduct> {
     unit: 'unité', hasExpiration: false, expirationDate: '',
     sellByDetail: false, detailCapacity: 0, detailUnit: 'L', detailSalePrice: 0,
     imageUrl: '', isRawMaterial: false,
+    refs: [], cars: [],
   };
+}
+
+// ─── Références & véhicules compatibles ────────────────────────────────────────
+/**
+ * Nettoie les références avant enregistrement : une ligne ajoutée puis
+ * abandonnée (numéro vide) ne doit pas se retrouver sur la fiche, et chaque
+ * référence conservée porte un identifiant — c'est lui qui la distingue de sa
+ * voisine quand on en corrige une seule.
+ */
+export function cleanProductRefs(refs: BizProductRef[] | undefined): BizProductRef[] | undefined {
+  const kept = (refs || [])
+    .map(r => ({
+      ...r,
+      id: r.id || newId(),
+      ref: (r.ref || '').trim(),
+      brand: (r.brand || '').trim() || undefined,
+      note: (r.note || '').trim() || undefined,
+    }))
+    // Le NUMÉRO fait la référence : une marque seule ne se cherche pas.
+    .filter(r => r.ref);
+  return kept.length ? kept : undefined;
+}
+
+/**
+ * Même règle pour les véhicules : la marque OU le modèle suffit à garder la
+ * ligne (« toutes les Clio » est une compatibilité valable), le reste est
+ * facultatif.
+ */
+export function cleanProductCars(cars: BizProductCar[] | undefined): BizProductCar[] | undefined {
+  const kept = (cars || [])
+    .map(c => ({
+      ...c,
+      id: c.id || newId(),
+      name: (c.name || '').trim(),
+      marque: (c.marque || '').trim(),
+      year: (c.year || '').trim() || undefined,
+      gearbox: c.gearbox || undefined,
+      description: (c.description || '').trim() || undefined,
+    }))
+    .filter(c => c.name || c.marque);
+  return kept.length ? kept : undefined;
+}
+
+/**
+ * ─── LES NUMÉROS SOUS LESQUELS LA PIÈCE EST CONNUE ─────────────────────────────
+ *
+ * Une pièce détachée n'a pas UN numéro, elle en a plusieurs : celui du
+ * constructeur, celui de l'équipementier, celui du catalogue du fournisseur. Le
+ * client qui appelle en cite un au hasard — et sans cette liste, le magasinier
+ * n'a aucun moyen de savoir que le filtre posé sur son étagère est justement
+ * celui-là. Chaque numéro entre donc dans la recherche du stock, des achats et
+ * du point de vente.
+ */
+export function ProductRefsEditor({ refs, onChange }: {
+  refs: BizProductRef[];
+  onChange: (next: BizProductRef[]) => void;
+}) {
+  const patch = (id: string, key: keyof BizProductRef, value: any) =>
+    onChange(refs.map(r => (r.id === id ? { ...r, [key]: value } : r)));
+
+  const add = () => onChange([...refs, { id: newId(), ref: '', brand: '', note: '' }]);
+
+  return (
+    <div className="rounded-2xl border border-violet-200 bg-violet-50/50 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Hash className="w-4 h-4 text-violet-600" />
+          <p className="text-[11px] font-black uppercase tracking-wider text-violet-800">
+            Références de la pièce {refs.length > 0 && <span className="text-violet-500">({refs.length})</span>}
+          </p>
+        </div>
+        <button type="button" className="btn-secondary !py-1.5 !px-3 text-xs" onClick={add}>
+          <Plus className="w-3.5 h-3.5" /> Ajouter une référence
+        </button>
+      </div>
+      <p className="text-[11px] font-semibold text-violet-900/60 leading-relaxed">
+        Autant de numéros que la pièce en porte — <strong>origine constructeur</strong>,
+        équipementier, catalogue fournisseur. Chacun retrouve le produit dans la Gestion de
+        stock, dans un achat et au point de vente, avec ou sans ses espaces.
+      </p>
+
+      {refs.length === 0 ? (
+        <p className="text-xs text-violet-900/50 italic py-1">Aucune référence enregistrée.</p>
+      ) : (
+        <div className="space-y-2">
+          {refs.map((r, i) => (
+            <div key={r.id || i} className="rounded-xl bg-white border border-violet-200 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 truncate">
+                  Référence {i + 1}{productRefLabel(r) ? ` — ${productRefLabel(r)}` : ''}
+                </span>
+                <button type="button" title="Retirer cette référence"
+                  className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 shrink-0"
+                  onClick={() => onChange(refs.filter(x => x !== r))}>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <Input placeholder="Référence (ex: 7701 478 261)" value={r.ref || ''}
+                  onChange={e => patch(r.id, 'ref', e.target.value)} />
+                <Input placeholder="Marque / origine (ex: Bosch)" value={r.brand || ''}
+                  onChange={e => patch(r.id, 'brand', e.target.value)} />
+                <Input placeholder="Note (facultatif)" value={r.note || ''}
+                  onChange={e => patch(r.id, 'note', e.target.value)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ─── LES VÉHICULES QUE LA PIÈCE ÉQUIPE ─────────────────────────────────────────
+ *
+ * Au comptoir, personne n'arrive avec une référence : on arrive avec une
+ * voiture. Ce que le magasinier entend, c'est « Clio 4 de 2015, boîte
+ * automatique » — et c'est exactement ce qu'il doit pouvoir taper pour voir
+ * sortir les plaquettes, les filtres et la courroie qui lui vont.
+ *
+ * La boîte laissée vide veut dire « les deux » : c'est le cas de la grande
+ * majorité des pièces, et l'imposer obligerait à saisir deux lignes pour rien.
+ */
+export function ProductCarsEditor({ cars, onChange }: {
+  cars: BizProductCar[];
+  onChange: (next: BizProductCar[]) => void;
+}) {
+  const patch = (id: string, key: keyof BizProductCar, value: any) =>
+    onChange(cars.map(c => (c.id === id ? { ...c, [key]: value } : c)));
+
+  const add = () => onChange([
+    ...cars,
+    { id: newId(), name: '', marque: '', year: '', gearbox: undefined, description: '' },
+  ]);
+
+  return (
+    <div className="rounded-2xl border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Car className="w-4 h-4 text-blue-600" />
+          <p className="text-[11px] font-black uppercase tracking-wider text-blue-800">
+            Véhicules compatibles {cars.length > 0 && <span className="text-blue-500">({cars.length})</span>}
+          </p>
+        </div>
+        <button type="button" className="btn-secondary !py-1.5 !px-3 text-xs" onClick={add}>
+          <Plus className="w-3.5 h-3.5" /> Ajouter un véhicule
+        </button>
+      </div>
+      <p className="text-[11px] font-semibold text-blue-900/60 leading-relaxed">
+        Les voitures que cette pièce équipe — autant que nécessaire. La
+        <strong> marque ou le modèle</strong> suffit ; l'année, la boîte et la description
+        affinent. <strong>Boîte laissée vide = les deux conviennent.</strong> Le client
+        annonce sa voiture, la recherche sort la pièce.
+      </p>
+
+      {cars.length === 0 ? (
+        <p className="text-xs text-blue-900/50 italic py-1">Aucun véhicule enregistré.</p>
+      ) : (
+        <div className="space-y-2">
+          {cars.map((c, i) => (
+            <div key={c.id || i} className="rounded-xl bg-white border border-blue-200 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 truncate">
+                  Véhicule {i + 1}{productCarLabel(c) ? ` — ${productCarLabel(c)}` : ''}
+                </span>
+                <button type="button" title="Retirer ce véhicule"
+                  className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 shrink-0"
+                  onClick={() => onChange(cars.filter(x => x !== c))}>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <Input placeholder="Marque (ex: Renault)" value={c.marque || ''}
+                  onChange={e => patch(c.id, 'marque', e.target.value)} />
+                <Input placeholder="Modèle (ex: Clio 4)" value={c.name || ''}
+                  onChange={e => patch(c.id, 'name', e.target.value)} />
+                <Input placeholder="Année (ex: 2012-2019)" value={c.year || ''}
+                  onChange={e => patch(c.id, 'year', e.target.value)} />
+                <Select value={c.gearbox || ''}
+                  onChange={e => patch(c.id, 'gearbox', (e.target.value || undefined) as BizGearbox | undefined)}>
+                  <option value="">Boîte — les deux</option>
+                  <option value="auto">{GEARBOX_LABEL.auto}</option>
+                  <option value="manuelle">{GEARBOX_LABEL.manuelle}</option>
+                </Select>
+              </div>
+              <Textarea rows={2} placeholder="Description (motorisation, finition, précision…)"
+                value={c.description || ''}
+                onChange={e => patch(c.id, 'description', e.target.value)} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Units a packaged product can be split into when sold au détail. */
@@ -167,6 +364,11 @@ export function buildProduct(
       ? Number(form.detailSalePrice) : undefined,
     imageUrl: form.imageUrl || undefined,
     isRawMaterial,
+    // Références et véhicules compatibles : les lignes vides laissées derrière
+    // une hésitation ne partent pas en base, mais rien de ce qui est saisi
+    // n'est perdu — c'est sur ces champs que la pièce se retrouvera.
+    refs: cleanProductRefs(form.refs),
+    cars: cleanProductCars(form.cars),
     createdAt: form.createdAt || new Date().toISOString(),
   };
 }
@@ -282,6 +484,12 @@ export function ProductModal({
   /** Lecture du code-barres à la caméra plutôt qu'à la main. */
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState('');
+  /**
+   * Les références et la compatibilité véhicule ne concernent que la partie qui
+   * vend des PIÈCES : le Lavage & Réparation. Un sandwich de cafétéria n'a ni
+   * numéro d'origine ni voiture compatible.
+   */
+  const showAutoParts = biz.module === 'lavage';
 
   React.useEffect(() => { setForm(initial || emptyProduct()); setHideSuggestions(false); }, [initial, open]);
 
@@ -551,6 +759,22 @@ export function ProductModal({
           </Field>
           {scanNote && <p className="mt-1.5 text-[11px] font-bold text-amber-700">{scanNote}</p>}
         </div>
+
+        {/* ── Références & compatibilité véhicule ────────────────────────────
+            Propres à la partie Lavage & Réparation, qui vend des pièces
+            détachées : une pièce se cherche par son numéro ou par la voiture
+            qu'elle équipe, jamais par son nom de rayon. Ces deux blocs
+            n'apparaissent pas en Cafétéria, où ils n'auraient aucun sens. */}
+        {showAutoParts && (
+          <>
+            <div className="sm:col-span-2">
+              <ProductRefsEditor refs={form.refs || []} onChange={v => set('refs', v)} />
+            </div>
+            <div className="sm:col-span-2">
+              <ProductCarsEditor cars={form.cars || []} onChange={v => set('cars', v)} />
+            </div>
+          </>
+        )}
 
         <Field label="Marque">
           <div className="flex gap-2">
@@ -966,10 +1190,19 @@ export function ContactModal({
 }
 
 // ─── Product picker (search products in stock) ─────────────────────────────────
+/**
+ * Un produit répond-il à ce qui est tapé ? Nom, code-barres, description,
+ * MAIS AUSSI chacune de ses références et chacun des véhicules qu'il équipe —
+ * les trois écrans (stock, achats, point de vente) partagent cette règle, pour
+ * qu'une pièce trouvée sur l'un le soit aussi sur les deux autres.
+ */
+export function productMatches(p: BizProduct, query: string): boolean {
+  return matchesSearch(query, ...productSearchFields(p), p.description || '');
+}
+
 export function useProductSearch(products: BizProduct[], query: string) {
-  const q = query.trim().toLowerCase();
-  if (!q) return products;
-  return products.filter(p => p.name.toLowerCase().includes(q) || (p.barcode || '').includes(q) || (p.description || '').toLowerCase().includes(q));
+  if (!query.trim()) return products;
+  return products.filter(p => productMatches(p, query));
 }
 
 // ─── PayDebtModal ───────────────────────────────────────────────────────────────

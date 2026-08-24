@@ -5,7 +5,10 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty } from '@/src/lib/bizConfig';
+import {
+  ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty,
+  productRefLabel, productCarLabel,
+} from '@/src/lib/bizConfig';
 import { deleteBizPurchase, describePurchaseRollback, purchaseStockDeltas, totalRolledBack } from '@/src/lib/bizPurchase';
 import {
   snapshotFor, stampLine, lineSnapshot, effectiveAvgCost, usesAverageCost, roundCost,
@@ -18,7 +21,7 @@ import {
   RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Select, Switch, FormSection,
   StaticField, money, formatDate,
 } from '@/src/components/biz/Kit';
-import { ProductModal, ContactModal, PayDebtModal, printInvoice } from './_shared';
+import { ProductModal, ContactModal, PayDebtModal, printInvoice, productMatches } from './_shared';
 
 export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
@@ -274,6 +277,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const biz = useBiz(moduleKey);
   const { products, suppliers } = biz.state;
   const isEdit = !!initial;
+  /** Pièces détachées : la partie Lavage & Réparation est la seule concernée. */
+  const isLavage = moduleKey === 'lavage';
 
   const [items, setItems] = useState<BizLineItem[]>(initial?.items || []);
   /**
@@ -298,9 +303,17 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const expectedMargin = useMemo(
     () => items.reduce((s, it) => s + it.qty * ((it.salePrice ?? 0) - it.unitPrice), 0), [items]);
 
+  /**
+   * Les produits proposés pendant la saisie. La recherche est la MÊME que dans
+   * la Gestion de stock et au point de vente : nom, code-barres, mais aussi
+   * chaque référence de la pièce et chaque véhicule qu'elle équipe. Le bon du
+   * fournisseur ne porte souvent QUE la référence — c'est avec elle qu'il faut
+   * pouvoir retrouver la fiche, sinon on en crée une seconde et le stock se
+   * coupe en deux.
+   */
   const matches = useMemo(() => {
     if (!pQuery.trim()) return [];
-    return products.filter(p => matchesSearch(pQuery, p.name, p.barcode)).slice(0, 8);
+    return products.filter(p => productMatches(p, pQuery)).slice(0, 8);
   }, [products, pQuery]);
 
   /**
@@ -489,7 +502,9 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
 
           {/* 1. Produits — recherche puis saisie ligne par ligne */}
           <FormSection step={1} icon={Package} title="Produits achetés"
-            hint="Cherchez un produit, sélectionnez-le, puis renseignez ses quantités et ses prix"
+            hint={isLavage
+              ? 'Cherchez par nom, code-barres, référence ou véhicule, sélectionnez, puis renseignez quantités et prix'
+              : 'Cherchez un produit, sélectionnez-le, puis renseignez ses quantités et ses prix'}
             action={
               <button className="btn-secondary !py-2 !px-3.5 text-xs w-full sm:w-auto" onClick={() => setShowProductModal(true)}>
                 <Plus className="w-4 h-4" /> Nouveau produit
@@ -498,7 +513,10 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
             <div className="relative mb-4">
               <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input value={pQuery} onChange={e => setPQuery(e.target.value)}
-                placeholder="Rechercher un produit par nom ou code-barres…" className="input-field !pl-11" />
+                placeholder={isLavage
+                  ? 'Rechercher par nom, code-barres, référence ou véhicule…'
+                  : 'Rechercher un produit par nom ou code-barres…'}
+                className="input-field !pl-11" />
               {matches.length > 0 && (
                 <div className="absolute z-30 mt-1 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-h-80 overflow-y-auto custom-scrollbar">
                   {matches.map(p => {
@@ -512,6 +530,19 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                             {p.categoryName || 'Sans catégorie'}{p.barcode ? ` • ${p.barcode}` : ''}
                             {p.sellByDetail ? ' • vendu au détail' : ''}
                           </span>
+                          {/* Ce qui a fait sortir cette ligne : sans la
+                              référence ni le véhicule sous les yeux, on ne sait
+                              pas si c'est LA bonne pièce qu'on ajoute. */}
+                          {!!p.refs?.length && (
+                            <span className="block text-[11px] font-mono text-violet-600 truncate">
+                              {p.refs.map(productRefLabel).join(' · ')}
+                            </span>
+                          )}
+                          {!!p.cars?.length && (
+                            <span className="block text-[11px] font-semibold text-blue-600 truncate">
+                              {p.cars.map(productCarLabel).join(' · ')}
+                            </span>
+                          )}
                         </span>
                         <span className="text-xs text-slate-400 shrink-0 text-right">
                           <span className="block">Achat {money(p.purchasePrice)}</span>

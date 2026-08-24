@@ -16,11 +16,13 @@ import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore 
 import {
   Package, Plus, Boxes, AlertTriangle, CalendarClock, Wallet, Barcode, Printer, Tag, Layers,
   Flame, RotateCcw, Trash, User, Beaker, ShoppingBag, FileWarning, Upload, CloudOff, Loader2,
-  RefreshCw, CheckCircle2, History, Scale, ScanLine,
+  RefreshCw, CheckCircle2, History, Scale, ScanLine, Hash, Car, Search,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId, matchesSearch } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizProduct, BizDestruction, formatQty } from '@/src/lib/bizConfig';
+import { newId } from '@/src/lib/utils';
+import {
+  ModuleKey, MODULES, BizProduct, BizDestruction, formatQty, productRefLabel, productCarLabel,
+} from '@/src/lib/bizConfig';
 import { useBiz, useBizSync, useBizProductsSync } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
@@ -32,7 +34,7 @@ import {
   Table, Tabs, EmptyState, RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal,
   Field, Input, Textarea, money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
-import { ProductModal, printBarcode } from './_shared';
+import { ProductModal, printBarcode, productMatches } from './_shared';
 import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 import ProductHistoryModal from '@/src/components/biz/ProductHistoryModal';
 
@@ -48,6 +50,12 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const catalogue = useBizProductsSync();
   const { currentUserName, currentModuleWorker, settings } = useAppState();
   const { products, categories, marques, destructions } = biz.state;
+
+  /**
+   * Les pièces détachées — références et véhicules compatibles — n'existent que
+   * dans la partie Lavage & Réparation. La Cafétéria garde son écran inchangé.
+   */
+  const isLavage = moduleKey === 'lavage';
 
   const [tab, setTab] = useState<'catalogue' | 'destructions' | 'drafts'>('catalogue');
   const [search, setSearch] = useState('');
@@ -73,7 +81,11 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const filtered = useMemo(() => {
     return products.filter(p =>
-      matchesSearch(search, p.name, p.barcode) &&
+      // La recherche ne porte plus seulement sur le nom et le code-barres :
+      // chaque RÉFÉRENCE de la pièce et chaque VÉHICULE qu'elle équipe y
+      // entrent. C'est ainsi qu'on cherche une pièce détachée — « 7701478261 »
+      // ou « clio 4 2015 », jamais « filtre à huile n°3 ».
+      productMatches(p, search) &&
       (cat === 'all' || p.categoryId === cat) &&
       (mrq === 'all' || p.marqueId === mrq) &&
       (nature === 'all' || (nature === 'raw' ? !!p.isRawMaterial : !p.isRawMaterial)));
@@ -291,7 +303,8 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
 
       {tab === 'catalogue' && <>
       <div className="card-glass p-4 flex flex-wrap items-center gap-3">
-        <SearchInput value={search} onChange={setSearch} placeholder="Nom ou code-barres…" />
+        <SearchInput value={search} onChange={setSearch}
+          placeholder={isLavage ? 'Nom, code-barres, référence ou véhicule…' : 'Nom ou code-barres…'} />
         {/* Scanner l'article en rayon plutôt que de chercher son nom : le code lu
             ouvre directement sa fiche, et dit franchement quand aucun produit ne
             le porte — c'est ainsi qu'on repère une étiquette jamais enregistrée. */}
@@ -314,6 +327,18 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         </Select>
         <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
       </div>
+
+      {/* Ce que la barre accepte réellement — sans cette ligne, personne ne
+          devine qu'on peut y taper une plaque de référence ou « clio 4 2015 ». */}
+      {isLavage && (
+        <p className="-mt-1 text-[11px] text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1 font-semibold text-slate-500">
+            <Search className="w-3.5 h-3.5" /> La recherche accepte aussi :
+          </span>
+          <span className="inline-flex items-center gap-1"><Hash className="w-3 h-3 text-violet-500" /> une référence — « 7701478261 », avec ou sans ses espaces</span>
+          <span className="inline-flex items-center gap-1"><Car className="w-3 h-3 text-blue-500" /> un véhicule — « renault clio 4 », « clio 2015 auto »</span>
+        </p>
+      )}
 
       {filtered.length === 0 ? (
         <EmptyState icon={nature === 'raw' ? Beaker : Package}
@@ -339,7 +364,25 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 {p.isRawMaterial && <Badge tone="warning"><Beaker className="w-3 h-3" />Matière première</Badge>}
                 {p.categoryName && <Badge tone="primary"><Layers className="w-3 h-3" />{p.categoryName}</Badge>}
                 {p.marqueName && <Badge tone="neutral"><Tag className="w-3 h-3" />{p.marqueName}</Badge>}
+                {!!p.refs?.length && <Badge tone="info"><Hash className="w-3 h-3" />{p.refs.length} réf.</Badge>}
+                {!!p.cars?.length && <Badge tone="info"><Car className="w-3 h-3" />{p.cars.length} véhicule(s)</Badge>}
               </div>
+
+              {/* Les deux premières références et les deux premiers véhicules,
+                  lisibles sans ouvrir la fiche : c'est ce qu'on vérifie du
+                  regard quand un client annonce sa voiture au téléphone. */}
+              {!!p.refs?.length && (
+                <p className="mt-2 text-[11px] text-violet-700 font-mono leading-tight break-words">
+                  {p.refs.slice(0, 3).map(productRefLabel).join(' · ')}
+                  {p.refs.length > 3 ? ` +${p.refs.length - 3}` : ''}
+                </p>
+              )}
+              {!!p.cars?.length && (
+                <p className="mt-1 text-[11px] text-blue-700 font-semibold leading-tight break-words">
+                  {p.cars.slice(0, 2).map(productCarLabel).join(' · ')}
+                  {p.cars.length > 2 ? ` +${p.cars.length - 2}` : ''}
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-2 mt-3">
                 <div className="rounded-xl bg-slate-50 p-2.5">
                   <p className="text-[10px] uppercase font-bold text-slate-400">Principal</p>
@@ -412,6 +455,18 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                   )}
                 </div>
                 <div className="text-[11px] text-slate-400 font-mono">{p.barcode || '—'}</div>
+                {!!p.refs?.length && (
+                  <div className="text-[11px] text-violet-600 font-mono truncate max-w-[220px]"
+                    title={p.refs.map(productRefLabel).join(' · ')}>
+                    {p.refs.map(productRefLabel).join(' · ')}
+                  </div>
+                )}
+                {!!p.cars?.length && (
+                  <div className="text-[11px] text-blue-600 font-semibold truncate max-w-[220px]"
+                    title={p.cars.map(productCarLabel).join(' · ')}>
+                    {p.cars.map(productCarLabel).join(' · ')}
+                  </div>
+                )}
               </td>
               <td className="table-cell">{p.categoryName || '—'}</td>
               <td className="table-cell">{p.marqueName || '—'}</td>
@@ -756,6 +811,45 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 </div>
               </div>
             )}
+            {/* ── Les références de la pièce ─────────────────────────────────
+                Chacune retrouve le produit dans la recherche du stock, d'un
+                achat et du point de vente. */}
+            {!!viewing.refs?.length && (
+              <div className="rounded-xl bg-violet-50 border border-violet-200 p-3">
+                <p className="text-[10px] uppercase font-black text-violet-800 flex items-center gap-1.5 mb-2">
+                  <Hash className="w-3.5 h-3.5" /> Références ({viewing.refs.length})
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {viewing.refs.map(r => (
+                    <span key={r.id}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-violet-200 text-[11px] font-mono font-bold text-violet-700"
+                      title={r.note || undefined}>
+                      {productRefLabel(r)}{r.note ? ` · ${r.note}` : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Les véhicules que la pièce équipe ──────────────────────────
+                Ce que le client annonce au comptoir, et donc ce qu'il faut
+                pouvoir confirmer d'un coup d'œil. */}
+            {!!viewing.cars?.length && (
+              <div className="rounded-xl bg-blue-50 border border-blue-200 p-3">
+                <p className="text-[10px] uppercase font-black text-blue-800 flex items-center gap-1.5 mb-2">
+                  <Car className="w-3.5 h-3.5" /> Véhicules compatibles ({viewing.cars.length})
+                </p>
+                <div className="space-y-1.5">
+                  {viewing.cars.map(c => (
+                    <div key={c.id} className="rounded-lg bg-white border border-blue-100 px-2.5 py-1.5">
+                      <p className="text-[12px] font-bold text-blue-800">{productCarLabel(c) || '—'}</p>
+                      {c.description && <p className="text-[11px] text-slate-500">{c.description}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {viewing.description && <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Description</p><p className="text-sm text-slate-600">{viewing.description}</p></div>}
             {viewing.hasExpiration && viewing.expirationDate && (
               <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 flex items-center gap-2 text-amber-700">
