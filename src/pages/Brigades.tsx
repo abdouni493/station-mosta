@@ -42,7 +42,7 @@ import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
-import { ownsNozzleIndex, nozzleIndexFixes, nozzleIndexOwner, brigadeIndexOrder, NozzleIndexFix } from "../lib/nozzleIndexes";
+import { ownsNozzleIndex } from "../lib/nozzleIndexes";
 import { toNum } from "../lib/brigadeCalc";
 import { clientChargeDelta, clientLedgers, clientStanding, ClientLedger, ClientStanding } from "../lib/clientLedger";
 import { brigadeBankLines, isBankJustification, accountOfJustification } from "../lib/brigadeBankLines";
@@ -261,48 +261,6 @@ const Brigades = () => {
   const [newClientDraft, setNewClientDraft] = useState({ name: '', phone: '', type: 'PARTICULIER' as Client['type'], paymentMode: 'CASH' as Client['paymentMode'] });
 
   const activeBrigade = brigades.find(b => b.status === "Ouverte");
-
-  /**
-   * ─── LES COMPTEURS DES PISTOLETS, RELUS SUR LA DERNIÈRE BRIGADE ─────────────
-   *
-   * `pump_nozzles.last_index` est le compteur qui sert d'index de DÉPART à la
-   * prochaine brigade. Une brigade ancienne rouverte pour correction y recopiait
-   * ses propres index de fin et faisait reculer toute la piste. La cause est
-   * corrigée à l'enregistrement ; ce bloc répare l'existant : il compare chaque
-   * compteur à l'index de fin de SA dernière brigade et n'offre le bouton que
-   * s'il y a réellement un écart. Seuls les index des PISTOLETS sont touchés —
-   * ni cuve, ni brigade, ni comptabilité.
-   */
-  const [showIndexRepair, setShowIndexRepair] = useState(false);
-  const nozzleDrift = useMemo<NozzleIndexFix[]>(
-    () => nozzleIndexFixes(brigades, pumpNozzles),
-    [brigades, pumpNozzles]);
-
-  /** La brigade qui fait référence pour les compteurs — la dernière relevée. */
-  const indexReferenceBrigade = useMemo<Brigade | null>(() => {
-    let ref: Brigade | null = null;
-    let refOrder = -Infinity;
-    pumpNozzles.forEach(n => {
-      const owner = nozzleIndexOwner(brigades, n.id) as Brigade | null;
-      if (!owner) return;
-      const order = brigadeIndexOrder(owner);
-      if (order > refOrder) { ref = owner; refOrder = order; }
-    });
-    return ref;
-  }, [brigades, pumpNozzles]);
-
-  /** Remet chaque compteur sur l'index de fin de sa dernière brigade. */
-  const applyIndexRepair = () => {
-    if (nozzleDrift.length === 0) return;
-    nozzleDrift.forEach(fix => {
-      const n = pumpNozzles.find(x => x.id === fix.nozzleId);
-      if (!n) return;
-      dispatch({ type: 'UPDATE_NOZZLE', payload: { ...n, lastIndex: fix.expected } });
-    });
-    dispatch({ type: 'ADD_TOAST', payload: { type: 'success',
-      message: `${nozzleDrift.length} index pistolet remis sur la dernière brigade` } });
-    setShowIndexRepair(false);
-  };
 
   const [elapsed, setElapsed] = useState("00:00:00");
    
@@ -1229,28 +1187,6 @@ const Brigades = () => {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {/* Remise en ordre des compteurs de pistolets — voir `lib/nozzleIndexes.ts`.
-              Discret quand tout est à jour, franc quand un compteur a dérivé. */}
-          {perm.modifier && (
-            <button
-              onClick={() => setShowIndexRepair(true)}
-              title="Remettre les index des pistolets sur la dernière brigade"
-              className={cn(
-                "h-14 px-6 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all flex items-center gap-3 italic border-2",
-                nozzleDrift.length > 0
-                  ? "bg-amber-50 text-amber-900 border-amber-400 hover:bg-amber-100 shadow-lg shadow-amber-500/10 hover:scale-105"
-                  : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
-              )}
-            >
-              <WrenchIcon className="w-5 h-5" />
-              CORRIGER LES INDEX
-              {nozzleDrift.length > 0 && (
-                <span className="px-2 py-0.5 rounded-lg bg-amber-500 text-white text-[10px] not-italic tabular-nums">
-                  {nozzleDrift.length}
-                </span>
-              )}
-            </button>
-          )}
           {perm.creer && (
             <button onClick={() => { setEditingBrigade(null); resetForm(); setShowModal(true); }} className="h-14 px-8 bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] text-[#FFB800] border border-blue-900 hover:border-[#FFB800] rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-950/20 hover:scale-105 transition-all flex items-center gap-3 italic">
               <Plus className="w-5 h-5 text-[#FFB800]" /> CRÉER NOUVELLE BRIGADE
@@ -3035,107 +2971,6 @@ const Brigades = () => {
             dispatch={dispatch}
             onClose={() => { setShowAccountingModal(false); setSelectedBrigade(null); }}
           />
-        )}
-      </AnimatePresence>
-
-      {/* ─── Correction des index pistolets ─────────────────────────────────
-          Le compteur de chaque pistolet doit valoir l'index de FIN de sa
-          dernière brigade. Cette fenêtre montre l'écart et le corrige — rien
-          d'autre n'est touché : ni cuve, ni brigade, ni comptabilité. */}
-      <AnimatePresence>
-        {showIndexRepair && (
-          <div className="modal-shell z-[70] italic text-left">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              onClick={() => setShowIndexRepair(false)}
-              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-3xl rounded-2xl sm:rounded-[2rem] relative z-10 overflow-hidden flex flex-col max-h-[var(--modal-max-h)] shadow-2xl border border-slate-100">
-              <div className="px-4 py-3.5 sm:px-6 sm:py-5 text-white flex justify-between items-center gap-3 shrink-0 border-b-2 border-[#FFB800]/55"
-                style={{ background: 'linear-gradient(120deg, #001233 0%, #001f5c 45%, #003087 100%)' }}>
-                <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-                  <div className="modal-title-icon"><WrenchIcon className="w-4 h-4" /></div>
-                  <div className="min-w-0">
-                    <h3 className="font-black text-[11px] sm:text-sm uppercase tracking-widest truncate">Corriger les index pistolets</h3>
-                    <p className="hidden sm:block text-[11px] text-blue-200 font-bold mt-0.5 truncate">
-                      {indexReferenceBrigade
-                        ? `Référence : dernière brigade du ${indexReferenceBrigade.date}`
-                        : 'Aucune brigade de référence'}
-                    </p>
-                  </div>
-                </div>
-                <button onClick={() => setShowIndexRepair(false)} className="modal-close shrink-0"><X className="w-5 h-5" /></button>
-              </div>
-
-              <div className="p-4 sm:p-6 overflow-y-auto custom-scrollbar space-y-4">
-                <div className="p-4 bg-[#eef3fc] rounded-2xl border border-[#003087]/15 text-[11px] font-bold text-[#002d87] leading-relaxed">
-                  Le compteur d'un pistolet doit valoir l'index de <b>FIN</b> relevé par sa dernière
-                  brigade : c'est lui qui servira d'index de départ à la prochaine. Seuls ces
-                  compteurs sont remis en place — les brigades, les cuves et la comptabilité ne
-                  bougent pas.
-                </div>
-
-                {nozzleDrift.length === 0 ? (
-                  <div className="p-8 text-center">
-                    <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-3" />
-                    <p className="font-black text-slate-700 text-sm">Tous les compteurs sont à jour</p>
-                    <p className="text-[11px] text-slate-500 font-bold mt-1">
-                      Chaque pistolet porte bien l'index de fin de sa dernière brigade.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto rounded-2xl border-2 border-slate-100">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-50">
-                        <tr className="text-[9px] font-black uppercase tracking-widest text-slate-500">
-                          <th className="px-4 py-3">Pompe / Pistolet</th>
-                          <th className="px-4 py-3 text-right">Index actuel</th>
-                          <th className="px-4 py-3 text-right">Index dernière brigade</th>
-                          <th className="px-4 py-3 text-right">Écart</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {nozzleDrift.map(fix => {
-                          const pump = pumps.find(p => p.id === fix.pumpId);
-                          const num = (v: number) => v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                          return (
-                            <tr key={fix.nozzleId} className="text-xs font-bold tabular-nums">
-                              <td className="px-4 py-3">
-                                <span className="font-black text-slate-800">{pump?.name || pump?.number || '—'}</span>
-                                <span className="text-slate-400 mx-1.5">/</span>
-                                <span className="font-black text-blue-900">{fix.nozzleName}</span>
-                                <div className="text-[10px] text-slate-400 font-bold not-italic">
-                                  Brigade du {fix.brigadeDate || '—'}
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-right text-slate-400 line-through">{num(fix.current)}</td>
-                              <td className="px-4 py-3 text-right text-blue-900 font-black">{num(fix.expected)}</td>
-                              <td className={cn("px-4 py-3 text-right font-black", fix.drift < 0 ? "text-red-600" : "text-emerald-600")}>
-                                {fix.drift > 0 ? '+' : ''}{num(fix.drift)}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              <div className="px-4 py-3.5 sm:px-6 sm:py-4 border-t-2 border-slate-100 flex justify-end gap-3 shrink-0 bg-slate-50/60">
-                <button onClick={() => setShowIndexRepair(false)}
-                  className="px-5 py-3 text-[10px] font-black uppercase tracking-widest text-slate-600 border-2 border-slate-200 rounded-xl hover:bg-white transition-colors">
-                  Fermer
-                </button>
-                {nozzleDrift.length > 0 && (
-                  <button onClick={applyIndexRepair}
-                    className="px-6 py-3 text-[10px] font-black uppercase tracking-widest text-[#FFB800] bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] border border-blue-900 hover:border-[#FFB800] rounded-xl shadow-lg transition-all flex items-center gap-2">
-                    <Check className="w-4 h-4" />
-                    Corriger {nozzleDrift.length} index
-                  </button>
-                )}
-              </div>
-            </motion.div>
-          </div>
         )}
       </AnimatePresence>
 
