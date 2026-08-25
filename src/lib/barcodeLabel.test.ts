@@ -22,6 +22,7 @@
 import {
   code128Values, code128Widths, barcodeSVG, barcodeLabelSVG,
   moduleWidthMm, labelPrice, barcodeLabelHTML, MIN_MODULE_MM,
+  LABEL_40_20, LABEL_PRESETS, LABEL_PREFS_KEY, PAD_X_RATIO,
 } from './barcodeLabel';
 
 let passed = 0, failed = 0;
@@ -117,7 +118,8 @@ check('un prix aberrant est ignoré', labelPrice(NaN), '');
 console.log('\n── La page d\'impression ──');
 const html = barcodeLabelHTML({ name: 'Huile moteur 5W40', barcode: CODE, salePrice: 2400 });
 ok('la page annonce le format du rouleau', html.includes('@page{size:40mm 20mm;margin:0}'));
-ok('la vignette fait exactement 40 × 20 mm', html.includes('width:40mm;height:20mm'));
+ok('la vignette fait exactement 40 × 20 mm', html.includes('--lw:40mm; --lh:20mm;'));
+ok('la page fait la même taille que la vignette, sans pivot', html.includes('--pw:40mm; --ph:20mm;'));
 ok('le nom du produit est en gras', /\.name\{[^}]*font-weight:900/.test(html));
 ok('le nom apparaît sur l\'étiquette', html.includes('Huile moteur 5W40'));
 ok('le code humain est imprimé sous les barres', html.includes(`>${CODE}<`));
@@ -127,6 +129,90 @@ ok('l\'aperçu et les consignes ne partent pas à l\'imprimante',
   html.includes('.screen-only{display:none!important}'));
 ok('rien ne déborde de la vignette', /\.label\{[^}]*overflow:hidden/.test(html));
 ok('un nom à rallonge est borné à deux lignes', html.includes('-webkit-line-clamp:2'));
+
+/**
+ * Le cœur de la mise en page : quatre rangées, dont une seule élastique. Les
+ * trois rangées de texte prennent leur hauteur, les barres prennent le reste
+ * et savent descendre à zéro. C'est ce qui rend impossible qu'une rangée en
+ * recouvre une autre — le défaut qu'on voyait sortir de l'imprimante.
+ */
+ok('la vignette est une grille de quatre rangées',
+  html.includes('grid-template-rows:auto minmax(0,1fr) auto auto'));
+ok('seules les barres sont élastiques',
+  (/grid-template-rows:[^;]*/.exec(html)![0].match(/minmax\(0,1fr\)/g) || []).length === 1)
+ok('le nom ne peut pas manger la hauteur des barres',
+  /\.name\{[^}]*max-height:calc\(var\(--lh\)/.test(html));
+ok('chaque vignette occupe sa propre page',
+  /\.sheet\{[^}]*break-after:page/.test(html));
+ok('la dernière copie ne pousse pas de page blanche',
+  html.includes('.sheet:last-child{break-after:auto;page-break-after:auto}'));
+/**
+ * Le nom RÉTRÉCIT, il ne se fait pas couper. La mesure doit donc se faire
+ * bride desserrée : avec "-webkit-line-clamp" en place, le navigateur annonce
+ * une hauteur qui rentre toujours et le nom sortirait avec des points de
+ * suspension. Et elle vise deux lignes À LA TAILLE COURANTE, pas le plafond
+ * CSS — qui vaut deux lignes à la taille de DÉPART, donc presque trois une
+ * fois le texte réduit.
+ */
+ok('le nom se mesure bride desserrée', html.includes("el.style.webkitLineClamp = 'unset'"));
+ok('la bride est remise après la mesure', html.includes("el.style.webkitLineClamp = ''"));
+ok('la cible est deux lignes à la taille courante',
+  html.includes('el.scrollHeight > LINES * lh + 1'));
+ok('le plafond CSS reste le garde-fou si le script ne tourne pas',
+  /\.name\{[^}]*max-height:calc/.test(html));
+
+/**
+ * Les polices arrivent parfois après le premier calcul : un nom mesuré en
+ * police de secours déborde sur le papier. On remesure quand elles sont là,
+ * puis encore juste avant que la page parte à l'imprimante.
+ */
+ok('la mesure est refaite quand les polices sont chargées', html.includes('document.fonts.ready.then(fitAll)'));
+ok('et encore juste avant l\'impression', html.includes("addEventListener('beforeprint', fitAll)"));
+
+
+console.log('\n── Le pivot d\'un quart de tour ──');
+/**
+ * Le défaut d'origine : `@page{size:40mm 20mm}` annonce une page PAYSAGE, le
+ * pilote de l'étiqueteuse est en PORTRAIT, et il fait tourner l'image — les
+ * 40 mm de dessin s'écrasent sur les 20 mm du pas d'étiquette et tout sort
+ * coupé au même endroit. Pivoter, c'est envoyer la page dans le sens que le
+ * pilote attend, la vignette tournée dedans.
+ */
+const turned = barcodeLabelHTML({ name: 'Huile', barcode: CODE, salePrice: 2400 }, {
+  size: LABEL_40_20, rotate: true,
+});
+ok('la page pivotée échange ses côtés', turned.includes('@page{size:20mm 40mm;margin:0}'));
+ok('le dessin, lui, garde ses 40 × 20', turned.includes('--lw:40mm; --lh:20mm;'));
+ok('la vignette tourne d\'un quart de tour dans sa page',
+  turned.includes('transform:rotate(90deg) translateY(-100%)'));
+ok('le pivot est armé dès le chargement', turned.includes('<body data-rotate="1">'));
+ok('sans pivot, la page reste à l\'endroit', html.includes('<body data-rotate="0">'));
+
+console.log('\n── Les copies ──');
+const three = barcodeLabelHTML({ name: 'Huile', barcode: CODE }, { copies: 3 });
+ok('le nombre de copies part avec la page', /copies: 3 \}/.test(three));
+check('une demande absurde est ramenée dans les clous',
+  /copies: (\d+) \}/.exec(barcodeLabelHTML({ barcode: CODE }, { copies: 900 }))![1], '50');
+check('zéro copie vaut une copie',
+  /copies: (\d+) \}/.exec(barcodeLabelHTML({ barcode: CODE }, { copies: 0 }))![1], '1');
+
+console.log('\n── Les autres rouleaux ──');
+const big = barcodeLabelHTML({ name: 'Huile', barcode: CODE }, { size: { widthMm: 58, heightMm: 40 } });
+ok('un 58 × 40 annonce sa taille', big.includes('@page{size:58mm 40mm;margin:0}'));
+ok('les tailles de texte suivent la hauteur du rouleau',
+  big.includes('--fs-name:calc(var(--lh) * 0.125)'));
+ok('la marge suit la largeur du rouleau', big.includes(`--pad-x:calc(var(--lw) * ${PAD_X_RATIO})`));
+ok('tous les formats du menu sont proposés',
+  LABEL_PRESETS.every(p => html.includes(`value="${p.size.widthMm}x${p.size.heightMm}"`)));
+ok('le format du rouleau se retient sur le poste', html.includes(LABEL_PREFS_KEY));
+
+/**
+ * La marge du CSS et celle de `moduleWidthMm` doivent être LA MÊME, sinon
+ * l'avertissement « code trop dense » ment : il rassure sur des barres plus
+ * larges que celles qui sortent vraiment.
+ */
+check('la marge annoncée est celle qui est appliquée',
+  moduleWidthMm(CODE, LABEL_40_20), (40 - 40 * PAD_X_RATIO * 2) / code128Widths(CODE)!.modules);
 
 const noPrice = barcodeLabelHTML({ name: 'Sans prix', barcode: CODE });
 ok('sans prix, la ligne disparaît et les barres respirent', !noPrice.includes('class="price"'));

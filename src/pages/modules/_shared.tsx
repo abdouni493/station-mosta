@@ -43,8 +43,14 @@ export function genBarcode(): string {
 export { barcodeSVG } from '@/src/lib/barcodeLabel';
 
 /**
- * Ouvre l'étiquette d'un produit, réglée pour le rouleau 40 × 20 mm : nom en
- * gras, code-barres à la largeur de la vignette, code lisible et prix.
+ * Ouvre l'étiquette d'un produit : nom en gras, code-barres à la largeur de la
+ * vignette, code lisible et prix.
+ *
+ * TOUS les écrans qui impriment une étiquette passent par ici — la fiche
+ * produit du stock comme le formulaire de saisie — pour que le format du
+ * rouleau, le pivot et le nombre de copies soient les mêmes partout. Le réglage
+ * se fait dans la fenêtre d'aperçu et se retient sur le poste ; `size` n'est
+ * que le point de départ de la toute première étiquette.
  */
 export function printBarcode(
   product: { name?: string; barcode?: string; salePrice?: number },
@@ -52,14 +58,14 @@ export function printBarcode(
 ) {
   const code = (product.barcode || '').trim();
   if (!code) return;
-  // La fenêtre s'ouvre à la taille de l'aperçu agrandi, pas à celle de la
-  // vignette : 40 × 20 mm à l'écran ne se relit pas.
-  const win = window.open('', '_blank', 'width=520,height=620');
+  // La fenêtre s'ouvre à la taille de l'aperçu agrandi et de ses réglages, pas
+  // à celle de la vignette : 40 × 20 mm à l'écran ne se relit pas.
+  const win = window.open('', '_blank', 'width=560,height=780');
   if (!win) {
     toast.error("La fenêtre d'impression a été bloquée par le navigateur.");
     return;
   }
-  win.document.write(barcodeLabelHTML(product, size));
+  win.document.write(barcodeLabelHTML(product, { size }));
   win.document.close();
 }
 
