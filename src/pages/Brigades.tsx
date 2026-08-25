@@ -3010,7 +3010,9 @@ const Brigades = () => {
         )}
       </AnimatePresence>
 
-      {/* Accounting Modal */}
+      {/* Accounting Modal — `brigades` n'y sert qu'à savoir si cette brigade est
+          encore la dernière sur ses pistolets : sinon, un index corrigé dans la
+          comptabilité ne déplace plus leur compteur (`lib/nozzleIndexes.ts`). */}
       <AnimatePresence>
         {showAccountingModal && selectedBrigade && (
           <BrigadeAccountingModal
@@ -3029,6 +3031,7 @@ const Brigades = () => {
             treasuryTransactions={treasuryTransactions}
             bankAccounts={bankAccounts}
             clientAccounts={clientAccounts}
+            brigades={brigades}
             dispatch={dispatch}
             onClose={() => { setShowAccountingModal(false); setSelectedBrigade(null); }}
           />

@@ -18,6 +18,7 @@ import { clientChargeDelta, clientStanding, ClientLedger } from "../lib/clientLe
 import {
   brigadeBankLines, brigadeBankLineIds, unbankedJustifications, accountOfJustification,
 } from "../lib/brigadeBankLines";
+import { ownsNozzleIndex } from "../lib/nozzleIndexes";
 
 interface Justification {
   id: string;
@@ -69,6 +70,16 @@ interface Props {
    * ailleurs (la colonne `clients.debt`) n'était pas celui de sa fiche.
    */
   clientAccounts?: Record<string, ClientLedger>;
+  /**
+   * Toutes les brigades — uniquement pour savoir QUI détient le compteur de
+   * chaque pistolet. Corriger un index ici recopiait la valeur dans
+   * `pump_nozzles.last_index`, le compteur qui sert d'index de DÉPART à la
+   * prochaine brigade : rouvrir la comptabilité d'une brigade ancienne — même
+   * sans rien changer, les corrections d'origine étant relues telles quelles —
+   * faisait RECULER toute la piste sur les index de ce jour-là. Voir
+   * `lib/nozzleIndexes.ts`.
+   */
+  brigades?: Brigade[];
   dispatch: React.Dispatch<any>;
   onClose: () => void;
 }
@@ -82,7 +93,8 @@ type VerEntry = { verified: boolean; corrected: boolean; correctedValue?: number
 const BrigadeAccountingModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, settings,
   clients, tracks, currentUserRole, currentUserName, existingAccounting,
-  treasuryTransactions = [], bankAccounts = [], clientAccounts = {}, dispatch, onClose
+  treasuryTransactions = [], bankAccounts = [], clientAccounts = {}, brigades = [],
+  dispatch, onClose
 }) => {
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
 
@@ -169,6 +181,27 @@ const BrigadeAccountingModal: React.FC<Props> = ({
 
   const activeNozzles = useMemo(
     () => brigadeActiveNozzles(brigade, calcCtx), [brigade, calcCtx]);
+
+  /**
+   * ─── QUI DÉPLACE LE COMPTEUR D'UN PISTOLET ─────────────────────────────────
+   *
+   * Corriger un index de fin ici le recopiait dans `pump_nozzles.last_index` —
+   * le compteur qui sert d'index de DÉPART à la prochaine brigade. Comme les
+   * corrections d'origine sont relues à l'ouverture, il suffisait de rouvrir la
+   * comptabilité d'une brigade ancienne et de l'enregistrer, SANS RIEN CHANGER,
+   * pour que les pistolets reculent sur les index de ce jour-là.
+   *
+   * Seule la DERNIÈRE brigade à avoir relevé un pistolet déplace son compteur.
+   * Une correction portée sur une brigade antérieure reste enregistrée sur SA
+   * fiche — ses litres, son théorique et sa cuve suivent — mais le compteur ne
+   * bouge plus. Voir `lib/nozzleIndexes.ts`.
+   */
+  const ownsLiveIndex = (nozzleId: string) =>
+    brigades.length === 0 || ownsNozzleIndex(brigades, brigade.id, nozzleId);
+  /** Vrai quand cette brigade n'est plus la dernière sur au moins un pistolet. */
+  const indexesLockedByLater = useMemo<boolean>(
+    () => activeNozzles.some((n: PumpNozzle) => !ownsLiveIndex(n.id)),
+    [activeNozzles, brigades, brigade.id]);
 
   // Les corrections d'index saisies ici rejouent le MÊME calcul, sans en écrire
   // une seconde version qui finirait par diverger.
@@ -401,11 +434,16 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     // correction. Seule la DIFFÉRENCE est appliquée, comme partout ailleurs.
     let hadNozzleCorrection = false;
     const newEndNozzleIndices = { ...(brigade.endNozzleIndices || {}) };
-    activeNozzles.forEach(nozzle => {
+    activeNozzles.forEach((nozzle: PumpNozzle) => {
       const ver = nozzleVer[nozzle.id];
       if (ver?.corrected && ver.correctedValue !== undefined) {
         newEndNozzleIndices[nozzle.id] = ver.correctedValue;
-        dispatch({ type: 'UPDATE_NOZZLE', payload: { ...nozzle, lastIndex: ver.correctedValue } });
+        // Le compteur vivant du pistolet n'appartient qu'à sa DERNIÈRE brigade
+        // (voir `ownsLiveIndex` plus haut) : une correction portée sur une
+        // brigade antérieure reste sur sa fiche sans faire reculer la piste.
+        if (ownsLiveIndex(nozzle.id)) {
+          dispatch({ type: 'UPDATE_NOZZLE', payload: { ...nozzle, lastIndex: ver.correctedValue } });
+        }
         hadNozzleCorrection = true;
       }
     });
@@ -644,6 +682,19 @@ const BrigadeAccountingModal: React.FC<Props> = ({
             {step === 2 && (
               <motion.div key="s2" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="p-6 space-y-4">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vérification des Pistolets — confirmez ou corrigez les index de fin</p>
+                {/* Une brigade qui n'est plus la dernière garde ses index pour
+                    elle — voir `lib/nozzleIndexes.ts`. */}
+                {indexesLockedByLater && (
+                  <div className="p-4 bg-amber-50 rounded-2xl border-2 border-amber-300 text-[11px] font-bold text-amber-900 flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      Cette brigade n'est pas la dernière. Un index corrigé ici reste enregistré sur
+                      <b> sa propre fiche</b> — litres, théorique et cuve suivent — mais les compteurs
+                      des pistolets, ceux qui servent de départ à la prochaine brigade,
+                      <b> ne bougeront pas</b> : ils appartiennent à la dernière brigade relevée.
+                    </span>
+                  </div>
+                )}
                 {activeNozzles.length === 0 && <div className="text-center py-12 text-slate-400 text-sm">Aucun pistolet actif pour cette brigade</div>}
                 {activeNozzles.map(nozzle => {
                   const d = nozzleData.find(x => x.nozzle.id === nozzle.id)!;
