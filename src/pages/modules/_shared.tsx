@@ -24,7 +24,7 @@ import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/prod
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 import { uploadFile } from '@/src/lib/supabase';
-import { barcodeLabelHTML, LABEL_40_20, LabelSize } from '@/src/lib/barcodeLabel';
+import { barcodeLabelHTML, LABEL_40_20, LabelSize, LabelOptions } from '@/src/lib/barcodeLabel';
 
 // ─── Barcode helpers ──────────────────────────────────────────────────────────
 export function genBarcode(): string {
@@ -43,29 +43,42 @@ export function genBarcode(): string {
 export { barcodeSVG } from '@/src/lib/barcodeLabel';
 
 /**
- * Ouvre l'étiquette d'un produit : nom en gras, code-barres à la largeur de la
- * vignette, code lisible et prix.
+ * Ouvre l'aperçu d'étiquette d'un produit : nom en gras, code-barres à la
+ * largeur de la vignette, code lisible et prix.
  *
  * TOUS les écrans qui impriment une étiquette passent par ici — la fiche
  * produit du stock comme le formulaire de saisie — pour que le format du
- * rouleau, le pivot et le nombre de copies soient les mêmes partout. Le réglage
- * se fait dans la fenêtre d'aperçu et se retient sur le poste ; `size` n'est
- * que le point de départ de la toute première étiquette.
+ * rouleau, le sens d'impression et le nombre de copies soient les mêmes
+ * partout. Ces trois réglages se font dans la fenêtre d'aperçu et se retiennent
+ * sur le poste ; ce que l'appelant passe n'est que le point de départ de la
+ * toute première étiquette, avant qu'un réglage n'ait été enregistré.
+ *
+ * Le bouton ne lance plus l'impression à l'aveugle : l'aperçu s'ouvre, montre
+ * la vignette telle qu'elle sortira, et c'est le bouton « Imprimer » de cette
+ * fenêtre — qui a déjà le focus — qui appelle le dialogue.
  */
 export function printBarcode(
   product: { name?: string; barcode?: string; salePrice?: number },
-  size: LabelSize = LABEL_40_20,
+  sizeOrOptions: LabelSize | LabelOptions = LABEL_40_20,
 ) {
   const code = (product.barcode || '').trim();
-  if (!code) return;
-  // La fenêtre s'ouvre à la taille de l'aperçu agrandi et de ses réglages, pas
-  // à celle de la vignette : 40 × 20 mm à l'écran ne se relit pas.
-  const win = window.open('', '_blank', 'width=560,height=780');
-  if (!win) {
-    toast.error("La fenêtre d'impression a été bloquée par le navigateur.");
+  if (!code) {
+    toast.error("Ce produit n'a pas de code-barres : générez-en un d'abord.");
     return;
   }
-  win.document.write(barcodeLabelHTML(product, { size }));
+  // La fenêtre s'ouvre à la taille de l'aperçu agrandi et de ses réglages, pas
+  // à celle de la vignette : 40 × 20 mm à l'écran ne se relit pas.
+  const win = window.open('', '_blank', 'width=640,height=880');
+  if (!win) {
+    toast.error(
+      "L'aperçu de l'étiquette a été bloqué par le navigateur. "
+      + 'Autorisez les fenêtres pop-up pour ce site, puis réessayez.',
+      { duration: 6000 },
+    );
+    return;
+  }
+  win.document.open();
+  win.document.write(barcodeLabelHTML({ ...product, barcode: code }, sizeOrOptions));
   win.document.close();
 }
 
@@ -704,7 +717,8 @@ export function ProductModal({
               <button type="button" title="Générer" className="btn-secondary !px-3 shrink-0" onClick={() => set('barcode', genBarcode())}>
                 <RefreshCw className="w-4 h-4" />
               </button>
-              <button type="button" title="Imprimer" className="btn-outline !px-3 shrink-0" onClick={() => printBarcode(form as any)} disabled={!form.barcode}>
+              <button type="button" title={form.barcode ? "Aperçu et impression de l'étiquette" : "Générez ou scannez un code-barres d'abord"}
+                className="btn-outline !px-3 shrink-0" onClick={() => printBarcode(form as any)} disabled={!form.barcode}>
                 <Printer className="w-4 h-4" />
               </button>
             </div>

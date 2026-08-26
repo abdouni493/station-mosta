@@ -22,7 +22,8 @@
 import {
   code128Values, code128Widths, barcodeSVG, barcodeLabelSVG,
   moduleWidthMm, labelPrice, barcodeLabelHTML, MIN_MODULE_MM,
-  LABEL_40_20, LABEL_PRESETS, LABEL_PREFS_KEY, PAD_X_RATIO,
+  LABEL_40_20, LABEL_PRESETS, LABEL_PREFS_KEY, LABEL_PREFS_KEY_V1,
+  LABEL_ROTATIONS, PAD_X_RATIO, normalizeRotation,
 } from './barcodeLabel';
 
 let passed = 0, failed = 0;
@@ -131,17 +132,34 @@ ok('rien ne déborde de la vignette', /\.label\{[^}]*overflow:hidden/.test(html)
 ok('un nom à rallonge est borné à deux lignes', html.includes('-webkit-line-clamp:2'));
 
 /**
- * Le cœur de la mise en page : quatre rangées, dont une seule élastique. Les
- * trois rangées de texte prennent leur hauteur, les barres prennent le reste
- * et savent descendre à zéro. C'est ce qui rend impossible qu'une rangée en
- * recouvre une autre — le défaut qu'on voyait sortir de l'imprimante.
+ * Le cœur de la mise en page : TROIS rangées, dont une seule élastique. Le nom
+ * et le pied prennent leur hauteur, les barres prennent le reste et savent
+ * descendre à zéro. C'est ce qui rend impossible qu'une rangée en recouvre une
+ * autre — le défaut qu'on voyait sortir de l'imprimante.
+ *
+ * Trois et non quatre : le code et le prix partagent la même ligne de pied.
+ * Sur un rouleau de 20 mm de haut, la rangée économisée rend près de 3 mm aux
+ * barres, et des barres hautes se scannent du premier coup.
  */
-ok('la vignette est une grille de quatre rangées',
-  html.includes('grid-template-rows:auto minmax(0,1fr) auto auto'));
+ok('la vignette est une grille de trois rangées',
+  html.includes('grid-template-rows:auto minmax(0,1fr) auto'));
 ok('seules les barres sont élastiques',
   (/grid-template-rows:[^;]*/.exec(html)![0].match(/minmax\(0,1fr\)/g) || []).length === 1)
 ok('le nom ne peut pas manger la hauteur des barres',
   /\.name\{[^}]*max-height:calc\(var\(--lh\)/.test(html));
+/**
+ * Chaque rangée est ASSIGNÉE. Sans ça, une étiquette sans nom verrait ses
+ * barres tomber dans la rangée "auto" du nom — dessin écrasé en haut, moitié
+ * basse vide — au lieu de récupérer la place laissée libre.
+ */
+ok('le nom occupe la première rangée', /\.name\{[^}]*grid-row:1/.test(html));
+ok('les barres occupent la rangée élastique', /\.bars\{[^}]*grid-row:2/.test(html));
+ok('le pied occupe la dernière rangée', /\.foot\{[^}]*grid-row:3/.test(html));
+ok('le code et le prix tiennent sur la même ligne',
+  /\.foot\{[^}]*display:flex[^}]*justify-content:space-between/.test(html));
+ok('ni le code ni le prix ne se replient', /\.foot\{[^}]*white-space:nowrap/.test(html));
+ok('le pied se mesure en largeur pour rétrécir au lieu de déborder',
+  /class="foot"[^>]*data-fit="width"/.test(html));
 ok('chaque vignette occupe sa propre page',
   /\.sheet\{[^}]*break-after:page/.test(html));
 ok('la dernière copie ne pousse pas de page blanche',
@@ -154,8 +172,8 @@ ok('la dernière copie ne pousse pas de page blanche',
  * CSS — qui vaut deux lignes à la taille de DÉPART, donc presque trois une
  * fois le texte réduit.
  */
-ok('le nom se mesure bride desserrée', html.includes("el.style.webkitLineClamp = 'unset'"));
-ok('la bride est remise après la mesure', html.includes("el.style.webkitLineClamp = ''"));
+ok('le nom se mesure bride desserrée', html.includes('el.style.webkitLineClamp = \"unset\"'));
+ok('la bride est remise après la mesure', html.includes('el.style.webkitLineClamp = ""'));
 ok('la cible est deux lignes à la taille courante',
   html.includes('el.scrollHeight > LINES * lh + 1'));
 ok('le plafond CSS reste le garde-fou si le script ne tourne pas',
@@ -167,26 +185,84 @@ ok('le plafond CSS reste le garde-fou si le script ne tourne pas',
  * puis encore juste avant que la page parte à l'imprimante.
  */
 ok('la mesure est refaite quand les polices sont chargées', html.includes('document.fonts.ready.then(fitAll)'));
-ok('et encore juste avant l\'impression', html.includes("addEventListener('beforeprint', fitAll)"));
+ok('et encore juste avant l\'impression', html.includes('addEventListener("beforeprint", fitAll)'));
 
 
-console.log('\n── Le pivot d\'un quart de tour ──');
+console.log('\n── Le sens d\'impression ──');
 /**
  * Le défaut d'origine : `@page{size:40mm 20mm}` annonce une page PAYSAGE, le
  * pilote de l'étiqueteuse est en PORTRAIT, et il fait tourner l'image — les
  * 40 mm de dessin s'écrasent sur les 20 mm du pas d'étiquette et tout sort
- * coupé au même endroit. Pivoter, c'est envoyer la page dans le sens que le
- * pilote attend, la vignette tournée dedans.
+ * coupé au même endroit.
+ *
+ * La case à cocher qui a suivi ne réglait que la moitié du problème : elle
+ * couvrait deux orientations sur quatre, et une fois cochée par erreur elle
+ * restait cochée — l'étiquette sortait debout pour de bon. Quatre positions,
+ * 0° par défaut, et n'importe quel tour de pilote se rattrape.
  */
-const turned = barcodeLabelHTML({ name: 'Huile', barcode: CODE, salePrice: 2400 }, {
-  size: LABEL_40_20, rotate: true,
-});
-ok('la page pivotée échange ses côtés', turned.includes('@page{size:20mm 40mm;margin:0}'));
-ok('le dessin, lui, garde ses 40 × 20', turned.includes('--lw:40mm; --lh:20mm;'));
-ok('la vignette tourne d\'un quart de tour dans sa page',
-  turned.includes('transform:rotate(90deg) translateY(-100%)'));
-ok('le pivot est armé dès le chargement', turned.includes('<body data-rotate="1">'));
-ok('sans pivot, la page reste à l\'endroit', html.includes('<body data-rotate="0">'));
+check('rien, ou n\'importe quoi, vaut horizontale', [
+  normalizeRotation(undefined), normalizeRotation(null), normalizeRotation('nord'),
+  normalizeRotation(0), normalizeRotation(360), normalizeRotation(45),
+], [0, 0, 0, 0, 0, 0]);
+check('les quatre positions passent telles quelles',
+  [90, 180, 270].map(normalizeRotation), [90, 180, 270]);
+check('un angle négatif retombe sur son équivalent',
+  [normalizeRotation(-90), normalizeRotation(-180)], [270, 180]);
+check('l\'ancien réglage booléen devient un quart de tour',
+  [normalizeRotation(true), normalizeRotation(false)], [90, 0]);
+
+ok('l\'étiquette sort HORIZONTALE par défaut', html.includes('<body data-rotate="0">'));
+ok('et sa page reste à plat, comme le rouleau', html.includes('@page{size:40mm 20mm;margin:0}'));
+
+/**
+ * Les deux quarts de tour échangent les côtés de la PAGE ; le demi-tour, non.
+ * Le dessin, lui, garde toujours ses 40 × 20 : c'est la page qui s'adapte au
+ * pilote, jamais la vignette qui s'écrase.
+ */
+for (const [deg, page] of [[90, '20mm 40mm'], [180, '40mm 20mm'], [270, '20mm 40mm']] as const) {
+  const turned = barcodeLabelHTML({ name: 'Huile', barcode: CODE, salePrice: 2400 },
+    { size: LABEL_40_20, rotate: deg });
+  ok(`à ${deg}°, la page mesure ${page}`, turned.includes(`@page{size:${page};margin:0}`));
+  ok(`à ${deg}°, le dessin garde ses 40 × 20`, turned.includes('--lw:40mm; --lh:20mm;'));
+  ok(`à ${deg}°, le sens est armé dès le chargement`, turned.includes(`<body data-rotate="${deg}">`));
+}
+/**
+ * Chaque transformation se lit de droite à gauche — on déplace la vignette de
+ * sa propre taille, PUIS on tourne. C'est ce qui la fait retomber coin sur coin
+ * dans sa page : une rotation sans ce déplacement la projetterait hors du
+ * papier, et il ne sortirait rien du tout.
+ */
+ok('le quart de tour à droite retombe dans la page',
+  html.includes('body[data-rotate="90"]  .label{transform-origin:0 0;transform:rotate(90deg) translateY(-100%)}'));
+ok('le demi-tour aussi',
+  html.includes('body[data-rotate="180"] .label{transform-origin:0 0;transform:rotate(180deg) translate(-100%,-100%)}'));
+ok('le quart de tour à gauche aussi',
+  html.includes('body[data-rotate="270"] .label{transform-origin:0 0;transform:rotate(-90deg) translateX(-100%)}'));
+ok('les quatre sens sont proposés dans la fenêtre',
+  LABEL_ROTATIONS.every(r => html.includes(`<option value="${r.value}"`)));
+check('le premier sens proposé est l\'horizontale', LABEL_ROTATIONS[0].value, 0);
+
+/**
+ * L'ancien réglage enregistré ne doit PAS ressusciter : un « pivoté » coché un
+ * jour pour essayer faisait sortir toutes les étiquettes debout, sans que rien
+ * sur l'écran de saisie ne le laisse deviner. La v2 relit l'ancienne clé pour
+ * le seul format du rouleau.
+ */
+ok('le réglage du poste a changé de version', String(LABEL_PREFS_KEY) !== String(LABEL_PREFS_KEY_V1));
+ok('la page lit d\'abord la clé courante', html.includes(`var PREFS = "${LABEL_PREFS_KEY}"`));
+ok('et l\'ancienne seulement en repli', html.includes(`var PREFS_V1 = "${LABEL_PREFS_KEY_V1}"`));
+ok('l\'ancienne clé n\'est relue que pour le format',
+  /old\.w > 0 && old\.h > 0\) \{ state\.w = old\.w; state\.h = old\.h; \}/.test(html));
+
+/**
+ * Et la fenêtre n'appelle plus le dialogue d'impression toute seule : il se
+ * posait par-dessus les réglages, donc par-dessus le seul endroit où corriger
+ * un mauvais sens. On voyait le problème sans pouvoir l'atteindre.
+ */
+ok('le dialogue ne s\'ouvre plus tout seul', !/window\.focus\(\);\s*window\.print\(\)/.test(html));
+ok('c\'est le bouton qui imprime',
+  html.includes('printBtn.addEventListener("click", function () { fitAll(); window.print(); });'));
+ok('et il a le focus au chargement', html.includes('printBtn.focus();'));
 
 console.log('\n── Les copies ──');
 const three = barcodeLabelHTML({ name: 'Huile', barcode: CODE }, { copies: 3 });
@@ -200,7 +276,7 @@ console.log('\n── Les autres rouleaux ──');
 const big = barcodeLabelHTML({ name: 'Huile', barcode: CODE }, { size: { widthMm: 58, heightMm: 40 } });
 ok('un 58 × 40 annonce sa taille', big.includes('@page{size:58mm 40mm;margin:0}'));
 ok('les tailles de texte suivent la hauteur du rouleau',
-  big.includes('--fs-name:calc(var(--lh) * 0.125)'));
+  big.includes('--fs-name:calc(var(--lh) * 0.135)'));
 ok('la marge suit la largeur du rouleau', big.includes(`--pad-x:calc(var(--lw) * ${PAD_X_RATIO})`));
 ok('tous les formats du menu sont proposés',
   LABEL_PRESETS.every(p => html.includes(`value="${p.size.widthMm}x${p.size.heightMm}"`)));
@@ -215,7 +291,9 @@ check('la marge annoncée est celle qui est appliquée',
   moduleWidthMm(CODE, LABEL_40_20), (40 - 40 * PAD_X_RATIO * 2) / code128Widths(CODE)!.modules);
 
 const noPrice = barcodeLabelHTML({ name: 'Sans prix', barcode: CODE });
-ok('sans prix, la ligne disparaît et les barres respirent', !noPrice.includes('class="price"'));
+ok('sans prix, rien ne s\'imprime à sa place', !noPrice.includes('class="price"'));
+ok('et le code se recentre au lieu de rester collé à gauche',
+  noPrice.includes('class="foot solo"') && /\.foot\.solo\{justify-content:center\}/.test(noPrice));
 
 const nasty = barcodeLabelHTML({ name: '<script>alert(1)</script>', barcode: CODE });
 ok('un nom mal intentionné est échappé', !nasty.includes('<script>alert(1)'));

@@ -857,7 +857,10 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
               </div>
             )}
             <div className="flex flex-wrap justify-end gap-2">
-              <button className="btn-outline" onClick={() => printBarcode(viewing)} disabled={!viewing.barcode}><Printer className="w-4 h-4" /> Imprimer code-barres</button>
+              <button className="btn-outline" onClick={() => printBarcode(viewing)} disabled={!viewing.barcode}
+                title={viewing.barcode ? "Aperçu et impression de l'étiquette 40 × 20 mm" : 'Ce produit n’a pas de code-barres'}>
+                <Printer className="w-4 h-4" /> Étiquette code-barres
+              </button>
               <button className="btn-outline" onClick={() => { const p = viewing; setViewing(null); setHistoryOf(p); }}>
                 <History className="w-4 h-4" /> Historique
               </button>

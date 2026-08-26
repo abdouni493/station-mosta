@@ -1,36 +1,39 @@
 /**
  * ─── L'ÉTIQUETTE CODE-BARRES, TAILLÉE POUR LE ROULEAU ──────────────────────────
  *
- * Ce que l'imprimante sortait, et pourquoi.
+ * Ce qui sortait de l'imprimante, et pourquoi.
  *
- * La feuille annonçait `@page { size: 40mm 20mm }` : une page PLUS LARGE QUE
- * HAUTE. Chrome traduit ça au pilote par « paysage ». Le pilote Seagull du
- * XP-350B, lui, est réglé sur « Portrait » avec un support USER 40 × 20 : il
- * reçoit une page paysage pour un support portrait et fait tourner l'image d'un
- * quart de tour. Résultat au comptoir : les 40 mm de dessin s'écrasent sur les
- * 20 mm du pas d'étiquette — le nom, les chiffres et le prix sont coupés net à
- * droite, tous au même endroit (d'où l'impression qu'ils « se chevauchent »),
- * et la moitié du rouleau reste blanche.
+ * Le rouleau de la station fait 40 mm de large sur 20 mm de haut : une vignette
+ * COUCHÉE. Mais entre la page que le navigateur décrit et le papier que le
+ * pilote croit avoir, il y a quatre façons de se tromper — droit, un quart de
+ * tour à droite, la tête en bas, un quart de tour à gauche. Le pilote Seagull
+ * du XP-350B, réglé sur un support « USER », fait tourner l'image dès que
+ * l'orientation annoncée ne correspond pas à la sienne. Résultat au comptoir :
+ * le nom, les chiffres et le prix sortent en travers de l'étiquette et coupés
+ * net sur le côté, la moitié du rouleau reste blanche.
  *
- * Aucune marge, aucun `padding` ne rattrape ça : 40 mm de contenu ne rentrent
- * pas dans 20 mm. Ce qu'il faut, c'est que la GÉOMÉTRIE DE LA PAGE corresponde
- * à ce que le pilote attend. D'où, ici :
+ * Une case à cocher « pivoter » ne couvrait que deux cas sur quatre, et une
+ * fois cochée par erreur elle restait cochée : l'étiquette sortait debout pour
+ * de bon. D'où, ici :
  *
- *   • un PIVOT 90° assumé : la vignette garde son dessin (nom en haut, barres,
- *     chiffres, prix), mais la page part en portrait — `@page{size:20mm 40mm}`
- *     — et la vignette est tournée dedans. Plus de conflit portrait/paysage,
- *     donc plus de rotation surprise du pilote ;
- *   • le format et le pivot se CHOISISSENT sur la feuille d'aperçu et se
- *     retiennent (localStorage) : réglé une fois sur le poste, juste ensuite ;
- *   • la vignette est une GRILLE à quatre rangées — nom / barres / chiffres /
- *     prix. Les trois rangées de texte prennent leur hauteur, les barres
- *     prennent tout le reste (`minmax(0,1fr)`) : aucune rangée ne peut mordre
- *     sur sa voisine, même avec un nom à rallonge ou un prix à cinq chiffres ;
+ *   • le SENS D'IMPRESSION est un vrai réglage à quatre positions — 0°, 90°,
+ *     180°, 270° — et il vaut 0° par défaut : HORIZONTALE, dans le sens de la
+ *     lecture, comme le rouleau. Quel que soit le tour que fait le pilote, une
+ *     des quatre positions le rattrape ;
+ *   • la page suit le sens choisi : `@page{size:40mm 20mm}` à plat,
+ *     `@page{size:20mm 40mm}` sur un quart de tour. Plus de contradiction entre
+ *     la page et le support, donc plus de rotation-surprise ;
+ *   • le réglage se retient par poste (`localStorage`). La clé porte un numéro
+ *     de version : l'ancien « pivoté » enregistré par la version précédente ne
+ *     ressuscite pas, seul le format du rouleau est repris ;
+ *   • la vignette est une GRILLE À TROIS RANGÉES — nom · barres · pied (code à
+ *     gauche, prix à droite). Le pied sur une seule ligne rend près de 3 mm de
+ *     hauteur aux barres sur un 40 × 20, et des barres hautes se lisent du
+ *     premier coup ;
  *   • toutes les tailles dérivent de la hauteur de l'étiquette, donc un 58 × 40
  *     n'est pas un 40 × 20 avec du vide autour ;
- *   • le nom, les chiffres et le prix se réduisent jusqu'à tenir dans leur
- *     boîte — mesuré une fois les polices chargées, et re-mesuré juste avant
- *     l'impression.
+ *   • le nom et le pied se réduisent jusqu'à tenir dans leur boîte — mesuré une
+ *     fois les polices chargées, et re-mesuré juste avant l'impression.
  *
  * Le module ne connaît ni le DOM ni React : il rend du HTML, et se teste.
  * ──────────────────────────────────────────────────────────────────────────────
@@ -62,6 +65,34 @@ export const LABEL_PRESETS: { label: string; size: LabelSize }[] = [
 ];
 
 /**
+ * Le sens dans lequel le dessin est posé sur la page, en degrés.
+ *
+ * 0° est le bon réglage quand le pilote respecte la page qu'on lui envoie —
+ * c'est le défaut, et c'est ce que le rouleau 40 × 20 demande. Les trois autres
+ * positions existent pour rattraper un pilote qui tourne l'image de son côté.
+ */
+export type LabelRotation = 0 | 90 | 180 | 270;
+
+/** Les quatre positions, telles qu'elles s'affichent dans la fenêtre d'aperçu. */
+export const LABEL_ROTATIONS: { value: LabelRotation; label: string }[] = [
+  { value: 0, label: 'Horizontale — dans le sens du rouleau' },
+  { value: 90, label: "Quart de tour à droite (elle sortait couchée vers la gauche)" },
+  { value: 180, label: 'Demi-tour — la tête en bas' },
+  { value: 270, label: "Quart de tour à gauche (elle sortait couchée vers la droite)" },
+];
+
+/**
+ * Ramène n'importe quelle valeur enregistrée à une des quatre positions.
+ * L'ancien réglage booléen (`true` = « pivoter ») devient 90° : un appelant qui
+ * passe encore un booléen obtient le sens qu'il demandait.
+ */
+export function normalizeRotation(v: unknown): LabelRotation {
+  const n = typeof v === 'boolean' ? (v ? 90 : 0) : Math.round(Number(v) || 0);
+  const m = ((n % 360) + 360) % 360;
+  return (m === 90 || m === 180 || m === 270 ? m : 0) as LabelRotation;
+}
+
+/**
  * La marge de la vignette, en PROPORTION de ses côtés — 2,5 % en largeur, 3 %
  * en hauteur. Une marge en millimètres fixes mangerait tout un 30 × 20 et se
  * perdrait sur un 100 × 50 ; en proportion, le dessin est le même partout.
@@ -71,11 +102,11 @@ export const LABEL_PRESETS: { label: string; size: LabelSize }[] = [
 export const PAD_X_RATIO = 0.025;
 export const PAD_Y_RATIO = 0.03;
 
-/** Ce qu'on retient d'un poste à l'autre : format du rouleau, pivot, copies. */
+/** Ce qu'on retient d'un poste à l'autre : format du rouleau, sens, copies. */
 export interface LabelOptions {
   size?: LabelSize;
-  /** Page tournée d'un quart de tour — voir l'en-tête du fichier. */
-  rotate?: boolean;
+  /** Sens d'impression en degrés — voir `LabelRotation`. */
+  rotate?: LabelRotation | number | boolean;
   /** Nombre de vignettes identiques à sortir d'affilée. */
   copies?: number;
 }
@@ -284,20 +315,35 @@ export function escapeHtml(s: string): string {
   ));
 }
 
-/** Où le poste retient son rouleau : format, pivot, nombre de copies. */
-export const LABEL_PREFS_KEY = 'etiquette.format.v1';
+/**
+ * Où le poste retient son rouleau : format, sens, nombre de copies.
+ *
+ * Le numéro de version compte. La v1 enregistrait un « pivoté » booléen qu'un
+ * essai malheureux laissait coché pour toujours — l'étiquette sortait debout à
+ * chaque impression, sans que rien sur l'écran de saisie ne le laisse deviner.
+ * En v2, seul le FORMAT est repris de l'ancien réglage ; le sens repart
+ * d'horizontale, celui du rouleau.
+ */
+export const LABEL_PREFS_KEY = 'etiquette.format.v2';
+/** L'ancienne clé, relue une seule fois pour ne pas reperdre le format choisi. */
+export const LABEL_PREFS_KEY_V1 = 'etiquette.format.v1';
 
 /**
  * La page d'impression complète.
  *
  * À l'écran elle montre l'étiquette AGRANDIE — une vignette de 40 × 20 mm est
  * illisible sur un moniteur — avec les trois réglages qui décident de ce qui
- * sort vraiment : le format du rouleau, le pivot, le nombre de copies. À
+ * sort vraiment : le sens, le format du rouleau, le nombre de copies. À
  * l'imprimante, seules les vignettes partent, exactement à leur taille.
  *
- * Le format et le pivot vivent dans des VARIABLES CSS et dans une règle `@page`
+ * Le format et le sens vivent dans des VARIABLES CSS et dans une règle `@page`
  * réécrite à la volée : changer de rouleau ne redemande pas la page, l'aperçu
  * suit immédiatement, et le choix est retenu pour l'étiquette suivante.
+ *
+ * La fenêtre ne déclenche PLUS l'impression toute seule. Le dialogue s'ouvrait
+ * par-dessus les réglages, donc par-dessus le seul endroit où corriger un
+ * mauvais sens : on voyait le problème sans pouvoir l'atteindre. Le bouton
+ * « Imprimer » prend le focus au chargement — une touche Entrée suffit.
  */
 export function barcodeLabelHTML(
   product: BarcodeLabelProduct,
@@ -307,7 +353,7 @@ export function barcodeLabelHTML(
     ? { size: sizeOrOptions as LabelSize }
     : (sizeOrOptions as LabelOptions);
   const size = opts.size || LABEL_40_20;
-  const rotate = !!opts.rotate;
+  const rotate = normalizeRotation(opts.rotate);
   const copies = Math.max(1, Math.min(50, Math.round(opts.copies || 1)));
 
   const code = String(product.barcode ?? '').trim();
@@ -317,17 +363,22 @@ export function barcodeLabelHTML(
   const modules = code128Widths(code)?.modules ?? 0;
   const W = size.widthMm;
   const H = size.heightMm;
-  // La page envoyée à l'imprimante : les côtés s'échangent quand on pivote.
-  const PW = rotate ? H : W;
-  const PH = rotate ? W : H;
+  // La page envoyée à l'imprimante : les côtés s'échangent sur un quart de tour.
+  const quarter = rotate === 90 || rotate === 270;
+  const PW = quarter ? H : W;
+  const PH = quarter ? W : H;
 
   const presetOptions = LABEL_PRESETS.map(p =>
     `<option value="${p.size.widthMm}x${p.size.heightMm}"`
     + `${p.size.widthMm === W && p.size.heightMm === H ? ' selected' : ''}>${p.label}</option>`
   ).join('');
+  const rotationOptions = LABEL_ROTATIONS.map(r =>
+    `<option value="${r.value}"${r.value === rotate ? ' selected' : ''}>${escapeHtml(r.label)}</option>`
+  ).join('');
 
   return `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Étiquette ${escapeHtml(code)}</title>
 <style id="page-size">@page{size:${PW}mm ${PH}mm;margin:0}</style>
 <style>
@@ -335,24 +386,24 @@ export function barcodeLabelHTML(
 
   /* ── Toute la vignette dérive de ces quatre nombres ─────────────────────────
      "--lw"/"--lh" sont le DESSIN (toujours à l'endroit), "--pw"/"--ph" la PAGE
-     envoyée à l'imprimante (côtés échangés quand on pivote). Les tailles de
-     texte et les marges sont des fractions de la hauteur : un 58 × 40 n'est pas
-     un 40 × 20 entouré de vide, c'est le même dessin en plus grand. */
+     envoyée à l'imprimante (côtés échangés sur un quart de tour). Les tailles
+     de texte et les marges sont des fractions de la hauteur : un 58 × 40 n'est
+     pas un 40 × 20 entouré de vide, c'est le même dessin en plus grand. */
   :root{
     --lw:${W}mm; --lh:${H}mm;
     --pw:${PW}mm; --ph:${PH}mm;
     --pad-x:calc(var(--lw) * ${PAD_X_RATIO});
     --pad-y:calc(var(--lh) * ${PAD_Y_RATIO});
-    --fs-name:calc(var(--lh) * 0.125);
-    --fs-code:calc(var(--lh) * 0.105);
-    --fs-price:calc(var(--lh) * 0.16);
-    --zoom:4;
+    --fs-name:calc(var(--lh) * 0.135);
+    --fs-foot:calc(var(--lh) * 0.115);
+    --zoom:2.8;
+    color-scheme:light;
   }
-  html,body{background:#f1f5f9;font-family:Arial,Helvetica,sans-serif}
+  html,body{background:#eef2f7;font-family:Arial,Helvetica,sans-serif;color:#0f172a}
 
   /* ── La page physique, et la vignette dedans ──────────────────────────────
      ".sheet" fait EXACTEMENT la taille de la page : c'est lui qui garantit
-     qu'une vignette pivotée retombe dans ses clous plutôt que de déborder. */
+     qu'une vignette tournée retombe dans ses clous plutôt que de déborder. */
   .sheet{
     position:relative;
     width:var(--pw);height:var(--ph);
@@ -370,27 +421,29 @@ export function barcodeLabelHTML(
     overflow:hidden;
     -webkit-print-color-adjust:exact;print-color-adjust:exact;
 
-    /* Quatre rangées : nom · barres · chiffres · prix. Les trois rangées de
-       texte prennent leur hauteur ("auto"), les barres prennent tout le reste
-       ("minmax(0,1fr)", qui sait descendre à zéro sans jamais pousser ses
-       voisines). Aucune rangée ne peut donc en recouvrir une autre — c'est ce
-       qui remplace l'empilement flex où un nom long grignotait le reste. */
+    /* Trois rangées : nom · barres · pied. Le nom et le pied prennent leur
+       hauteur ("auto"), les barres prennent tout le reste ("minmax(0,1fr)",
+       qui sait descendre à zéro sans jamais pousser ses voisines). Chaque
+       rangée est ASSIGNÉE explicitement : une étiquette sans nom laisse sa
+       place aux barres au lieu de décaler tout le dessin d'un cran. */
     display:grid;
-    grid-template-rows:auto minmax(0,1fr) auto auto;
+    grid-template-rows:auto minmax(0,1fr) auto;
     align-content:stretch;
   }
-  /* Le pivot : la vignette tourne d'un quart de tour dans sa page.
-     "rotate(90deg) translateY(-100%)" se lit de droite à gauche — on remonte
-     d'abord la vignette de sa propre hauteur, puis on tourne : elle retombe
-     pile sur [0, --lh] × [0, --lw], soit exactement la page pivotée. */
-  body[data-rotate="1"] .label{
-    transform-origin:0 0;
-    transform:rotate(90deg) translateY(-100%);
-  }
+
+  /* ── Le sens d'impression ─────────────────────────────────────────────────
+     La vignette tourne DANS sa page, dont les côtés ont déjà été échangés au
+     besoin. Chaque transformation se lit de droite à gauche : on déplace
+     d'abord la vignette de sa propre taille, puis on tourne — elle retombe
+     pile sur la page, coin sur coin, sans un dixième de millimètre de fuite. */
+  body[data-rotate="90"]  .label{transform-origin:0 0;transform:rotate(90deg) translateY(-100%)}
+  body[data-rotate="180"] .label{transform-origin:0 0;transform:rotate(180deg) translate(-100%,-100%)}
+  body[data-rotate="270"] .label{transform-origin:0 0;transform:rotate(-90deg) translateX(-100%)}
 
   /* Le nom : gras, deux lignes au plus, et une hauteur PLAFONNÉE. Sans ce
      plafond, un nom à rallonge prendrait sur la hauteur des barres. */
   .name{
+    grid-row:1;
     font-weight:900;font-size:var(--fs-name);line-height:1.06;
     letter-spacing:-0.02em;text-align:center;
     max-height:calc(var(--lh) * 0.28);
@@ -401,20 +454,31 @@ export function barcodeLabelHTML(
      absolu : c'est la seule façon fiable de remplir une boîte dont la hauteur
      vient de "1fr". */
   .bars{
+    grid-row:2;
     position:relative;min-height:0;
-    margin:calc(var(--lh) * 0.02) 0 calc(var(--lh) * 0.012);
+    margin:calc(var(--lh) * 0.02) 0 calc(var(--lh) * 0.015);
   }
   .bars svg{position:absolute;top:0;left:0;width:100%;height:100%;display:block}
-  .code{
-    font-family:'Courier New',Courier,monospace;font-weight:700;
-    font-size:var(--fs-code);line-height:1.1;letter-spacing:0.12em;
-    text-align:center;white-space:nowrap;overflow:hidden;
-  }
-  .price{
-    font-weight:900;font-size:var(--fs-price);line-height:1.15;
-    text-align:center;margin-top:calc(var(--lh) * 0.015);
+
+  /* Le pied, sur UNE seule ligne : le code à gauche, le prix à droite. Deux
+     rangées empilées coûtaient près de 3 mm sur un rouleau de 20 mm de haut —
+     3 mm que les barres n'avaient pas, et des barres courtes se lisent mal.
+     Les deux textes ne se replient pas ("flex:none" + "nowrap") : ils
+     débordent donc franchement quand ils sont trop larges, ce qui est
+     précisément ce que la mesure ci-dessous sait voir et corriger. */
+  .foot{
+    grid-row:3;
+    display:flex;align-items:baseline;justify-content:space-between;
+    gap:calc(var(--lw) * 0.03);
+    font-size:var(--fs-foot);line-height:1.15;
     white-space:nowrap;overflow:hidden;
   }
+  .foot.solo{justify-content:center}
+  .foot .code{
+    flex:none;font-family:'Courier New',Courier,monospace;font-weight:700;
+    letter-spacing:0.06em;
+  }
+  .foot .price{flex:none;font-weight:900;font-size:1.45em}
   .empty{
     grid-row:1 / -1;align-self:center;
     font-size:calc(var(--lh) * 0.12);font-weight:700;text-align:center;
@@ -422,11 +486,19 @@ export function barcodeLabelHTML(
 
   /* ── Écran : la vignette agrandie, et les réglages qui la commandent ────── */
   @media screen{
-    body{padding:26px 16px 40px;display:flex;flex-direction:column;align-items:center;gap:16px}
-    h1{font-size:13px;text-transform:uppercase;letter-spacing:.14em;color:#475569;text-align:center}
+    body{
+      min-height:100vh;padding:22px 16px 32px;
+      display:flex;flex-direction:column;align-items:center;gap:14px;
+    }
+    h1{font-size:12px;text-transform:uppercase;letter-spacing:.16em;color:#64748b;text-align:center}
+    #dims{font:700 15px/1.3 Arial,Helvetica,sans-serif;color:#0f172a;text-align:center;margin-top:-8px}
+
+    /* La scène fait la taille de la PAGE, au grossissement près : ce qui se
+       voit à l'écran est le rectangle qui sortira, bord pour bord. */
     .stage{
       width:calc(var(--pw) * var(--zoom));height:calc(var(--ph) * var(--zoom));
-      box-shadow:0 10px 30px rgba(15,23,42,.18);border-radius:4px;background:#fff;
+      box-shadow:0 12px 32px rgba(15,23,42,.20);border-radius:3px;background:#fff;
+      outline:1px dashed #94a3b8;outline-offset:3px;
       overflow:hidden;flex:none;
     }
     .stage .sheet{transform:scale(var(--zoom));transform-origin:top left}
@@ -434,51 +506,80 @@ export function barcodeLabelHTML(
     #sheets .sheet:not(:first-child){display:none}
 
     .panel{
-      display:flex;flex-wrap:wrap;gap:10px 14px;justify-content:center;align-items:flex-end;
-      background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px;
-      box-shadow:0 2px 8px rgba(15,23,42,.06);
+      display:flex;flex-wrap:wrap;gap:12px 16px;justify-content:center;align-items:flex-end;
+      background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px 18px;
+      box-shadow:0 2px 10px rgba(15,23,42,.06);max-width:640px;width:100%;
     }
     .panel label{
-      display:flex;flex-direction:column;gap:5px;
+      display:flex;flex-direction:column;gap:6px;
       font:700 10px/1 Arial,Helvetica,sans-serif;
       text-transform:uppercase;letter-spacing:.1em;color:#64748b;
     }
+    .panel .wide{flex:1 1 100%;min-width:0}
     .panel select,.panel input[type=number]{
-      font:700 13px/1 Arial,Helvetica,sans-serif;color:#0f172a;
-      border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;background:#fff;
+      font:700 13px/1.2 Arial,Helvetica,sans-serif;color:#0f172a;
+      border:1px solid #cbd5e1;border-radius:9px;padding:9px 10px;background:#fff;
+      max-width:100%;
     }
-    .panel input[type=number]{width:76px}
-    .toggle{
-      flex-direction:row!important;align-items:center;gap:8px!important;
-      color:#0f172a!important;font-size:11px!important;padding-bottom:9px;
-    }
-    .toggle input{width:16px;height:16px;accent-color:#001f5c}
+    .panel select:focus,.panel input:focus{outline:2px solid #001f5c;outline-offset:1px}
 
-    .meta{font-size:12px;color:#64748b;text-align:center;line-height:1.6;max-width:46ch}
-    .meta b{color:#0f172a}
+    /* Les copies au pas de un : au comptoir on ajoute une étiquette, on ne
+       tape pas un nombre. */
+    .stepper{display:flex;align-items:stretch;gap:6px}
+    .stepper button{
+      width:32px;padding:0;font-size:17px;line-height:1;border-radius:9px;
+      background:#e2e8f0;color:#0f172a;letter-spacing:0;
+    }
+    .stepper button:hover{background:#cbd5e1}
+    .stepper input[type=number]{width:64px;text-align:center;-moz-appearance:textfield}
+    .stepper input::-webkit-outer-spin-button,
+    .stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+
     .warn{
-      max-width:46ch;font-size:12px;line-height:1.5;text-align:center;font-weight:700;
+      max-width:560px;font-size:12px;line-height:1.5;text-align:center;font-weight:700;
       color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;
     }
     .warn[hidden]{display:none}
+
+    /* La liste de contrôle du dialogue d'impression. Les cinq réglages qui
+       décident si l'étiquette sort juste sont dans CE dialogue, pas dans la
+       page : autant les avoir sous les yeux au moment de le remplir. */
+    .help{
+      max-width:560px;width:100%;background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+      padding:12px 18px;font-size:12px;line-height:1.7;color:#475569;
+    }
+    .help summary{
+      cursor:pointer;font-weight:700;color:#0f172a;text-transform:uppercase;
+      font-size:10px;letter-spacing:.1em;
+    }
+    .help ol{margin:10px 0 0 18px}
+    .help b{color:#0f172a}
+
+    .actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
     button{
       font:700 12px/1 Arial,Helvetica,sans-serif;text-transform:uppercase;letter-spacing:.12em;
-      padding:12px 22px;border-radius:10px;border:0;cursor:pointer;
+      padding:14px 26px;border-radius:11px;border:0;cursor:pointer;
       background:#001f5c;color:#FFB800;
     }
     button:hover{background:#003087}
+    button.ghost{background:#e2e8f0;color:#334155}
+    button.ghost:hover{background:#cbd5e1}
   }
 
   /* ── Impression : les vignettes, et rien d'autre ───────────────────────── */
   @media print{
-    html,body{background:#fff;padding:0;margin:0}
+    html,body{background:#fff;padding:0;margin:0;display:block}
     .screen-only{display:none!important}
-    .stage{width:auto;height:auto;box-shadow:none;border-radius:0;overflow:visible}
+    .stage{
+      width:auto;height:auto;box-shadow:none;border-radius:0;
+      outline:0;overflow:visible;
+    }
     .stage .sheet{transform:none}
   }
 </style></head>
-<body data-rotate="${rotate ? '1' : '0'}">
-  <h1 class="screen-only" id="title">Étiquette ${W} × ${H} mm</h1>
+<body data-rotate="${rotate}">
+  <h1 class="screen-only">Aperçu de l'étiquette</h1>
+  <p class="screen-only" id="dims"></p>
 
   <div class="stage">
     <div id="sheets">
@@ -487,8 +588,9 @@ export function barcodeLabelHTML(
           ${svg ? `
           <div class="name" data-fit="height">${name || '&nbsp;'}</div>
           <div class="bars">${svg}</div>
-          <div class="code" data-fit="width">${escapeHtml(code)}</div>
-          ${price ? `<div class="price" data-fit="width">${price}</div>` : ''}`
+          <div class="foot${price ? '' : ' solo'}" data-fit="width">
+            <span class="code">${escapeHtml(code)}</span>${price ? `<span class="price">${price}</span>` : ''}
+          </div>`
           : `<div class="empty">Code-barres illisible</div>`}
         </div>
       </div>
@@ -496,47 +598,79 @@ export function barcodeLabelHTML(
   </div>
 
   <div class="panel screen-only">
+    <label class="wide">Sens d'impression
+      <select id="rot">${rotationOptions}</select>
+    </label>
     <label>Format du rouleau
       <select id="fmt">${presetOptions}</select>
     </label>
-    <label class="toggle" title="À cocher si l'étiquette sort tournée d'un quart de tour, ou coupée sur le côté">
-      <input type="checkbox" id="rot"${rotate ? ' checked' : ''}> Pivoter 90°
-    </label>
     <label>Copies
-      <input type="number" id="cop" min="1" max="50" step="1" value="${copies}">
+      <span class="stepper">
+        <button type="button" class="ghost" id="less" title="Une de moins">&minus;</button>
+        <input type="number" id="cop" min="1" max="50" step="1" value="${copies}">
+        <button type="button" class="ghost" id="more" title="Une de plus">+</button>
+      </span>
     </label>
   </div>
 
   <p class="warn screen-only" id="warn" hidden></p>
-  <p class="meta screen-only" id="meta"></p>
-  <button class="screen-only" onclick="window.print()">Imprimer l'étiquette</button>
+
+  <details class="help screen-only" open>
+    <summary>Réglages du dialogue d'impression</summary>
+    <ol>
+      <li><b>Destination</b> : votre étiqueteuse (XPrinter…), pas une imprimante A4.</li>
+      <li><b>Taille du papier</b> : le format « USER » du pilote, réglé sur <b id="paper"></b>.</li>
+      <li><b>Marges</b> : <b>Aucune</b>.</li>
+      <li><b>Échelle</b> : <b>100&nbsp;%</b> — surtout pas « Ajuster à la largeur de la page ».</li>
+      <li><b>Décochez</b> « Imprimer les en-têtes et pieds de page ».</li>
+    </ol>
+  </details>
+
+  <div class="actions screen-only">
+    <button type="button" id="print">Imprimer</button>
+    <button type="button" class="ghost" id="close">Fermer</button>
+  </div>
 
   <script>
   (function () {
     var PREFS = ${JSON.stringify(LABEL_PREFS_KEY)};
+    var PREFS_V1 = ${JSON.stringify(LABEL_PREFS_KEY_V1)};
     var MODULES = ${modules};
     var PAD_X = ${PAD_X_RATIO};
     var MIN_MODULE = ${MIN_MODULE_MM};
 
     var root = document.documentElement;
-    var pageStyle = document.getElementById('page-size');
-    var sheets = document.getElementById('sheets');
-    var fmt = document.getElementById('fmt');
-    var rot = document.getElementById('rot');
-    var cop = document.getElementById('cop');
+    var pageStyle = document.getElementById("page-size");
+    var sheets = document.getElementById("sheets");
+    var fmt = document.getElementById("fmt");
+    var rot = document.getElementById("rot");
+    var cop = document.getElementById("cop");
 
     var state = { w: ${W}, h: ${H}, rotate: ${rotate}, copies: ${copies} };
+
+    function clean(deg) {
+      var n = Math.round(Number(deg) || 0), m = ((n % 360) + 360) % 360;
+      return (m === 90 || m === 180 || m === 270) ? m : 0;
+    }
 
     // ── Le réglage retenu sur le poste ─────────────────────────────────────
     // Le format d'un rouleau ne change pas d'une étiquette à l'autre : réglé
     // une fois, il vaut pour toutes les suivantes.
+    //
+    // De l'ancien réglage (v1) on ne reprend QUE le format. Son "pivoté"
+    // booléen, coché un jour pour essayer, faisait sortir toutes les étiquettes
+    // debout jusqu'à ce que quelqu'un pense à le décocher : le sens repart
+    // d'horizontale, celui du rouleau.
     try {
-      var saved = JSON.parse(localStorage.getItem(PREFS) || 'null');
+      var saved = JSON.parse(localStorage.getItem(PREFS) || "null");
       if (saved && saved.w > 0 && saved.h > 0) {
         state.w = saved.w;
         state.h = saved.h;
-        state.rotate = !!saved.rotate;
+        state.rotate = clean(saved.rotate);
         state.copies = Math.max(1, Math.min(50, saved.copies || 1));
+      } else {
+        var old = JSON.parse(localStorage.getItem(PREFS_V1) || "null");
+        if (old && old.w > 0 && old.h > 0) { state.w = old.w; state.h = old.h; }
       }
     } catch (e) { /* navigation privée, stockage bloqué : on garde le défaut */ }
 
@@ -555,17 +689,17 @@ export function barcodeLabelHTML(
     // On relâche la bride le temps de la mesure, puis on la remet.
     //
     // Et on vise DEUX LIGNES À LA TAILLE COURANTE, pas le "max-height" du CSS :
-    // celui-ci vaut deux lignes à la taille de départ, donc presque trois une
+    // celui-ci vaut deux lignes à la taille de DÉPART, donc presque trois une
     // fois le texte réduit — le nom aurait passé la mesure pour se faire
     // couper juste après par la bride.
     var LINES = 2;
     function fit(el) {
       if (!el) return;
-      el.style.fontSize = '';
+      el.style.fontSize = "";
       var base = parseFloat(getComputedStyle(el).fontSize);
       if (!(base > 0)) return;
-      var byWidth = el.getAttribute('data-fit') === 'width';
-      if (!byWidth) el.style.webkitLineClamp = 'unset';
+      var byWidth = el.getAttribute("data-fit") === "width";
+      if (!byWidth) el.style.webkitLineClamp = "unset";
 
       var over = function () {
         if (byWidth) return el.scrollWidth > el.clientWidth + 1;
@@ -578,51 +712,53 @@ export function barcodeLabelHTML(
       var size = base, floor = base * 0.62, step = base * 0.04, guard = 0;
       while (over() && size > floor && guard++ < 40) {
         size -= step;
-        el.style.fontSize = size + 'px';
+        el.style.fontSize = size + "px";
       }
-      if (!byWidth) el.style.webkitLineClamp = '';
+      if (!byWidth) el.style.webkitLineClamp = "";
     }
     function fitAll() {
-      var nodes = sheets.querySelectorAll('[data-fit]');
+      var nodes = sheets.querySelectorAll("[data-fit]");
       for (var i = 0; i < nodes.length; i++) fit(nodes[i]);
     }
 
     // ── Appliquer l'état : page, variables CSS, copies, avertissement ──────
     function apply() {
-      var pw = state.rotate ? state.h : state.w;
-      var ph = state.rotate ? state.w : state.h;
+      var quarter = state.rotate === 90 || state.rotate === 270;
+      var pw = quarter ? state.h : state.w;
+      var ph = quarter ? state.w : state.h;
 
       // Une règle @page ne lit pas les variables CSS : on la réécrit.
-      pageStyle.textContent = '@page{size:' + pw + 'mm ' + ph + 'mm;margin:0}';
-      root.style.setProperty('--lw', state.w + 'mm');
-      root.style.setProperty('--lh', state.h + 'mm');
-      root.style.setProperty('--pw', pw + 'mm');
-      root.style.setProperty('--ph', ph + 'mm');
-      // L'aperçu tient dans ~340 px de large, quel que soit le rouleau.
-      root.style.setProperty('--zoom', Math.max(1.5, Math.min(6, Math.round(900 / pw) / 10)));
-      document.body.setAttribute('data-rotate', state.rotate ? '1' : '0');
+      pageStyle.textContent = "@page{size:" + pw + "mm " + ph + "mm;margin:0}";
+      root.style.setProperty("--lw", state.w + "mm");
+      root.style.setProperty("--lh", state.h + "mm");
+      root.style.setProperty("--pw", pw + "mm");
+      root.style.setProperty("--ph", ph + "mm");
+      // L'aperçu vise ~112 mm de large et ~150 mm de haut à l'écran : assez
+      // grand pour relire un prix, assez petit pour tenir dans la fenêtre quel
+      // que soit le rouleau — y compris un 20 × 40 debout.
+      var zoom = Math.min(112 / pw, 150 / ph);
+      root.style.setProperty("--zoom", Math.max(1.2, Math.min(6, Math.round(zoom * 100) / 100)));
+      document.body.setAttribute("data-rotate", String(state.rotate));
 
       // Autant de pages que de copies, toutes identiques à la première.
       var first = sheets.firstElementChild;
       while (sheets.children.length > state.copies) sheets.removeChild(sheets.lastElementChild);
       while (sheets.children.length < state.copies) sheets.appendChild(first.cloneNode(true));
 
-      document.getElementById('title').textContent =
-        'Étiquette ' + state.w + ' × ' + state.h + ' mm' + (state.rotate ? ' — pivotée' : '');
-      document.getElementById('meta').innerHTML =
-        'Réglez l\\'imprimante sur <b>' + pw + ' × ' + ph + ' mm</b>, marges à <b>zéro</b>, '
-        + 'échelle <b>100 %</b> (surtout pas « ajuster à la page »).<br>'
-        + 'Si l\\'étiquette sort tournée d\\'un quart de tour, ou coupée sur le côté, '
-        + 'cochez <b>Pivoter 90°</b>.';
+      var turned = state.rotate ? " \\u00B7 " + state.rotate + "\\u00B0" : "";
+      var many = state.copies > 1 ? " \\u00B7 " + state.copies + " copies" : "";
+      document.getElementById("dims").textContent =
+        state.w + " \\u00D7 " + state.h + " mm" + turned + many;
+      document.getElementById("paper").textContent = pw + " \\u00D7 " + ph + " mm";
 
       // Les barres sont-elles encore lisibles à cette largeur ?
-      var warn = document.getElementById('warn');
+      var warn = document.getElementById("warn");
       var mm = MODULES ? (state.w - state.w * PAD_X * 2) / MODULES : 0;
       if (mm > 0 && mm < MIN_MODULE) {
         warn.hidden = false;
-        warn.textContent = 'Code très long : les barres ne font que ' + mm.toFixed(2)
-          + ' mm de large sur ' + state.w + ' mm. Certaines douchettes peineront — '
-          + 'un rouleau plus large, ou un code plus court, se lit mieux.';
+        warn.textContent = "Code très long : les barres ne font que " + mm.toFixed(2)
+          + " mm de large sur " + state.w + " mm. Certaines douchettes peineront \\u2014 "
+          + "un rouleau plus large, ou un code plus court, se lit mieux.";
       } else {
         warn.hidden = true;
       }
@@ -631,33 +767,41 @@ export function barcodeLabelHTML(
     }
 
     // ── Les commandes ─────────────────────────────────────────────────────
-    fmt.addEventListener('change', function () {
-      var d = fmt.value.split('x');
+    fmt.addEventListener("change", function () {
+      var d = fmt.value.split("x");
       state.w = parseFloat(d[0]);
       state.h = parseFloat(d[1]);
       save(); apply();
     });
-    rot.addEventListener('change', function () {
-      state.rotate = rot.checked; save(); apply();
+    rot.addEventListener("change", function () {
+      state.rotate = clean(rot.value); save(); apply();
     });
-    cop.addEventListener('change', function () {
-      state.copies = Math.max(1, Math.min(50, parseInt(cop.value, 10) || 1));
-      cop.value = state.copies; save(); apply();
-    });
+    function setCopies(n) {
+      state.copies = Math.max(1, Math.min(50, n || 1));
+      cop.value = state.copies;
+      save(); apply();
+    }
+    cop.addEventListener("change", function () { setCopies(parseInt(cop.value, 10)); });
+    document.getElementById("less").addEventListener("click", function () { setCopies(state.copies - 1); });
+    document.getElementById("more").addEventListener("click", function () { setCopies(state.copies + 1); });
+
+    var printBtn = document.getElementById("print");
+    printBtn.addEventListener("click", function () { fitAll(); window.print(); });
+    document.getElementById("close").addEventListener("click", function () { window.close(); });
 
     // Un rouleau hors liste (format retenu d'une autre session) : on l'ajoute
     // au menu plutôt que de le perdre au premier affichage.
     function syncControls() {
-      var want = state.w + 'x' + state.h;
+      var want = state.w + "x" + state.h;
       fmt.value = want;
       if (fmt.value !== want) {
-        var o = document.createElement('option');
+        var o = document.createElement("option");
         o.value = want;
-        o.textContent = state.w + ' × ' + state.h + ' mm';
+        o.textContent = state.w + " \\u00D7 " + state.h + " mm";
         fmt.appendChild(o);
         fmt.value = want;
       }
-      rot.checked = state.rotate;
+      rot.value = String(state.rotate);
       cop.value = state.copies;
     }
 
@@ -668,12 +812,15 @@ export function barcodeLabelHTML(
     // fois qu'elles sont là, puis encore juste avant l'impression — sinon un
     // nom mesuré en police de secours déborde sur le papier.
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitAll);
-    window.addEventListener('beforeprint', fitAll);
+    window.addEventListener("beforeprint", fitAll);
 
-    window.addEventListener('load', function () {
+    // Le dialogue ne s'ouvre plus tout seul : il se posait par-dessus les
+    // réglages, donc par-dessus le seul endroit où corriger un mauvais sens.
+    // Le bouton prend le focus — une touche Entrée et l'étiquette part.
+    window.addEventListener("load", function () {
       fitAll();
       window.focus();
-      window.print();
+      printBtn.focus();
     });
   })();
   </script>
