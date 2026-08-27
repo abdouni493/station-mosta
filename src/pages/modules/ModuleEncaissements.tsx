@@ -1,5 +1,5 @@
 /**
- * ─── Demandes d'encaissement (Lavage & Réparation) ──────────────────────────────
+ * ─── Demandes d'encaissement (Lavage & Vidange) ──────────────────────────────
  * Un laveur qui n'encaisse pas lui-même envoie ici, à l'administrateur ou à
  * l'employé de caisse, le montant qu'un client doit payer, avec le nom du client
  * et les informations de son véhicule. La caisse voit la liste des demandes en

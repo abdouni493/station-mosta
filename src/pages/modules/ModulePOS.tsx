@@ -1,6 +1,6 @@
 /**
  * ─── Point de vente ─────────────────────────────────────────────────────────────
- * Caisse of the Cafétéria and of the Lavage & Réparation part (which absorbed the
+ * Caisse of the Cafétéria and of the Lavage & Vidange part (which absorbed the
  * former Magasin point-de-vente).
  *
  *  • Session de travail obligatoire — rien ne peut être vendu avant qu'un employé
@@ -141,7 +141,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const { mySession, otherOpen } = useBizSessions(moduleKey);
 
   /**
-   * Pièces détachées : seule la partie Lavage & Réparation en vend, et donc
+   * Pièces détachées : seule la partie Lavage & Vidange en vend, et donc
    * seule elle cherche par référence ou par véhicule.
    */
   const isLavage = moduleKey === 'lavage';

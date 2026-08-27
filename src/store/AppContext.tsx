@@ -636,7 +636,7 @@ export const CASH_ACCOUNT_LABEL: Record<string, string> = {
   [CAISSE_ID]: 'Caisse générale',
   [CAISSE_PART_ID.carburant]: 'Caisse Carburant',
   [CAISSE_PART_ID.cafeteria]: 'Caisse Cafétéria',
-  [CAISSE_PART_ID.lavage]: 'Caisse Lavage & Réparation',
+  [CAISSE_PART_ID.lavage]: 'Caisse Lavage & Vidange',
 };
 
 /** `true` when the id designates a cash box rather than a bank account. */

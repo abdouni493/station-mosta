@@ -1,7 +1,7 @@
 /**
  * ─── Business Modules Configuration & Types ────────────────────────────────────
  * Self-contained data model for the commerce/production parts of the sidebar:
- * Cafétéria and Lavage & Réparation (the Magasin point-de-vente & ventes screens
+ * Cafétéria and Lavage & Vidange (the Magasin point-de-vente & ventes screens
  * were folded into the Lavage part; the Restaurant part was removed).
  *
  * These modules live on a dedicated store (`BizContext`, persisted as one JSON
@@ -86,7 +86,7 @@ export interface BizProduct {
   imageUrl?: string;
   /**
    * Matière première : le produit sert à FABRIQUER (production, fiches
-   * techniques, réparations) et ne se vend jamais tel quel. Il reste dans la
+   * techniques, vidanges) et ne se vend jamais tel quel. Il reste dans la
    * Gestion de stock et dans les Achats, mais n'apparaît PAS au point de vente.
    */
   isRawMaterial?: boolean;
@@ -454,7 +454,7 @@ export interface BizContact {
    */
   advancePayments?: BizDocPayment[];
   /**
-   * ─── LE PARC DU CLIENT (Lavage & Réparation) ───────────────────────────────
+   * ─── LE PARC DU CLIENT (Lavage & Vidange) ───────────────────────────────
    * Un client de lavage revient avec SES voitures — souvent plusieurs (la
    * sienne, celle de son épouse, l'utilitaire de la société). Les saisir à
    * chaque passage faisait perdre l'historique du véhicule et obligeait à
@@ -475,7 +475,7 @@ export interface BizWorkerPayment {
   date: string;
   description?: string;
   mode?: string;
-  /** Percentage payroll: the works (réparations/lavages) settled by this payment. */
+  /** Percentage payroll: the works (vidanges/lavages) settled by this payment. */
   workIds?: string[];
   /** Sum of the settled works and the rate applied, for the payslip. */
   worksTotal?: number;
@@ -503,16 +503,16 @@ export interface BizWorkerPayment {
 }
 
 /**
- * Speciality of an employee of the Lavage & Réparation part. It decides which
+ * Speciality of an employee of the Lavage & Vidange part. It decides which
  * employees are proposed on a « lavage » prestation and which on a
- * « réparation » one — `both` shows up on either.
+ * « vidange » one — `both` shows up on either.
  */
 export type BizWorkerKind = 'lavage' | 'reparation' | 'both';
 
 export const WORKER_KIND_META: Record<BizWorkerKind, { label: string; short: string }> = {
   lavage: { label: 'Employé lavage', short: 'Lavage' },
-  reparation: { label: 'Employé réparation', short: 'Réparation' },
-  both: { label: 'Lavage & réparation', short: 'Polyvalent' },
+  reparation: { label: 'Employé vidange', short: 'Vidange' },
+  both: { label: 'Lavage & vidange', short: 'Polyvalent' },
 };
 
 export interface BizWorker {
@@ -524,7 +524,7 @@ export interface BizWorker {
   cin?: string;
   phone?: string;
   roleName: string;
-  /** Lavage part only: is this a lavage worker, a réparation worker, or both? */
+  /** Lavage part only: is this a lavage worker, a vidange worker, or both? */
   workerKind?: BizWorkerKind;
   paid: boolean;                 // reçoit un salaire ?
   /** `pourcentage` pays a share of every intervention the worker performed. */
@@ -803,7 +803,7 @@ export interface BizCar {
    *
    * Absent (`undefined`) ⇒ le véhicule suit le délai de la partie
    * (`rappelConfig`). `0` ⇒ ce véhicule ne reçoit PAS de rappel de cette nature.
-   * Le lavage et la réparation se règlent séparément, comme au niveau de la
+   * Le lavage et la vidange se règlent séparément, comme au niveau de la
    * partie.
    */
   rappelLavageDays?: number;
@@ -848,7 +848,7 @@ export type BizDiscountType = 'percent' | 'amount';
 export interface BizReparation {
   id: string;
   ref: string;
-  /** `mixte` when the intervention holds both lavage and réparation prestations. */
+  /** `mixte` when the intervention holds both lavage and vidange prestations. */
   kind: BizRepKind;
   clientId?: string;
   /** "Client de passage" when no client record was picked. */
@@ -859,7 +859,7 @@ export interface BizReparation {
    * so every older screen and report keeps working unchanged.
    */
   serviceTotal: number;
-  /** Detail of the labour: one line per lavage / réparation performed. */
+  /** Detail of the labour: one line per lavage / vidange performed. */
   prestations?: BizPrestation[];
   usedProducts: BizLineItem[];
   problem?: string;
@@ -904,7 +904,7 @@ export function prestationsOf(r: BizReparation): BizPrestation[] {
   return [{
     id: `${r.id}-legacy`,
     kind: r.kind === 'mixte' ? 'reparation' : r.kind,
-    label: r.problem || (r.kind === 'lavage' ? 'Lavage' : 'Réparation'),
+    label: r.problem || (r.kind === 'lavage' ? 'Lavage' : 'Vidange'),
     amount: r.serviceTotal,
     workerIds: r.workers || [],
   }];
@@ -953,7 +953,7 @@ export const MESSAGE_TOKENS: { token: string; label: string }[] = [
   { token: '{immatriculation}', label: "Plaque d'immatriculation" },
   { token: '{kilometrage}',  label: 'Dernier kilométrage relevé' },
   { token: '{derniere_visite}', label: 'Date du dernier passage' },
-  { token: '{prestation}',   label: 'Nature du dernier passage (lavage / réparation)' },
+  { token: '{prestation}',   label: 'Nature du dernier passage (lavage / vidange)' },
   { token: '{station}',      label: 'Nom de la station' },
   { token: '{telephone}',    label: 'Téléphone de la station' },
 ];
@@ -988,11 +988,11 @@ export interface BizRappel {
   messageId?: string;
 }
 
-/** Délais de rappel d'une partie — le lavage et la réparation sont indépendants. */
+/** Délais de rappel d'une partie — le lavage et la vidange sont indépendants. */
 export interface BizRappelConfig {
   /** Rappeler un LAVAGE après ce nombre de jours. 0 ⇒ pas de rappel de lavage. */
   lavageDays: number;
-  /** Rappeler une RÉPARATION après ce nombre de jours. 0 ⇒ aucun rappel. */
+  /** Rappeler une VIDANGE après ce nombre de jours. 0 ⇒ aucun rappel. */
   reparationDays: number;
   /** Coupe tous les rappels sans perdre les délais réglés. */
   enabled: boolean;
@@ -1184,7 +1184,7 @@ export interface ModuleState {
    */
   avgCostEnabled?: boolean;
   /**
-   * Délais de rappel de la partie (lavage et réparation, séparément). Absent ⇒
+   * Délais de rappel de la partie (lavage et vidange, séparément). Absent ⇒
    * `DEFAULT_RAPPEL_CONFIG`. C'est un réglage SCALAIRE : il n'a pas d'id, donc
    * il se départage sur son propre horodatage (`rappelConfigUpd` dans
    * `bizSync.ts`), sinon la copie du serveur l'écrase au prochain démarrage.
@@ -1214,7 +1214,7 @@ export interface ModuleConfig {
   productWord: string;    // "Plat", "Produit"…
   hasProduction: boolean; // production + comptoir + fiches
   hasComptoir: boolean;
-  isService: boolean;     // lavage & réparation flow
+  isService: boolean;     // lavage & vidange flow
 }
 
 export const MODULES: Record<ModuleKey, ModuleConfig> = {
@@ -1231,7 +1231,7 @@ export const MODULES: Record<ModuleKey, ModuleConfig> = {
   },
   lavage: {
     key: 'lavage',
-    label: 'Lavage & Réparation',
+    label: 'Lavage & Vidange',
     short: 'Lavage',
     emoji: '🧽',
     base: '/lavage',
@@ -1251,7 +1251,7 @@ export const MODULE_INTERFACES: { id: string; label: string }[] = [
   { id: 'comptoir', label: 'Comptoir' },
   { id: 'pos', label: 'Point de vente' },
   { id: 'sales', label: 'Ventes' },
-  { id: 'reparations', label: 'Réparations & Lavage' },
+  { id: 'reparations', label: 'Vidanges & Lavage' },
   { id: 'encaissements', label: 'Demandes d\'encaissement' },
   { id: 'clients', label: 'Clients' },
   { id: 'messages', label: 'Messages clients' },
@@ -1268,7 +1268,7 @@ export const INTERFACE_ACTIONS = ['voir', 'creer', 'modifier', 'supprimer'] as c
 /**
  * Interfaces that actually exist for one part — the permissions editor and the
  * employee sidebar must never offer a screen the part does not have (Lavage has
- * no "Production", Cafétéria has no "Réparations").
+ * no "Production", Cafétéria has no "Vidanges").
  *
  * The Lavage part also carries the point-de-vente and ventes screens that used
  * to live in the (now removed) Magasin part, and the « Messages clients » screen

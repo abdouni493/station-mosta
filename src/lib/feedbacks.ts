@@ -66,7 +66,7 @@ export const FEEDBACK_PARTS: {
 }[] = [
   { id: 'fuel',      label: 'Carburant',            short: 'Carburant', emoji: '⛽', hint: 'Pompes, service à la piste, prix, propreté' },
   { id: 'cafeteria', label: 'Cafétéria',            short: 'Cafétéria', emoji: '☕', hint: 'Boissons, restauration, accueil au comptoir' },
-  { id: 'lavage',    label: 'Lavage & Réparation',  short: 'Lavage',    emoji: '🧽', hint: 'Lavage du véhicule, réparation, mécanique' },
+  { id: 'lavage',    label: 'Lavage & Vidange',  short: 'Lavage',    emoji: '🧽', hint: 'Lavage du véhicule, vidange, mécanique' },
 ];
 
 export const FEEDBACK_PART_META: Record<FeedbackPart, { label: string; short: string; emoji: string }> =

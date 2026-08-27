@@ -47,12 +47,12 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const currentMonth = new Date().toISOString().slice(0, 7);
 
-  // The speciality only exists on the Lavage & Réparation part.
+  // The speciality only exists on the Lavage & Vidange part.
   const hasKinds = cfg.isService;
   const filtered = workers.filter(w => {
     const matchQ = matchesSearch(search, w.name, w.roleName, w.phone, w.cin);
     const kind = w.workerKind || 'both';
-    // A polyvalent employee belongs to both the "lavage" and the "réparation" filters.
+    // A polyvalent employee belongs to both the "lavage" and the "vidange" filters.
     const matchKind = !hasKinds || kindFilter === 'all' || kind === kindFilter || kind === 'both';
     return matchQ && matchKind;
   });
@@ -307,7 +307,7 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
   const biz = useBiz(moduleKey);
   const { roles } = biz.state;
   const isEdit = !!initial;
-  // Only the Lavage & Réparation part splits its staff by speciality.
+  // Only the Lavage & Vidange part splits its staff by speciality.
   const hasKinds = MODULES[moduleKey].isService;
   const [f, setF] = useState<Partial<BizWorker>>(initial || {
     name: '', birthday: '', cin: '', phone: '', roleName: '', paid: true, salaryType: 'mois', salaryAmount: 0, percentage: 0,
@@ -435,7 +435,7 @@ function WorkerForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; ini
                     </p>
                     <p className="text-[10px] text-slate-400 mt-0.5">
                       {k === 'lavage' ? 'Uniquement les lavages'
-                        : k === 'reparation' ? 'Uniquement les réparations'
+                        : k === 'reparation' ? 'Uniquement les vidanges'
                           : 'Proposé sur les deux'}
                     </p>
                   </button>
@@ -960,8 +960,8 @@ function PaymentModal({ moduleKey, worker, onClose }: { moduleKey: ModuleKey; wo
       id: r.id,
       label: `${r.ref} — ${r.clientName}`,
       sublabel: mine.length
-        ? mine.map(p => `${p.kind === 'lavage' ? 'Lavage' : 'Réparation'} : ${p.label}`).join(' · ')
-        : (r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'),
+        ? mine.map(p => `${p.kind === 'lavage' ? 'Lavage' : 'Vidange'} : ${p.label}`).join(' · ')
+        : (r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Vidange' : 'Lavage + Vidange'),
       date: r.date,
       base: baseFor(r, worker.id),
       share: workerShareOf(r, worker.id, rate),

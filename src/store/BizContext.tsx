@@ -1,6 +1,6 @@
 /**
  * ─── Business Modules Store ────────────────────────────────────────────────────
- * Store des parties commerciales (Cafétéria, Lavage & Réparation), tenu à part
+ * Store des parties commerciales (Cafétéria, Lavage & Vidange), tenu à part
  * des tables carburant de `AppContext`.
  *
  *   const biz = useBiz('cafeteria');
@@ -156,7 +156,7 @@ function reducer(state: BizState, action: Action): BizState {
       if ('posPinned' in patch) patch.posPinnedUpd = nowIso();
       // Idem pour l'option « coût moyen pondéré » de la partie.
       if ('avgCostEnabled' in patch) patch.avgCostEnabledUpd = nowIso();
-      // Idem pour les délais de rappel des clients (lavage / réparation).
+      // Idem pour les délais de rappel des clients (lavage / vidange).
       if ('rappelConfig' in patch) patch.rappelConfigUpd = nowIso();
       return { ...state, [action.module]: { ...mod, ...patch } };
     }
@@ -271,7 +271,7 @@ function migrate(raw: any): BizState | null {
           ? [{
             id: `${r.id}-p1`,
             kind: kind === 'mixte' ? 'reparation' : kind,
-            label: r.problem || (kind === 'lavage' ? 'Lavage' : 'Réparation'),
+            label: r.problem || (kind === 'lavage' ? 'Lavage' : 'Vidange'),
             amount: serviceTotal,
             workerIds: Array.isArray(r.workers) ? r.workers : [],
           }]

@@ -266,7 +266,7 @@ export function moduleCaisseMovements(
     }))),
     ...(st.reparations || []).flatMap(r => docPaymentSlices(r, num(r.paid)).map(l => ({
       id: `rep-${l.id}`, date: l.date, nature: 'Vente',
-      label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
+      label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Vidange' : 'Lavage + Vidange'} ${r.ref} — ${r.clientName}`,
       amount: l.amount,
     }))),
     // Un règlement encaissé sur la DETTE INITIALE d'un client est de l'argent
@@ -525,13 +525,13 @@ export function computeModuleReport(
     })),
     ...repsInRange.map(r => ({
       id: r.id, ref: r.ref,
-      kind: r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation',
+      kind: r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Vidange' : 'Lavage + Vidange',
       date: r.date, client: r.clientName,
       total: r.total, paid: r.paid, rest: r.rest,
       items: [
         // One line per prestation performed, then the products, then the remise.
         ...prestationsOf(r).map(p => ({
-          name: `${p.kind === 'lavage' ? 'Lavage' : 'Réparation'} — ${p.label}`,
+          name: `${p.kind === 'lavage' ? 'Lavage' : 'Vidange'} — ${p.label}`,
           qty: 1, unitPrice: p.amount, total: p.amount,
         })),
         ...(r.usedProducts || []).map(it => ({ name: it.productName, qty: it.qty, unitPrice: it.unitPrice, total: it.total ?? it.qty * it.unitPrice })),
@@ -559,9 +559,9 @@ export function computeModuleReport(
     bp[k].cost += costOfItem(it);
   }));
   // Prestations are pure margin (no goods behind them) and are split by nature so
-  // the report says how much lavage and how much réparation was sold.
+  // the report says how much lavage and how much vidange was sold.
   repsInRange.forEach(r => prestationsOf(r).forEach(p => {
-    const k = p.kind === 'lavage' ? 'Prestations — Lavage' : 'Prestations — Réparation';
+    const k = p.kind === 'lavage' ? 'Prestations — Lavage' : 'Prestations — Vidange';
     (bp[k] ||= { qty: 0, revenue: 0, cost: 0, unit: 'prestation' });
     bp[k].qty += 1;
     bp[k].revenue += Number(p.amount) || 0;

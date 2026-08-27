@@ -1,11 +1,11 @@
 /**
- * ─── Réparations & Lavage ───────────────────────────────────────────────────────
- * Interventions of the Lavage & Réparation part.
+ * ─── Vidanges & Lavage ───────────────────────────────────────────────────────
+ * Interventions of the Lavage & Vidange part.
  *
  *  • Le client est optionnel — sans client, l'intervention est au nom d'un
  *    « Client de passage ».
  *  • Une intervention porte AUTANT DE PRESTATIONS que nécessaire : un lavage et
- *    une réparation peuvent être créés en une seule fois. Chaque prestation a sa
+ *    une vidange peuvent être créés en une seule fois. Chaque prestation a sa
  *    désignation, son montant et ses employés (base de la paie au pourcentage).
  *  • Une remise peut être appliquée en pourcentage ou en montant fixe ; elle est
  *    déduite du sous-total (prestations + produits).
@@ -38,9 +38,9 @@ import { ContactModal, PayDebtModal, PayDebtMeta, withPayment, seedPayments, pri
 import { ClientCarPicker } from './ClientCarPicker';
 
 const KIND_META: Record<BizRepKind, { label: string; icon: React.ElementType }> = {
-  reparation: { label: 'Réparation', icon: Wrench },
+  reparation: { label: 'Vidange', icon: Wrench },
   lavage: { label: 'Lavage', icon: Droplets },
-  mixte: { label: 'Lavage + Réparation', icon: Layers },
+  mixte: { label: 'Lavage + Vidange', icon: Layers },
 };
 
 /** Kind of the whole intervention, derived from what it actually contains. */
@@ -170,7 +170,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader icon={Car} title="Réparations & Lavage" subtitle={`${cfg.label} — atelier & interventions`}
+      <PageHeader icon={Car} title="Vidanges & Lavage" subtitle={`${cfg.label} — atelier & interventions`}
         actions={perm.creer ? <NewInterventionActions onPick={setCreating} /> : undefined} />
 
       {/* Alerte — des interventions attendent d'être finalisées. */}
@@ -186,7 +186,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
               {stats.pending} intervention{stats.pending > 1 ? 's' : ''} en attente
             </span>
             <span className="block text-[12px] text-amber-50">
-              Lavages / réparations à finaliser — cliquez pour n'afficher que celles-ci.
+              Lavages / vidanges à finaliser — cliquez pour n'afficher que celles-ci.
             </span>
           </span>
           <span className="ml-auto text-xs font-black text-white bg-white/20 rounded-lg px-3 py-1.5 shrink-0">
@@ -225,7 +225,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
       </div>
 
       {filtered.length === 0 ? (
-        <EmptyState icon={Car} title="Aucune intervention" message="Créez un lavage ou une réparation, ou enregistrez-la en attente." />
+        <EmptyState icon={Car} title="Aucune intervention" message="Créez un lavage ou une vidange, ou enregistrez-la en attente." />
       ) : (
         <CardGrid>
           {filtered.map(r => {
@@ -333,7 +333,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 /**
  * The four ways to open the intervention form, grouped so the choice reads at a
  * glance instead of four look-alike buttons wrapping onto two lines:
- *   • un segment « Nouvelle intervention » — Lavage / Réparation / les deux
+ *   • un segment « Nouvelle intervention » — Lavage / Vidange / les deux
  *   • un bouton distinct « En attente » — le véhicule est pris en charge et
  *     l'intervention sera finalisée plus tard.
  */
@@ -342,8 +342,8 @@ function NewInterventionActions({
 }: { onPick: (v: { kind: BizRepKind; pending: boolean }) => void }) {
   const TYPES: { kind: BizRepKind; label: string; short: string; icon: React.ElementType; cls: string }[] = [
     { kind: 'lavage', label: 'Lavage', short: 'Lavage', icon: Droplets, cls: 'text-cyan-700 hover:bg-cyan-600 hover:text-white' },
-    { kind: 'reparation', label: 'Réparation', short: 'Répar.', icon: Wrench, cls: 'text-violet-700 hover:bg-violet-700 hover:text-white' },
-    { kind: 'mixte', label: 'Lavage + Réparation', short: 'Les deux', icon: Layers, cls: 'bg-[#003087] text-white hover:bg-[#001f5c]' },
+    { kind: 'reparation', label: 'Vidange', short: 'Vidange', icon: Wrench, cls: 'text-violet-700 hover:bg-violet-700 hover:text-white' },
+    { kind: 'mixte', label: 'Lavage + Vidange', short: 'Les deux', icon: Layers, cls: 'bg-[#003087] text-white hover:bg-[#001f5c]' },
   ];
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -466,7 +466,7 @@ const keptLine = (l: LineDraft) =>
  * The same form serves creation, edition and finalisation of a pending job, so
  * the three flows can never drift apart.
  *
- * An intervention holds a LIST of prestations: un lavage et une réparation
+ * An intervention holds a LIST of prestations: un lavage et une vidange
  * peuvent être facturés en une seule création, chacun avec sa désignation, son
  * montant et ses employés. Une remise (pourcentage ou montant fixe) est ensuite
  * déduite du sous-total.
@@ -741,7 +741,7 @@ function ReparationForm({
                   <Layers className="w-3.5 h-3.5" /> Prestations
                 </h4>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Ajoutez un lavage et/ou une réparation — chacun avec son montant et ses employés.
+                  Ajoutez un lavage et/ou une vidange — chacun avec son montant et ses employés.
                 </p>
               </div>
               <div className="flex gap-2 shrink-0">
@@ -749,7 +749,7 @@ function ReparationForm({
                   <Droplets className="w-3.5 h-3.5" /> + Lavage
                 </button>
                 <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine('reparation')}>
-                  <Wrench className="w-3.5 h-3.5" /> + Réparation
+                  <Wrench className="w-3.5 h-3.5" /> + Vidange
                 </button>
               </div>
             </div>
@@ -790,7 +790,7 @@ function ReparationForm({
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <div className="sm:col-span-2">
-                        <Input placeholder={l.kind === 'lavage' ? 'Ex: Lavage complet intérieur/extérieur' : 'Ex: Changement plaquettes de frein'}
+                        <Input placeholder={l.kind === 'lavage' ? 'Ex: Lavage complet intérieur/extérieur' : 'Ex: Vidange moteur + filtre à huile'}
                           value={l.label} onChange={e => patchLine(l.id, { label: e.target.value })} />
                       </div>
                       <Input type="number" placeholder="Montant (DA)" value={l.amountStr}
@@ -803,7 +803,7 @@ function ReparationForm({
                       </p>
                       {pool.length === 0 ? (
                         <p className="text-xs text-slate-400 italic">
-                          Aucun employé « {l.kind === 'lavage' ? 'lavage' : 'réparation'} » enregistré.
+                          Aucun employé « {l.kind === 'lavage' ? 'lavage' : 'vidange'} » enregistré.
                         </p>
                       ) : (
                         <div className="flex flex-wrap gap-1.5">

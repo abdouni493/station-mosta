@@ -451,7 +451,7 @@ export function ProductModal({
   const [scanNote, setScanNote] = useState('');
   /**
    * Les références et la compatibilité véhicule ne concernent que la partie qui
-   * vend des PIÈCES : le Lavage & Réparation. Un sandwich de cafétéria n'a ni
+   * vend des PIÈCES : le Lavage & Vidange. Un sandwich de cafétéria n'a ni
    * numéro d'origine ni voiture compatible.
    */
   const showAutoParts = biz.module === 'lavage';
@@ -727,7 +727,7 @@ export function ProductModal({
         </div>
 
         {/* ── Références & compatibilité véhicule ────────────────────────────
-            Propres à la partie Lavage & Réparation, qui vend des pièces
+            Propres à la partie Lavage & Vidange, qui vend des pièces
             détachées : une pièce se cherche par son numéro ou par la voiture
             qu'elle équipe, jamais par son nom de rayon. Ces deux blocs
             n'apparaissent pas en Cafétéria, où ils n'auraient aucun sens. */}
@@ -873,7 +873,7 @@ export function ProductModal({
   );
 }
 
-// ─── Le parc d'un client (Lavage & Réparation) ─────────────────────────────────
+// ─── Le parc d'un client (Lavage & Vidange) ─────────────────────────────────
 /**
  * ─── POURQUOI LES VOITURES VIVENT SUR LA FICHE DU CLIENT ───────────────────────
  *
@@ -986,7 +986,7 @@ export function CarsEditor({ cars, onChange, defaults }: {
                       onChange={e => patchDays(c.id!, 'rappelLavageDays', e.target.value)} />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Réparation (jours)</label>
+                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Vidange (jours)</label>
                     <Input type="number" inputMode="numeric" min={0} className="text-right"
                       placeholder={`Défaut : ${cfg.reparationDays} j`}
                       value={c.rappelReparationDays ?? ''}
@@ -1041,7 +1041,7 @@ export function ContactModal({
   const isEdit = !!initial?.id;
   /**
    * Le parc n'a de sens que pour un CLIENT d'une partie de service (Lavage &
-   * Réparation) : une cafétéria n'a que faire des voitures de ses clients, et un
+   * Vidange) : une cafétéria n'a que faire des voitures de ses clients, et un
    * fournisseur encore moins. Ce même composant sert partout, donc c'est ici —
    * et une seule fois — que la question se tranche.
    */
@@ -1602,7 +1602,7 @@ export function printPaymentReceipt(opts: PrintReceiptOptions) {
 
 // ─── "Imprimer la facture ?" prompt ─────────────────────────────────────────────
 /**
- * Small confirmation shown right after a sale / lavage / réparation is saved, so
+ * Small confirmation shown right after a sale / lavage / vidange is saved, so
  * the user decides whether the document is printed.
  */
 export function AskPrintModal({

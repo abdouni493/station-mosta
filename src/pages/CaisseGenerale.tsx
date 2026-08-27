@@ -7,7 +7,7 @@
  *    entre, pour que ce chiffre réponde à « qu'y a-t-il dans les tiroirs ? ».
  *  • Trésorerie totale — toutes les caisses (Finance comprise) PLUS les comptes
  *    bancaires : le seul chiffre qui réunit tout l'argent de la station.
- *  • Caisse de chaque partie — Carburant, Cafétéria and Lavage & Réparation, each
+ *  • Caisse de chaque partie — Carburant, Cafétéria and Lavage & Vidange, each
  *    computed from its own documents ; la quatrième carte est celle de la
  *    Finance, c.-à-d. la part du tiroir commun qui n'appartient à aucune activité.
  *  • Journal des opérations — every movement of the station in one list: achats,
@@ -106,7 +106,7 @@ const salaryPaidInCash = (mode?: string): boolean => {
 const PART_META: Record<TreasuryPart, { label: string; icon: React.ElementType; tone: string }> = {
   carburant: { label: 'Carburant', icon: Fuel, tone: '#003087' },
   cafeteria: { label: 'Cafétéria', icon: Coffee, tone: '#b45309' },
-  lavage: { label: 'Lavage & Réparation', icon: Droplets, tone: '#0e7490' },
+  lavage: { label: 'Lavage & Vidange', icon: Droplets, tone: '#0e7490' },
   systeme: { label: 'Finance', icon: Landmark, tone: '#4c1d95' },
 };
 
@@ -400,7 +400,7 @@ export default function CaisseGenerale() {
       }))));
       m.reparations.forEach(r => docPaymentSlices(r, r.paid).forEach(l => out.push(cashRow({
         id: `${key}-rep-${l.id}`, date: l.date, nature: 'Vente', part,
-        label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation'} ${r.ref} — ${r.clientName}`,
+        label: `${r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Vidange' : 'Lavage + Vidange'} ${r.ref} — ${r.clientName}`,
         amount: l.amount,
       }))));
       // Un règlement encaissé sur la DETTE INITIALE d'un client de partie est de
@@ -1443,7 +1443,7 @@ function CashTxModal({
 // ─── Virement : d'une caisse vers un compte bancaire (ou une autre caisse) ─────
 /**
  * The user chooses BOTH sides of the movement:
- *   • la caisse source — générale, Carburant, Cafétéria ou Lavage & Réparation
+ *   • la caisse source — générale, Carburant, Cafétéria ou Lavage & Vidange
  *   • la destination   — n'importe quel compte bancaire, ou une autre caisse
  *
  * One single `TRANSFER` line is written, so the money leaves the chosen caisse

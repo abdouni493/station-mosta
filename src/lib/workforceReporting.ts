@@ -10,7 +10,7 @@
  *    chèques) et le décalage — plus la comptabilité de la brigade.
  *  • Employés Cafétéria → leurs sessions de travail (ouverture, fermeture, fond de
  *    caisse, théorique, crédit, décalage) et toutes les ventes de chaque session.
- *  • Employés Lavage & Réparation → leur pourcentage, la liste de TOUS les travaux
+ *  • Employés Lavage & Vidange → leur pourcentage, la liste de TOUS les travaux
  *    qui leur sont assignés (prestation par prestation), la base retenue, leur
  *    part, et si elle est déjà réglée.
  *  • Tout le monde → salaires versés, acomptes, absences, compte de connexion.
@@ -29,7 +29,7 @@ export type WorkforcePart = 'carburant' | 'cafeteria' | 'lavage';
 export const PART_META: Record<WorkforcePart, { label: string; emoji: string; color: string }> = {
   carburant: { label: 'Carburant', emoji: '⛽', color: '#003087' },
   cafeteria: { label: 'Cafétéria', emoji: '☕', color: '#b45309' },
-  lavage: { label: 'Lavage & Réparation', emoji: '🧽', color: '#0e7490' },
+  lavage: { label: 'Lavage & Vidange', emoji: '🧽', color: '#0e7490' },
 };
 
 // ─── Detail rows ─────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ export interface WFPayment { id: string; label: string; date: string; amount: nu
 export interface WFAcompte { id: string; date: string; amount: number; description?: string; paid: boolean }
 export interface WFAbsence { id: string; date: string; cost: number; description?: string; paid: boolean }
 
-/** One intervention (lavage / réparation) performed by the worker. */
+/** One intervention (lavage / vidange) performed by the worker. */
 export interface WFWork {
   id: string; ref: string; date: string; kindLabel: string; client: string; car: string;
   /** Every prestation of the job; `mine` marks the ones this worker performed. */
@@ -98,7 +98,7 @@ export interface WorkforceWorker {
   id: string; name: string;
   part: WorkforcePart; partLabel: string; partEmoji: string;
   role: string;
-  /** Lavage part: « Lavage », « Réparation » or « Polyvalent ». */
+  /** Lavage part: « Lavage », « Vidange » or « Polyvalent ». */
   speciality?: string;
   phone?: string; cin?: string; email?: string;
   status: string; hireDate?: string;
@@ -192,11 +192,11 @@ function bizWorker(
       const settled = settledBy.get(r.id);
       return {
         id: r.id, ref: r.ref, date: r.date,
-        kindLabel: r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Réparation' : 'Lavage + Réparation',
+        kindLabel: r.kind === 'lavage' ? 'Lavage' : r.kind === 'reparation' ? 'Vidange' : 'Lavage + Vidange',
         client: r.clientName, car: carLabel(r.car),
         prestations: lines.map(l => ({
           id: l.id, label: l.label, amount: num(l.amount),
-          kindLabel: l.kind === 'lavage' ? 'Lavage' : 'Réparation',
+          kindLabel: l.kind === 'lavage' ? 'Lavage' : 'Vidange',
           mine: (l.workerIds || []).includes(w.id),
         })),
         myPrestations: (mine.length ? mine : lines).map(l => l.label).filter(Boolean).join(' · '),

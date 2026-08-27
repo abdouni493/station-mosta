@@ -39,7 +39,7 @@ import Feedbacks from "./pages/Feedbacks";
 import ClientFeedback from "./pages/ClientFeedback";
 import { FeedbackProvider } from "./store/FeedbackContext";
 
-// ─── Business modules (Cafétéria / Lavage & Réparation) ───────────────────────
+// ─── Business modules (Cafétéria / Lavage & Vidange) ───────────────────────
 import { BizProvider } from "./store/BizContext";
 import { MODULES, ModuleKey } from "./lib/bizConfig";
 import ModuleStock from "./pages/modules/ModuleStock";
@@ -536,7 +536,7 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         <Route path="/statistics"       element={<ProtectedRoute element={<Statistics />} moduleId="Statistiques" />} />
         <Route path="/reports"          element={<ProtectedRoute element={<Reports />} moduleId="Rapports" />} />
 
-        {/* Business modules (Cafétéria / Lavage & Réparation) */}
+        {/* Business modules (Cafétéria / Lavage & Vidange) */}
         {MODULE_ROUTES.map(r => React.createElement(Route, {
           key: r.path,
           path: r.path,

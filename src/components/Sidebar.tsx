@@ -60,7 +60,7 @@ const roleBadge: Record<string, { label: string; bg: string; text: string }> = {
 //
 // The sidebar is organised by "part" (activity): a reorganised Carburant part
 // (the original fuel-station app), then four new commerce/production parts
-// (Restaurant, Cafétéria, Lavage & Réparation, Magasin) whose pages live on the
+// (Restaurant, Cafétéria, Lavage & Vidange, Magasin) whose pages live on the
 // BizContext store — itself fed by the `biz_store` row in Supabase.
 
 // Builds a nav group for one business module from its capabilities (config).
@@ -69,7 +69,7 @@ function buildModuleNavGroup(key: ModuleKey): NavGroup {
   const b = cfg.base;
   const items: NavItem[] = [];
   if (cfg.isService) {
-    items.push({ label: "Réparations & Lavage", icon: Car,         path: `${b}/reparations` });
+    items.push({ label: "Vidanges & Lavage", icon: Car,         path: `${b}/reparations` });
     items.push({ label: "Demandes d'encaissement", icon: BellRing, path: `${b}/encaissements` });
     items.push({ label: "Point de vente",       icon: ShoppingBag, path: `${b}/pos` });
     items.push({ label: "Ventes",               icon: Receipt,     path: `${b}/sales` });
@@ -202,7 +202,7 @@ const DASHBOARD_ITEM: NavItem = { label: "Tableau de Bord", icon: LayoutDashboar
 // --- Sidebar alerts ---
 //
 // Some screens hold work that is WAITING for someone: a demande d'encaissement
-// the caisse has not collected yet, a lavage/réparation left "en attente". The
+// the caisse has not collected yet, a lavage/vidange left "en attente". The
 // sidebar shows that count on the button itself (and on the collapsed section
 // header), so nobody has to open the page to notice there is something to do.
 
@@ -303,7 +303,7 @@ function buildWorkerNav(role: string, permissions?: UserPermissions): NavGroup[]
 
 /** Sidebar entry for one interface id of a part (same ids as MODULE_INTERFACES). */
 const PART_IFACE_NAV: Record<string, { label: string; icon: React.ElementType }> = {
-  reparations:   { label: "Réparations & Lavage",    icon: Car },
+  reparations:   { label: "Vidanges & Lavage",    icon: Car },
   encaissements: { label: "Demandes d'encaissement", icon: BellRing },
   stock:       { label: "Gestion de stock",     icon: Package },
   purchases:   { label: "Achats",               icon: ShoppingCart },
@@ -415,7 +415,7 @@ const SETTINGS_PATH: Record<string, string> = {
 // --- Favoris de partie ---
 //
 // Une partie ouvre douze à quatorze interfaces. Celle qu'on utilise vingt fois
-// par jour — le point de vente d'une cafétéria, les réparations d'un lavage, les
+// par jour — le point de vente d'une cafétéria, les vidanges d'un lavage, les
 // brigades du carburant — se retrouvait au milieu d'une liste qu'il fallait
 // parcourir des yeux à chaque fois, souvent en la déroulant d'abord.
 //

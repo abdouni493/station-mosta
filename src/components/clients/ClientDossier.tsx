@@ -2,7 +2,7 @@
  * ─── Le dossier d'un client ────────────────────────────────────────────────────
  *
  * UN seul écran pour les trois activités — Carburant, Cafétéria, Lavage &
- * Réparation. « Voir détails » et « Historique » n'ouvrent plus deux boîtes
+ * Vidange. « Voir détails » et « Historique » n'ouvrent plus deux boîtes
  * différentes : ils ouvrent le MÊME dossier, à une rubrique différente.
  *
  * Ce qu'il montre, rubrique par rubrique :

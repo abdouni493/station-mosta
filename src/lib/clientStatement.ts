@@ -2,7 +2,7 @@
  * ─── Le relevé de compte d'un client, sur la période qu'on lui demande ─────────
  *
  * Trois écrans montrent l'historique d'un client — Carburant, Cafétéria,
- * Lavage & Réparation — et les trois lisaient des données différentes, avec des
+ * Lavage & Vidange — et les trois lisaient des données différentes, avec des
  * colonnes différentes, sans jamais pouvoir sortir un document imprimable.
  *
  * Ce module ramène les trois à UNE seule forme, le `ClientStatement` :
@@ -130,7 +130,7 @@ export interface StatementParty {
 
 export interface ClientStatement {
   client: StatementParty;
-  /** « Carburant », « Cafétéria », « Lavage & Réparation ». */
+  /** « Carburant », « Cafétéria », « Lavage & Vidange ». */
   partLabel: string;
   /** Bornes demandées, `''` quand la borne est ouverte. */
   from: string;
@@ -358,12 +358,12 @@ function saleLine(s: BizSale): StatementLine {
   };
 }
 
-/** Une intervention lavage / réparation. */
+/** Une intervention lavage / vidange. */
 function repLine(r: BizReparation): StatementLine {
   const canceled = r.status === 'canceled';
   const items: StatementItem[] = [
     ...prestationsOf(r).map(p => ({
-      name: p.label || (p.kind === 'lavage' ? 'Lavage' : 'Réparation'),
+      name: p.label || (p.kind === 'lavage' ? 'Lavage' : 'Vidange'),
       qty: 1,
       unitPrice: num(p.amount),
       total: num(p.amount),
@@ -381,7 +381,7 @@ function repLine(r: BizReparation): StatementLine {
     id: `rep-${r.id}`,
     date: r.date,
     kind: 'intervention',
-    kindLabel: r.kind === 'lavage' ? 'Lavage' : r.kind === 'mixte' ? 'Lavage + Réparation' : 'Réparation',
+    kindLabel: r.kind === 'lavage' ? 'Lavage' : r.kind === 'mixte' ? 'Lavage + Vidange' : 'Vidange',
     ref: r.ref,
     label: [r.problem || 'Intervention', car].filter(Boolean).join(' — '),
     status: r.status,
@@ -497,7 +497,7 @@ function advanceDepositLines(client: BizContact | null): StatementLine[] {
     }));
 }
 
-/** Le relevé d'un client d'une partie (Cafétéria, Lavage & Réparation). */
+/** Le relevé d'un client d'une partie (Cafétéria, Lavage & Vidange). */
 export function bizClientStatement(
   state: ModuleState, client: BizContact | null, partLabel: string, from = '', to = '',
 ): ClientStatement {

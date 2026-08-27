@@ -1,7 +1,7 @@
 /**
  * ─── Employés & Personnel (rapport général) ────────────────────────────────────
  * Liste TOUS les employés de la station — pompistes, chefs de brigade, gérants,
- * employés magasin, cafétéria, lavage & réparation — et déplie pour chacun le
+ * employés magasin, cafétéria, lavage & vidange — et déplie pour chacun le
  * détail complet de son activité sur la période :
  *
  *  • Pompiste / chef  → chaque brigade assignée : piste, pompes, index de chaque
@@ -255,7 +255,7 @@ function SessionRow({ s }: { s: WorkforceWorker['sessions'][number]; key?: React
   );
 }
 
-// ─── Work detail (lavage / réparation) ───────────────────────────────────────
+// ─── Work detail (lavage / vidange) ───────────────────────────────────────
 function WorkRow({ w, rate }: { w: WorkforceWorker['works'][number]; rate: number; key?: React.Key }) {
   const [open, setOpen] = useState(false);
   return (
@@ -450,9 +450,9 @@ function WorkerCard({ w }: { w: WorkforceWorker; key?: React.Key }) {
                 </Section>
               )}
 
-              {/* Works (lavage / réparation) */}
+              {/* Works (lavage / vidange) */}
               {w.works.length > 0 && (
-                <Section title="Travaux assignés — lavages & réparations" icon={Car} count={w.works.length}>
+                <Section title="Travaux assignés — lavages & vidanges" icon={Car} count={w.works.length}>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-2">
                     <Chip label="Travaux" value={String(w.worksCount)} tone="blue" />
                     <Chip label="Montant facturé" value={money(w.worksAmount)} />
@@ -599,7 +599,7 @@ export default function WorkforceView({ report }: { report: WorkforceReport }) {
         <Kpi icon={CalendarMinus} tone="red" label="Absences / retenues" value={money(t.absences)} />
         <Kpi icon={Target} tone="purple" label="Brigades couvertes" value={String(t.brigades)} sub={`${liters(t.liters)} vendus`} />
         <Kpi icon={Clock} tone="cyan" label="Sessions de travail" value={String(t.sessions)} />
-        <Kpi icon={Car} tone="blue" label="Travaux lavage / réparation" value={String(t.works)} sub={money(t.worksAmount)} />
+        <Kpi icon={Car} tone="blue" label="Travaux lavage / vidange" value={String(t.works)} sub={money(t.worksAmount)} />
         <Kpi icon={Percent} tone={t.dueNow > 0 ? 'red' : 'green'} label="Parts employés à régler" value={money(t.dueNow)} sub={`${money(t.earned)} générés`} />
       </div>
 
