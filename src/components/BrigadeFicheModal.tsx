@@ -49,6 +49,8 @@ const BrigadeFicheModal: React.FC<Props> = ({
   const justifByPompiste = useMemo(() => {
     const m: Record<string, NonNullable<BrigadeAccounting['justifications']>> = {};
     (accounting?.justifications || []).forEach(j => {
+      // Les dépenses ont leur propre section : on ne les répète pas ici.
+      if (j.justificationType === 'EXPENSE') return;
       const pid = j.pompisteId || '_unassigned';
       (m[pid] = m[pid] || []).push(j);
     });
