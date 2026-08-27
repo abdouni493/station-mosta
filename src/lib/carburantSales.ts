@@ -95,6 +95,8 @@ export interface FuelBrigadeSale {
   tpe: number;
   /** Bons clients — du chiffre d'affaires qui devient une créance. */
   credit: number;
+  /** Dépenses de brigade — des espèces sorties pour une charge, justifiées. */
+  expense: number;
   /** Manquant non justifié à la clôture. */
   rest: number;
   pompistes: FuelPompisteLine[];
@@ -114,6 +116,8 @@ export interface CarburantSales {
   cash: number;
   tpe: number;
   credit: number;
+  /** Dépenses de brigade justifiées sur la période. */
+  expense: number;
   rest: number;
   /** Ce qui est réellement rentré : espèces + TPE. Le crédit ne l'est pas encore. */
   collected: number;
@@ -236,11 +240,15 @@ export function computeCarburantSales(app: any, from: string, to: string): Carbu
       // ── Ce qui est rentré, par nature ──
       const justifs: any[] = acc?.justifications || [];
       const isBank = (j: any) => j.justificationType === 'TAG' || j.justificationType === 'TPE';
+      const isExpense = (j: any) => j.justificationType === 'EXPENSE';
       const tpe = justifs.filter(isBank).reduce((s, j) => s + num(j.amount), 0);
-      const credit = justifs.filter(j => !isBank(j)).reduce((s, j) => s + num(j.amount), 0);
+      // Une dépense de brigade justifie le reste, mais ce n'est ni de la banque
+      // ni une créance client : elle a sa propre part.
+      const expense = justifs.filter(isExpense).reduce((s, j) => s + num(j.amount), 0);
+      const credit = justifs.filter(j => !isBank(j) && !isExpense(j)).reduce((s, j) => s + num(j.amount), 0);
       const cash = num(acc?.cashReceived);
       // Le manquant enregistré fait foi ; sinon on le recalcule.
-      const rest = acc ? num(acc.rest) : revenue - cash - tpe - credit;
+      const rest = acc ? num(acc.rest) : revenue - cash - tpe - credit - expense;
 
       const summaries: Record<string, any> = acc?.pompisteSummary || b.pompisteData || {};
       const pompisteLines: FuelPompisteLine[] = Object.entries(summaries).map(([id, d]: [string, any]) => {
@@ -266,7 +274,7 @@ export function computeCarburantSales(app: any, from: string, to: string): Carbu
         chefName: chefs.find(c => c.id === b.chefId)?.name || '—',
         status: b.status || (acc?.status === 'completed' ? 'Clôturée' : 'En cours'),
         closed: b.status === 'Clôturée' || acc?.status === 'completed',
-        liters, revenue, cost, cash, tpe, credit, rest,
+        liters, revenue, cost, cash, tpe, credit, expense, rest,
         pompistes: pompisteLines,
         byFuel, byPump,
       };
@@ -286,6 +294,7 @@ export function computeCarburantSales(app: any, from: string, to: string): Carbu
     revenue, cost, gain: revenue - cost,
     cash, tpe,
     credit: sum(r => r.credit),
+    expense: sum(r => r.expense),
     rest: sum(r => r.rest),
     collected: cash + tpe,
     counts: { brigades: rows.length, closed: rows.filter(r => r.closed).length },

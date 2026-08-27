@@ -369,8 +369,11 @@ export interface BrigadeAccountingJustification {
   clientType?: string;
   paymentMode?: string;
   notes?: string;
-  justificationType?: 'CLIENT' | 'TAG' | 'TPE'; // default 'CLIENT'
-  clientName?: string;    // optional free-text name for TAG/TPE
+  // 'EXPENSE' : une dépense payée sur les espèces de la brigade (nom + montant,
+  // description facultative). Elle justifie le reste au même titre qu'un bon,
+  // sans client ni compte bancaire.
+  justificationType?: 'CLIENT' | 'TAG' | 'TPE' | 'EXPENSE'; // default 'CLIENT'
+  clientName?: string;    // optional free-text name for TAG/TPE (or the expense label)
   fuelType?: string;      // e.g. 'SUPER', 'DIESEL'
   liters?: number;        // how many liters
   pricePerLiter?: number; // auto-filled from settings

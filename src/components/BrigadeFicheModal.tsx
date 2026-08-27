@@ -57,6 +57,14 @@ const BrigadeFicheModal: React.FC<Props> = ({
   const justifTotals = useMemo(
     () => justifiedByPompiste(accounting?.justifications), [accounting]);
 
+  // Les dépenses de brigade justifient le reste sans être rattachées à un
+  // pompiste : on les liste à part et on les ajoute au total justifié.
+  const expenseJustifs = useMemo(
+    () => (accounting?.justifications || []).filter(j => j.justificationType === 'EXPENSE'),
+    [accounting]);
+  const expensesTotal = useMemo(
+    () => expenseJustifs.reduce((s, j) => s + (j.amount || 0), 0), [expenseJustifs]);
+
   // Détail Pompiste → Pompe → Pistolet, avec la ventilation par carburant.
   const pumpBreakdown = useMemo(
     () => brigadePompisteGroups(brigade, ctx, nozzleRows, justifTotals),
@@ -299,6 +307,33 @@ const BrigadeFicheModal: React.FC<Props> = ({
         </section>
       )}
 
+      {/* SECTION — Dépenses justifiées (sorties d'espèces de la brigade) */}
+      {expenseJustifs.length > 0 && (
+        <section>
+          <FicheHeader num="3b" label="Dépenses justifiées" />
+          <table className="w-full text-sm border-collapse">
+            <thead><tr className="bg-blue-900 text-white">
+              {['Dépense', 'Description', 'Montant'].map(h => <Th key={h} dark>{h}</Th>)}
+            </tr></thead>
+            <tbody>
+              {expenseJustifs.map(j => (
+                <tr key={j.id} className="border-b border-slate-200">
+                  <Td><strong>🧾 {j.clientName || 'Dépense'}</strong></Td>
+                  <Td className="text-slate-600">{j.notes || '—'}</Td>
+                  <Td className="tabular-nums"><strong className="text-slate-800">{fmt(j.amount || 0)} DA</strong></Td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-slate-50 border-t-2 border-slate-200">
+                <Td colSpan={2}><strong className="text-[10px] uppercase text-slate-500">Total dépenses</strong></Td>
+                <Td className="tabular-nums"><strong className="text-red-700">{fmt(expensesTotal)} DA</strong></Td>
+              </tr>
+            </tfoot>
+          </table>
+        </section>
+      )}
+
       {/* SECTION 4: Alertes Décalage — écart = Δ pistolets − Δ cuve */}
       {tankRows.length > 0 && (
         <section>
@@ -366,8 +401,9 @@ const BrigadeFicheModal: React.FC<Props> = ({
             { label: 'Montant Index (calculé)', value: `${fmt(totals.computedAmount)} DA` },
             { label: 'Total Théorique', value: `${fmt(totals.theoretical)} DA` },
             { label: 'Total Espèces Collectées', value: `${fmt(totals.collected)} DA` },
-            { label: 'Total Justifications', value: `${fmt(totals.justified)} DA` },
-            { label: 'SOLDE NET', value: `${fmt(totals.netBalance)} DA`, bold: true },
+            { label: 'Total Justifications', value: `${fmt(totals.justified + expensesTotal)} DA` },
+            ...(expensesTotal > 0 ? [{ label: 'dont Dépenses brigade', value: `${fmt(expensesTotal)} DA` }] : []),
+            { label: 'SOLDE NET', value: `${fmt(totals.netBalance - expensesTotal)} DA`, bold: true },
           ].map((row: any, i) => (
             <div key={i} className={`flex justify-between px-4 py-3 rounded-xl border ${row.bold ? 'bg-blue-900 text-white font-black border-blue-900' : 'bg-slate-50 border-slate-200'}`}>
               <span className="text-sm">{row.label}</span>
@@ -451,8 +487,8 @@ const FicheHeader: React.FC<{ num?: string; label: string }> = ({ num, label }) 
 const Th: React.FC<{ children: React.ReactNode; dark?: boolean }> = ({ children, dark }) => (
   <th className={`px-3 py-2 text-left text-[10px] font-black uppercase tracking-widest border ${dark ? 'border-blue-800 text-white' : 'border-slate-200'}`}>{children}</th>
 );
-const Td: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
-  <td className={`px-3 py-2 text-sm border border-slate-200 ${className || ''}`}>{children}</td>
+const Td: React.FC<{ children: React.ReactNode; className?: string; colSpan?: number }> = ({ children, className, colSpan }) => (
+  <td colSpan={colSpan} className={`px-3 py-2 text-sm border border-slate-200 ${className || ''}`}>{children}</td>
 );
 
 export default BrigadeFicheModal;

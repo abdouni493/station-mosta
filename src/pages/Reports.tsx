@@ -202,7 +202,7 @@ const Reports = () => {
   const fSales  = useMemo(() => fuelSales.filter(s => inRange(s.date)), [fuelSales, startDate, endDate]);
   const fuelCollected = useMemo(() => {
     const r = computeCarburantSales(app, startDate, endDate);
-    return { cash: r.cash, tpe: r.tpe, credit: r.credit, rest: r.rest };
+    return { cash: r.cash, tpe: r.tpe, credit: r.credit, expense: r.expense, rest: r.rest };
   }, [app, startDate, endDate]);
   const sSales  = useMemo(() => shopSales.filter(s => inRange(s.date)), [shopSales, startDate, endDate]);
   const bBrig   = useMemo(() => brigades.filter(b => inRange(b.date)).filter(
@@ -975,6 +975,7 @@ const Reports = () => {
                     { l: "Carburant — Espèces (brigades)", v: fuelCollected.cash },
                     { l: "Carburant — TPE / TAG",          v: fuelCollected.tpe },
                     { l: "Carburant — Bons clients",       v: fuelCollected.credit },
+                    { l: "Carburant — Dépenses brigade",   v: fuelCollected.expense },
                     { l: "Magasin — Espèces",    v: sSales.filter(s=>s.paymentMode==="ESPECES").reduce((a,c)=>a+c.total,0) },
                     { l: "Magasin — Chèques",    v: sSales.filter(s=>s.paymentMode==="CHEQUE").reduce((a,c)=>a+c.total,0) },
                   ].filter(r => r.v > 0).map(r => (

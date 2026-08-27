@@ -13,7 +13,7 @@ import { syncBizExpenseLedger, removeBizExpenseLedger } from '@/src/lib/bizExpen
 import {
   PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
   RowActions, ActionBtn, Edit2, Trash2, Confirm, Modal, Field, Input, Textarea, Select,
-  money, formatDate, PeriodFilter, Period, inPeriod,
+  money, formatDate, PeriodFilter, Period, inPeriod, ViewToggle, Table,
 } from '@/src/components/biz/Kit';
 
 export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) {
@@ -28,6 +28,9 @@ export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) 
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [form, setForm] = useState<BizExpense | null | 'new'>(null);
   const [toDelete, setToDelete] = useState<BizExpense | null>(null);
+  // Les dépenses s'affichent en tableau par défaut : une liste dense, lisible
+  // d'un coup d'œil ; les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
 
   const cats = useMemo(() => Array.from(new Set(expenses.map(e => e.category).filter(Boolean))) as string[], [expenses]);
   const filtered = useMemo(() => [...expenses]
@@ -72,11 +75,45 @@ export default function ModuleExpenses({ moduleKey }: { moduleKey: ModuleKey }) 
       </div>
 
       <div className="card-glass p-4 space-y-3">
-        <SearchInput value={search} onChange={setSearch} placeholder="Nom de la dépense…" />
+        <div className="flex flex-wrap items-center gap-3">
+          <SearchInput value={search} onChange={setSearch} placeholder="Nom de la dépense…" />
+          <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
+        </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
       </div>
 
-      {filtered.length === 0 ? <EmptyState icon={CreditCard} title="Aucune dépense" action={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvelle dépense</button> : undefined} /> : (
+      {filtered.length === 0 ? <EmptyState icon={CreditCard} title="Aucune dépense" action={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvelle dépense</button> : undefined} /> : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Date</th><th className="table-head">Dépense</th>
+          <th className="table-head">Catégorie</th><th className="table-head">Payée depuis</th>
+          <th className="table-head text-right">Montant</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(e => (
+            <tr key={e.id}>
+              <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(e.date)}</td>
+              <td className="table-cell">
+                <div className="font-bold text-slate-700">{e.name}</div>
+                {e.description && <div className="text-[11px] text-slate-400 truncate max-w-[280px]" title={e.description}>{e.description}</div>}
+              </td>
+              <td className="table-cell">{e.category ? <Badge tone="primary">{e.category}</Badge> : <span className="text-slate-400">—</span>}</td>
+              <td className="table-cell">
+                <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-500">
+                  {bizExpensePaidInCash(e)
+                    ? <><Banknote className="w-3.5 h-3.5" /> Espèces — Caisse {cfg.label}</>
+                    : <><Landmark className="w-3.5 h-3.5" /> {app.bankAccounts.find(a => a.id === e.accountId)?.name || 'Compte bancaire'}{e.chequeNumber ? ` · n° ${e.chequeNumber}` : ''}</>}
+                </span>
+              </td>
+              <td className="table-cell text-right font-black text-red-600 tabular-nums">{money(e.amount)}</td>
+              <td className="table-cell text-right">
+                <RowActions>
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(e)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(e)} />}
+                </RowActions>
+              </td>
+            </tr>
+          ))}
+        </Table>
+      ) : (
         <CardGrid>
           {filtered.map(e => (
             <GlassCard key={e.id}>

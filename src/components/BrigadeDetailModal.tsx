@@ -621,23 +621,26 @@ const BrigadeDetailModal: React.FC<Props> = ({
                         </div>
                       )}
 
-                      {/* ⑦ Justifications TAG / TPE / Clients */}
+                      {/* ⑦ Justifications Clients / TAG / TPE / Dépenses */}
                       {(accountingRecord.justifications || []).length > 0 && (
                         <div className="space-y-2">
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Justifications TAG / TPE / Clients</p>
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Justifications Clients / TAG / TPE / Dépenses</p>
                           {(accountingRecord.justifications || []).map(j => {
                             const client = clients.find(c => c.id === j.clientId);
                             const track = tracks.find(t => t.id === j.trackId);
                             const pompiste = pompistes.find(p => p.id === j.pompisteId);
+                            const isExpense = j.justificationType === 'EXPENSE';
                             const label = j.clientName || client?.name || j.notes || j.justificationType || 'Justification';
+                            const typeLabel = isExpense ? 'DÉPENSE' : (j.justificationType || 'CLIENT');
                             return (
-                              <div key={j.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100">
+                              <div key={j.id} className={cn('flex items-center justify-between p-3 rounded-xl border', isExpense ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-100')}>
                                 <div>
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-bold text-slate-700">{label}</span>
-                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">{j.justificationType || 'CLIENT'}</span>
+                                    <span className="text-sm font-bold text-slate-700">{isExpense ? '🧾 ' : ''}{label}</span>
+                                    <span className={cn('text-[9px] font-black px-2 py-0.5 rounded-full', isExpense ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>{typeLabel}</span>
                                   </div>
                                   <div className="text-[9px] text-slate-500 mt-1 space-x-2">
+                                    {isExpense && j.notes ? <span>{j.notes}</span> : null}
                                     {j.fuelType && <span>{j.fuelType}</span>}
                                     {track && <span>{track.name}</span>}
                                     {pompiste && <span>{pompiste.name}</span>}

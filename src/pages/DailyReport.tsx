@@ -256,6 +256,8 @@ const DailyReport = () => {
       credit:   carburant.credit,
       avance:   0,
       tpe:      carburant.tpe,
+      // Dépenses de brigade justifiées — des espèces sorties pour une charge.
+      depenses: carburant.expense,
       manquant: carburant.rest,
     };
 
@@ -334,8 +336,8 @@ const DailyReport = () => {
     /* cash received from brigades (espèces remises) */
     const brigadeCash = brigadeDetails.reduce((s: number, b: any) => s + (b.accounting?.cashReceived || 0), 0);
 
-    /* B. Justifications totals (TPE / TAG / crédit client / avance client) */
-    const justifByType = { TPE: 0, TAG: 0, CREDIT: 0, AVANCE: 0 };
+    /* B. Justifications totals (TPE / TAG / crédit / avance client / dépenses) */
+    const justifByType = { TPE: 0, TAG: 0, CREDIT: 0, AVANCE: 0, EXPENSE: 0 };
     const tagsByAmount: Record<string, number> = {};
     (brigadeAccountings || []).forEach(acc => {
       if (!periodBrigadeIds.has(acc.brigadeId)) return;
@@ -345,6 +347,8 @@ const DailyReport = () => {
           justifByType.TAG += j.amount || 0;
           const key = String(Math.round(j.amount || 0));
           tagsByAmount[key] = (tagsByAmount[key] || 0) + 1;
+        } else if (j.justificationType === 'EXPENSE') {
+          justifByType.EXPENSE += j.amount || 0;
         } else if (j.justificationType === 'CLIENT' || !j.justificationType) {
           if (j.paymentMode === 'AVANCE') justifByType.AVANCE += j.amount || 0;
           else justifByType.CREDIT += j.amount || 0;
@@ -1132,9 +1136,13 @@ const DailyReport = () => {
                               {b.accounting.justifications.map((j: any) => (
                                 <tr key={j.id} className="border-b border-slate-100">
                                   <td className="px-3 py-1.5 font-black border border-slate-200">
-                                    {j.justificationType === 'TAG' ? '🏷️ Tag' : j.justificationType === 'TPE' ? '💳 TPE' : j.paymentMode === 'AVANCE' ? '🟢 Avance' : '🟠 Crédit'}
+                                    {j.justificationType === 'TAG' ? '🏷️ Tag' : j.justificationType === 'TPE' ? '💳 TPE' : j.justificationType === 'EXPENSE' ? '🧾 Dépense' : j.paymentMode === 'AVANCE' ? '🟢 Avance' : '🟠 Crédit'}
                                   </td>
-                                  <td className="px-3 py-1.5 border border-slate-200">{j.notes || j.clientName || '—'}</td>
+                                  <td className="px-3 py-1.5 border border-slate-200">
+                                    {j.justificationType === 'EXPENSE'
+                                      ? [j.clientName, j.notes].filter(Boolean).join(' — ') || '—'
+                                      : (j.notes || j.clientName || '—')}
+                                  </td>
                                   <td className="px-3 py-1.5 tabular-nums border border-slate-200">{(j.liters || 0).toFixed(2)}</td>
                                   <td className="px-3 py-1.5 font-black text-slate-700 border border-slate-200">{(j.amount || 0).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} DA</td>
                                 </tr>
@@ -1175,8 +1183,9 @@ const DailyReport = () => {
                   { label: "Espèces (Cash)",   v: reportData.payments.especes,  icon: DollarSign,  c: "text-green-700"  },
                   { label: "TPE / TAG",        v: reportData.payments.tpe,      icon: CreditCard,  c: "text-purple-700" },
                   { label: "Bons / Crédit Clients", v: reportData.payments.credit, icon: FileText, c: "text-orange-600" },
+                  { label: "Dépenses brigade", v: reportData.payments.depenses, icon: FileText, c: "text-emerald-700" },
                   { label: "Manquant non justifié", v: reportData.payments.manquant, icon: AlertCircle, c: "text-red-600" },
-                ].map(row => (
+                ].filter(row => row.label !== "Dépenses brigade" || row.v > 0).map(row => (
                   <div key={row.label} className="flex justify-between items-center p-4 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
                     <div className="flex items-center gap-3">
                       <row.icon className={cn("w-4 h-4", row.c)} />
@@ -1191,7 +1200,7 @@ const DailyReport = () => {
                      style={{ background: `linear-gradient(135deg, ${C.blue800}, ${C.blue600})` }}>
                   <span className="text-[10px] uppercase tracking-[0.3em] opacity-70">Total Carburant</span>
                   <span className="text-2xl tracking-tighter">
-                    {(reportData.payments.especes + reportData.payments.tpe + reportData.payments.credit).toLocaleString()} DA
+                    {(reportData.payments.especes + reportData.payments.tpe + reportData.payments.credit + reportData.payments.depenses).toLocaleString()} DA
                   </span>
                 </div>
               </div>
@@ -1373,6 +1382,7 @@ const DailyReport = () => {
           { label: 'Tags / Bons', value: f.justifByType.TAG, color: '#7c3aed' },
           { label: 'Crédit client', value: f.justifByType.CREDIT, color: '#ea580c' },
           { label: 'Avance client', value: f.justifByType.AVANCE, color: '#0d9488' },
+          { label: 'Dépenses brigade', value: f.justifByType.EXPENSE, color: '#047857' },
         ].filter(j => Math.abs(j.value) > 0.001);
         const venteTotale = f.fuelTotals.selling + f.shopTotals.selling;
         const beneficeNet = f.fuelTotals.gain + f.shopTotals.gain - f.allExpenseTotal;

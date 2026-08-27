@@ -63,7 +63,9 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
   const [mrq, setMrq] = useState('all');
   /** Nature du produit : tout, ce qui se vend, ou ce qui sert à fabriquer. */
   const [nature, setNature] = useState<'all' | 'sale' | 'raw'>('all');
-  const [view, setView] = useState<'grid' | 'table'>('grid');
+  // Le catalogue s'ouvre en tableau : c'est la lecture la plus dense du stock,
+  // celle qu'on veut par défaut quand on cherche un article et son reste.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<BizProduct | null>(null);
   const [viewing, setViewing] = useState<BizProduct | null>(null);
@@ -422,6 +424,7 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                 <span className="text-[11px] text-slate-400">Créé le {formatDate(p.createdAt)}</span>
                 <RowActions>
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
+                  <ActionBtn icon={Printer} tone="slate" title="Imprimer l'étiquette code-barres" onClick={() => printBarcode(p)} />
                   <ActionBtn icon={History} tone="slate" title="Historique — achats, ventes & gains" onClick={() => setHistoryOf(p)} />
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
@@ -439,9 +442,13 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
         </CardGrid>
       ) : (
         <Table head={<>
-          <th className="table-head">Produit</th><th className="table-head">Catégorie</th><th className="table-head">Marque</th>
-          <th className="table-head">Principal</th><th className="table-head">Reste</th><th className="table-head">Prix vente</th>
-          <th className="table-head">État</th><th className="table-head text-right">Actions</th>
+          {/* Ordre voulu pour le stock : le produit, puis les actions à portée de
+              main, puis les deux chiffres qu'on lit en premier — le reste et le
+              prix de vente — et enfin le reste des colonnes. */}
+          <th className="table-head">Produit</th><th className="table-head">Actions</th>
+          <th className="table-head">Reste</th><th className="table-head">Prix vente</th>
+          <th className="table-head">Catégorie</th><th className="table-head">Marque</th>
+          <th className="table-head">Principal</th><th className="table-head">État</th>
         </>}>
           {filtered.map(p => (
             <tr key={p.id}>
@@ -468,9 +475,16 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                   </div>
                 )}
               </td>
-              <td className="table-cell">{p.categoryName || '—'}</td>
-              <td className="table-cell">{p.marqueName || '—'}</td>
-              <td className="table-cell tabular-nums">{formatQty(p.principalQty)} {p.unit}</td>
+              <td className="table-cell">
+                <RowActions>
+                  <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
+                  <ActionBtn icon={Printer} tone="slate" title="Imprimer l'étiquette code-barres" onClick={() => printBarcode(p)} />
+                  <ActionBtn icon={History} tone="slate" title="Historique — achats, ventes & gains" onClick={() => setHistoryOf(p)} />
+                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
+                  {perm.modifier && p.currentQty > 0 && <ActionBtn icon={Flame} tone="red" title="Destruction" onClick={() => setDestroying(p)} />}
+                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
+                </RowActions>
+              </td>
               <td className={`table-cell tabular-nums font-bold ${negative(p) ? 'text-red-600' : ''}`}
                 title={negative(p) ? `Vendu à découvert — ${formatQty(-p.currentQty)} ${p.unit || ''} à racheter` : undefined}>
                 {formatQty(p.currentQty)} {p.unit}
@@ -480,19 +494,13 @@ export default function ModuleStock({ moduleKey }: { moduleKey: ModuleKey }) {
                   ? <span className="text-slate-400">— <span className="text-[11px]">matière première</span></span>
                   : money(p.salePrice)}
               </td>
+              <td className="table-cell">{p.categoryName || '—'}</td>
+              <td className="table-cell">{p.marqueName || '—'}</td>
+              <td className="table-cell tabular-nums">{formatQty(p.principalQty)} {p.unit}</td>
               <td className="table-cell">
                 {negative(p)
                   ? <Badge tone="danger">Négatif</Badge>
                   : lowBadge(p) ? <Badge tone="danger">Bas</Badge> : <Badge tone="success">OK</Badge>}
-              </td>
-              <td className="table-cell">
-                <RowActions>
-                  <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
-                  <ActionBtn icon={History} tone="slate" title="Historique — achats, ventes & gains" onClick={() => setHistoryOf(p)} />
-                  {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(p)} />}
-                  {perm.modifier && p.currentQty > 0 && <ActionBtn icon={Flame} tone="red" title="Destruction" onClick={() => setDestroying(p)} />}
-                  {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
-                </RowActions>
               </td>
             </tr>
           ))}

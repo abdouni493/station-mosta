@@ -31,7 +31,9 @@ import {
   ArrowUp,
   ArrowDown,
   TrendingUp,
-  User
+  User,
+  List,
+  LayoutGrid
 } from "lucide-react";
 import { 
   PieChart, 
@@ -118,7 +120,9 @@ const Expenses = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"grid" | "analytics">("grid");
+  // Les dépenses s'ouvrent en tableau : la lecture la plus dense. « Cartes » et
+  // « Analyses » restent à portée du sélecteur.
+  const [viewMode, setViewMode] = useState<"table" | "grid" | "analytics">("table");
 
   // Filter State
   const [searchQuery, setSearchQuery] = useState("");
@@ -501,12 +505,24 @@ const Expenses = () => {
           </p>
         </div>
         <div className="flex gap-2">
-           <button 
-            onClick={() => setViewMode(viewMode === "grid" ? "analytics" : "grid")} 
-            className="px-6 py-3 bg-white border border-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-500 rounded-xl hover:bg-slate-50 transition-all flex items-center gap-2 italic"
-           >
-              {viewMode === "grid" ? <BarChartIcon className="w-4 h-4" /> : <Layers className="w-4 h-4" />} {viewMode === "grid" ? "Analyses" : "Liste"}
-           </button>
+           <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 italic">
+             {([
+               { id: "table", label: "Tableau", icon: List },
+               { id: "grid", label: "Cartes", icon: LayoutGrid },
+               { id: "analytics", label: "Analyses", icon: BarChartIcon },
+             ] as const).map(opt => (
+               <button
+                 key={opt.id}
+                 onClick={() => setViewMode(opt.id)}
+                 className={cn(
+                   "px-4 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all flex items-center gap-2",
+                   viewMode === opt.id ? "bg-blue-900 text-white shadow" : "text-slate-500 hover:bg-slate-50",
+                 )}
+               >
+                 <opt.icon className="w-4 h-4" /> {opt.label}
+               </button>
+             ))}
+           </div>
            {perm.creer && (
            <button
             onClick={() => { setSelectedExpense(null); setFormData(emptyForm()); setShowModal(true); }}
@@ -519,8 +535,8 @@ const Expenses = () => {
       </div>
 
       <AnimatePresence mode="wait">
-        {viewMode === "grid" ? (
-          <motion.div key="grid" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="space-y-6">
+        {viewMode !== "analytics" ? (
+          <motion.div key="list" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="space-y-6">
             {/* Stats */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
                <div className="bg-gradient-to-br from-[#001f5c] via-[#003087] to-[#002470] text-white p-8 rounded-[2rem] shadow-xl relative overflow-hidden border border-blue-700">
@@ -618,7 +634,74 @@ const Expenses = () => {
               </div>
             </div>
 
+            {/* Table view — the dense default */}
+            {viewMode === "table" && (
+              filteredExpenses.length > 0 ? (
+                <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden not-italic">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-100">
+                          {["Date", "Description", "Catégorie", "Partie", "Compte débité", "Mode", "Montant", ""].map((h, i) => (
+                            <th key={h || i} className={cn("px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-widest", i === 6 ? "text-right" : "text-left")}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {filteredExpenses.map(expense => {
+                          const part = expensePartOf(expense);
+                          const acct = expense.accountId || cashAccountOfPart(part);
+                          return (
+                            <tr key={expense.id} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="px-4 py-3 text-[11px] font-bold text-slate-500 whitespace-nowrap">{new Date(expense.date).toLocaleDateString('fr-FR')}</td>
+                              <td className="px-4 py-3">
+                                <p className="font-black text-blue-900 uppercase tracking-tight text-xs">{expense.description}</p>
+                                {expense.recipient && <p className="text-[10px] text-slate-400 font-bold">{expense.recipient}</p>}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="text-[9px] font-black uppercase px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100">{expense.category}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="text-[9px] font-black uppercase text-slate-500">{PARTS.find(p => p.key === part)?.short || 'Carburant'}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-600">
+                                  {isCashAccount(acct) ? <Banknote className="w-3.5 h-3.5 text-slate-400" /> : <Landmark className="w-3.5 h-3.5 text-slate-400" />}
+                                  <span className="truncate max-w-[160px]">{accountLabel(acct)}</span>
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-[11px] font-bold text-slate-500">{expense.paymentMode || expense.mode}</td>
+                              <td className="px-4 py-3 text-right font-black text-blue-900 tabular-nums whitespace-nowrap">{expense.amount.toLocaleString('fr-FR')} DA</td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center justify-end gap-1">
+                                  {perm.modifier && (
+                                    <button onClick={() => handleEdit(expense)} title="Modifier" className="w-8 h-8 rounded-lg flex items-center justify-center text-blue-600 hover:bg-blue-50 transition-colors"><Edit2 className="w-4 h-4" /></button>
+                                  )}
+                                  {perm.imprimer && (
+                                    <button onClick={() => handlePrint(expense)} title="Imprimer" className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 transition-colors"><Printer className="w-4 h-4" /></button>
+                                  )}
+                                  {perm.supprimer && (
+                                    <button onClick={() => handleDelete(expense.id)} title="Supprimer" className="w-8 h-8 rounded-lg flex items-center justify-center text-red-600 hover:bg-red-50 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 bg-white rounded-3xl border border-slate-100">
+                  <TrendingDown className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+                  <p className="text-slate-350 font-black uppercase tracking-[0.3em] text-xs">Aucune dépense trouvée avec ces filtres</p>
+                </div>
+              )
+            )}
+
             {/* Cards Grid */}
+            {viewMode === "grid" && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredExpenses.length > 0 ? (
                 filteredExpenses.map((expense, index) => (
@@ -754,6 +837,7 @@ const Expenses = () => {
                 </div>
               )}
             </div>
+            )}
           </motion.div>
         ) : (
           <motion.div key="analytics" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="space-y-8">

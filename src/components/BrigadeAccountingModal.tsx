@@ -24,7 +24,9 @@ interface Justification {
   id: string;
   clientId: string;
   amount: number;
-  justificationType: 'CLIENT' | 'TAG' | 'TPE';
+  justificationType: 'CLIENT' | 'TAG' | 'TPE' | 'EXPENSE';
+  /** Description libre d'une dépense (justifie le reste sans client). */
+  notes?: string;
   /**
    * Le compte bancaire crédité par un TAG / TPE.
    *
@@ -116,12 +118,16 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       // Le libellé rattrape le compte des brigades dont la colonne a été perdue
       // (« TPE Naftal card » est resté écrit sur la pièce).
       bankAccountId: accountOfJustification(j, bankAccounts),
-      clientName: j.clientName, fuelType: j.fuelType, liters: j.liters,
+      clientName: j.clientName, notes: j.notes, fuelType: j.fuelType, liters: j.liters,
       pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
     }))
   );
-  // TPE / Tag justification entry mode
-  const [justifMode, setJustifMode] = useState<'CLIENT' | 'TAG' | 'TPE'>('CLIENT');
+  // Mode de justification du reste : dépense de brigade, bon/tag ou TPE.
+  const [justifMode, setJustifMode] = useState<'EXPENSE' | 'TAG' | 'TPE'>('EXPENSE');
+  // Saisie d'une dépense justifiée (nom obligatoire, description facultative).
+  const [expName, setExpName] = useState('');
+  const [expDesc, setExpDesc] = useState('');
+  const [expAmount, setExpAmount] = useState<number | ''>('');
   const [tpeClientName, setTpeClientName] = useState('');
   const [tpeBankAccountId, setTpeBankAccountId] = useState(bankAccounts[0]?.id || '');
   const [tpeFuelType, setTpeFuelType] = useState(Object.keys(settings.fuelPrices)[0] || 'SUPER');
@@ -297,6 +303,22 @@ const BrigadeAccountingModal: React.FC<Props> = ({
     setClientSearch('');
   };
 
+  // ── Justification par dépense ────────────────────────────────────────────────
+  const addExpenseJustification = () => {
+    if (!expName.trim() || !expAmount || +expAmount <= 0) return;
+    setJustifications(prev => [...prev, {
+      id: newId(),
+      clientId: '',
+      amount: +expAmount,
+      justificationType: 'EXPENSE',
+      clientName: expName.trim(),
+      notes: expDesc.trim() || undefined,
+    }]);
+    setExpName('');
+    setExpDesc('');
+    setExpAmount('');
+  };
+
   // ── TPE / Tag justification helpers ──────────────────────────────────────────
   const tpePricePerLiter = useMemo(() => settings.fuelPrices[tpeFuelType as FuelType] || 0, [settings, tpeFuelType]);
   const tpeAutoAmount = useMemo(() => (typeof tpeLiters === 'number' ? tpeLiters * tpePricePerLiter : 0), [tpeLiters, tpePricePerLiter]);
@@ -330,7 +352,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
         id: j.id, accountingId: '', clientId: j.clientId || '', amount: j.amount,
         clientType: client?.type, paymentMode: client?.paymentMode,
         justificationType: j.justificationType || 'CLIENT',
-        bankAccountId: j.bankAccountId,
+        bankAccountId: j.bankAccountId, notes: j.notes,
         clientName: j.clientName, fuelType: j.fuelType, liters: j.liters,
         pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
       };
@@ -1009,7 +1031,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
 
                   {/* Mode tabs */}
                   <div className="flex gap-2 p-1 bg-slate-100 rounded-2xl">
-                    {(['CLIENT', 'TAG', 'TPE'] as const).map(mode => (
+                    {(['EXPENSE', 'TAG', 'TPE'] as const).map(mode => (
                       <button
                         key={mode}
                         onClick={() => setJustifMode(mode)}
@@ -1020,103 +1042,50 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                             : "text-slate-500 hover:text-slate-700"
                         )}
                       >
-                        {mode === 'CLIENT' ? '👤 Client' : mode === 'TAG' ? '🏷️ Bon/Tag' : '💳 TPE'}
+                        {mode === 'EXPENSE' ? '🧾 Dépense' : mode === 'TAG' ? '🏷️ Bon/Tag' : '💳 TPE'}
                       </button>
                     ))}
                   </div>
 
-                  {/* CLIENT mode — existing search UI */}
-                  {justifMode === 'CLIENT' && (
-                    <div className="p-4 bg-blue-50 rounded-2xl border border-blue-200 space-y-3">
-                      <div className="flex gap-2 items-center">
-                        <div className="relative flex-1">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                          <input type="text" placeholder="Rechercher un client..." value={clientSearch}
-                            onChange={e => { setClientSearch(e.target.value); setSelectedClientId(''); }}
-                            className="w-full pl-9 pr-4 py-2.5 border border-blue-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400 bg-white" />
+                  {/* EXPENSE mode — une charge payée sur les espèces de la brigade */}
+                  {justifMode === 'EXPENSE' && (
+                    <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-200 space-y-3">
+                      <p className="text-[10px] font-black text-emerald-900 uppercase tracking-widest">Dépense de la brigade</p>
+                      <div>
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Nom de la dépense *</label>
+                        <input
+                          type="text"
+                          placeholder="Ex: Achat d'eau, réparation, pourboire..."
+                          value={expName}
+                          onChange={e => setExpName(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-emerald-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400 bg-white" />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Description (optionnel)</label>
+                        <input
+                          type="text"
+                          placeholder="Précisions sur la dépense..."
+                          value={expDesc}
+                          onChange={e => setExpDesc(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-emerald-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400 bg-white" />
+                      </div>
+                      <div className="flex gap-2 items-end">
+                        <div className="flex-1">
+                          <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Montant (DA) *</label>
+                          <input type="number" step="0.01" placeholder="0.00"
+                            className="w-full px-3 py-2.5 border border-emerald-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400 bg-white"
+                            value={expAmount}
+                            onChange={e => setExpAmount(parseFloat(e.target.value) || '')} />
                         </div>
-                        <button
-                          onClick={() => setShowCreateClientModal(true)}
-                          className="flex items-center gap-1.5 px-3 py-2.5 bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase hover:bg-blue-800 transition-colors shrink-0"
-                        >
-                          <Plus className="w-3.5 h-3.5" /> Nouveau Client
+                        <button onClick={addExpenseJustification}
+                          disabled={!expName.trim() || !expAmount || +expAmount <= 0}
+                          className="px-4 py-2.5 bg-emerald-600 disabled:opacity-50 text-white rounded-xl text-[10px] font-black uppercase hover:bg-emerald-700 transition-colors flex items-center gap-1 shrink-0">
+                          <Plus className="w-3.5 h-3.5" /> Ajouter
                         </button>
                       </div>
-                      {clientSearch && (
-                        <div className="space-y-1">
-                          {filteredClients.map(c => {
-                            // Ce que le client doit AUJOURD'HUI, lu sur ses pièces :
-                            // le même montant que sa fiche, et que le relevé imprimé.
-                            const st = standingOf(c);
-                            return (
-                            <button key={c.id} onClick={() => { setSelectedClientId(c.id); setClientSearch(c.name); }}
-                              className={cn("w-full px-3 py-2 text-left rounded-lg text-sm font-bold transition-colors flex items-center justify-between gap-2", selectedClientId === c.id ? "bg-blue-200 text-blue-900" : "hover:bg-blue-100 text-slate-700")}>
-                              <span className="min-w-0 truncate">
-                                {c.name} <span className="text-[10px] text-slate-400 ml-2">{c.type} · {c.paymentMode}</span>
-                              </span>
-                              <span className="text-right shrink-0 leading-tight">
-                                <span className={cn("block text-[10px] font-black", st.debt > 0 ? "text-red-600" : "text-slate-400")}>
-                                  Dette {money0(st.debt)}
-                                </span>
-                                {st.advance > 0 && (
-                                  <span className="block text-[9px] font-bold text-emerald-600">Avance {money0(st.advance)}</span>
-                                )}
-                              </span>
-                            </button>
-                            );
-                          })}
-                          {filteredClients.length === 0 && <p className="text-xs text-slate-400 px-3">Aucun client trouvé</p>}
-                        </div>
-                      )}
-                      {/* ─── Le compte du client choisi ───────────────────────
-                          Avant de porter un montant à son crédit, on lit ce
-                          qu'il doit déjà et ce qu'il a versé d'avance. Sans ce
-                          rappel, on justifiait à l'aveugle — et le seul chiffre
-                          que l'application montrait par ailleurs venait d'un
-                          compteur que la fiche du client contredisait. */}
-                      {selectedClientId && (() => {
-                        const c = clients.find(x => x.id === selectedClientId);
-                        if (!c) return null;
-                        const st = standingOf(c);
-                        const after = st.debt + (+currentClientAmount || 0);
-                        return (
-                          <div className="p-3 rounded-xl bg-white border border-blue-200 space-y-1.5">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Reste dû</span>
-                              <span className={cn("font-black", st.debt > 0 ? "text-red-600" : "text-slate-400")}>{money0(st.debt)}</span>
-                            </div>
-                            {st.advance > 0 && (
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Avance disponible</span>
-                                <span className="font-black text-emerald-600">{money0(st.advance)}</span>
-                              </div>
-                            )}
-                            {+currentClientAmount > 0 && (
-                              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
-                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Après ce bon</span>
-                                <span className="font-black text-blue-800">{money0(after)}</span>
-                              </div>
-                            )}
-                            {c.creditLimit > 0 && after > c.creditLimit && (
-                              <p className="flex items-center gap-1 text-[10px] font-black uppercase text-red-600">
-                                <AlertTriangle className="w-3 h-3" /> Plafond {money0(c.creditLimit)} dépassé de {money0(after - c.creditLimit)}
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })()}
-                      {selectedClientId && (
-                        <div className="flex gap-2 items-center">
-                          <input type="number" step="0.01" placeholder="Montant (DA)"
-                            className="flex-1 px-3 py-2.5 border border-blue-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400 bg-white"
-                            value={currentClientAmount}
-                            onChange={e => setCurrentClientAmount(parseFloat(e.target.value) || '')} />
-                          <button onClick={addJustification}
-                            className="px-4 py-2.5 bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase hover:bg-blue-800 transition-colors flex items-center gap-1">
-                            <Plus className="w-3.5 h-3.5" /> Ajouter
-                          </button>
-                        </div>
-                      )}
+                      <p className="text-[9px] font-bold text-slate-400">
+                        La dépense justifie le reste au même titre qu'un bon : elle sort des espèces de la brigade.
+                      </p>
                     </div>
                   )}
 
@@ -1238,20 +1207,23 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                   {justifications.map(j => {
                     const client = clients.find(c => c.id === j.clientId);
                     const isTPE = j.justificationType === 'TPE' || j.justificationType === 'TAG';
+                    const isExpense = j.justificationType === 'EXPENSE';
                     return (
                       <div key={j.id} className={cn(
                         "flex items-center gap-3 p-3 rounded-xl border",
-                        isTPE ? "bg-amber-50 border-amber-200" : "bg-white border-slate-200"
+                        isTPE ? "bg-amber-50 border-amber-200" : isExpense ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"
                       )}>
                         <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-black shrink-0"
-                          style={{ background: isTPE ? '#f59e0b20' : '#dbeafe', color: isTPE ? '#b45309' : '#1e40af' }}>
-                          {j.justificationType === 'TPE' ? '💳' : j.justificationType === 'TAG' ? '🏷️' : '👤'}
+                          style={{ background: isTPE ? '#f59e0b20' : isExpense ? '#10b98120' : '#dbeafe', color: isTPE ? '#b45309' : isExpense ? '#047857' : '#1e40af' }}>
+                          {j.justificationType === 'TPE' ? '💳' : j.justificationType === 'TAG' ? '🏷️' : isExpense ? '🧾' : '👤'}
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="font-black text-slate-800 text-sm">
-                            {isTPE ? (j.clientName || `Sans nom · ${j.fuelType}`) : (client?.name || j.clientId)}
+                            {isExpense ? (j.clientName || 'Dépense') : isTPE ? (j.clientName || `Sans nom · ${j.fuelType}`) : (client?.name || j.clientId)}
                           </p>
-                          {isTPE ? (
+                          {isExpense ? (
+                            <p className="text-[10px] text-slate-400">Dépense de brigade{j.notes ? ` · ${j.notes}` : ''}</p>
+                          ) : isTPE ? (
                             <p className="text-[10px] text-slate-400">{j.liters?.toFixed(2)} L × {j.pricePerLiter?.toFixed(2)} DA/L</p>
                           ) : (
                             <p className="text-[10px] text-slate-400">
