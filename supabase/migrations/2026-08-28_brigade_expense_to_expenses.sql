@@ -10,6 +10,10 @@
 --  résultat du Carburant. De l'argent sortait de la station sans laisser de pièce.
 --
 --  CE QUE FAIT CETTE MIGRATION
+--    0. Le RATTRAPAGE des colonnes que les migrations précédentes auraient dû poser
+--       sur `expenses` — `account_id`, `bordereau_number` et surtout `part`. Sans
+--       `part`, la reprise de l'étape 3 échouait sur
+--       « column "part" of relation "expenses" does not exist ».
 --    1. `brigade_accounting_justifications.expense_category` — la catégorie
 --       (facultative) de la dépense, celle de l'écran Dépenses.
 --    2. `expenses.brigade_id` / `.brigade_justification_id` / `.pompiste_id` — la
@@ -26,8 +30,68 @@
 --  les écarte de toutes ses lectures de caisse (`isBrigadeExpense`).
 --
 --  Script IDEMPOTENT : sans risque à réexécuter.
---  À lancer dans Supabase → Database → SQL Editor.
+--  À lancer EN UNE FOIS dans Supabase → Database → SQL Editor.
 -- =====================================================================================
+
+-- =====================================================================================
+--  0. RATTRAPAGE — LES COLONNES QUE `expenses` DOIT AVOIR
+--
+--     Ce bloc reprend, sans rien casser, ce que les migrations 2026-08-01 et
+--     2026-08-16 posaient. Si elles ont déjà été appliquées, il ne fait RIEN :
+--     `add column if not exists` ne touche pas une colonne existante, et les
+--     `update` ci-dessous ne visent que les lignes restées vides.
+--
+--     `part` est l'activité qui SUPPORTE la dépense (carburant, cafeteria, lavage,
+--     systeme). C'est ce choix qui décide de quelle caisse sortent les espèces —
+--     sans lui, une dépense de Cafétéria vidait le tiroir du Carburant.
+-- =====================================================================================
+
+alter table public.expenses add column if not exists account_id       text;
+alter table public.expenses add column if not exists bordereau_number text;
+alter table public.expenses add column if not exists part             text;
+
+-- Toute dépense enregistrée avant les comptes bancaires a été payée en espèces.
+update public.expenses set account_id = 'CAISSE' where account_id is null;
+
+-- Les dépenses d'avant l'imputation étaient toutes comptées au Carburant :
+-- c'est là qu'elles restent.
+update public.expenses set part = 'carburant' where part is null;
+
+alter table public.expenses drop constraint if exists expenses_part_check;
+alter table public.expenses
+  add constraint expenses_part_check
+  check (part is null or part in ('carburant', 'cafeteria', 'lavage', 'systeme'));
+
+create index if not exists idx_expenses_account on public.expenses (account_id);
+create index if not exists idx_expenses_date    on public.expenses (date desc);
+create index if not exists idx_expenses_part    on public.expenses (part);
+
+comment on column public.expenses.part is
+  'Activité qui supporte la dépense : carburant | cafeteria | lavage | systeme (Finance). '
+  'Payée en espèces, la dépense sort de la caisse de CETTE activité — '
+  'account_id = CAISSE_CARBURANT / CAISSE_CAFETERIA / CAISSE_LAVAGE, ou CAISSE pour la Finance.';
+
+-- Le coffre de l'activité, et non plus la caisse générale, pour les dépenses réglées
+-- EN ESPÈCES. Une dépense réglée par chèque ou virement garde son compte bancaire.
+update public.expenses e
+   set account_id = case e.part
+                      when 'carburant' then 'CAISSE_CARBURANT'
+                      when 'cafeteria' then 'CAISSE_CAFETERIA'
+                      when 'lavage'    then 'CAISSE_LAVAGE'
+                      else 'CAISSE'
+                    end
+ where coalesce(e.account_id, 'CAISSE') in
+       ('CAISSE', 'CAISSE_CARBURANT', 'CAISSE_CAFETERIA', 'CAISSE_LAVAGE');
+
+-- La ligne du grand livre suit la dépense : même compte débité, même activité.
+update public.treasury_transactions t
+   set account_from = e.account_id,
+       part         = e.part
+  from public.expenses e
+ where t.ref_type = 'expense'
+   and t.ref_id   = e.id
+   and coalesce(t.account_from, 'CAISSE') in
+       ('CAISSE', 'CAISSE_CARBURANT', 'CAISSE_CAFETERIA', 'CAISSE_LAVAGE');
 
 -- =====================================================================================
 --  1. LA CATÉGORIE DE LA JUSTIFICATION « DÉPENSE »
@@ -116,9 +180,9 @@ on conflict (id) do nothing;
 -- =====================================================================================
 --  4. MÉNAGE — AUCUNE LIGNE DE TRÉSORERIE POUR CES DÉPENSES
 --
---     Si une dépense de brigade a reçu une ligne de grand livre (édition manuelle
---     depuis l'écran Dépenses avant cette version), elle sortait le même argent une
---     seconde fois. On la retire.
+--     Si une dépense de brigade a reçu une ligne de grand livre (l'étape 0 ci-dessus
+--     en réaffecte, une édition manuelle depuis l'écran Dépenses en créait), elle
+--     sortait le même argent une seconde fois. On la retire.
 -- =====================================================================================
 
 delete from public.treasury_transactions t
@@ -149,3 +213,17 @@ comment on view public.v_brigade_expenses is
   'Les dépenses nées d''une justification de brigade. Leur total doit égaler la somme '
   'des justifications justification_type = ''EXPENSE''. Elles ne sortent d''aucune caisse : '
   'leur montant manque déjà aux espèces remises par la brigade.';
+
+-- Contrôle : ce que chaque caisse a réellement payé en dépenses.
+create or replace view public.v_expenses_by_part as
+  select coalesce(e.part, 'carburant')            as part,
+         coalesce(e.account_id, 'CAISSE')         as account_id,
+         count(*)                                 as nb,
+         sum(e.amount)                            as total
+    from public.expenses e
+   group by 1, 2
+   order by 1, 2;
+
+comment on view public.v_expenses_by_part is
+  'Dépenses par activité et par compte débité — sert à vérifier qu''aucune '
+  'dépense d''activité ne sort plus de la caisse générale.';
