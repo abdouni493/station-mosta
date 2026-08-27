@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, isBrigadeExpense } from "../store/AppContext";
 import { computeCarburantSales, derivedPumpStats, derivedTankSales } from "../lib/carburantSales";
 import { exportElementToPdf, printDocumentMode } from "../lib/pdf";
 import { brigadeNozzleRows, brigadePompisteGroups, justifiedByPompiste } from "../lib/brigadeCalc";
@@ -402,7 +402,17 @@ const DailyReport = () => {
     const shopTotals = shopRows.reduce((a, r) => ({ qty: a.qty + r.qty, selling: a.selling + r.selling, buy: a.buy + r.buy, gain: a.gain + r.gain }), { qty: 0, selling: 0, buy: 0, gain: 0 });
 
     /* D. Dépenses — station expenses + worker acomptes + salaries */
-    const expenseRows = selExp.map(e => ({ kind: 'Dépense', name: e.category, description: e.description, amount: e.amount, date: e.date }));
+    // Une dépense née d'une brigade porte SON origine : elle est une charge
+    // comme une autre, mais son argent n'est jamais passé par la caisse (la
+    // brigade a remis son montant en moins) — voir `lib/brigadeExpenses.ts`.
+    const expenseRows = selExp.map(e => ({
+      kind: isBrigadeExpense(e) ? 'Dépense brigade' : 'Dépense',
+      name: e.category,
+      description: [e.description, isBrigadeExpense(e) ? e.recipient : null].filter(Boolean).join(' · '),
+      amount: e.amount, date: e.date,
+    }));
+    // Ce que les dépenses ont réellement SORTI d'une caisse.
+    const brigadeExpenseTotal = selExp.filter(isBrigadeExpense).reduce((s2, e) => s2 + (e.amount || 0), 0);
     const collectAcomptes = (list: any[], label: string) => list.flatMap((w: any) =>
       (w.acomptes || []).filter((a: any) => a.date && inRange(a.date)).map((a: any) => ({ kind: 'Acompte', name: `${w.name} (${label})`, description: a.description || 'Acompte', amount: a.amount, date: a.date })));
     const acompteRows = [
@@ -418,7 +428,9 @@ const DailyReport = () => {
     /* E. Récapitulation — « Espèces (toutes ventes) » calculé exactement comme
        décrit sur la fiche : espèces reçues carburant + total vente magasin,
        moins le total des dépenses. */
-    const recapCash = brigadeCash + shopTotals.selling - allExpenseTotal;
+    // Les dépenses de brigade sont DÉJÀ retranchées des espèces remises : les
+    // soustraire ici les compterait une seconde fois.
+    const recapCash = brigadeCash + shopTotals.selling - (allExpenseTotal - brigadeExpenseTotal);
 
     const comparisonAlerts: any[] = [];
     const brigadeChefById: Record<string, string> = {};
@@ -1140,7 +1152,7 @@ const DailyReport = () => {
                                   </td>
                                   <td className="px-3 py-1.5 border border-slate-200">
                                     {j.justificationType === 'EXPENSE'
-                                      ? [j.clientName, j.notes].filter(Boolean).join(' — ') || '—'
+                                      ? [j.clientName, j.expenseCategory, j.notes].filter(Boolean).join(' — ') || '—'
                                       : (j.notes || j.clientName || '—')}
                                   </td>
                                   <td className="px-3 py-1.5 tabular-nums border border-slate-200">{(j.liters || 0).toFixed(2)}</td>
@@ -1564,7 +1576,7 @@ const DailyReport = () => {
                     {f.allExpenseRows.length === 0 && (<tr><TD>Aucune dépense</TD><TD>—</TD><TD align="right">0</TD><TD align="right">—</TD></tr>)}
                     {f.allExpenseRows.map((r, i) => (
                       <tr key={i} style={{ background: i % 2 ? '#f8fafc' : '#fff' }}>
-                        <TD bold color={r.kind === 'Salaire' ? '#4338ca' : r.kind === 'Acompte' ? '#b45309' : '#0f172a'}>{r.kind}</TD>
+                        <TD bold color={r.kind === 'Salaire' ? '#4338ca' : r.kind === 'Acompte' ? '#b45309' : r.kind === 'Dépense brigade' ? '#047857' : '#0f172a'}>{r.kind}</TD>
                         <TD>{r.name}{r.description ? <span style={{ color: '#94a3b8' }}> — {r.description}</span> : null}</TD>
                         <TD align="right" bold color="#dc2626">{da(r.amount)} DA</TD>
                         <TD align="right">{r.date}</TD>

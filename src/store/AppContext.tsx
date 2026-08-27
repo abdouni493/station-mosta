@@ -374,6 +374,12 @@ export interface BrigadeAccountingJustification {
   // sans client ni compte bancaire.
   justificationType?: 'CLIENT' | 'TAG' | 'TPE' | 'EXPENSE'; // default 'CLIENT'
   clientName?: string;    // optional free-text name for TAG/TPE (or the expense label)
+  /**
+   * La catégorie d'une justification EXPENSE — celle de l'écran Dépenses
+   * (`settings.expenseCategories`). Facultative : sans elle, la dépense écrite
+   * dans l'écran Dépenses est classée « Dépense brigade ».
+   */
+  expenseCategory?: string;
   fuelType?: string;      // e.g. 'SUPER', 'DIESEL'
   liters?: number;        // how many liters
   pricePerLiter?: number; // auto-filled from settings
@@ -573,6 +579,24 @@ export interface Expense {
   receipt?: string;   // URL or base64
   receiptUrl?: string;
   createdBy?: string;
+  /**
+   * ─── UNE DÉPENSE NÉE D'UNE BRIGADE ──────────────────────────────────────
+   *
+   * La comptabilité d'une brigade peut justifier son reste « par dépense » :
+   * le pompiste a payé quelque chose avec les espèces de la brigade et remet
+   * d'autant moins. Cette dépense-là est alors écrite ICI, dans l'écran
+   * Dépenses, pour qu'elle pèse dans le résultat du Carburant comme n'importe
+   * quelle autre charge — et pour qu'on puisse la retrouver.
+   *
+   * Elle ne SORT en revanche d'AUCUNE caisse : l'argent n'y est jamais entré,
+   * puisque la brigade a remis son montant en moins. Toute lecture de
+   * trésorerie doit donc l'écarter — voir `isBrigadeExpense`.
+   */
+  brigadeId?: string;
+  /** La justification de brigade dont elle est née (son propre `id`). */
+  brigadeJustificationId?: string;
+  /** Le pompiste sur le lot duquel la dépense a été justifiée. */
+  pompisteId?: string;
 }
 
 // ─── Treasury: general cash box + bank accounts ────────────────────────────────
@@ -671,6 +695,20 @@ export const partOfCashAccount = (id?: string): TreasuryPart | undefined =>
  */
 export const expensePartOf = (e: { part?: string | null } | null | undefined): TreasuryPart =>
   ((e?.part as TreasuryPart) || 'carburant');
+
+/**
+ * Une dépense née d'une justification de brigade.
+ *
+ * Son montant est DÉJÀ retranché des espèces remises par la brigade : le
+ * pompiste l'a réglée sur le tiroir avant de rendre le reste. La retirer une
+ * seconde fois d'une caisse compterait le même argent deux fois — toutes les
+ * lectures de trésorerie (caisse Carburant, Caisse Générale, journal) doivent
+ * donc l'ignorer. Elle reste en revanche une CHARGE à part entière dans les
+ * rapports de résultat.
+ */
+export const isBrigadeExpense = (
+  e: { brigadeId?: string | null } | null | undefined,
+): boolean => !!(e && e.brigadeId);
 
 /**
  * One line of the station's money ledger. `accountFrom` / `accountTo` hold
@@ -1506,6 +1544,10 @@ function appReducer(state: AppState, action: AppAction): AppState {
         // brigade dont plus aucune pièce n'existait.
         treasuryTransactions: (state.treasuryTransactions || []).filter(
           t => !(t.refType === 'brigade' && t.refId === action.payload)),
+        // Les dépenses justifiées sur cette brigade n'ont plus de pièce : elles
+        // s'en vont avec elle, sans quoi l'écran Dépenses garderait une charge
+        // rattachée à une brigade qui n'existe plus.
+        expenses: (state.expenses || []).filter(e => e.brigadeId !== action.payload),
       };
 
     case 'ADD_FUEL_SALE':    return { ...state, fuelSales: [...state.fuelSales, action.payload] };
@@ -1834,6 +1876,7 @@ async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccoun
         notes: jr.notes, justificationType: jr.justification_type || 'CLIENT', bankAccountId: jr.bank_account_id ?? undefined,
         clientName: jr.client_name, fuelType: jr.fuel_type, liters: +jr.liters || 0,
         pricePerLiter: +jr.price_per_liter || 0, trackId: jr.track_id, pompisteId: jr.pompiste_id,
+        expenseCategory: jr.expense_category ?? undefined,
       });
     });
   }
@@ -2079,7 +2122,7 @@ function buildPurchases(rows: any[], itemRows: any[], paymentRows: any[]): Purch
   });
 }
 function mapExpense(r: any): Expense {
-  return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, bordereauNumber: r.bordereau_number ?? undefined, accountId: r.account_id ?? undefined, part: (r.part || 'carburant') as TreasuryPart, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by };
+  return { id: r.id, date: r.date, category: r.category, amount: +r.amount, description: r.description, paymentMode: r.payment_mode, chequeNumber: r.cheque_number, bordereauNumber: r.bordereau_number ?? undefined, accountId: r.account_id ?? undefined, part: (r.part || 'carburant') as TreasuryPart, paidBy: r.paid_by, recipient: r.recipient, status: r.status, receipt: r.receipt_url, receiptUrl: r.receipt_url, createdBy: r.created_by, brigadeId: r.brigade_id ?? undefined, brigadeJustificationId: r.brigade_justification_id ?? undefined, pompisteId: r.pompiste_id ?? undefined };
 }
 function mapBankAccount(r: any): BankAccount {
   return {
@@ -2208,6 +2251,11 @@ async function cleanBrigadeDependencies(brigadeId: string): Promise<void> {
   //    bancaires, sans plus aucune pièce pour l'expliquer.
   await supabase.from('treasury_transactions').delete()
     .eq('ref_type', 'brigade').eq('ref_id', brigadeId);
+  // 8. Les dépenses justifiées sur cette brigade (`lib/brigadeExpenses.ts`).
+  //    La colonne peut ne pas exister encore : l'erreur ne doit pas empêcher la
+  //    suppression de la brigade elle-même.
+  const { error: expErr } = await supabase.from('expenses').delete().eq('brigade_id', brigadeId);
+  if (expErr) console.warn('[brigade] dépenses de brigade non supprimées :', expErr.message);
 }
 
 // ─── Supabase sync function (standalone, not a hook) ─────────────────────────
@@ -2377,6 +2425,7 @@ async function syncToSupabase(action: AppAction): Promise<void> {
             notes: j.notes,
             justification_type: j.justificationType || 'CLIENT', bank_account_id: nz(j.bankAccountId),
             client_name: nz(j.clientName),
+            expense_category: nz(j.expenseCategory),
             fuel_type: nz(j.fuelType),
             liters: j.liters || 0,
             price_per_liter: j.pricePerLiter || 0,
@@ -2455,6 +2504,7 @@ async function syncToSupabase(action: AppAction): Promise<void> {
             notes: j.notes,
             justification_type: j.justificationType || 'CLIENT', bank_account_id: nz(j.bankAccountId),
             client_name: nz(j.clientName),
+            expense_category: nz(j.expenseCategory),
             fuel_type: nz(j.fuelType),
             liters: j.liters || 0,
             price_per_liter: j.pricePerLiter || 0,
@@ -2657,10 +2707,10 @@ async function syncToSupabase(action: AppAction): Promise<void> {
         break;
       case 'DELETE_PURCHASE': await db.deletePurchase(action.payload); break;
       case 'ADD_EXPENSE':
-        await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy) });
+        await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy), brigade_id: nz(action.payload.brigadeId), brigade_justification_id: nz(action.payload.brigadeJustificationId), pompiste_id: nz(action.payload.pompisteId) });
         break;
       case 'UPDATE_EXPENSE':
-        await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl });
+        await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: (action.payload as any).receiptUrl, brigade_id: nz(action.payload.brigadeId), brigade_justification_id: nz(action.payload.brigadeJustificationId), pompiste_id: nz(action.payload.pompisteId) });
         break;
       case 'DELETE_EXPENSE': await db.deleteExpense(action.payload); break;
 
@@ -4065,10 +4115,10 @@ export function useSupabaseDispatch() {
 
         // ── Expenses ───────────────────────────────────────────────────────
         case 'ADD_EXPENSE':
-          await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy) });
+          await db.addExpense({ id: action.payload.id, date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl || action.payload.receipt, created_by: nz(action.payload.createdBy), brigade_id: nz(action.payload.brigadeId), brigade_justification_id: nz(action.payload.brigadeJustificationId), pompiste_id: nz(action.payload.pompisteId) });
           break;
         case 'UPDATE_EXPENSE':
-          await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl });
+          await db.updateExpense(action.payload.id, { date: action.payload.date, category: action.payload.category, amount: action.payload.amount, description: action.payload.description, payment_mode: action.payload.paymentMode, cheque_number: action.payload.chequeNumber, bordereau_number: nz(action.payload.bordereauNumber), account_id: nz(action.payload.accountId), part: expensePartOf(action.payload), paid_by: action.payload.paidBy, recipient: action.payload.recipient, status: action.payload.status, receipt_url: action.payload.receiptUrl, brigade_id: nz(action.payload.brigadeId), brigade_justification_id: nz(action.payload.brigadeJustificationId), pompiste_id: nz(action.payload.pompisteId) });
           break;
         case 'DELETE_EXPENSE':
           await db.deleteExpense(action.payload);

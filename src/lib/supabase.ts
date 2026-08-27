@@ -828,36 +828,52 @@ export async function dbUpdate<T extends object>(
 }
 
 /**
- * La base ne connaît-elle pas encore la colonne `part` des dépenses ?
- * PostgREST répond « Could not find the 'part' column … in the schema cache »
+ * ─── LA COLONNE QUE LA BASE NE CONNAÎT PAS ENCORE ───────────────────────────
+ *
+ * Une migration en retard ne doit pas faire PERDRE une écriture. PostgREST
+ * répond « Could not find the 'part' column … in the schema cache »
  * (PGRST204) et Postgres « column "part" of relation "expenses" does not
- * exist » (42703) : les deux disent la même chose.
+ * exist » (42703) : les deux NOMMENT la colonne fautive entre guillemets. On la
+ * lit pour pouvoir réessayer sans elle.
+ *
+ * Rend `null` quand l'erreur n'est pas celle d'une colonne manquante : toute
+ * autre erreur doit remonter telle quelle.
  */
-const isMissingPartColumn = (err: unknown): boolean => {
+const missingColumnName = (err: unknown): string | null => {
   const msg = String((err as any)?.message || '');
-  return /'?\bpart\b'?/.test(msg) && /(column|schema cache)/i.test(msg);
+  if (!/(does not exist|could not find|schema cache)/i.test(msg)) return null;
+  const m = msg.match(/['\"]([a-z0-9_]+)['\"]/i);
+  return m ? m[1] : null;
 };
 
 /**
- * Écrit une dépense, et retente SANS son imputation quand la colonne `part`
- * n'existe pas encore. Voir `db.addExpense`.
+ * Écrit une ligne, et retente SANS la colonne que la base ignore encore —
+ * jusqu'à trois colonnes en retard. Sert aux dépenses (`part`, puis la
+ * provenance de brigade) et aux justifications de brigade (`expense_category`)
+ * : la pièce est enregistrée, seule la nouveauté attend sa migration, et la
+ * console dit laquelle. Toute autre erreur lève, comme partout ailleurs.
  */
-async function writeExpense<T>(
-  write: () => Promise<T>,
+async function writeTolerant<T>(
+  label: string,
   row: object,
-  retryWithout: (rest: object) => Promise<T>,
+  write: (payload: object) => Promise<T>,
 ): Promise<T> {
-  try {
-    return await write();
-  } catch (err) {
-    if (!isMissingPartColumn(err)) throw err;
-    const { part, ...rest } = row as any;
-    console.warn(
-      '[expenses] La colonne `part` est absente : appliquez la migration '
-      + '2026-08-16_expense_part_and_part_cash.sql. La dépense est enregistrée '
-      + 'sans son imputation à une activité.');
-    return retryWithout(rest);
+  let payload: any = row;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await write(payload);
+    } catch (err) {
+      const col = missingColumnName(err);
+      if (!col || !(col in payload)) throw err;
+      const { [col]: _dropped, ...rest } = payload;
+      payload = rest;
+      console.warn(
+        `[${label}] La colonne \`${col}\` est absente de la base : appliquez les `
+        + 'migrations en attente (dossier supabase/migrations). La ligne est '
+        + 'enregistrée sans cette information.');
+    }
   }
+  return write(payload);
 }
 
 export async function dbDelete(tableName: string, id: string) {
@@ -1122,7 +1138,9 @@ export const db = {
   updateBrigadeAccounting: (id: string, a: object) => dbUpdate('brigade_accounting', id, a),
   getBrigadeAccountingJustifications: (accountingId: string) =>
     dbSelect('brigade_accounting_justifications', { accounting_id: accountingId }),
-  addBrigadeAccountingJustification: (j: object) => dbInsert('brigade_accounting_justifications', j),
+  addBrigadeAccountingJustification: (j: object) =>
+    writeTolerant('brigade_accounting_justifications', j,
+      row => dbInsert('brigade_accounting_justifications', row)),
 
   // Fuel Sales
   getFuelSales:   () => dbSelectAll<any>('fuel_sales'),
@@ -1218,8 +1236,8 @@ export const db = {
   // Paginé : les dépenses sortent des caisses, un plafond de lecture les
   // aurait fait disparaître du solde sans rien signaler.
   getExpenses:   () => dbSelectAll<any>('expenses'),
-  addExpense:    (e: object) => writeExpense(() => dbInsert('expenses', e), e, rest => dbInsert('expenses', rest)),
-  updateExpense: (id: string, e: object) => writeExpense(() => dbUpdate('expenses', id, e), e, rest => dbUpdate('expenses', id, rest)),
+  addExpense:    (e: object) => writeTolerant('expenses', e, row => dbInsert('expenses', row)),
+  updateExpense: (id: string, e: object) => writeTolerant('expenses', e, row => dbUpdate('expenses', id, row)),
   deleteExpense: (id: string) => dbDelete('expenses', id),
 
   // Inventories

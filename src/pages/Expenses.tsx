@@ -78,7 +78,10 @@ const PART_LABEL: Record<string, string> = Object.fromEntries(PARTS.map(p => [p.
 const Expenses = () => {
   const { t } = useTranslation();
   const state = useAppState();
-  const { expenses, settings, bankAccounts, treasuryTransactions, currentUserName } = state;
+  const {
+    expenses, settings, bankAccounts, treasuryTransactions, currentUserName,
+    brigades = [], brigadeChefs = [], pompistes = [],
+  } = state;
   const perm = useModulePermission('Dépenses');
   const dispatch = useAppDispatch();
   const biz = useBizAll();
@@ -107,6 +110,30 @@ const Expenses = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, biz, treasuryTransactions, expenses]);
+
+  /**
+   * ─── LA BRIGADE QUI A PRODUIT LA DÉPENSE ───────────────────────────────────
+   *
+   * Une brigade peut justifier son reste « par dépense » : le pompiste a payé
+   * quelque chose avec les espèces de la brigade. Cette dépense-là arrive donc
+   * ici toute seule — et sans dire d'où elle vient, elle serait indistinguable
+   * d'une saisie manuelle. On lit sa fiche pour l'afficher sur sa carte.
+   *
+   * Elle ne sort d'AUCUNE caisse : la brigade a remis son montant en moins
+   * (voir `lib/brigadeExpenses.ts` et `isBrigadeExpense`).
+   */
+  const brigadeOf = (e: any) => {
+    if (!e?.brigadeId) return null;
+    const b = brigades.find(x => x.id === e.brigadeId);
+    const pompiste = pompistes.find(p => p.id === e.pompisteId)?.name;
+    const chef = b ? brigadeChefs.find(c => c.id === b.chefId)?.name : undefined;
+    return {
+      brigade: b,
+      label: b ? `Brigade ${b.shift || ''} du ${new Date(b.date).toLocaleDateString('fr-FR')}`.replace('  ', ' ')
+        : 'Brigade supprimée',
+      chef, pompiste,
+    };
+  };
 
   /** Label of the account an expense was paid from. */
   const accountLabel = (id?: string) =>
@@ -335,7 +362,10 @@ const Expenses = () => {
     treasuryTransactions
       .filter(t => t.refType === 'expense' && t.refId === id)
       .forEach(t => dispatch({ type: 'DELETE_TREASURY_TX', payload: t.id }));
-    if (amount > 0) {
+    // Une dépense née d'une brigade n'écrit AUCUNE ligne de trésorerie : son
+    // montant manque déjà aux espèces remises par la brigade. Lui en donner une
+    // ferait sortir le même argent une seconde fois (`lib/brigadeExpenses.ts`).
+    if (amount > 0 && !payload.brigadeId) {
       const tx: TreasuryTransaction = {
         id: newId(),
         date: new Date(formData.date).toISOString(),
@@ -657,6 +687,17 @@ const Expenses = () => {
                               <td className="px-4 py-3">
                                 <p className="font-black text-blue-900 uppercase tracking-tight text-xs">{expense.description}</p>
                                 {expense.recipient && <p className="text-[10px] text-slate-400 font-bold">{expense.recipient}</p>}
+                                {(() => {
+                                  const bi = brigadeOf(expense);
+                                  if (!bi) return null;
+                                  return (
+                                    <p className="mt-1 inline-flex items-center gap-1 text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                      ⛽ {bi.label}
+                                      {bi.pompiste ? ` · ${bi.pompiste}` : ''}
+                                      {bi.chef ? ` · Chef ${bi.chef}` : ''}
+                                    </p>
+                                  );
+                                })()}
                               </td>
                               <td className="px-4 py-3">
                                 <span className="text-[9px] font-black uppercase px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100">{expense.category}</span>
@@ -811,6 +852,24 @@ const Expenses = () => {
                           <span className="truncate">{expense.recipient}</span>
                         </div>
                       )}
+                      {(() => {
+                        const bi = brigadeOf(expense);
+                        if (!bi) return null;
+                        return (
+                          <div className="pt-2 mt-1 border-t border-slate-200/70 space-y-1 text-emerald-700">
+                            <p className="text-[9px] font-black uppercase tracking-widest">Justifiée sur une brigade</p>
+                            <p className="normal-case tracking-normal font-bold text-[10px]">{bi.label}</p>
+                            {(bi.pompiste || bi.chef) && (
+                              <p className="normal-case tracking-normal text-[10px] text-slate-500">
+                                {[bi.pompiste && `Pompiste ${bi.pompiste}`, bi.chef && `Chef ${bi.chef}`].filter(Boolean).join(' · ')}
+                              </p>
+                            )}
+                            <p className="normal-case tracking-normal text-[9px] text-slate-400">
+                              Payée sur les espèces de la brigade — la caisse n'est pas débitée une seconde fois.
+                            </p>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Amount Footer */}
@@ -990,6 +1049,26 @@ const Expenses = () => {
 
               <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
                 <section className="space-y-6">
+                  {/* Une dépense de brigade est le REFLET de sa justification :
+                      la corriger ici ne tient que jusqu'au prochain
+                      enregistrement de la brigade, qui la réécrit. */}
+                  {(() => {
+                    const bi = brigadeOf(selectedExpense);
+                    if (!bi) return null;
+                    return (
+                      <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 not-italic">
+                        <p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest">Dépense justifiée sur une brigade</p>
+                        <p className="text-xs font-bold text-emerald-900 mt-1">
+                          {bi.label}{bi.pompiste ? ` · Pompiste ${bi.pompiste}` : ''}{bi.chef ? ` · Chef ${bi.chef}` : ''}
+                        </p>
+                        <p className="text-[10px] font-semibold text-emerald-700/80 mt-1.5">
+                          Elle a été payée sur les espèces de la brigade : aucune caisse n'est débitée ici.
+                          Corrigez-la de préférence dans la comptabilité de la brigade — un nouvel
+                          enregistrement de celle-ci réécrira cette ligne.
+                        </p>
+                      </div>
+                    );
+                  })()}
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                     <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Informations Principales</h4>
                     <button onClick={handleAddCategory} className="text-[10px] font-black text-blue-900 uppercase tracking-widest flex items-center gap-1.5 hover:underline">

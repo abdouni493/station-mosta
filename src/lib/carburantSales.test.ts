@@ -166,6 +166,25 @@ check("celle de la Finance non plus",
 check('seule la dépense Carburant en espèces y figure',
   cash.lines.filter(l => l.nature === 'Dépense').map(l => l.id), ['exp-E1']);
 
+console.log("\nUne dépense justifiée SUR une brigade ne sort d'aucune caisse");
+// Le pompiste l'a payée avec les espèces de la brigade : `cashReceived` est
+// déjà plus bas d'autant. La retrancher ici sortirait le même argent deux fois.
+const appBrigadeExp = {
+  ...app,
+  expenses: [
+    ...app.expenses,
+    {
+      id: 'EB1', date: '2026-08-09', category: 'Entretien', amount: 7_000,
+      description: 'Achat eau', part: 'carburant', accountId: 'CAISSE_CARBURANT',
+      brigadeId: 'B1', brigadeJustificationId: 'EB1', pompisteId: 'P1',
+    },
+  ],
+};
+const cashBrigadeExp = computeCarburantCash(appBrigadeExp);
+check('le solde de la caisse ne bouge pas', cashBrigadeExp.balance, cash.balance);
+check("elle n'apparaît pas parmi les sorties de caisse",
+  cashBrigadeExp.lines.some(l => l.id === 'exp-EB1'), false);
+
 console.log("\nUn dépôt imputé à une activité entre bien dans SA caisse");
 check('le dépôt Carburant est compté', cash.deposits, 40_000);
 check('le retrait Carburant est compté', cash.withdrawals, 6_000);

@@ -733,19 +733,6 @@ function ReparationForm({
             </Field>
           </div>
 
-          {/* ── Le client, puis SA voiture ─────────────────────────────────
-              Recherche par nom ou téléphone, parc du client proposé, et le
-              kilométrage relevé sur place. La saisie libre reste disponible :
-              un client de passage n'a pas de fiche. */}
-          <ClientCarPicker
-            clients={clients}
-            clientId={clientId}
-            onClientId={setClientId}
-            car={car}
-            onCar={setCar}
-            onCreateClient={() => setShowClient(true)}
-            passageLabel={PASSAGE} />
-
           {/* ── Prestations ─────────────────────────────────────────────────── */}
           <div className="rounded-2xl border border-slate-200 overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200">
@@ -846,10 +833,6 @@ function ReparationForm({
             </div>
           </div>
 
-          <Field label="Description du problème / observations">
-            <Textarea value={problem} onChange={e => setProblem(e.target.value)} placeholder="Décrivez le travail à réaliser…" />
-          </Field>
-
           {/* Used products — search by name or barcode */}
           <div>
             <label className="label-field">Produits utilisés (déduits du stock)</label>
@@ -901,6 +884,29 @@ function ReparationForm({
               </div>
             )}
           </div>
+
+          {/* ── Le client, puis SA voiture ─────────────────────────────────
+              Recherche par nom ou téléphone, parc du client proposé, et le
+              kilométrage relevé sur place. La saisie libre reste disponible :
+              un client de passage n'a pas de fiche.
+
+              Il vient APRÈS le travail : on saisit d'abord ce qui a été fait
+              et ce qui a été consommé — c'est l'ordre du garage, et c'est
+              seulement une fois le total connu qu'on cherche à qui le
+              facturer. Le demander en premier obligeait à interrompre la
+              saisie pour aller chercher une fiche client. */}
+          <ClientCarPicker
+            clients={clients}
+            clientId={clientId}
+            onClientId={setClientId}
+            car={car}
+            onCar={setCar}
+            onCreateClient={() => setShowClient(true)}
+            passageLabel={PASSAGE} />
+
+          <Field label="Description du problème / observations">
+            <Textarea value={problem} onChange={e => setProblem(e.target.value)} placeholder="Décrivez le travail à réaliser…" />
+          </Field>
 
           {/* ── Remise ──────────────────────────────────────────────────────── */}
           <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4 space-y-3">

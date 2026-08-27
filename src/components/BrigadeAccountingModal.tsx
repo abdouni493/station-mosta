@@ -8,7 +8,7 @@ import { cn, newId, degreesFromLiters, matchesSearch } from "@/src/lib/utils";
 import {
   Brigade, Pump, Tank, Pompiste, BrigadeChef, PumpNozzle, StationSettings,
   Client, Track, BrigadeAccounting, BrigadeAccountingJustification, FuelType,
-  TreasuryTransaction, BankAccount, CAISSE_ID,
+  TreasuryTransaction, BankAccount, Expense, CAISSE_ID,
 } from "../store/AppContext";
 import {
   brigadeActiveNozzles, brigadeNozzleRows, brigadeTankRows, brigadePompisteGroups, justifiedByPompiste,
@@ -19,6 +19,7 @@ import {
   brigadeBankLines, brigadeBankLineIds, unbankedJustifications, accountOfJustification,
 } from "../lib/brigadeBankLines";
 import { ownsNozzleIndex } from "../lib/nozzleIndexes";
+import { planBrigadeExpenses, BRIGADE_EXPENSE_CATEGORY } from "../lib/brigadeExpenses";
 
 interface Justification {
   id: string;
@@ -27,6 +28,8 @@ interface Justification {
   justificationType: 'CLIENT' | 'TAG' | 'TPE' | 'EXPENSE';
   /** Description libre d'une dépense (justifie le reste sans client). */
   notes?: string;
+  /** La catégorie d'une dépense — celle de l'écran Dépenses, facultative. */
+  expenseCategory?: string;
   /**
    * Le compte bancaire crédité par un TAG / TPE.
    *
@@ -66,6 +69,12 @@ interface Props {
   /** Les comptes bancaires : un TAG / TPE justifié crédite celui du terminal. */
   bankAccounts?: BankAccount[];
   /**
+   * Les dépenses déjà enregistrées. Une justification « dépense » en écrit une
+   * vraie dans l'écran Dépenses : il faut donc savoir laquelle existe déjà pour
+   * la corriger — et non en créer une seconde (`lib/brigadeExpenses.ts`).
+   */
+  expenses?: Expense[];
+  /**
    * Le compte de chaque client, relu sur ses pièces — celui-là même que l'écran
    * Clients affiche. Cette fenêtre ne montrait AUCUN solde : on justifiait « au
    * client » sans savoir ce qu'il devait déjà, et le seul chiffre visible
@@ -95,7 +104,7 @@ type VerEntry = { verified: boolean; corrected: boolean; correctedValue?: number
 const BrigadeAccountingModal: React.FC<Props> = ({
   brigade, pumps, tanks, pompistes, brigadeChefs, pumpNozzles, settings,
   clients, tracks, currentUserRole, currentUserName, existingAccounting,
-  treasuryTransactions = [], bankAccounts = [], clientAccounts = {}, brigades = [],
+  treasuryTransactions = [], bankAccounts = [], expenses = [], clientAccounts = {}, brigades = [],
   dispatch, onClose
 }) => {
   const chef = brigadeChefs.find(c => c.id === brigade.chefId);
@@ -118,7 +127,8 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       // Le libellé rattrape le compte des brigades dont la colonne a été perdue
       // (« TPE Naftal card » est resté écrit sur la pièce).
       bankAccountId: accountOfJustification(j, bankAccounts),
-      clientName: j.clientName, notes: j.notes, fuelType: j.fuelType, liters: j.liters,
+      clientName: j.clientName, notes: j.notes, expenseCategory: j.expenseCategory,
+      fuelType: j.fuelType, liters: j.liters,
       pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
     }))
   );
@@ -127,6 +137,7 @@ const BrigadeAccountingModal: React.FC<Props> = ({
   // Saisie d'une dépense justifiée (nom obligatoire, description facultative).
   const [expName, setExpName] = useState('');
   const [expDesc, setExpDesc] = useState('');
+  const [expCategory, setExpCategory] = useState('');
   const [expAmount, setExpAmount] = useState<number | ''>('');
   const [tpeClientName, setTpeClientName] = useState('');
   const [tpeBankAccountId, setTpeBankAccountId] = useState(bankAccounts[0]?.id || '');
@@ -313,9 +324,11 @@ const BrigadeAccountingModal: React.FC<Props> = ({
       justificationType: 'EXPENSE',
       clientName: expName.trim(),
       notes: expDesc.trim() || undefined,
+      expenseCategory: expCategory || undefined,
     }]);
     setExpName('');
     setExpDesc('');
+    setExpCategory('');
     setExpAmount('');
   };
 
@@ -353,7 +366,8 @@ const BrigadeAccountingModal: React.FC<Props> = ({
         clientType: client?.type, paymentMode: client?.paymentMode,
         justificationType: j.justificationType || 'CLIENT',
         bankAccountId: j.bankAccountId, notes: j.notes,
-        clientName: j.clientName, fuelType: j.fuelType, liters: j.liters,
+        clientName: j.clientName, expenseCategory: j.expenseCategory,
+        fuelType: j.fuelType, liters: j.liters,
         pricePerLiter: j.pricePerLiter, trackId: j.trackId, pompisteId: j.pompisteId,
       };
     });
@@ -389,6 +403,23 @@ const BrigadeAccountingModal: React.FC<Props> = ({
 
     const action = existingAccounting ? 'UPDATE_BRIGADE_ACCOUNTING' : 'ADD_BRIGADE_ACCOUNTING';
     dispatch({ type: action, payload: accounting });
+
+    // ── Les dépenses justifiées deviennent de VRAIES dépenses ───────────────
+    // Même règle que l'assistant de création : la charge pèse dans le résultat
+    // du Carburant et se retrouve dans l'écran Dépenses, sans sortir d'aucune
+    // caisse (la brigade a déjà remis son montant en moins).
+    {
+      const plan = planBrigadeExpenses(accounting.justifications, expenses, {
+        brigadeId: brigade.id,
+        date: brigade.date,
+        shift: brigade.shift,
+        createdBy: currentUserName,
+        pompisteName: pid => pompistes.find(p => p.id === pid)?.name,
+      });
+      plan.remove.forEach(id => dispatch({ type: 'DELETE_EXPENSE', payload: id }));
+      plan.add.forEach(e => dispatch({ type: 'ADD_EXPENSE', payload: e }));
+      plan.update.forEach(e => dispatch({ type: 'UPDATE_EXPENSE', payload: e }));
+    }
 
     // Reflect TAG/TPE justifications in the Caisse TPE store immediately
     if (existingAccounting) {
@@ -1069,6 +1100,16 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                           onChange={e => setExpDesc(e.target.value)}
                           className="w-full px-3 py-2.5 border border-emerald-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400 bg-white" />
                       </div>
+                      <div>
+                        <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Catégorie (optionnel)</label>
+                        <select
+                          value={expCategory}
+                          onChange={e => setExpCategory(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-emerald-200 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400 bg-white">
+                          <option value="">— Aucune —</option>
+                          {(settings.expenseCategories || []).map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
                       <div className="flex gap-2 items-end">
                         <div className="flex-1">
                           <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-1">Montant (DA) *</label>
@@ -1084,7 +1125,8 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                         </button>
                       </div>
                       <p className="text-[9px] font-bold text-slate-400">
-                        La dépense justifie le reste au même titre qu'un bon : elle sort des espèces de la brigade.
+                        La dépense justifie le reste au même titre qu'un bon : elle sort des espèces de la
+                        brigade, et sera enregistrée dans l'écran Dépenses (Carburant) au nom de cette brigade.
                       </p>
                     </div>
                   )}
@@ -1222,7 +1264,9 @@ const BrigadeAccountingModal: React.FC<Props> = ({
                             {isExpense ? (j.clientName || 'Dépense') : isTPE ? (j.clientName || `Sans nom · ${j.fuelType}`) : (client?.name || j.clientId)}
                           </p>
                           {isExpense ? (
-                            <p className="text-[10px] text-slate-400">Dépense de brigade{j.notes ? ` · ${j.notes}` : ''}</p>
+                            <p className="text-[10px] text-slate-400">
+                              {j.expenseCategory || 'Dépense de brigade'}{j.notes ? ` · ${j.notes}` : ''}
+                            </p>
                           ) : isTPE ? (
                             <p className="text-[10px] text-slate-400">{j.liters?.toFixed(2)} L × {j.pricePerLiter?.toFixed(2)} DA/L</p>
                           ) : (

@@ -19,7 +19,7 @@ import { BizState, ModuleKey, MODULES, netCashOfSale, bizExpensePaidInCash } fro
 import { within } from './period';
 import { computeCarburantCash } from './carburantSales';
 import { moduleCaisseBalance, docPaymentSlices } from './bizReporting';
-import { expensePartOf, cashEffectOf, treasuryEffectOf, partCashEffect } from '../store/AppContext';
+import { expensePartOf, isBrigadeExpense, cashEffectOf, treasuryEffectOf, partCashEffect } from '../store/AppContext';
 
 export const CAISSE_ID = 'CAISSE';
 
@@ -451,6 +451,9 @@ export function computeTreasuryReport(app: any, biz: BizState, from: string, to:
   }
   for (const e of expenses) {
     if (ledgered.has(`expense:${e.id}`)) continue;
+    // Une dépense de brigade n'a jamais touché un tiroir : son montant manque
+    // déjà aux espèces remises par la brigade (`lib/brigadeExpenses.ts`).
+    if (isBrigadeExpense(e)) continue;
     // Payée depuis un compte bancaire, elle n'a rien pris à la caisse.
     const paidInCash = !e.accountId || isCashAccount(e.accountId);
     push({

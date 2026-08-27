@@ -46,6 +46,7 @@ import { ownsNozzleIndex } from "../lib/nozzleIndexes";
 import { toNum } from "../lib/brigadeCalc";
 import { clientChargeDelta, clientLedgers, clientStanding, ClientLedger, ClientStanding } from "../lib/clientLedger";
 import { brigadeBankLines, isBankJustification, accountOfJustification } from "../lib/brigadeBankLines";
+import { planBrigadeExpenses, BRIGADE_EXPENSE_CATEGORY } from "../lib/brigadeExpenses";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
 import Skeleton from "../components/Skeleton";
@@ -88,10 +89,20 @@ const byNewestFirst = (a: Brigade, b: Brigade): number => brigadeCreatedAt(b) - 
  * d'un TPE, dont l'absence vidait déjà le solde d'un compte en silence.
  */
 interface WizardJustification {
+  /**
+   * `EXPENSE` — une DÉPENSE payée sur les espèces de la brigade : un nom, une
+   * catégorie facultative et un montant. Elle justifie le reste comme un bon,
+   * et devient une vraie ligne de l'écran Dépenses (`lib/brigadeExpenses.ts`).
+   * Elle a remplacé l'avance client, que le gérant ne saisissait plus ici.
+   */
+  type: 'TAG' | 'TPE' | 'CLIENT_CREDIT' | 'CLIENT_AVANCE' | 'EXPENSE';
   id: string;
-  type: 'TAG' | 'TPE' | 'CLIENT_CREDIT' | 'CLIENT_AVANCE';
   /** Pour un TAG / TPE : le compte bancaire crédité à l'enregistrement. */
   bankAccountId?: string;
+  /** Pour une DÉPENSE : son nom, tel qu'il s'écrira dans l'écran Dépenses. */
+  expenseName?: string;
+  /** Pour une DÉPENSE : sa catégorie — facultative. */
+  expenseCategory?: string;
   description: string;
   liters: number;
   amount: number;
@@ -105,7 +116,7 @@ const Brigades = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const appState = useAppState();
-  const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [], bankAccounts = [], treasuryTransactions = [] } = appState;
+  const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [], bankAccounts = [], treasuryTransactions = [], expenses = [] } = appState;
   const perm = useModulePermission('Brigades');
   const dispatch = useAppDispatch();
 
@@ -257,6 +268,13 @@ const Brigades = () => {
     useState<Record<string, WizardJustification[]>>({});
   // Step 7 client search / new-client UI (per pompiste)
   const [justifClientSearch, setJustifClientSearch] = useState<Record<string, string>>({});
+  /**
+   * Le brouillon de la dépense en cours de saisie, par pompiste — les mêmes
+   * champs que l'écran Dépenses : un nom, une catégorie facultative, un
+   * montant. Il n'entre dans la liste des justifications qu'une fois ajouté.
+   */
+  const [expenseDraft, setExpenseDraft] =
+    useState<Record<string, { name: string; category: string; amount: string }>>({});
   const [showNewClientForm, setShowNewClientForm] = useState<string | null>(null);
   const [newClientDraft, setNewClientDraft] = useState({ name: '', phone: '', type: 'PARTICULIER' as Client['type'], paymentMode: 'CASH' as Client['paymentMode'] });
 
@@ -609,6 +627,19 @@ const Brigades = () => {
               trackId: s.trackId, pompisteId: s.pompisteId,
               bankAccountId: j.bankAccountId,
             });
+          } else if (j.type === 'EXPENSE') {
+            // Une DÉPENSE n'a ni client ni banque : son nom vit dans
+            // `clientName`, sa précision dans `notes` — les colonnes existantes.
+            // Elle deviendra une vraie ligne de l'écran Dépenses plus bas.
+            accJustifications.push({
+              id: j.id, accountingId, clientId: '', amount: j.amount,
+              justificationType: 'EXPENSE',
+              clientName: (j.expenseName || '').trim() || BRIGADE_EXPENSE_CATEGORY,
+              expenseCategory: j.expenseCategory,
+              notes: j.description || undefined,
+              fuelType: jFuel, liters: jLiters, pricePerLiter: jPrice,
+              trackId: s.trackId, pompisteId: s.pompisteId,
+            });
           } else {
             accJustifications.push({
               id: j.id, accountingId, clientId: j.clientId || '', amount: j.amount,
@@ -763,6 +794,21 @@ const Brigades = () => {
         justifications: accJustifications,
       };
       dispatch({ type: (isEdit && existingAccounting) ? 'UPDATE_BRIGADE_ACCOUNTING' : 'ADD_BRIGADE_ACCOUNTING', payload: accounting });
+
+      // ── Les dépenses justifiées deviennent de VRAIES dépenses ───────────────
+      // Le pompiste a payé sur les espèces de la brigade : la charge doit peser
+      // dans le résultat du Carburant et se retrouver dans l'écran Dépenses,
+      // avec la brigade qui l'a produite. Elle ne sort d'AUCUNE caisse — la
+      // brigade a déjà remis son montant en moins (`lib/brigadeExpenses.ts`).
+      {
+        const plan = planBrigadeExpenses(accJustifications, expenses, {
+          brigadeId, date: sDate, shift: sType, createdBy: currentUserName,
+          pompisteName: pid => pompistes.find(x => x.id === pid)?.name,
+        });
+        plan.remove.forEach(id => dispatch({ type: 'DELETE_EXPENSE', payload: id }));
+        plan.add.forEach(e => dispatch({ type: 'ADD_EXPENSE', payload: e }));
+        plan.update.forEach(e => dispatch({ type: 'UPDATE_EXPENSE', payload: e }));
+      }
 
       // ── TPE / TAG : l'argent justifié entre sur le compte bancaire choisi ────
       // Les lignes de la brigade sont réécrites à chaque enregistrement pour que
@@ -980,10 +1026,15 @@ const Brigades = () => {
 
     const justifMap: Record<string, WizardJustification[]> = {};
     (acc?.justifications || []).forEach(j => {
-      const pid = j.pompisteId || '';
+      // Une pièce sans pompiste — la fenêtre Comptabilité en écrit pour les
+      // dépenses — était purement PERDUE ici : rouvrir la brigade dans
+      // l'assistant l'effaçait, et le reste redevenait un manquant. On la
+      // rattache au premier pompiste du lot plutôt que de la jeter.
+      const pid = j.pompisteId || (b.pompisteIds || [])[0] || '';
       if (!pid) return;
       const type = j.justificationType === 'TAG' ? 'TAG'
         : j.justificationType === 'TPE' ? 'TPE'
+        : j.justificationType === 'EXPENSE' ? 'EXPENSE'
         : (j.paymentMode === 'AVANCE' ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT');
       const byLiters = (j.liters || 0) > 0;
       (justifMap[pid] = justifMap[pid] || []).push({
@@ -1000,6 +1051,10 @@ const Brigades = () => {
         // resté écrit dans la pièce. Rouvrir une telle brigade la répare donc
         // d'elle-même.
         bankAccountId: accountOfJustification(j, bankAccounts),
+        // Une DÉPENSE garde son nom dans `clientName` et sa précision dans
+        // `notes` : les deux repartent dans leurs champs respectifs.
+        expenseName: type === 'EXPENSE' ? (j.clientName || '') : undefined,
+        expenseCategory: type === 'EXPENSE' ? (j.expenseCategory || undefined) : undefined,
         description: j.notes || ((type === 'TAG' || type === 'TPE') ? (j.clientName || '') : ''),
         liters: j.liters || 0,
         amount: j.amount || 0,
@@ -1012,6 +1067,7 @@ const Brigades = () => {
     setPompisteJustifications(justifMap);
 
     setJustifClientSearch({});
+    setExpenseDraft({});
     setShowNewClientForm(null);
     setStep(1);
     setActionMenuOpen(null);
@@ -1045,6 +1101,7 @@ const Brigades = () => {
     setPompistePayments({});
     setPompisteJustifications({});
     setJustifClientSearch({});
+    setExpenseDraft({});
     setShowNewClientForm(null);
     setNewClientDraft({ name: '', phone: '', type: 'PARTICULIER', paymentMode: 'CASH' });
   };
@@ -2484,6 +2541,24 @@ const Brigades = () => {
                           const searchVal = justifClientSearch[s.pompisteId] || '';
                           const addJustif = (j: any) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: [...(prev[s.pompisteId] || []), j] }));
                           const removeJustif = (jid: string) => setPompisteJustifications(prev => ({ ...prev, [s.pompisteId]: (prev[s.pompisteId] || []).filter(x => x.id !== jid) }));
+                          // ── La dépense en cours de saisie ────────────────
+                          const draft = expenseDraft[s.pompisteId] || { name: '', category: '', amount: '' };
+                          const patchDraft = (changes: Partial<typeof draft>) =>
+                            setExpenseDraft(prev => ({ ...prev, [s.pompisteId]: { ...draft, ...changes } }));
+                          const draftAmount = parseFloat(draft.amount) || 0;
+                          const canAddExpense = draft.name.trim().length > 0 && draftAmount > 0;
+                          const addExpenseJustif = () => {
+                            if (!canAddExpense) return;
+                            addJustif({
+                              id: newId(), type: 'EXPENSE',
+                              expenseName: draft.name.trim(),
+                              expenseCategory: draft.category || undefined,
+                              description: '', liters: 0, amount: draftAmount,
+                              byLiters: false, fuelType: s.primaryFuel,
+                            });
+                            setExpenseDraft(prev => ({ ...prev, [s.pompisteId]: { name: '', category: '', amount: '' } }));
+                            setShowNewClientForm(null);
+                          };
                           return (
                             <div key={s.pompisteId} className="p-3 sm:p-4 rounded-2xl border-2 border-slate-200 bg-white space-y-3">
                               <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -2584,18 +2659,79 @@ const Brigades = () => {
                                   ))}
                                 </>)}
                                 <button onClick={() => setShowNewClientForm(showNewClientForm === `credit-${s.pompisteId}` ? null : `credit-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-orange-100 text-orange-700 text-[10px] font-black uppercase hover:bg-orange-200">+ Crédit Client</button>
-                                <button onClick={() => setShowNewClientForm(showNewClientForm === `avance-${s.pompisteId}` ? null : `avance-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-teal-100 text-teal-700 text-[10px] font-black uppercase hover:bg-teal-200">+ Avance Client</button>
+                                {/* L'avance client a laissé la place à la DÉPENSE : le
+                                    gérant ne justifiait plus sur l'argent déjà versé
+                                    d'un client, mais sur ce que le pompiste avait payé
+                                    de sa poche de brigade. La saisie reprend celle de
+                                    l'écran Dépenses — nom, catégorie, montant. */}
+                                <button onClick={() => setShowNewClientForm(showNewClientForm === `expense-${s.pompisteId}` ? null : `expense-${s.pompisteId}`)} className="px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 text-[10px] font-black uppercase hover:bg-emerald-200">+ Dépense</button>
                               </div>
 
-                              {/* Client search panel (credit or avance) */}
-                              {(showNewClientForm === `credit-${s.pompisteId}` || showNewClientForm === `avance-${s.pompisteId}`) && (() => {
-                                const isAvance = showNewClientForm === `avance-${s.pompisteId}`;
-                                // Un client dont la colonne `advance_balance` est restée à zéro
-                                // alors que ses pièces montrent une avance disparaissait de cette
-                                // liste : il devenait impossible de justifier sur son propre
-                                // argent. Les deux sources ouvrent désormais la porte.
+                              {/* ── Nouvelle dépense ─────────────────────────────────
+                                  La MÊME saisie que l'écran Dépenses : un nom, une
+                                  catégorie (facultative, prise dans les réglages) et
+                                  un montant. Une fois ajoutée, elle justifie le reste
+                                  comme les autres pièces — et devient une vraie
+                                  dépense du Carburant à l'enregistrement. */}
+                              {showNewClientForm === `expense-${s.pompisteId}` && (
+                                <div className="p-3 rounded-xl border-2 border-emerald-100 bg-emerald-50/60 space-y-2">
+                                  <p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest">Nouvelle dépense</p>
+                                  <div>
+                                    <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Nom de la dépense *</label>
+                                    <input autoFocus placeholder="Ex: Achat d'eau, réparation, pourboire…"
+                                      value={draft.name}
+                                      onChange={e => patchDraft({ name: e.target.value })}
+                                      onKeyDown={e => { if (e.key === 'Enter') addExpenseJustif(); }}
+                                      className="w-full input-field h-9 text-xs font-bold" />
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <div>
+                                      <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Catégorie (optionnel)</label>
+                                      <div className="flex gap-1.5">
+                                        <select value={draft.category}
+                                          onChange={e => patchDraft({ category: e.target.value })}
+                                          className="flex-1 input-field h-9 text-xs font-bold">
+                                          <option value="">— Aucune —</option>
+                                          {(settings.expenseCategories || []).map(c => <option key={c} value={c}>{c}</option>)}
+                                        </select>
+                                        <button type="button" title="Nouvelle catégorie"
+                                          onClick={() => {
+                                            const cat = window.prompt('Nom de la nouvelle catégorie :');
+                                            if (!cat || !cat.trim()) return;
+                                            const name = cat.trim();
+                                            if (!(settings.expenseCategories || []).includes(name)) {
+                                              dispatch({ type: 'SET_SETTINGS', payload: { ...settings, expenseCategories: [...(settings.expenseCategories || []), name] } });
+                                            }
+                                            patchDraft({ category: name });
+                                          }}
+                                          className="h-9 w-9 shrink-0 rounded-lg bg-white border border-emerald-200 text-emerald-700 font-black">+</button>
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <label className="text-[9px] font-black text-slate-500 uppercase mb-1 block">Montant (DA) *</label>
+                                      <input type="number" placeholder="0"
+                                        value={draft.amount}
+                                        onChange={e => patchDraft({ amount: e.target.value })}
+                                        onKeyDown={e => { if (e.key === 'Enter') addExpenseJustif(); }}
+                                        className="w-full input-field h-9 text-xs font-bold" />
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2 pt-0.5">
+                                    <button onClick={() => { setShowNewClientForm(null); }}
+                                      className="flex-1 py-2 rounded-lg bg-white border border-slate-200 text-[10px] font-black uppercase text-slate-500">Annuler</button>
+                                    <button onClick={addExpenseJustif} disabled={!canAddExpense}
+                                      className="flex-1 py-2 rounded-lg bg-emerald-600 disabled:opacity-40 text-white text-[10px] font-black uppercase">Ajouter la dépense</button>
+                                  </div>
+                                  <p className="text-[9px] font-bold text-emerald-700/70">
+                                    Elle justifie l'écart comme un bon, et sera enregistrée dans Dépenses (Carburant) avec cette brigade.
+                                  </p>
+                                </div>
+                              )}
+
+                              {/* Recherche du client d'un CRÉDIT. L'avance client
+                                  ne se saisit plus ici — voir le bouton Dépense. */}
+                              {showNewClientForm === `credit-${s.pompisteId}` && (() => {
                                 const matches = clients
-                                  .filter(c => !isAvance || standingOf(c).advance > 0 || (clientAccounts[c.id]?.advanceLeft || 0) > 0)
                                   .filter(c => matchesSearch(searchVal, c.name, c.phone))
                                   .slice(0, 5);
                                 return (
@@ -2609,7 +2745,7 @@ const Brigades = () => {
                                       const st = standingOf(c);
                                       return (
                                       <button key={c.id} onClick={() => {
-                                        addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: c.id, clientName: c.name });
+                                        addJustif({ id: newId(), type: 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: c.id, clientName: c.name });
                                         setShowNewClientForm(null);
                                         setJustifClientSearch(prev => ({ ...prev, [s.pompisteId]: '' }));
                                       }} className="w-full text-left p-2 bg-white rounded-lg border border-slate-100 hover:border-blue-300 flex items-center justify-between gap-2">
@@ -2618,31 +2754,25 @@ const Brigades = () => {
                                           <p className="text-[9px] text-slate-400">{c.phone || 'N/A'}</p>
                                         </div>
                                         <div className="text-right shrink-0 leading-tight">
-                                          {isAvance ? (<>
-                                            <p className="text-[9px] font-black text-emerald-600">Avance {money0(st.advance)}</p>
-                                            {st.debt > 0 && <p className="text-[8px] font-bold text-red-500">Dette {money0(st.debt)}</p>}
-                                          </>) : (<>
-                                            <p className={cn("text-[9px] font-black", st.debt > 0 ? "text-red-500" : "text-slate-400")}>Dette {money0(st.debt)}</p>
-                                            {Number.isFinite(st.restCredit) && (
-                                              <p className={cn("text-[8px] font-bold", st.restCredit < 0 ? "text-red-500" : "text-slate-400")}>
-                                                {st.restCredit < 0 ? `Hors plafond ${money0(-st.restCredit)}` : `Reste crédit ${money0(st.restCredit)}`}
-                                              </p>
-                                            )}
-                                            {st.advance > 0 && <p className="text-[8px] font-bold text-emerald-600">Avance {money0(st.advance)}</p>}
-                                          </>)}
+                                          <p className={cn("text-[9px] font-black", st.debt > 0 ? "text-red-500" : "text-slate-400")}>Dette {money0(st.debt)}</p>
+                                          {Number.isFinite(st.restCredit) && (
+                                            <p className={cn("text-[8px] font-bold", st.restCredit < 0 ? "text-red-500" : "text-slate-400")}>
+                                              {st.restCredit < 0 ? `Hors plafond ${money0(-st.restCredit)}` : `Reste crédit ${money0(st.restCredit)}`}
+                                            </p>
+                                          )}
+                                          {st.advance > 0 && <p className="text-[8px] font-bold text-emerald-600">Avance {money0(st.advance)}</p>}
                                         </div>
                                       </button>
                                       );
                                     })}
                                     {matches.length === 0 && <p className="text-[10px] text-slate-400 font-bold text-center py-1">Aucun client</p>}
-                                    <button onClick={() => { setNewClientDraft({ name: searchVal, phone: '', type: 'PARTICULIER', paymentMode: isAvance ? 'ADVANCE' : 'CREDIT' }); setShowNewClientForm(`new-${isAvance ? 'avance' : 'credit'}-${s.pompisteId}`); }} className="w-full p-2 rounded-lg border-2 border-dashed border-blue-200 text-blue-600 text-[10px] font-black uppercase hover:bg-blue-50">+ Nouveau client</button>
+                                    <button onClick={() => { setNewClientDraft({ name: searchVal, phone: '', type: 'PARTICULIER', paymentMode: 'CREDIT' }); setShowNewClientForm(`new-credit-${s.pompisteId}`); }} className="w-full p-2 rounded-lg border-2 border-dashed border-blue-200 text-blue-600 text-[10px] font-black uppercase hover:bg-blue-50">+ Nouveau client</button>
                                   </div>
                                 );
                               })()}
 
                               {/* New client mini form */}
-                              {(showNewClientForm === `new-avance-${s.pompisteId}` || showNewClientForm === `new-credit-${s.pompisteId}`) && (() => {
-                                const isAvance = showNewClientForm === `new-avance-${s.pompisteId}`;
+                              {showNewClientForm === `new-credit-${s.pompisteId}` && (() => {
                                 return (
                                   <div className="p-3 rounded-xl border-2 border-blue-100 bg-blue-50/50 space-y-2">
                                     <p className="text-[10px] font-black text-[#002d87] uppercase">Nouveau client</p>
@@ -2662,7 +2792,7 @@ const Brigades = () => {
                                         if (!newClientDraft.name.trim()) return;
                                         const nc: Client = { id: newId(), name: newClientDraft.name.trim(), phone: newClientDraft.phone, balance: 0, debt: 0, creditLimit: 0, paymentDelay: 0, type: newClientDraft.type, paymentMode: newClientDraft.paymentMode, advanceBalance: 0, transactionHistory: [] };
                                         dispatch({ type: 'ADD_CLIENT', payload: nc });
-                                        addJustif({ id: newId(), type: isAvance ? 'CLIENT_AVANCE' : 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: nc.id, clientName: nc.name });
+                                        addJustif({ id: newId(), type: 'CLIENT_CREDIT', description: '', liters: 0, amount: 0, byLiters: false, fuelType: s.primaryFuel, clientId: nc.id, clientName: nc.name });
                                         setShowNewClientForm(null);
                                       }} className="flex-1 py-2 rounded-lg bg-[#001f5c] text-white text-[10px] font-black uppercase">Créer & ajouter</button>
                                     </div>
@@ -2684,11 +2814,13 @@ const Brigades = () => {
                                     const isNewest = jIdx === 0;
                                     return (
                                     <div key={j.id} className={cn("p-3 rounded-xl border space-y-2 transition-all",
-                                      isNewest ? "bg-[#fff8e6] border-[#FFB800]/60 shadow-sm" : "bg-slate-50 border-slate-100")}>
+                                      isNewest ? "bg-[#fff8e6] border-[#FFB800]/60 shadow-sm"
+                                        : j.type === 'EXPENSE' ? "bg-emerald-50/60 border-emerald-100"
+                                        : "bg-slate-50 border-slate-100")}>
                                       <div className="flex items-center justify-between gap-2">
                                         <div className="flex items-center gap-1.5 min-w-0">
                                           <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 uppercase shrink-0">
-                                            {j.type === 'CLIENT_CREDIT' ? 'CRÉDIT CLIENT' : j.type === 'CLIENT_AVANCE' ? 'AVANCE CLIENT' : j.type}
+                                            {j.type === 'CLIENT_CREDIT' ? 'CRÉDIT CLIENT' : j.type === 'CLIENT_AVANCE' ? 'AVANCE CLIENT' : j.type === 'EXPENSE' ? '🧾 DÉPENSE' : j.type}
                                           </span>
                                           {isNewest && (
                                             <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-[#001f5c] text-[#FFB800] uppercase shrink-0">Nouveau</span>
@@ -2716,6 +2848,31 @@ const Brigades = () => {
                                           </div>
                                         );
                                       })()}
+
+                                      {/* La dépense : son nom et sa catégorie, exactement
+                                          comme sur l'écran Dépenses — c'est sous ce nom
+                                          qu'elle y sera enregistrée. */}
+                                      {j.type === 'EXPENSE' && (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                          <div>
+                                            <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Nom de la dépense</label>
+                                            <input value={j.expenseName || ''}
+                                              onChange={e => patch({ expenseName: e.target.value })}
+                                              placeholder="Nom de la dépense"
+                                              className={cn("input-field h-9 text-xs font-bold w-full",
+                                                !(j.expenseName || '').trim() && "border-red-300 text-red-600")} />
+                                          </div>
+                                          <div>
+                                            <label className="text-[9px] font-black text-slate-400 uppercase mb-1 block">Catégorie (optionnel)</label>
+                                            <select value={j.expenseCategory || ''}
+                                              onChange={e => patch({ expenseCategory: e.target.value || undefined })}
+                                              className="input-field h-9 text-xs font-bold w-full">
+                                              <option value="">— Aucune —</option>
+                                              {(settings.expenseCategories || []).map(c => <option key={c} value={c}>{c}</option>)}
+                                            </select>
+                                          </div>
+                                        </div>
+                                      )}
 
                                       {/* Compte crédité (TAG / TPE) — la ligne qui entrera au
                                           grand livre et fera monter le solde de CE compte. */}
@@ -2794,6 +2951,38 @@ const Brigades = () => {
                               <p>Total justifications:</p><p className="text-right font-black">{totalJust.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                               <p>Solde restant:</p><p className={cn("text-right font-black", Math.abs(solde) < 0.01 ? "text-green-300" : "text-red-300")}>{solde.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</p>
                             </div>
+
+                            {/* ── Ce qui SORT en dépenses ─────────────────────────────
+                                Justifiées ici, elles seront écrites dans l'écran
+                                Dépenses (Carburant) au nom de cette brigade. */}
+                            {(() => {
+                              const lists = Object.values(pompisteJustifications) as WizardJustification[][];
+                              const rows = lists.flat().filter(j => j.type === 'EXPENSE' && (j.amount || 0) > 0);
+                              if (rows.length === 0) return null;
+                              const total = rows.reduce((a, j) => a + (j.amount || 0), 0);
+                              return (
+                                <div className="pt-2 mt-2 border-t border-white/15 space-y-1">
+                                  <p className="text-[9px] font-black uppercase tracking-widest text-emerald-200">
+                                    Dépenses justifiées ({rows.length}) — enregistrées dans Dépenses
+                                  </p>
+                                  {rows.map(j => (
+                                    <div key={j.id} className="flex items-center justify-between gap-2 text-[11px] font-bold">
+                                      <span className="truncate">
+                                        🧾 {j.expenseName || 'Dépense'}
+                                        {j.expenseCategory ? <span className="text-blue-200"> · {j.expenseCategory}</span> : null}
+                                      </span>
+                                      <span className="text-right font-black text-emerald-300 shrink-0">
+                                        −{(j.amount || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD
+                                      </span>
+                                    </div>
+                                  ))}
+                                  <div className="flex items-center justify-between gap-2 text-[11px] font-black pt-1">
+                                    <span>Total dépenses</span>
+                                    <span className="text-[#FFB800]">{total.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} DZD</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {/* ── Ce qui va ENTRER EN BANQUE ──────────────────────────
                                 L'utilisateur doit lire, avant d'enregistrer, le montant
@@ -2966,6 +3155,7 @@ const Brigades = () => {
             existingAccounting={brigadeAccountings.find(a => a.brigadeId === selectedBrigade.id)}
             treasuryTransactions={treasuryTransactions}
             bankAccounts={bankAccounts}
+            expenses={expenses}
             clientAccounts={clientAccounts}
             brigades={brigades}
             dispatch={dispatch}

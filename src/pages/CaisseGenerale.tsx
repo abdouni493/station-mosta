@@ -32,7 +32,7 @@ import {
   useAppState, useAppDispatch, useModulePermission,
   TreasuryTransaction, TreasuryPart, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
   accountLabelOf, isCashAccount, bankBalanceOf, caisseBalanceOf,
-  cashAccountOfPart, expensePartOf, cashEffectOf, treasuryEffectOf,
+  cashAccountOfPart, expensePartOf, isBrigadeExpense, cashEffectOf, treasuryEffectOf,
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
 import { MODULES, ModuleKey, bizExpensePaidInCash, netCashOfSale } from '../lib/bizConfig';
@@ -294,6 +294,9 @@ export default function CaisseGenerale() {
     }
     for (const e of expenses) {
       if (ledgered.has(`expense:${e.id}`)) continue;
+      // Une dépense de brigade n'est passée par AUCUNE caisse : la brigade a
+      // remis son montant en moins (`lib/brigadeExpenses.ts`).
+      if (isBrigadeExpense(e)) continue;
       // Payée depuis un compte bancaire, elle n'a rien pris à la caisse.
       const paidInCash = !e.accountId || isCashAccount(e.accountId);
       const amount = -(e.amount || 0);

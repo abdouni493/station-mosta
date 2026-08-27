@@ -32,7 +32,7 @@
  * un découvert qui n'existait pas.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { expensePartOf, isCashAccount, nozzleTankId, partCashLedgerLines } from '../store/AppContext';
+import { expensePartOf, isBrigadeExpense, isCashAccount, nozzleTankId, partCashLedgerLines } from '../store/AppContext';
 import { within } from './period';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -543,6 +543,10 @@ export function computeCarburantCash(app: any): CarburantCash {
   //    n'avait jamais sorti.
   for (const e of expenses) {
     if (expensePartOf(e) !== 'carburant') continue;
+    // Une dépense née d'une justification de brigade est DÉJÀ retranchée : le
+    // pompiste l'a réglée avant de remettre le reste, et `cashReceived` est
+    // d'autant plus bas. La retirer ici sortirait le même argent deux fois.
+    if (isBrigadeExpense(e)) continue;
     if (!paidInCash(e.accountId)) continue;
     const amount = num(e.amount);
     if (!amount) continue;

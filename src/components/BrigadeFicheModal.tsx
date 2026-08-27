@@ -313,14 +313,19 @@ const BrigadeFicheModal: React.FC<Props> = ({
       {expenseJustifs.length > 0 && (
         <section>
           <FicheHeader num="3b" label="Dépenses justifiées" />
+          <p className="text-[10px] text-slate-500 mb-1">
+            Payées sur les espèces de la brigade — reprises dans l'écran Dépenses (Carburant).
+          </p>
           <table className="w-full text-sm border-collapse">
             <thead><tr className="bg-blue-900 text-white">
-              {['Dépense', 'Description', 'Montant'].map(h => <Th key={h} dark>{h}</Th>)}
+              {['Dépense', 'Catégorie', 'Pompiste', 'Description', 'Montant'].map(h => <Th key={h} dark>{h}</Th>)}
             </tr></thead>
             <tbody>
               {expenseJustifs.map(j => (
                 <tr key={j.id} className="border-b border-slate-200">
                   <Td><strong>🧾 {j.clientName || 'Dépense'}</strong></Td>
+                  <Td className="text-slate-600">{j.expenseCategory || '—'}</Td>
+                  <Td className="text-slate-600">{pompistes.find(p => p.id === j.pompisteId)?.name || '—'}</Td>
                   <Td className="text-slate-600">{j.notes || '—'}</Td>
                   <Td className="tabular-nums"><strong className="text-slate-800">{fmt(j.amount || 0)} DA</strong></Td>
                 </tr>
@@ -328,7 +333,7 @@ const BrigadeFicheModal: React.FC<Props> = ({
             </tbody>
             <tfoot>
               <tr className="bg-slate-50 border-t-2 border-slate-200">
-                <Td colSpan={2}><strong className="text-[10px] uppercase text-slate-500">Total dépenses</strong></Td>
+                <Td colSpan={4}><strong className="text-[10px] uppercase text-slate-500">Total dépenses</strong></Td>
                 <Td className="tabular-nums"><strong className="text-red-700">{fmt(expensesTotal)} DA</strong></Td>
               </tr>
             </tfoot>

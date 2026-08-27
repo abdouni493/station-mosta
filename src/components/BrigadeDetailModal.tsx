@@ -640,6 +640,9 @@ const BrigadeDetailModal: React.FC<Props> = ({
                                     <span className={cn('text-[9px] font-black px-2 py-0.5 rounded-full', isExpense ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>{typeLabel}</span>
                                   </div>
                                   <div className="text-[9px] text-slate-500 mt-1 space-x-2">
+                                    {isExpense && j.expenseCategory ? (
+                                      <span className="font-black text-emerald-700">{j.expenseCategory}</span>
+                                    ) : null}
                                     {isExpense && j.notes ? <span>{j.notes}</span> : null}
                                     {j.fuelType && <span>{j.fuelType}</span>}
                                     {track && <span>{track.name}</span>}
@@ -649,6 +652,13 @@ const BrigadeDetailModal: React.FC<Props> = ({
                                   {/* Où l'argent est ALLÉ : un TAG / TPE crédite un compte
                                       bancaire, et la fiche doit le nommer — c'est là qu'on
                                       vérifie que la ligne existe bien dans son historique. */}
+                                  {/* Une dépense a sa contrepartie dans l'écran Dépenses :
+                                      on le dit ici, c'est là qu'on la retrouve. */}
+                                  {isExpense && (
+                                    <p className="text-[9px] font-black mt-1 text-emerald-600">
+                                      → Dépenses (Carburant) · payée sur les espèces de la brigade
+                                    </p>
+                                  )}
                                   {(j.justificationType === 'TAG' || j.justificationType === 'TPE') && (
                                     <p className={cn('text-[9px] font-black mt-1',
                                       j.bankAccountId ? 'text-emerald-600' : 'text-red-500')}>
