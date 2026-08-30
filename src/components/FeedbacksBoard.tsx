@@ -27,7 +27,7 @@ import { matchesSearch } from '@/src/lib/utils';
 import { useFeedbacks, usePartFeedbacks } from '@/src/store/FeedbackContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
+  PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
   RowActions, ActionBtn, Confirm, Modal, formatDate, formatDateTime,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
@@ -52,6 +52,9 @@ export default function FeedbacksBoard({
   const { currentUserName } = useAppState();
 
   const [search, setSearch] = useState('');
+  // Tableau par défaut : une boîte d'avis se dépouille en lignes — qui, quand,
+  // lu ou non. Les cartes, où le message se lit en entier, restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [status, setStatus] = useState<StatusFilter>('all');
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
@@ -166,6 +169,7 @@ export default function FeedbacksBoard({
               );
             })}
           </div>
+          <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
         </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
       </div>
@@ -182,6 +186,51 @@ export default function FeedbacksBoard({
                 : 'Changez de filtre ou de période pour retrouver un avis.'
           }
         />
+      ) : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Client</th><th className="table-head">Contact</th>
+          <th className="table-head">Message</th><th className="table-head">Reçu le</th>
+          <th className="table-head">État</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(f => {
+            const isNew = f.status === 'unread';
+            return (
+              <tr key={f.id} className={isNew ? 'bg-amber-50/60' : undefined}>
+                <td className={`table-cell font-bold ${f.fullName ? 'text-slate-700' : 'text-slate-400 italic'}`}>
+                  {feedbackAuthor(f)}
+                </td>
+                <td className="table-cell whitespace-nowrap text-slate-500">
+                  <div>{f.phone || 'Sans téléphone'}</div>
+                  {f.email && <div className="text-[11px] truncate max-w-[200px]" title={f.email}>{f.email}</div>}
+                </td>
+                <td className="table-cell">
+                  <button onClick={() => setDetail(f)}
+                    className="text-left max-w-[380px] text-slate-600 line-clamp-2 whitespace-pre-line hover:text-[#003087]"
+                    title="Voir le détail">
+                    {f.message}
+                  </button>
+                </td>
+                <td className="table-cell whitespace-nowrap text-slate-500">
+                  {formatDateTime(f.createdAt)}
+                  {f.readAt && <div className="text-[11px] text-emerald-600">Lu par {f.readBy || "l'équipe"}</div>}
+                </td>
+                <td className="table-cell"><Badge tone={isNew ? 'warning' : 'success'}>{isNew ? 'Nouveau' : 'Lu'}</Badge></td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir le détail" onClick={() => setDetail(f)} />
+                    {isNew && canModify && (
+                      <ActionBtn icon={Check} tone="green" title="Marquer comme lu — l'alerte du menu se décrémente" onClick={() => doMarkRead(f)} />
+                    )}
+                    {!isNew && canModify && (
+                      <ActionBtn icon={Undo2} tone="amber" title="Remettre en non lu" onClick={() => doMarkUnread(f)} />
+                    )}
+                    {canDelete && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(f)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
       ) : (
         <CardGrid>
           {filtered.map(f => (

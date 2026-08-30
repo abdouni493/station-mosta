@@ -34,6 +34,7 @@ import PermissionsModal from "../components/PermissionsModal";
 import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
 import WorkerDetailsModal from "../components/WorkerDetailsModal";
 import { WEEKDAYS, DEFAULT_WORK_DAYS } from "../lib/workerPay";
+import { ViewToggle, Table, Badge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 
 // Username must be 3-32 chars: lowercase letters, digits, dot, underscore, hyphen
 const USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
@@ -49,6 +50,9 @@ const MagasinWorkers = () => {
 
   // Toolbar: recherche libre + filtre de statut
   const [search, setSearch] = useState("");
+  // Tableau par défaut : la paie se lit en colonnes — salaire, acomptes, statut
+  // du mois. Les fiches en cartes restent à un clic.
+  const [viewMode, setViewMode] = useState<"grid" | "table">("table");
   const [statusFilter, setStatusFilter] = useState<'tous' | 'Actif' | 'Inactif'>('tous');
 
   const visibleWorkers: MagasinWorker[] = useMemo(() => workers.filter((w: MagasinWorker) =>
@@ -466,11 +470,65 @@ const MagasinWorkers = () => {
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
           {visibleWorkers.length} / {workers.length} employé(s)
         </p>
+        <ViewToggle view={viewMode} onChange={setViewMode} />
       </div>
 
-      {/* Cards Grid */}
+      {visibleWorkers.length === 0 ? (
+        workers.length > 0
+          ? <EmptyState icon={Search} title="Aucun résultat" description="Aucun employé ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
+          : <EmptyState icon={Store} title="Aucun employé magasin" description="Commencez par ajouter votre premier employé" actionLabel="Ajouter" action={() => { resetForm(); setShowModal(true); }} />
+      ) : viewMode === "table" ? (
+        /* ── Les employés en tableau — mêmes chiffres que la carte, alignés. */
+        <Table head={<>
+          <th className="table-head">Employé</th><th className="table-head">CIN</th>
+          <th className="table-head">Téléphone</th><th className="table-head">Compte</th>
+          <th className="table-head text-right">Salaire</th><th className="table-head text-right">Acomptes du mois</th>
+          <th className="table-head">Ce mois</th><th className="table-head">Statut</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {visibleWorkers.map((w: MagasinWorker) => {
+            const currentMonthAcomptes = (w.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
+            const isMonthPaid = (w.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
+            return (
+              <tr key={w.id} className={w.status === "Actif" ? undefined : "opacity-60"}>
+                <td className="table-cell font-bold text-blue-900 uppercase tracking-tight">{w.name}</td>
+                <td className="table-cell whitespace-nowrap">{w.cin || "—"}</td>
+                <td className="table-cell whitespace-nowrap">{w.phone || "—"}</td>
+                <td className="table-cell">
+                  {w.hasAccess && w.authUserId
+                    ? <Badge tone="success">Actif</Badge>
+                    : w.hasAccess && w.username
+                      ? <button className="text-[11px] font-black text-amber-700 hover:underline"
+                        onClick={() => { setActivatingWorker(w); setActivatePassword(""); setShowActivateModal(true); }}>À activer</button>
+                      : <span className="text-slate-400">Aucun</span>}
+                </td>
+                <td className="table-cell tabular-nums text-right font-bold">{w.baseSalary.toLocaleString()} DA</td>
+                <td className="table-cell tabular-nums text-right">
+                  {currentMonthAcomptes > 0
+                    ? <span className="font-black text-red-600">{currentMonthAcomptes.toLocaleString()} DA</span>
+                    : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="table-cell">{isMonthPaid ? <Badge tone="success">Payé</Badge> : <Badge tone="warning">À payer</Badge>}</td>
+                <td className="table-cell"><Badge tone={w.status === "Actif" ? "success" : "danger"}>{w.status}</Badge></td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir les détails" onClick={() => { setSelectedWorker(w); setShowDetailModal(true); }} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setSelectedWorker(w); setForm(w); setShowModal(true); }} />}
+                    <ActionBtn icon={Wallet} tone="amber" title="Acompte" onClick={() => { setSelectedWorker(w); setShowAdvanceModal(true); }} />
+                    <ActionBtn icon={UserX} tone="slate" title="Absence" onClick={() => { setSelectedWorker(w); setShowAbsenceModal(true); }} />
+                    <ActionBtn icon={DollarSign} tone="green" title="Paiement" onClick={() => { setSelectedWorker(w); setShowPaymentModal(true); }} />
+                    <ActionBtn icon={HistoryIcon} tone="slate" title="Historique" onClick={() => { setSelectedWorker(w); setShowHistoryModal(true); }} />
+                    {currentUserRole === 'admin' && <ActionBtn icon={Shield} tone="red" title="Permissions" onClick={() => { setSelectedWorker(w); setShowPermissionsModal(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => { setSelectedWorker(w); setShowConfirmDelete(true); }} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {visibleWorkers.length > 0 ? visibleWorkers.map((w: MagasinWorker) => {
+        {visibleWorkers.map((w: MagasinWorker) => {
           const currentMonthAcomptes = (w.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
           const isMonthPaid = (w.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
 
@@ -604,16 +662,9 @@ const MagasinWorkers = () => {
             </div>
           </motion.div>
         );
-        }) : (
-          <div className="col-span-full">
-            {workers.length > 0 ? (
-              <EmptyState icon={Search} title="Aucun résultat" description="Aucun employé ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
-            ) : (
-              <EmptyState icon={Store} title="Aucun employé magasin" description="Commencez par ajouter votre premier employé" actionLabel="Ajouter" action={() => { resetForm(); setShowModal(true); }} />
-            )}
-          </div>
-        )}
+        })}
       </div>
+      )}
 
       {/* Edit/Create Modal */}
       <AnimatePresence>

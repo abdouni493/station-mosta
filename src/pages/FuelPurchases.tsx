@@ -31,7 +31,7 @@ import {
 } from '../store/AppContext';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
-  Table, EmptyState, SearchInput, RowActions, ActionBtn, FormSection, StaticField,
+  Table, EmptyState, SearchInput, RowActions, ActionBtn, FormSection, StaticField, ViewToggle,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '../components/biz/Kit';
 import { printInvoice, stationFromSettings } from './modules/_shared';
@@ -82,6 +82,10 @@ export default function FuelPurchases() {
   const { purchases, suppliers, tanks, bankAccounts, treasuryTransactions, settings } = state;
 
   const [search, setSearch] = useState('');
+  // Tableau par défaut : une liste de factures se lit en colonnes. Les cartes
+  // restent à un clic — et restent la seule mise en page tenable sur un écran
+  // étroit, où le tableau ne rentre pas.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [creating, setCreating] = useState(false);
@@ -197,6 +201,9 @@ export default function FuelPurchases() {
             {filtered.length} achat(s) affiché(s) — du plus récent au plus ancien
           </p>
         )}
+        {/* Le tableau demande de la place : sur un écran étroit, les cartes
+            restent la seule mise en page possible. */}
+        <div className="ml-auto hidden xl:block"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
       {filtered.length === 0 ? (
@@ -205,8 +212,9 @@ export default function FuelPurchases() {
           action={perm.creer ? <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
       ) : (
         <>
-          {/* ── Mobile & tablet: one readable card per achat ─────────────── */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 xl:hidden">
+          {/* ── Les cartes : seule mise en page sur écran étroit, et à un
+                 clic sur grand écran. ─────────────────────────────────────── */}
+          <div className={`grid grid-cols-1 md:grid-cols-2 gap-3 ${view === 'table' ? 'xl:hidden' : ''}`}>
             {filtered.map(p => {
               const supplier = suppliers.find(s => s.id === p.supplierId);
               const liters = (p.items || []).reduce((a, i) => a + (i.quantity || 0), 0);
@@ -271,6 +279,7 @@ export default function FuelPurchases() {
           </div>
 
           {/* ── Desktop: the full table, every column at a glance ────────── */}
+          {view === 'table' && (
           <div className="hidden xl:block">
             {/* ── L'ORDRE DES COLONNES ─────────────────────────────────────
                 Les boutons d'action suivent immédiatement le fournisseur : on
@@ -327,6 +336,7 @@ export default function FuelPurchases() {
               })}
             </Table>
           </div>
+          )}
         </>
       )}
 

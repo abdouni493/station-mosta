@@ -11,6 +11,7 @@ import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Tank, Product, Pump, Inventory as InventoryType } from "../store/AppContext";
 import EmptyState from "../components/EmptyState";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { ViewToggle } from "@/src/components/biz/Kit";
 
 /* ── Colour palette matching the Sidebar ── */
 const C = {
@@ -583,6 +584,11 @@ const Inventory = () => {
 
   /* View state */
   const [view, setView]     = useState<"list" | "create" | "compare" | "detail">("list");
+  /**
+   * La mise en page de la LISTE — à ne pas confondre avec `view`, qui dit sur
+   * quel écran on se trouve. Tableau par défaut, cartes à un clic.
+   */
+  const [listView, setListView] = useState<"grid" | "table">("table");
   const [step, setStep]     = useState(0);   // 0=type, 1=meta, 2=data, 3=confirm
   const [isLoading, setIsLoading] = useState(false);
   const [selected, setSelected]   = useState<InventoryType | null>(null);
@@ -741,6 +747,63 @@ const Inventory = () => {
               <EmptyState icon={Calculator} title="Aucun inventaire" description="Créez votre premier inventaire physique."
                 action={() => { resetForm(); setView("create"); }} actionLabel="NOUVEL INVENTAIRE" />
             ) : (
+              <>
+              <div className="flex justify-end"><ViewToggle view={listView} onChange={setListView} /></div>
+              {listView === "grid" ? (
+                /* ── Les inventaires en cartes ────────────────────────────
+                   Le même contenu que la ligne du tableau, en vignettes —
+                   utile quand on parcourt l'historique plus qu'on ne le lit. */
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                  {[...inventories].reverse().map(inv => (
+                    <motion.div key={inv.id}
+                      initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                      className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-lg transition-all p-5 space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-black text-blue-900 text-sm uppercase tracking-tight truncate">{inv.name || inv.id}</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest truncate">{inv.id}</p>
+                        </div>
+                        <span className={cn("px-3 py-1 rounded-full text-[10px] font-black uppercase shrink-0",
+                          inv.status === "Validé" ? "bg-green-50 text-green-700" :
+                            inv.status === "Comparé" ? "bg-purple-50 text-purple-700" : "bg-blue-50 text-blue-700")}>
+                          {inv.status}
+                        </span>
+                      </div>
+                      {inv.description && <p className="text-[11px] text-slate-400 font-medium line-clamp-2">{inv.description}</p>}
+                      <div className="flex flex-wrap items-center gap-2 text-[10px] font-black uppercase">
+                        <span className={cn("px-3 py-1 rounded-full",
+                          inv.type === "Carburant" ? "bg-blue-50 text-blue-700" : "bg-amber-50 text-amber-700")}>
+                          {inv.type ?? "Mixte"}
+                        </span>
+                        <span className="text-slate-400">
+                          {new Date(inv.date).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })}
+                        </span>
+                        <span className="text-blue-900">{inv.user}</span>
+                      </div>
+                      <div className="flex items-center gap-1 pt-3 border-t border-slate-100">
+                        <button title="Voir Détails" onClick={() => { setSelected(inv); setView("detail"); }}
+                          className="p-2 rounded-xl text-slate-300 hover:bg-blue-50 hover:text-blue-700 transition-all">
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button title="Comparer avec le stock actuel" onClick={() => { setSelected(inv); setView("compare"); }}
+                          className="p-2 rounded-xl text-slate-300 hover:bg-blue-50 hover:text-blue-700 transition-all">
+                          <GitCompare className="w-4 h-4" />
+                        </button>
+                        <button title="Imprimer" onClick={() => window.print()}
+                          className="p-2 rounded-xl text-slate-300 hover:bg-amber-50 hover:text-amber-700 transition-all">
+                          <Printer className="w-4 h-4" />
+                        </button>
+                        {perm.supprimer && (
+                          <button title="Supprimer" onClick={() => { setDeleteTargetId(inv.id); setShowDeleteConfirm(true); }}
+                            className="p-2 rounded-xl text-slate-300 hover:bg-red-50 hover:text-red-600 transition-all cursor-pointer">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              ) : (
               <div className="bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden">
                 <table className="w-full text-left">
                   <thead style={{ background: `${C.blue800}08` }}>
@@ -815,6 +878,8 @@ const Inventory = () => {
                   </tbody>
                 </table>
               </div>
+              )}
+              </>
             )}
           </motion.div>
         )}

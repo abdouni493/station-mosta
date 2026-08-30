@@ -50,7 +50,7 @@ import {
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import { useBizSessions } from '@/src/hooks/useBizSessions';
-import { PageHeader, Badge, Select, Field, Input, Textarea, Modal, money, formatDate } from '@/src/components/biz/Kit';
+import { PageHeader, Badge, Select, Field, Input, Textarea, Modal, money, formatDate, ViewToggle, Table } from '@/src/components/biz/Kit';
 import { useCustomerDisplay, CustomerDisplayState } from '@/src/components/biz/CustomerDisplay';
 import { ContactModal, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
 import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
@@ -148,6 +148,14 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
+  /**
+   * Mise en page du rayon. SEUL écran de l'application où les vignettes restent
+   * la vue de départ : ici, elles ne présentent pas des données, ce sont les
+   * TOUCHES de la caisse — un caissier les vise du doigt. Le tableau est
+   * offert à côté, pour un rayon de pièces où c'est la référence qui distingue
+   * deux articles au nom identique.
+   */
+  const [view, setView] = useState<'grid' | 'table'>('grid');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [clientId, setClientId] = useState('');
   const [passage, setPassage] = useState(true);
@@ -667,6 +675,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
               title="Choisir et ordonner les produits affichés en tête de la grille">
               <ListOrdered className="w-4 h-4" /> Organiser l'affichage
             </button>
+            <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
           </div>
 
           {/* Category chips */}
@@ -696,6 +705,69 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
             <div className="card-glass p-12 text-center text-slate-400">
               <Package className="w-10 h-10 mx-auto mb-2 text-slate-300" />Aucun produit disponible
             </div>
+          ) : view === 'table' ? (
+            /* ── Le rayon en tableau ─────────────────────────────────────
+               La ligne entière est cliquable : on ajoute au panier comme on
+               tapait la vignette. Ce que la vignette ne peut pas montrer sans
+               se serrer — référence, véhicules, catégorie — tient ici en clair. */
+            <Table head={<>
+              <th className="table-head">Produit</th><th className="table-head">Catégorie</th>
+              <th className="table-head">Référence / véhicule</th>
+              <th className="table-head text-right">Prix</th><th className="table-head text-right">Disponible</th>
+              <th className="table-head text-right">Accès rapide</th>
+            </>}>
+              {filtered.map(s => (
+                <tr key={`${s.kind}-${s.id}`} role="button" tabIndex={0}
+                  onClick={() => addToCart(s)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); addToCart(s); } }}
+                  className={`cursor-pointer ${isPinned(s) ? 'bg-amber-50/60' : ''}`}
+                  title="Ajouter au panier">
+                  <td className="table-cell">
+                    <div className="font-bold text-slate-700 flex items-center gap-1.5">
+                      {s.name}
+                      {s.kind === 'fiche' && <Badge tone="primary">Vente rapide</Badge>}
+                      {s.detail && <Badge tone="info">Au détail</Badge>}
+                    </div>
+                    {(s.kind === 'fiche' ? (s.missing?.length || 0) > 0 : s.avail <= 0) && (
+                      <div className="text-[11px] font-bold text-amber-600">
+                        Vente à découvert — stock en négatif
+                        {s.missing && s.missing.length > 0 && ` · manque ${s.missing.slice(0, 3).join(', ')}${s.missing.length > 3 ? '…' : ''}`}
+                      </div>
+                    )}
+                  </td>
+                  <td className="table-cell text-slate-500">{s.categoryName || '—'}</td>
+                  <td className="table-cell">
+                    {!!s.refs?.length && (
+                      <div className="text-[11px] font-mono text-violet-600 truncate max-w-[220px]" title={s.refs.map(productRefLabel).join(' · ')}>
+                        {s.refs.map(productRefLabel).join(' · ')}
+                      </div>
+                    )}
+                    {!!s.cars?.length && (
+                      <div className="text-[11px] font-bold text-blue-600 truncate max-w-[220px]" title={s.cars.map(productCarLabel).join(' · ')}>
+                        {s.cars.map(productCarLabel).join(' · ')}
+                      </div>
+                    )}
+                    {!s.refs?.length && !s.cars?.length && <span className="text-slate-400">—</span>}
+                  </td>
+                  <td className="table-cell tabular-nums text-right font-black text-[#002d87]">
+                    {money(s.price)}{s.detail ? <span className="text-[10px] font-bold">/{s.detailUnit}</span> : null}
+                  </td>
+                  <td className="table-cell text-right">
+                    <Badge tone={s.avail <= 0 ? 'danger' : s.avail <= 5 ? 'warning' : 'neutral'}>
+                      {formatQty(s.avail)} {s.unit}
+                    </Badge>
+                  </td>
+                  <td className="table-cell text-right">
+                    <button type="button" onClick={e => { e.stopPropagation(); togglePin(s); }}
+                      title={isPinned(s) ? "Retirer de l'accès rapide" : "Épingler en accès rapide"}
+                      className={`w-8 h-8 rounded-lg inline-flex items-center justify-center border transition-colors
+                        ${isPinned(s) ? 'bg-[#FFB800] border-[#FFB800] text-white' : 'bg-white border-slate-200 text-slate-300 hover:text-[#FFB800]'}`}>
+                      <Star className={`w-3.5 h-3.5 ${isPinned(s) ? 'fill-white' : ''}`} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </Table>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5">
               {filtered.map(s => (

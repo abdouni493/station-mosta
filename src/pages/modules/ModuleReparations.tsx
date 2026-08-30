@@ -30,7 +30,7 @@ import { applyRestock, describeRestock, restockPlan, totalRestocked } from '@/sr
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
+  PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, money, formatDate,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
@@ -71,6 +71,9 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   const { reparations, clients, workers } = biz.state;
 
   const [search, setSearch] = useState('');
+  // Tableau par défaut : une journée d'atelier se lit en lignes — réf, client,
+  // véhicule, reste à encaisser. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [status, setStatus] = useState<'all' | 'pending' | 'finalized' | 'canceled'>('all');
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
@@ -220,12 +223,62 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
               );
             })}
           </div>
+          <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
         </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
       </div>
 
       {filtered.length === 0 ? (
         <EmptyState icon={Car} title="Aucune intervention" message="Créez un lavage ou une vidange, ou enregistrez-la en attente." />
+      ) : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Réf</th><th className="table-head">Client</th><th className="table-head">Véhicule</th>
+          <th className="table-head">Prestations</th><th className="table-head">Date</th>
+          <th className="table-head text-right">Total</th><th className="table-head text-right">Payé</th>
+          <th className="table-head text-right">Reste</th><th className="table-head">État</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(r => {
+            const KM = KIND_META[r.kind]; const KIcon = KM.icon;
+            const carLabel = [r.car?.marque, r.car?.name, r.car?.immatriculation].filter(Boolean).join(' • ');
+            return (
+              <tr key={r.id} className={r.status === 'pending' ? 'bg-amber-50/60' : undefined}>
+                <td className="table-cell font-bold">
+                  <span className="inline-flex items-center gap-1.5"><KIcon className="w-4 h-4 text-[#003087]" />{r.ref}</span>
+                </td>
+                <td className="table-cell">{r.clientName}</td>
+                <td className="table-cell text-slate-500 max-w-[200px] truncate" title={carLabel || undefined}>{carLabel || '—'}</td>
+                <td className="table-cell">
+                  <div className="flex flex-wrap gap-1 max-w-[260px]">
+                    {prestationsOf(r).map(l => (
+                      <Badge key={l.id} tone={l.kind === 'lavage' ? 'info' : 'primary'}>
+                        {l.label || KIND_META[l.kind].label}
+                      </Badge>
+                    ))}
+                    {r.usedProducts.length > 0 && <Badge tone="neutral">{r.usedProducts.length} produit(s)</Badge>}
+                  </div>
+                </td>
+                <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(r.date)}</td>
+                <td className="table-cell tabular-nums text-right font-bold">{money(r.total)}</td>
+                <td className="table-cell tabular-nums text-right text-emerald-600">{money(r.paid)}</td>
+                <td className="table-cell tabular-nums text-right text-red-600">{money(r.rest)}</td>
+                <td className="table-cell"><Badge tone={STATUS_META[r.status].tone}>{STATUS_META[r.status].label}</Badge></td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    {r.status === 'pending' && perm.modifier && (
+                      <ActionBtn icon={CheckCircle2} tone="green" title="Finaliser l'intervention" onClick={() => setEditing(r)} />
+                    )}
+                    <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
+                    <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(r)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(r)} />}
+                    {r.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
       ) : (
         <CardGrid>
           {filtered.map(r => {

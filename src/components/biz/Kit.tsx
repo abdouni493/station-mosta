@@ -347,8 +347,13 @@ export function RowActions({ children }: { children: React.ReactNode }) {
   return <div className="flex items-center gap-1.5">{children}</div>;
 }
 export function ActionBtn({
-  icon: Icon, tone = 'slate', title, onClick,
-}: { icon: React.ElementType; tone?: 'slate' | 'blue' | 'green' | 'red' | 'amber'; title: string; onClick: () => void }) {
+  icon: Icon, tone = 'slate', title, onClick, disabled,
+}: {
+  icon: React.ElementType; tone?: 'slate' | 'blue' | 'green' | 'red' | 'amber'; title: string;
+  onClick: () => void;
+  /** Une action momentanément impossible reste VISIBLE : le `title` dit pourquoi. */
+  disabled?: boolean;
+}) {
   const tones: Record<string, string> = {
     slate: 'text-slate-500 hover:bg-slate-100 hover:text-slate-700',
     blue: 'text-blue-600 hover:bg-blue-50',
@@ -357,7 +362,9 @@ export function ActionBtn({
     amber: 'text-amber-600 hover:bg-amber-50',
   };
   return (
-    <button title={title} onClick={onClick} className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-colors', tones[tone])}>
+    <button title={title} onClick={onClick} disabled={disabled}
+      className={cn('w-8 h-8 rounded-lg flex items-center justify-center transition-colors',
+        disabled ? 'text-slate-300 cursor-not-allowed' : tones[tone])}>
       <Icon className="w-4 h-4" />
     </button>
   );

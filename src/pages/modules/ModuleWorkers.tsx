@@ -20,7 +20,7 @@ import WorkerPaymentModal, { WorkerPaymentResult } from '@/src/components/Worker
 import WorkerDetailsModal from '@/src/components/WorkerDetailsModal';
 import { WEEKDAYS, DEFAULT_WORK_DAYS, PayWork, PayInventaire } from '@/src/lib/workerPay';
 import {
-  PageHeader, StatCard, SearchInput, EmptyState,
+  PageHeader, StatCard, SearchInput, EmptyState, ViewToggle, Table, Badge, RowActions, ActionBtn,
   Confirm, Modal, Field, Input, Select, Switch, InlineCreate, money, formatDate,
 } from '@/src/components/biz/Kit';
 
@@ -33,6 +33,9 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
   const perm = useBizPermission(moduleKey, 'workers');
   const { workers, inventaires } = biz.state;
   const [search, setSearch] = useState('');
+  // Tableau par défaut : la paie se lit en colonnes — salaire, acomptes, statut
+  // du mois. Les fiches en cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [kindFilter, setKindFilter] = useState<'all' | BizWorkerKind>('all');
   const [form, setForm] = useState<BizWorker | null | 'new'>(null);
   const [viewing, setViewing] = useState<BizWorker | null>(null);
@@ -105,11 +108,84 @@ export default function ModuleWorkers({ moduleKey }: { moduleKey: ModuleKey }) {
             ))}
           </div>
         )}
+        <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
       {filtered.length === 0 ? (
         <EmptyState icon={UsersRound} title="Aucun employé"
           action={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Nouvel employé</button> : undefined} />
+      ) : view === 'table' ? (
+        /* ── Le personnel en tableau ──────────────────────────────────────
+           Les mêmes informations que la carte, alignées : qui est salarié,
+           combien il touche, ce qu'il a déjà pris en acompte, et s'il a été
+           payé ce mois-ci. Le menu « … » devient des boutons de ligne. */
+        <Table head={<>
+          <th className="table-head">Employé</th><th className="table-head">Rôle</th>
+          {hasKinds && <th className="table-head">Spécialité</th>}
+          <th className="table-head">Compte</th>
+          <th className="table-head text-right">Salaire</th><th className="table-head text-right">Acomptes dus</th>
+          <th className="table-head">Ce mois</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(w => {
+            const unpaidAcomptes = (w.acomptes || []).filter(a => !a.paid).reduce((s, a) => s + a.amount, 0);
+            const isMonthPaid = (w.payments || []).some(p => (p.date || '').startsWith(currentMonth));
+            const isActive = w.hasAccount ? !!w.authUserId : true;
+            const inventaireDebt = (w.payments || []).reduce(
+              (s, p) => s + Math.max(0, (p.inventaireTotal || 0) - (p.inventaireDeduction || 0)), 0);
+            return (
+              <tr key={w.id} className={isActive ? undefined : 'opacity-60'}>
+                <td className="table-cell">
+                  <div className="font-bold text-blue-900 uppercase tracking-tight">{w.name}</div>
+                  <div className="text-[11px] text-slate-400">{w.cin ? `CIN ${w.cin}` : (w.phone || '—')}</div>
+                  {inventaireDebt > 0 && (
+                    <div className="text-[11px] font-bold text-red-600"
+                      title="Manquants d'inventaire constatés et non encore retenus sur son salaire">
+                      Dette inventaire {money(inventaireDebt)}
+                    </div>
+                  )}
+                </td>
+                <td className="table-cell">{w.roleName}</td>
+                {hasKinds && (
+                  <td className="table-cell">
+                    <Badge tone={(w.workerKind || 'both') === 'lavage' ? 'info' : (w.workerKind || 'both') === 'reparation' ? 'warning' : 'primary'}>
+                      {WORKER_KIND_META[w.workerKind || 'both'].short}
+                    </Badge>
+                  </td>
+                )}
+                <td className="table-cell">
+                  {w.hasAccount && w.authUserId
+                    ? <Badge tone="success">Actif</Badge>
+                    : w.hasAccount && w.username
+                      ? <button className="text-[11px] font-black text-amber-700 hover:underline" onClick={() => setActivating(w)}>À activer</button>
+                      : <span className="text-slate-400">Aucun</span>}
+                </td>
+                <td className="table-cell tabular-nums text-right">
+                  {w.salaryType === 'pourcentage'
+                    ? <span className="font-bold text-emerald-600">{w.percentage || 0} % des travaux</span>
+                    : w.paid ? <span className="font-bold">{money(w.salaryAmount)}</span> : <span className="text-slate-400">Non salarié</span>}
+                </td>
+                <td className="table-cell tabular-nums text-right">
+                  {unpaidAcomptes > 0 ? <span className="font-black text-red-600">{money(unpaidAcomptes)}</span> : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="table-cell">
+                  {isMonthPaid ? <Badge tone="success">Payé</Badge> : <Badge tone="warning">À payer</Badge>}
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir les détails" onClick={() => setViewing(w)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(w)} />}
+                    <ActionBtn icon={CalendarPlus} tone="amber" title="Acompte" onClick={() => setAcompte(w)} />
+                    <ActionBtn icon={CalendarMinus} tone="slate" title="Absence" onClick={() => setAbsence(w)} />
+                    <ActionBtn icon={Banknote} tone="green" title="Paiement" onClick={() => setPayment(w)} />
+                    <ActionBtn icon={Printer} tone="slate" title="Imprimer les paiements" onClick={() => setPrinting(w)} />
+                    {perm.modifier && <ActionBtn icon={Shield} tone="red" title="Permissions" onClick={() => setPerms(w)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(w)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map(w => {

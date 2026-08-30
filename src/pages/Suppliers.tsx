@@ -49,7 +49,9 @@ const Suppliers = () => {
   const dispatch = useAppDispatch();
 
   // View state controls
-  const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
+  // Tableau par défaut : on vient y lire une dette fournisseur, colonne par
+  // colonne. Les cartes restent à un clic.
+  const [viewMode, setViewMode] = useState<"grid" | "table">("table");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedType, setSelectedType] = useState("Tous");
   const [actionMenuOpen, setActionMenuOpen] = useState<string | null>(null);

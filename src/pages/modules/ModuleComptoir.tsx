@@ -6,8 +6,8 @@ import { ModuleKey, MODULES, BizComptoirItem, BizDestruction, formatQty } from '
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, Badge, SearchInput, Select, CardGrid, GlassCard, EmptyState, Tabs, Table,
-  ActionBtn, Confirm, Modal, Field, Input, money, formatDate,
+  PageHeader, StatCard, Badge, SearchInput, ViewToggle, Select, CardGrid, GlassCard, EmptyState, Tabs, Table,
+  RowActions, ActionBtn, Confirm, Modal, Field, Input, money, formatDate,
 } from '@/src/components/biz/Kit';
 
 export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) {
@@ -21,6 +21,9 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
     () => biz.state.destructions.filter(d => d.source !== 'stock'),
     [biz.state.destructions]);
   const [tab, setTab] = useState<'avail' | 'destroy'>('avail');
+  // Le comptoir s'ouvre en tableau : on y cherche une quantité disponible et
+  // une valeur, colonne par colonne. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('all');
   const [destroying, setDestroying] = useState<BizComptoirItem | null>(null);
@@ -89,8 +92,40 @@ export default function ModuleComptoir({ moduleKey }: { moduleKey: ModuleKey }) 
             <Select value={cat} onChange={e => setCat(e.target.value)} className="!w-auto min-w-[160px]">
               <option value="all">Toutes catégories</option>{cats.map(c => <option key={c} value={c}>{c}</option>)}
             </Select>
+            <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
           </div>
-          {availFiltered.length === 0 ? <EmptyState icon={Beaker} title="Comptoir vide" message="Transférez des productions vers le comptoir." /> : (
+          {availFiltered.length === 0 ? <EmptyState icon={Beaker} title="Comptoir vide" message="Transférez des productions vers le comptoir." /> : view === 'table' ? (
+            <Table head={<>
+              <th className="table-head">Produit</th><th className="table-head">Catégorie</th><th className="table-head">Depuis</th>
+              <th className="table-head text-right">Disponible</th><th className="table-head text-right">Prix unit.</th>
+              <th className="table-head text-right">Valeur stock</th><th className="table-head text-right">Actions</th>
+            </>}>
+              {availFiltered.map(c => (
+                <tr key={c.id}>
+                  <td className="table-cell">
+                    <div className="font-bold text-slate-700">{c.productName}</div>
+                    {c.qty < 0 && (
+                      <div className="text-[11px] font-semibold text-red-600">
+                        Vendu à découvert — {formatQty(-c.qty)} {c.unit || ''} à produire
+                      </div>
+                    )}
+                  </td>
+                  <td className="table-cell">{c.categoryName ? <Badge tone="primary"><Layers className="w-3 h-3" />{c.categoryName}</Badge> : <span className="text-slate-400">—</span>}</td>
+                  <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(c.date)}</td>
+                  <td className={`table-cell tabular-nums text-right font-black ${c.qty < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                    {formatQty(c.qty)} <span className="text-xs font-normal text-slate-400">{c.unit}</span>
+                  </td>
+                  <td className="table-cell tabular-nums text-right">{money(c.unitPrice)}</td>
+                  <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(c.qty * c.unitPrice)}</td>
+                  <td className="table-cell text-right">
+                    <RowActions>
+                      {perm.supprimer && c.qty > 0 && <ActionBtn icon={Flame} tone="red" title="Destruction" onClick={() => setDestroying(c)} />}
+                    </RowActions>
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          ) : (
             <CardGrid>
               {availFiltered.map(c => (
                 <GlassCard key={c.id}>

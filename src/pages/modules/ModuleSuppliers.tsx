@@ -6,7 +6,7 @@ import { matchesSearch } from '@/src/lib/utils';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState, Table,
+  PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, EmptyState, Table,
   RowActions, ActionBtn, Edit2, Trash2, Confirm, Modal, money, formatDate,
 } from '@/src/components/biz/Kit';
 import { ContactModal } from './_shared';
@@ -18,6 +18,9 @@ export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey })
   const { suppliers, purchases } = biz.state;
 
   const [search, setSearch] = useState('');
+  // Tableau par défaut : on vient ici pour lire une dette fournisseur, pas pour
+  // regarder des vignettes. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<BizContact | null>(null);
   const [history, setHistory] = useState<BizContact | null>(null);
@@ -45,9 +48,45 @@ export default function ModuleSuppliers({ moduleKey }: { moduleKey: ModuleKey })
         <StatCard icon={CircleDollarSign} label="Dettes fournisseurs" value={money(totalDebt)} tone="red" />
       </div>
 
-      <div className="card-glass p-4"><SearchInput value={search} onChange={setSearch} placeholder="Nom ou téléphone…" /></div>
+      <div className="card-glass p-4 flex flex-wrap items-center gap-3">
+        <SearchInput value={search} onChange={setSearch} placeholder="Nom ou téléphone…" />
+        <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
+      </div>
 
-      {filtered.length === 0 ? <EmptyState icon={Truck} title="Aucun fournisseur" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau fournisseur</button> : undefined} /> : (
+      {filtered.length === 0 ? <EmptyState icon={Truck} title="Aucun fournisseur" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau fournisseur</button> : undefined} /> : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Fournisseur</th><th className="table-head">Téléphone</th><th className="table-head">Adresse</th>
+          <th className="table-head text-right">Achats</th><th className="table-head text-right">Total</th>
+          <th className="table-head text-right">Payé</th><th className="table-head text-right">Reste</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(s => {
+            const st = supStats(s.id);
+            return (
+              <tr key={s.id}>
+                <td className="table-cell font-bold text-slate-700">{s.name}</td>
+                <td className="table-cell whitespace-nowrap">{s.phone || '—'}</td>
+                <td className="table-cell text-slate-500 max-w-[220px] truncate" title={s.address || undefined}>{s.address || '—'}</td>
+                <td className="table-cell tabular-nums text-right">{st.count}</td>
+                <td className="table-cell tabular-nums text-right font-bold">{money(st.total)}</td>
+                <td className="table-cell tabular-nums text-right text-emerald-600">{money(st.paid)}</td>
+                <td className="table-cell tabular-nums text-right">
+                  {st.rest > 0
+                    ? <span className="font-black text-red-600">{money(st.rest)}</span>
+                    : <Badge tone="success">À jour</Badge>}
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={ShoppingCart} tone="blue" title="Historique des achats" onClick={() => setHistory(s)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(s); setShowForm(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(s)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
         <CardGrid>
           {filtered.map(s => {
             const st = supStats(s.id);

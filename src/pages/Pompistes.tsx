@@ -19,6 +19,7 @@ import PermissionsModal from "../components/PermissionsModal";
 import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
 import WorkerDetailsModal from "../components/WorkerDetailsModal";
 import { WEEKDAYS, DEFAULT_WORK_DAYS, PayDecalage } from "../lib/workerPay";
+import { ViewToggle, Table, Badge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 
 // Username must be 3-32 chars: lowercase letters, digits, dot, underscore, hyphen
 const USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
@@ -34,6 +35,9 @@ const Pompistes = () => {
 
   // Toolbar: recherche libre + filtre de statut
   const [search, setSearch] = useState("");
+  // Tableau par défaut : la paie se lit en colonnes — salaire, acomptes, statut
+  // du mois. Les fiches en cartes restent à un clic.
+  const [viewMode, setViewMode] = useState<"grid" | "table">("table");
   const [statusFilter, setStatusFilter] = useState<'tous' | 'Actif' | 'Inactif'>('tous');
 
   const visiblePompistes: Pompiste[] = useMemo(() => pompistes.filter((p: Pompiste) =>
@@ -477,11 +481,70 @@ const Pompistes = () => {
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
           {visiblePompistes.length} / {pompistes.length} pompiste(s)
         </p>
+        <ViewToggle view={viewMode} onChange={setViewMode} />
       </div>
 
-      {/* Cards Grid */}
+      {visiblePompistes.length === 0 ? (
+        pompistes.length > 0
+          ? <EmptyState icon={Search} title="Aucun résultat" description="Aucun pompiste ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
+          : <EmptyState icon={UsersRound} title="Aucun pompiste" description="Commencez par recruter votre premier pompiste" actionLabel="Recruter" action={() => { resetForm(); setShowModal(true); }} />
+      ) : viewMode === "table" ? (
+        /* ── L'équipe en tableau ──────────────────────────────────────────
+           Les mêmes chiffres que la carte — salaire, acomptes du mois, paie
+           faite ou non — mais alignés : c'est ainsi qu'on prépare une paie.
+           Le menu « … » de la carte devient des boutons de ligne. */
+        <Table head={<>
+          <th className="table-head">Pompiste</th><th className="table-head">CIN</th>
+          <th className="table-head">Piste</th><th className="table-head">Compte</th>
+          <th className="table-head text-right">Salaire</th><th className="table-head text-right">Acomptes du mois</th>
+          <th className="table-head">Ce mois</th><th className="table-head">Statut</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {visiblePompistes.map((p: Pompiste) => {
+            const currentMonthAcomptes = (p.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
+            const isMonthPaid = (p.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
+            return (
+              <tr key={p.id} className={p.status === "Actif" ? undefined : "opacity-60"}>
+                <td className="table-cell font-bold text-blue-900 uppercase tracking-tight">{p.name}</td>
+                <td className="table-cell whitespace-nowrap">{p.cin || "—"}</td>
+                <td className="table-cell">{p.trackId ? (tracks.find(t => t.id === p.trackId)?.name || "—") : "—"}</td>
+                <td className="table-cell">
+                  {p.hasAccess && p.authUserId
+                    ? <Badge tone="success">Actif</Badge>
+                    : p.hasAccess && p.username
+                      ? <button className="text-[11px] font-black text-amber-700 hover:underline"
+                        onClick={() => { setActivatingPompiste(p); setActivatePassword(""); setShowActivateModal(true); }}>À activer</button>
+                      : <span className="text-slate-400">Aucun</span>}
+                </td>
+                <td className="table-cell tabular-nums text-right font-bold">{p.baseSalary.toLocaleString()} DA</td>
+                <td className="table-cell tabular-nums text-right">
+                  {currentMonthAcomptes > 0
+                    ? <span className="font-black text-red-600">{currentMonthAcomptes.toLocaleString()} DA</span>
+                    : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="table-cell">{isMonthPaid ? <Badge tone="success">Payé</Badge> : <Badge tone="warning">À payer</Badge>}</td>
+                <td className="table-cell">
+                  <Badge tone={p.status === "Actif" ? "success" : "danger"}>{p.status}</Badge>
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir les détails" onClick={() => { setSelectedPompiste(p); setShowDetailModal(true); }} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setSelectedPompiste(p); setForm(p); setShowModal(true); }} />}
+                    <ActionBtn icon={Wallet} tone="amber" title="Acompte" onClick={() => { setSelectedPompiste(p); setShowAdvanceModal(true); }} />
+                    <ActionBtn icon={UserX} tone="slate" title="Absence" onClick={() => { setSelectedPompiste(p); setShowAbsenceModal(true); }} />
+                    <ActionBtn icon={DollarSign} tone="green" title="Paiement" onClick={() => { setSelectedPompiste(p); setShowPaymentModal(true); }} />
+                    <ActionBtn icon={HistoryIcon} tone="slate" title="Historique" onClick={() => { setSelectedPompiste(p); setShowHistoryModal(true); }} />
+                    {currentUserRole === 'admin' && <ActionBtn icon={Shield} tone="red" title="Permissions" onClick={() => { setSelectedPompiste(p); setShowPermissionsModal(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => { setSelectedPompiste(p); setShowConfirmDelete(true); }} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {visiblePompistes.length > 0 ? visiblePompistes.map((p: Pompiste) => {
+        {visiblePompistes.map((p: Pompiste) => {
           const currentMonthAcomptes = (p.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
           const isMonthPaid = (p.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
           
@@ -622,16 +685,9 @@ const Pompistes = () => {
             </div>
           </motion.div>
         );
-        }) : (
-          <div className="col-span-full">
-            {pompistes.length > 0 ? (
-              <EmptyState icon={Search} title="Aucun résultat" description="Aucun pompiste ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
-            ) : (
-              <EmptyState icon={UsersRound} title="Aucun pompiste" description="Commencez par recruter votre premier pompiste" actionLabel="Recruter" action={() => { resetForm(); setShowModal(true); }} />
-            )}
-          </div>
-        )}
+        })}
       </div>
+      )}
 
       {/* Edit/Create Modal */}
       <AnimatePresence>

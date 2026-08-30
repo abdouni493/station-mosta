@@ -16,7 +16,7 @@ import { ModuleKey, MODULES, BizPayRequest, BizCar } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, Badge, SearchInput, CardGrid, GlassCard, EmptyState,
+  PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Select,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
@@ -35,6 +35,9 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
   const { payRequests, workers } = biz.state;
 
   const [search, setSearch] = useState('');
+  // Tableau par défaut : la caisse balaie une file de demandes, elle a besoin
+  // de la liste dense. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [status, setStatus] = useState<'all' | BizPayRequest['status']>('pending');
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
@@ -162,6 +165,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
               );
             })}
           </div>
+          <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
         </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
       </div>
@@ -169,6 +173,46 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
       {filtered.length === 0 ? (
         <EmptyState icon={BellRing} title="Aucune demande"
           message="Le laveur crée une demande avec le montant à encaisser, le nom du client et son véhicule." />
+      ) : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Réf</th><th className="table-head">Client</th><th className="table-head">Véhicule</th>
+          <th className="table-head">Demandée par</th><th className="table-head">Date</th>
+          <th className="table-head text-right">À encaisser</th><th className="table-head">État</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(r => {
+            const carLabel = [r.car?.marque, r.car?.name, r.car?.color, r.car?.immatriculation].filter(Boolean).join(' • ');
+            return (
+              <tr key={r.id} className={r.status === 'pending' ? 'bg-amber-50/60' : undefined}>
+                <td className="table-cell font-bold">{r.ref}</td>
+                <td className="table-cell">
+                  <div>{r.clientName}</div>
+                  {r.description && <div className="text-[11px] text-slate-400 truncate max-w-[220px]" title={r.description}>{r.description}</div>}
+                </td>
+                <td className="table-cell text-slate-500 max-w-[200px] truncate" title={carLabel || undefined}>{carLabel || '—'}</td>
+                <td className="table-cell text-slate-500">{r.workerName}</td>
+                <td className="table-cell whitespace-nowrap text-slate-500">
+                  {formatDate(r.createdAt)}
+                  {r.collectedAt && <div className="text-[11px] text-emerald-600">Encaissé par {r.collectedBy}</div>}
+                </td>
+                <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(r.amount)}</td>
+                <td className="table-cell"><Badge tone={STATUS_META[r.status].tone}>{STATUS_META[r.status].label}</Badge></td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    {/* Les deux décisions de la caisse, à portée de ligne. */}
+                    {r.status === 'pending' && perm.modifier && (
+                      <ActionBtn icon={Check} tone="green" title={`Valider — ${money(r.amount)} reçus`} onClick={() => collect(r)} />
+                    )}
+                    {r.status === 'pending' && perm.modifier && (
+                      <ActionBtn icon={X} tone="amber" title="Annuler la demande" onClick={() => cancel(r)} />
+                    )}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
       ) : (
         <CardGrid>
           {filtered.map(r => (

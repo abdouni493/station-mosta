@@ -22,6 +22,7 @@ import PermissionsModal from "../components/PermissionsModal";
 import WorkerPaymentModal, { WorkerPaymentResult } from "../components/WorkerPaymentModal";
 import WorkerDetailsModal from "../components/WorkerDetailsModal";
 import { WEEKDAYS, DEFAULT_WORK_DAYS } from "../lib/workerPay";
+import { ViewToggle, Table, Badge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 
 // For now, we'll reuse Pompiste interface as Gerant type
 type Gerant = GerantWorker;
@@ -37,6 +38,9 @@ const Gerants = () => {
 
   // Toolbar: recherche libre + filtre de statut
   const [search, setSearch] = useState("");
+  // Tableau par défaut : la paie se lit en colonnes — salaire, acomptes, statut
+  // du mois. Les fiches en cartes restent à un clic.
+  const [viewMode, setViewMode] = useState<"grid" | "table">("table");
   const [statusFilter, setStatusFilter] = useState<'tous' | 'Actif' | 'Inactif'>('tous');
 
   const visibleGerants: Gerant[] = useMemo(() => gerants.filter((g: Gerant) =>
@@ -453,11 +457,65 @@ const Gerants = () => {
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
           {visibleGerants.length} / {gerants.length} gérant(s)
         </p>
+        <ViewToggle view={viewMode} onChange={setViewMode} />
       </div>
 
-      {/* Cards Grid */}
+      {visibleGerants.length === 0 ? (
+        gerants.length > 0
+          ? <EmptyState icon={Search} title="Aucun résultat" description="Aucun gérant ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
+          : <EmptyState icon={Users} title="Aucun gérant" description="Commencez par ajouter votre premier gérant" actionLabel="Ajouter" action={() => { resetForm(); setShowModal(true); }} />
+      ) : viewMode === "table" ? (
+        /* ── Les gérants en tableau — mêmes chiffres que la carte, alignés. */
+        <Table head={<>
+          <th className="table-head">Gérant</th><th className="table-head">CIN</th>
+          <th className="table-head">Téléphone</th><th className="table-head">Compte</th>
+          <th className="table-head text-right">Salaire</th><th className="table-head text-right">Acomptes du mois</th>
+          <th className="table-head">Ce mois</th><th className="table-head">Statut</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {visibleGerants.map((g: Gerant) => {
+            const currentMonthAcomptes = (g.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
+            const isMonthPaid = (g.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
+            return (
+              <tr key={g.id} className={g.status === "Actif" ? undefined : "opacity-60"}>
+                <td className="table-cell font-bold text-[#002d87] uppercase tracking-tight">{g.name}</td>
+                <td className="table-cell whitespace-nowrap">{g.cin || "—"}</td>
+                <td className="table-cell whitespace-nowrap">{g.phone || "—"}</td>
+                <td className="table-cell">
+                  {g.hasAccess && g.authUserId
+                    ? <Badge tone="success">Actif</Badge>
+                    : g.hasAccess && g.username
+                      ? <button className="text-[11px] font-black text-amber-700 hover:underline"
+                        onClick={() => { setActivatingGerant(g); setActivatePassword(""); setShowActivateModal(true); }}>À activer</button>
+                      : <span className="text-slate-400">Aucun</span>}
+                </td>
+                <td className="table-cell tabular-nums text-right font-bold">{g.baseSalary.toLocaleString()} DA</td>
+                <td className="table-cell tabular-nums text-right">
+                  {currentMonthAcomptes > 0
+                    ? <span className="font-black text-red-600">{currentMonthAcomptes.toLocaleString()} DA</span>
+                    : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="table-cell">{isMonthPaid ? <Badge tone="success">Payé</Badge> : <Badge tone="warning">À payer</Badge>}</td>
+                <td className="table-cell"><Badge tone={g.status === "Actif" ? "success" : "danger"}>{g.status}</Badge></td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir les détails" onClick={() => { setSelectedGerant(g); setShowDetailModal(true); }} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setSelectedGerant(g); setForm(g); setShowModal(true); }} />}
+                    <ActionBtn icon={Wallet} tone="amber" title="Acompte" onClick={() => { setSelectedGerant(g); setShowAdvanceModal(true); }} />
+                    <ActionBtn icon={UserX} tone="slate" title="Absence" onClick={() => { setSelectedGerant(g); setShowAbsenceModal(true); }} />
+                    <ActionBtn icon={DollarSign} tone="green" title="Paiement" onClick={() => { setSelectedGerant(g); setShowPaymentModal(true); }} />
+                    <ActionBtn icon={HistoryIcon} tone="slate" title="Historique" onClick={() => { setSelectedGerant(g); setShowHistoryModal(true); }} />
+                    {currentUserRole === 'admin' && <ActionBtn icon={Shield} tone="red" title="Permissions" onClick={() => { setSelectedGerant(g); setShowPermissionsModal(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => { setSelectedGerant(g); setShowConfirmDelete(true); }} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {visibleGerants.length > 0 ? visibleGerants.map((g: Gerant) => {
+        {visibleGerants.map((g: Gerant) => {
           const currentMonthAcomptes = (g.acomptes || []).filter(a => !a.isPaid && a.date.startsWith(currentMonth)).reduce((sum, a) => sum + a.amount, 0);
           const isMonthPaid = (g.paymentRecord || []).some(pr => pr.month === currentMonth && pr.isPaid);
 
@@ -591,16 +649,9 @@ const Gerants = () => {
             </div>
           </motion.div>
         );
-        }) : (
-          <div className="col-span-full">
-            {gerants.length > 0 ? (
-              <EmptyState icon={Search} title="Aucun résultat" description="Aucun gérant ne correspond à cette recherche." actionLabel="Réinitialiser" action={() => { setSearch(""); setStatusFilter('tous'); }} />
-            ) : (
-              <EmptyState icon={Users} title="Aucun gérant" description="Commencez par ajouter votre premier gérant" actionLabel="Ajouter" action={() => { resetForm(); setShowModal(true); }} />
-            )}
-          </div>
-        )}
+        })}
       </div>
+      )}
 
       {/* Edit/Create Modal */}
       <AnimatePresence>

@@ -42,6 +42,7 @@ import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, Table, EmptyState, RowActions, ActionBtn,
+  ViewToggle, CardGrid, GlassCard,
   Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Textarea, Select, Switch,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
@@ -60,6 +61,9 @@ export default function ModuleInventaire({ moduleKey }: { moduleKey: ModuleKey }
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | BizInventaireStatus>('all');
+  // Tableau par défaut : un inventaire se juge sur ses écarts, alignés en
+  // colonnes. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
 
   const [wizard, setWizard] = useState<null | { editing: BizInventaire | null }>(null);
   const [viewing, setViewing] = useState<BizInventaire | null>(null);
@@ -158,6 +162,7 @@ export default function ModuleInventaire({ moduleKey }: { moduleKey: ModuleKey }
               <option key={k} value={k}>{INVENTAIRE_STATUS_META[k].label}</option>
             ))}
           </Select>
+          <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
         </div>
         <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
       </div>
@@ -168,6 +173,60 @@ export default function ModuleInventaire({ moduleKey }: { moduleKey: ModuleKey }
           action={perm.creer
             ? <button className="btn-primary" onClick={() => setWizard({ editing: null })}><Plus className="w-4 h-4" /> Nouvel inventaire</button>
             : undefined} />
+      ) : view === 'grid' ? (
+        /* ── Les inventaires en cartes ────────────────────────────────────
+           Le même contenu que la ligne du tableau : ce qui a été compté, et
+           ce que la comparaison au stock a fait apparaître. */
+        <CardGrid>
+          {filtered.map(inv => {
+            const meta = INVENTAIRE_STATUS_META[inv.status];
+            const value = inv.lines.reduce((s, l) => s + countedQtyOf(l) * (Number(l.purchasePrice) || 0), 0);
+            return (
+              <GlassCard key={inv.id}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="font-black text-slate-800 truncate">{inv.ref}</h3>
+                    <p className="text-[11px] text-slate-400">
+                      {formatDate(inv.date)}{inv.createdBy ? ` • par ${inv.createdBy}` : ''}
+                    </p>
+                  </div>
+                  <Badge tone={meta.tone}>{meta.label}</Badge>
+                </div>
+                {inv.chargeWorkers === false && (
+                  <p className="text-[11px] text-slate-400 mt-1">Non imputé aux employés</p>
+                )}
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div className="rounded-xl bg-slate-50 p-2 text-center">
+                    <p className="text-[9px] uppercase font-bold text-slate-400">Produits</p>
+                    <p className="font-black text-slate-700 tabular-nums text-sm">{inv.lines.length}</p>
+                  </div>
+                  <div className="rounded-xl bg-red-50 p-2 text-center">
+                    <p className="text-[9px] uppercase font-bold text-slate-400">Manquants</p>
+                    <p className="font-black text-red-600 tabular-nums text-xs">{inv.comparison ? money(inv.comparison.lossValue) : '—'}</p>
+                  </div>
+                  <div className="rounded-xl bg-emerald-50 p-2 text-center">
+                    <p className="text-[9px] uppercase font-bold text-slate-400">Surplus</p>
+                    <p className="font-black text-emerald-600 tabular-nums text-xs">{inv.comparison ? money(inv.comparison.gainValue) : '—'}</p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                  <span className="text-[11px] font-bold text-amber-700 tabular-nums">Compté {money(value)}</span>
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir tout le détail" onClick={() => setViewing(inv)} />
+                    {perm.modifier && inv.status !== 'corrected' && (
+                      <ActionBtn icon={Edit2} tone="amber" title="Modifier le comptage" onClick={() => setWizard({ editing: inv })} />
+                    )}
+                    <ActionBtn icon={Printer} tone="slate" title="Imprimer la feuille de comptage" onClick={() => printCount(inv)} />
+                    <ActionBtn icon={Scale} tone="green"
+                      title={inv.comparison ? 'Voir la comparaison' : "Comparer au stock de l'application"}
+                      onClick={() => (inv.comparison ? setComparing(inv) : runComparison(inv))} />
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(inv)} />}
+                  </RowActions>
+                </div>
+              </GlassCard>
+            );
+          })}
+        </CardGrid>
       ) : (
         <Table head={<>
           <th className="table-head">Inventaire</th>

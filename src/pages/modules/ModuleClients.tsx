@@ -11,7 +11,7 @@ import { matchesSearch, cn } from '@/src/lib/utils';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
-  PageHeader, StatCard, EmptyState,
+  PageHeader, StatCard, EmptyState, ViewToggle, Table, Badge, RowActions, ActionBtn,
   Edit2, Trash2, Confirm, money, formatDate,
 } from '@/src/components/biz/Kit';
 import { printFiche } from '@/src/components/biz/ReportFiche';
@@ -41,6 +41,9 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
   const { clients } = biz.state;
 
   const [search, setSearch] = useState('');
+  // Tableau par défaut : un fichier client se balaie en lignes — nom, téléphone,
+  // achats, règlements, reste dû. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<BizContact | null>(null);
   /** Le client dont le dossier est ouvert, et la rubrique par laquelle entrer. */
@@ -261,9 +264,75 @@ export default function ModuleClients({ moduleKey }: { moduleKey: ModuleKey }) {
             </span>
           </div>
         </div>
+        <div className="mt-4 flex justify-end"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
-      {filtered.length === 0 ? <EmptyState icon={Users} title="Aucun client" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau client</button> : undefined} /> : (
+      {filtered.length === 0 ? <EmptyState icon={Users} title="Aucun client" action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouveau client</button> : undefined} /> : view === 'table' ? (
+        /* ── Le fichier client en tableau ─────────────────────────────────
+           Les mêmes chiffres que la carte — consommé, réglé, reste dû — mais
+           alignés en colonnes : c'est ainsi qu'on repère d'un coup d'œil qui
+           doit de l'argent. Les actions du menu « … » deviennent des boutons
+           de ligne, dans le même ordre. */
+        <Table head={<>
+          <th className="table-head">Client</th><th className="table-head">Téléphone</th>
+          {cfg.isService && <th className="table-head">Véhicules</th>}
+          <th className="table-head">Depuis</th>
+          <th className="table-head text-right">Total achats</th><th className="table-head text-right">Règlements</th>
+          <th className="table-head text-right">Reste dû</th><th className="table-head">État</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(c => {
+            const st = statements[c.id];
+            const debt = st?.netDebt || 0;
+            const advanceLeft = st?.advanceLeft || 0;
+            return (
+              <tr key={c.id}>
+                <td className="table-cell">
+                  <div className="font-bold text-[#002d87] uppercase tracking-tight">{c.name}</div>
+                  {c.address && <div className="text-[11px] text-slate-400 truncate max-w-[220px]" title={c.address}>{c.address}</div>}
+                </td>
+                <td className="table-cell whitespace-nowrap">{c.phone || '—'}</td>
+                {cfg.isService && (
+                  <td className="table-cell">
+                    {(c.cars?.length || 0) > 0
+                      ? <div className="flex flex-wrap gap-1 max-w-[220px]">
+                        {c.cars!.map((v: BizCar) => (
+                          <Badge key={v.id || carLabel(v)} tone="info">{carLabel(v) || 'Véhicule'}</Badge>
+                        ))}
+                      </div>
+                      : <span className="text-slate-400">—</span>}
+                  </td>
+                )}
+                <td className="table-cell whitespace-nowrap text-slate-500">{c.createdAt ? formatDate(c.createdAt) : '—'}</td>
+                <td className="table-cell tabular-nums text-right font-bold text-[#002d87]">{money(st?.totals.charged || 0)}</td>
+                <td className="table-cell tabular-nums text-right text-emerald-600">{money(st?.totals.paid || 0)}</td>
+                <td className="table-cell tabular-nums text-right">
+                  {debt > 0
+                    ? <span className="font-black text-red-600">{money(debt)}</span>
+                    : advanceLeft > 0
+                      ? <span className="font-black text-teal-700">+{money(advanceLeft)}</span>
+                      : <span className="text-slate-400">{money(0)}</span>}
+                </td>
+                <td className="table-cell">
+                  {debt > 0
+                    ? <Badge tone="danger">Débiteur</Badge>
+                    : advanceLeft > 0 ? <Badge tone="info">Avance</Badge> : <Badge tone="success">Soldé</Badge>}
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Dossier client" onClick={() => setDossier({ client: c, section: 'resume' })} />
+                    <ActionBtn icon={History} tone="slate" title="Historique complet" onClick={() => setDossier({ client: c, section: 'journal' })} />
+                    {debt > 0 && perm.modifier && <ActionBtn icon={DollarSign} tone="green" title="Payer la dette" onClick={() => setPaying(c)} />}
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(c); setShowForm(true); }} />}
+                    <ActionBtn icon={FileBarChart} tone="blue" title="Générer un rapport" onClick={() => setReport(c)} />
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(c)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
         /* ── Les cartes clients ───────────────────────────────────
            Même dessin que l’écran Clients du Carburant : un client est un client,
            qu’il prenne du gasoil, un café ou un lavage, et rien ne justifiait

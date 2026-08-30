@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   ShoppingCart, Plus, Search, Trash2 as TrashIcon, X, Truck, Receipt, Wallet, CircleDollarSign, Package,
-  Tag, Banknote, Droplet, Scale, Info,
+  Tag, Banknote, Droplet, Scale, Info, Printer,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
@@ -31,7 +31,10 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
   const { purchases, products, suppliers } = biz.state;
 
   const [search, setSearch] = useState('');
-  const [view, setView] = useState<'grid' | 'table'>('grid');
+  // Les achats s'ouvrent en tableau : c'est la lecture la plus dense d'une
+  // liste de factures (réf, fournisseur, total, reste) ; les cartes restent
+  // à un clic, et restent la seule vue possible sur un téléphone.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<BizPurchase | null>(null);
   const [viewing, setViewing] = useState<BizPurchase | null>(null);
@@ -72,6 +75,18 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
     () => (toDelete ? describePurchaseRollback(purchaseStockDeltas(toDelete, products)) : ''),
     [toDelete, products]);
 
+  /**
+   * Imprime la facture d'achat. Le rendu est écrit une seule fois : les cartes,
+   * le tableau et la fiche de l'achat appellent tous cette fonction, sinon la
+   * mise en page finirait par diverger d'un bouton a l'autre.
+   */
+  const printPurchase = (p: BizPurchase) => printInvoice({
+    title: 'Facture d\'achat', ref: p.ref, date: p.date, store: settings?.stationName,
+    party: { label: 'Fournisseur', name: p.supplierName },
+    items: p.items.map(i => ({ name: i.productName, qty: i.qty, unitPrice: i.unitPrice, total: i.qty * i.unitPrice })),
+    total: p.total, paid: p.paid, rest: p.rest,
+  });
+
   const onPay = (amount: number) => {
     if (!paying) return;
     const paid = Math.min(paying.total, paying.paid + amount);
@@ -103,7 +118,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
           action={perm.creer ? <button className="btn-primary" onClick={() => setShowForm(true)}><Plus className="w-4 h-4" /> Nouvel achat</button> : undefined} />
       ) : (
         <>
-        {/* Cards — the only layout on a phone, and the default on desktop. */}
+        {/* Cards — the only layout on a phone, and one click away on desktop. */}
         <div className={view === 'table' ? 'md:hidden' : ''}>
         <CardGrid>
           {filtered.map(p => (
@@ -133,12 +148,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />}
                   {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
-                  <ActionBtn icon={Receipt} tone="slate" title="Imprimer" onClick={() => printInvoice({
-                    title: 'Facture d\'achat', ref: p.ref, date: p.date, store: settings?.stationName,
-                    party: { label: 'Fournisseur', name: p.supplierName },
-                    items: p.items.map(i => ({ name: i.productName, qty: i.qty, unitPrice: i.unitPrice, total: i.qty * i.unitPrice })),
-                    total: p.total, paid: p.paid, rest: p.rest,
-                  })} />
+                  <ActionBtn icon={Printer} tone="slate" title="Imprimer la facture d’achat" onClick={() => printPurchase(p)} />
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </div>
@@ -147,7 +157,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
         </CardGrid>
         </div>
 
-        {/* Table — desktop only, every column at a glance. */}
+        {/* Table — desktop only, the default: every column at a glance. */}
         {view === 'table' && (
         <div className="hidden md:block">
         <Table head={<>
@@ -169,6 +179,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
                   <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(p)} />
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />}
                   {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
+                  <ActionBtn icon={Printer} tone="slate" title="Imprimer la facture d’achat" onClick={() => printPurchase(p)} />
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </td>
@@ -183,7 +194,15 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
       {showForm && <PurchaseForm moduleKey={moduleKey} initial={editing} onClose={() => setShowForm(false)} />}
 
       {/* View */}
-      <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="2xl" title={`Achat ${viewing?.ref || ''}`} subtitle={viewing?.supplierName}>
+      <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="2xl" title={`Achat ${viewing?.ref || ''}`} subtitle={viewing?.supplierName}
+        footer={<>
+          <button className="btn-ghost" onClick={() => setViewing(null)}>Fermer</button>
+          {/* On imprime la facture qu'on est en train de lire : c'est ici qu'on
+              décide qu'elle est juste, pas dans la liste. */}
+          <button className="btn-primary" onClick={() => viewing && printPurchase(viewing)}>
+            <Printer className="w-4 h-4" /> Imprimer la facture
+          </button>
+        </>}>
         {viewing && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 text-sm">
@@ -290,6 +309,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const [useAvg, setUseAvg] = useState(
     initial ? usesAverageCost(initial) : !!biz.state.avgCostEnabled);
   const [pQuery, setPQuery] = useState('');
+  /** Produit tout juste ajouté, signalé en tête de liste. */
+  const [lastAdded, setLastAdded] = useState<string | null>(null);
   const [supplierId, setSupplierId] = useState(initial?.supplierId || '');
   const [date, setDate] = useState(initial ? initial.date.split('T')[0] : new Date().toISOString().split('T')[0]);
   const [paidStr, setPaidStr] = useState<string>(initial ? String(initial.paid) : '');
@@ -313,7 +334,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
    */
   const matches = useMemo(() => {
     if (!pQuery.trim()) return [];
-    return products.filter(p => productMatches(p, pQuery)).slice(0, 8);
+    return products.filter(p => productMatches(p, pQuery)).slice(0, 20);
   }, [products, pQuery]);
 
   /**
@@ -323,7 +344,11 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
    */
   const addProduct = (p: BizProduct) => {
     if (items.some(it => it.productId === p.id)) { toast.error('Produit déjà ajouté'); return; }
-    setItems(prev => [...prev, {
+    // Le nouveau produit se pose EN TÊTE de liste : c'est celui qu'on vient de
+    // choisir et dont on doit saisir quantité et prix. Ajouté en queue, il
+    // partait sous la ligne de flottaison et il fallait redescendre le
+    // formulaire à chaque article d'un bon de livraison un peu long.
+    setItems(prev => [{
       productId: p.id, productName: p.name,
       qty: 1,
       unitPrice: p.purchasePrice,
@@ -334,8 +359,12 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
       detailCapacity: p.detailCapacity,
       detailUnit: p.detailUnit || 'L',
       detailSalePrice: p.sellByDetail ? detailPrice(p) : undefined,
-    }]);
-    setPQuery('');
+    }, ...prev]);
+    // La recherche n'est PAS vidée : un même bon de livraison porte plusieurs
+    // articles, et la liste des résultats doit rester ouverte pour enchaîner
+    // les ajouts. Le champ se vide au bouton « Effacer » ou à la touche Échap.
+    setLastAdded(p.id);
+    toast.success(`${p.name} ajouté`);
   };
   const updItem = (id: string, patch: Partial<BizLineItem>) => setItems(prev => prev.map(it => it.productId === id ? { ...it, ...patch } : it));
   const rmItem = (id: string) => setItems(prev => prev.filter(it => it.productId !== id));
@@ -503,8 +532,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
           {/* 1. Produits — recherche puis saisie ligne par ligne */}
           <FormSection step={1} icon={Package} title="Produits achetés"
             hint={isLavage
-              ? 'Cherchez par nom, code-barres, référence ou véhicule, sélectionnez, puis renseignez quantités et prix'
-              : 'Cherchez un produit, sélectionnez-le, puis renseignez ses quantités et ses prix'}
+              ? 'Cherchez par nom, code-barres, référence ou véhicule et ajoutez autant de pièces que le bon en porte — la dernière ajoutée passe en tête'
+              : 'Cherchez et ajoutez autant de produits que la livraison en porte — le dernier ajouté passe en tête de liste'}
             action={
               <button className="btn-secondary !py-2 !px-3.5 text-xs w-full sm:w-auto" onClick={() => setShowProductModal(true)}>
                 <Plus className="w-4 h-4" /> Nouveau produit
@@ -513,12 +542,26 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
             <div className="relative mb-4">
               <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input value={pQuery} onChange={e => setPQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setPQuery(''); } }}
                 placeholder={isLavage
                   ? 'Rechercher par nom, code-barres, référence ou véhicule…'
                   : 'Rechercher un produit par nom ou code-barres…'}
-                className="input-field !pl-11" />
+                className={`input-field !pl-11 ${pQuery ? '!pr-11' : ''}`} />
+              {pQuery && (
+                <button type="button" onClick={() => setPQuery('')} title="Effacer la recherche (Échap)"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 flex items-center justify-center">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
               {matches.length > 0 && (
-                <div className="absolute z-30 mt-1 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-h-80 overflow-y-auto custom-scrollbar">
+                <div className="absolute z-30 mt-1 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden flex flex-col max-h-96">
+                  <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
+                    <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">
+                      {matches.length} résultat(s) — cliquez pour ajouter, la liste reste ouverte
+                    </span>
+                    <span className="text-[11px] font-black text-[#002d87] tabular-nums shrink-0">{items.length} au panier</span>
+                  </div>
+                  <div className="overflow-y-auto custom-scrollbar">
                   {matches.map(p => {
                     const already = items.some(it => it.productId === p.id);
                     return (
@@ -545,12 +588,19 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                           )}
                         </span>
                         <span className="text-xs text-slate-400 shrink-0 text-right">
-                          <span className="block">Achat {money(p.purchasePrice)}</span>
+                          {already
+                            ? <span className="block font-black text-emerald-600">Déjà ajouté</span>
+                            : <span className="block">Achat {money(p.purchasePrice)}</span>}
                           <span className="block">Stock {p.currentQty}</span>
                         </span>
                       </button>
                     );
                   })}
+                  </div>
+                  <button type="button" onClick={() => setPQuery('')}
+                    className="shrink-0 px-4 py-2.5 bg-slate-50 border-t border-slate-200 text-xs font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100">
+                    Terminer la sélection
+                  </button>
                 </div>
               )}
             </div>
@@ -584,7 +634,14 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                           {idx + 1}
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-black text-slate-800 truncate">{it.productName}</p>
+                          <p className="text-sm font-black text-slate-800 truncate flex items-center gap-2">
+                            <span className="truncate">{it.productName}</span>
+                            {it.productId === lastAdded && items.length > 1 && (
+                              <span className="shrink-0 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 text-[10px] uppercase tracking-widest">
+                                Dernier ajouté
+                              </span>
+                            )}
+                          </p>
                           <p className="text-[11px] text-slate-400 truncate">
                             Stock actuel {prod?.currentQty ?? 0} {prod?.unit || 'unité'}
                             {prod ? ` → ${(prod.currentQty + (Number(it.qty) || 0)).toLocaleString('fr-FR')} après réception` : ''}

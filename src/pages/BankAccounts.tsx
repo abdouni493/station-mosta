@@ -22,7 +22,7 @@ import {
 import { repairBrigadeBankLines } from '../lib/brigadeBankLines';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
-  EmptyState, CardGrid, GlassCard, RowActions, ActionBtn, Table,
+  EmptyState, CardGrid, GlassCard, RowActions, ActionBtn, Table, ViewToggle,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '../components/biz/Kit';
 
@@ -36,6 +36,9 @@ export default function BankAccounts() {
   const dispatch = useAppDispatch();
   const perm = useModulePermission('Comptes Bancaires');
 
+  // Tableau par défaut : des comptes se comparent en colonnes — solde, entrées,
+  // sorties. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<BankAccount | null>(null);
   const [transferring, setTransferring] = useState<BankAccount | null>(null);
@@ -136,6 +139,10 @@ export default function BankAccounts() {
         <StatCard icon={PiggyBank} label="Caisse générale" value={money(caisse)} tone="amber" />
       </div>
 
+      {accounts.length > 0 && (
+        <div className="flex justify-end"><ViewToggle view={view} onChange={setView} /></div>
+      )}
+
       {/* ── Encaissements de brigade absents du grand livre ────────────────────
           Les brigades justifiées au TPE / TAG créditent désormais leur compte à
           l'enregistrement. Celles saisies avant ne l'avaient jamais fait : leur
@@ -168,6 +175,40 @@ export default function BankAccounts() {
         <EmptyState icon={Landmark} title="Aucun compte bancaire"
           message="Créez un compte avec son nom de banque et son solde actuel."
           action={perm.creer ? <button className="btn-primary" onClick={() => setCreating(true)}><Plus className="w-4 h-4" /> Nouveau compte</button> : undefined} />
+      ) : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Compte</th><th className="table-head">Numéro</th>
+          <th className="table-head text-right">Entrées</th><th className="table-head text-right">Sorties</th>
+          <th className="table-head text-right">Mouvements</th><th className="table-head text-right">Solde</th>
+          <th className="table-head">État</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {accounts.map(a => {
+            const moves = treasuryTransactions.filter(t => t.accountFrom === a.id || t.accountTo === a.id);
+            const credit = moves.filter(t => t.accountTo === a.id).reduce((s, t) => s + t.amount, 0);
+            const debit = moves.filter(t => t.accountFrom === a.id).reduce((s, t) => s + t.amount, 0);
+            return (
+              <tr key={a.id}>
+                <td className="table-cell font-bold text-slate-700">
+                  <span className="inline-flex items-center gap-1.5"><Landmark className="w-4 h-4 text-[#003087]" />{a.name}</span>
+                </td>
+                <td className="table-cell font-mono text-slate-500">{a.accountNumber || '—'}</td>
+                <td className="table-cell tabular-nums text-right text-emerald-600">+{money(credit)}</td>
+                <td className="table-cell tabular-nums text-right text-red-600">−{money(debit)}</td>
+                <td className="table-cell tabular-nums text-right text-slate-500">{moves.length}</td>
+                <td className={`table-cell tabular-nums text-right font-black ${a.balance >= 0 ? 'text-[#002d87]' : 'text-red-600'}`}>{money(a.balance)}</td>
+                <td className="table-cell"><Badge tone={a.balance >= 0 ? 'success' : 'danger'}>{a.balance >= 0 ? 'Actif' : 'Découvert'}</Badge></td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={History} tone="blue" title="Historique" onClick={() => setViewingHistory(a)} />
+                    <ActionBtn icon={ArrowLeftRight} tone="green" title="Transférer" onClick={() => setTransferring(a)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(a)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(a)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
       ) : (
         <CardGrid>
           {accounts.map(a => {

@@ -10,7 +10,7 @@ import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { uploadFile } from '@/src/lib/supabase';
 import {
-  PageHeader, StatCard, Badge, SearchInput, Select, CardGrid, GlassCard, EmptyState, Tabs,
+  PageHeader, StatCard, Badge, SearchInput, ViewToggle, Select, CardGrid, GlassCard, Table, EmptyState, Tabs,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Switch, InlineCreate, money, formatDate, inPeriod, Period,
 } from '@/src/components/biz/Kit';
 
@@ -54,6 +54,9 @@ function ProductionsTab({ moduleKey }: { moduleKey: ModuleKey }) {
   const { productions } = biz.state;
   const [search, setSearch] = useState('');
   const [period, setPeriod] = useState<Period>('all');
+  // Tableau par défaut : une liste de fabrications se compare en colonnes
+  // (coût, valeur, gains). Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [viewing, setViewing] = useState<BizProduction | null>(null);
   const [transfer, setTransfer] = useState<BizProduction | null>(null);
   const [toDelete, setToDelete] = useState<BizProduction | null>(null);
@@ -85,9 +88,51 @@ function ProductionsTab({ moduleKey }: { moduleKey: ModuleKey }) {
         <Select value={period} onChange={e => setPeriod(e.target.value as Period)} className="!w-auto">
           <option value="all">Toutes dates</option><option value="today">Aujourd'hui</option><option value="week">Cette semaine</option><option value="month">Ce mois</option>
         </Select>
+        <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
-      {filtered.length === 0 ? <EmptyState icon={FlaskConical} title="Aucune production" message="Lancez votre première fabrication." /> : (
+      {filtered.length === 0 ? <EmptyState icon={FlaskConical} title="Aucune production" message="Lancez votre première fabrication." /> : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Production</th><th className="table-head">Date</th><th className="table-head">Par</th>
+          <th className="table-head text-right">Produit</th><th className="table-head text-right">Reste au comptoir</th>
+          <th className="table-head text-right">Coût</th><th className="table-head text-right">Valeur vente</th>
+          <th className="table-head text-right">Gains nets</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(p => {
+            const rest = p.outputQuantity - p.sentToComptoir;
+            const gain = p.totalValue - p.totalCost;
+            return (
+              <tr key={p.id}>
+                <td className="table-cell">
+                  <div className="font-bold text-slate-700 flex items-center gap-1.5">
+                    {p.name}
+                    {p.hasLoss && <Badge tone="danger"><AlertTriangle className="w-3 h-3" /> Perte</Badge>}
+                  </div>
+                  <div className="text-[11px] text-slate-400">{p.categoryName || 'Sans catégorie'} • {p.ingredients.length} ingrédient(s)</div>
+                </td>
+                <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(p.date)}</td>
+                <td className="table-cell text-slate-500">{p.createdBy}</td>
+                <td className="table-cell tabular-nums text-right">{p.outputQuantity} {p.unit || ''}</td>
+                <td className="table-cell tabular-nums text-right">
+                  {rest > 0
+                    ? <button className="font-black text-[#002d87] hover:underline" title="Mettre au comptoir" onClick={() => setTransfer(p)}>{rest} {p.unit || ''}</button>
+                    : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="table-cell tabular-nums text-right">{money(p.totalCost)}</td>
+                <td className="table-cell tabular-nums text-right">{money(p.totalValue)}</td>
+                <td className={`table-cell tabular-nums text-right font-black ${gain >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(gain)}</td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Détails" onClick={() => setViewing(p)} />
+                    {rest > 0 && <ActionBtn icon={PackageCheck} tone="green" title={`Mettre au comptoir (${rest})`} onClick={() => setTransfer(p)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
         <CardGrid>
           {filtered.map(p => {
             const rest = p.outputQuantity - p.sentToComptoir;
@@ -360,6 +405,8 @@ function FichesTab({ moduleKey }: { moduleKey: ModuleKey }) {
   const perm = useBizPermission(moduleKey, 'production');
   const { fiches } = biz.state;
   const [search, setSearch] = useState('');
+  // Tableau par défaut : les recettes se lisent côte à côte (coût, prix, gain).
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [editing, setEditing] = useState<BizFiche | null>(null);
   const [toDelete, setToDelete] = useState<BizFiche | null>(null);
 
@@ -370,8 +417,39 @@ function FichesTab({ moduleKey }: { moduleKey: ModuleKey }) {
     <div className="space-y-5">
       <div className="card-glass p-4 flex flex-wrap items-center gap-3">
         <SearchInput value={search} onChange={setSearch} placeholder="Nom de fiche…" />
+        <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
       </div>
-      {filtered.length === 0 ? <EmptyState icon={FileText} title="Aucune fiche technique" message="Créez une recette de fabrication." /> : (
+      {filtered.length === 0 ? <EmptyState icon={FileText} title="Aucune fiche technique" message="Créez une recette de fabrication." /> : view === 'table' ? (
+        <Table head={<>
+          <th className="table-head">Fiche</th><th className="table-head">Catégorie</th>
+          <th className="table-head text-right">Ingrédients</th><th className="table-head text-right">Rendement</th>
+          <th className="table-head text-right">Coût unitaire</th><th className="table-head text-right">Prix vente</th>
+          <th className="table-head text-right">Gain / unité</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(f => (
+            <tr key={f.id}>
+              <td className="table-cell">
+                <div className="font-bold text-slate-700 flex items-center gap-1.5">
+                  {f.name}
+                  {f.usableInProduction && <Badge tone="info">Semi-fini</Badge>}
+                </div>
+              </td>
+              <td className="table-cell">{f.categoryName ? <Badge tone="primary">{f.categoryName}</Badge> : <span className="text-slate-400">—</span>}</td>
+              <td className="table-cell tabular-nums text-right">{f.ingredients.length}</td>
+              <td className="table-cell tabular-nums text-right">{f.outputQuantity} {f.sellUnit || ''}</td>
+              <td className="table-cell tabular-nums text-right">{money(f.costPerUnit)}</td>
+              <td className="table-cell tabular-nums text-right">{money(f.unitPrice)}</td>
+              <td className="table-cell tabular-nums text-right font-black text-emerald-600">{money(f.gainsPerUnit)}</td>
+              <td className="table-cell text-right">
+                <RowActions>
+                  <ActionBtn icon={Eye} tone="amber" title="Modifier" onClick={() => setEditing(f)} />
+                  {perm.supprimer && <ActionBtn icon={Trash} tone="red" title="Supprimer" onClick={() => setToDelete(f)} />}
+                </RowActions>
+              </td>
+            </tr>
+          ))}
+        </Table>
+      ) : (
         <CardGrid>
           {filtered.map(f => (
             <GlassCard key={f.id}>

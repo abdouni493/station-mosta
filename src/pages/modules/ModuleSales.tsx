@@ -33,7 +33,9 @@ export default function ModuleSales({ moduleKey }: { moduleKey: ModuleKey }) {
   const [search, setSearch] = useState('');
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
-  const [view, setView] = useState<'grid' | 'table'>('grid');
+  // Les ventes s'ouvrent en tableau : sur une journée de caisse on cherche une
+  // référence et un reste à payer, pas une vignette. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [viewing, setViewing] = useState<BizSale | null>(null);
   const [editing, setEditing] = useState<BizSale | null>(null);
   const [paying, setPaying] = useState<BizSale | null>(null);

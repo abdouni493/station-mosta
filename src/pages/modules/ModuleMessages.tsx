@@ -49,7 +49,7 @@ import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, Tabs, EmptyState, Modal, Field, Input, Textarea,
-  Select, Switch, SearchInput, formatDate,
+  Select, Switch, SearchInput, formatDate, ViewToggle, Table, RowActions, ActionBtn,
 } from '@/src/components/biz/Kit';
 
 const STATUS_TONE: Record<MessageStatus, 'neutral' | 'info' | 'success' | 'warning' | 'danger'> = {
@@ -99,6 +99,9 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
   const config: BizRappelConfig = biz.state.rappelConfig || DEFAULT_RAPPEL_CONFIG;
 
   const [tab, setTab] = useState('alertes');
+  // Tableau par défaut sur les trois listes de l'écran (alertes, journal,
+  // modèles) : ce sont des files d'attente, elles se balaient en lignes.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [showConfig, setShowConfig] = useState(false);
   const [composing, setComposing] = useState<Draft[] | null>(null);
   const [editingTemplate, setEditingTemplate] = useState<BizMessageTemplate | null>(null);
@@ -318,32 +321,32 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
       {/* ── Alertes ─────────────────────────────────────────────────────── */}
       {tab === 'alertes' && (
         <div className="space-y-3">
-          {dueAlerts.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {perm.creer && (
-                <button className="btn-primary" onClick={() => composeFromAlerts(dueAlerts)}>
-                  <Send className="w-4 h-4" /> Envoyer à tous ({dueAlerts.length})
-                </button>
-              )}
-              {perm.modifier && (
-                <button className="btn-secondary" onClick={markAllRead}>
-                  <Check className="w-4 h-4" /> Tout marquer comme lu
-                </button>
-              )}
-            </div>
-          )}
-          <AlertList alerts={dueAlerts} perm={perm} onSend={a => composeFromAlerts([a])} onRead={markRead}
+          <div className="flex flex-wrap items-center gap-2">
+            {dueAlerts.length > 0 && perm.creer && (
+              <button className="btn-primary" onClick={() => composeFromAlerts(dueAlerts)}>
+                <Send className="w-4 h-4" /> Envoyer à tous ({dueAlerts.length})
+              </button>
+            )}
+            {dueAlerts.length > 0 && perm.modifier && (
+              <button className="btn-secondary" onClick={markAllRead}>
+                <Check className="w-4 h-4" /> Tout marquer comme lu
+              </button>
+            )}
+            <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
+          </div>
+          <AlertList view={view} alerts={dueAlerts} perm={perm} onSend={a => composeFromAlerts([a])} onRead={markRead}
             emptyTitle="Aucun rappel échu"
             emptyMessage="Personne n'est en retard pour un lavage ou une révision. Les rappels apparaîtront ici d'eux-mêmes." />
         </div>
       )}
 
       {/* ── À venir ─────────────────────────────────────────────────────── */}
-      {tab === 'aVenir' && (
-        <AlertList alerts={soonAlerts} perm={perm} onSend={a => composeFromAlerts([a])} onRead={markRead}
+      {tab === 'aVenir' && (<div className="space-y-3">
+        <div className="flex justify-end"><ViewToggle view={view} onChange={setView} /></div>
+        <AlertList view={view} alerts={soonAlerts} perm={perm} onSend={a => composeFromAlerts([a])} onRead={markRead}
           emptyTitle="Rien dans les sept prochains jours"
           emptyMessage="Les rappels s'affichent une semaine avant leur échéance, pour laisser le temps de préparer l'envoi." />
-      )}
+      </div>)}
 
       {/* ── Journal ─────────────────────────────────────────────────────── */}
       {tab === 'journal' && (
@@ -354,6 +357,7 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
               {loadingJournal ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />}
               Actualiser
             </button>
+            <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
           </div>
           {journalMissing ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -369,6 +373,26 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
             </div>
           ) : filteredMessages.length === 0 ? (
             <EmptyState icon={Inbox} title="Aucun message" message="Les envois apparaîtront ici, avec leur accusé de remise." />
+          ) : view === 'table' ? (
+            <Table head={<>
+              <th className="table-head">Destinataire</th><th className="table-head">Numéro</th>
+              <th className="table-head">Véhicule</th><th className="table-head">Date</th>
+              <th className="table-head">Message</th><th className="table-head">État</th>
+            </>}>
+              {filteredMessages.map((m: MessageRow) => (
+                <tr key={m.id}>
+                  <td className="table-cell font-bold text-slate-700">{m.recipientName || displayPhone(m.recipientPhone)}</td>
+                  <td className="table-cell whitespace-nowrap">{displayPhone(m.recipientPhone)}</td>
+                  <td className="table-cell text-slate-500">{m.carLabel || '—'}</td>
+                  <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(m.createdAt)}</td>
+                  <td className="table-cell">
+                    <div className="max-w-[360px] text-slate-600 line-clamp-2 whitespace-pre-wrap" title={m.body}>{m.body}</div>
+                    {m.error && <div className="text-[11px] font-bold text-red-600">{m.error}</div>}
+                  </td>
+                  <td className="table-cell"><Badge tone={STATUS_TONE[m.status]}>{STATUS_LABEL[m.status]}</Badge></td>
+                </tr>
+              ))}
+            </Table>
           ) : (
             <div className="space-y-2">
               {filteredMessages.map((m: MessageRow) => (
@@ -411,10 +435,36 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
                 <FileText className="w-4 h-4" /> Installer les modèles de départ
               </button>
             )}
+            <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
           </div>
           {templates.length === 0 ? (
             <EmptyState icon={FileText} title="Aucun modèle"
               message="Écrivez un texte une fois, réutilisez-le à chaque envoi. Les jetons {client}, {vehicule} ou {kilometrage} sont remplis automatiquement." />
+          ) : view === 'table' ? (
+            <Table head={<>
+              <th className="table-head">Modèle</th><th className="table-head">Usage</th>
+              <th className="table-head">Texte</th><th className="table-head text-right">Actions</th>
+            </>}>
+              {templates.map((t: BizMessageTemplate) => (
+                <tr key={t.id}>
+                  <td className="table-cell font-bold text-slate-700">{t.name}</td>
+                  <td className="table-cell">
+                    <Badge tone={t.usage === 'lavage' ? 'info' : t.usage === 'reparation' ? 'warning' : 'neutral'}>
+                      {t.usage === 'lavage' ? 'Rappel de lavage' : t.usage === 'reparation' ? 'Rappel de vidange' : 'Message libre'}
+                    </Badge>
+                  </td>
+                  <td className="table-cell">
+                    <div className="max-w-[420px] text-slate-600 line-clamp-2 whitespace-pre-wrap" title={t.body}>{t.body}</div>
+                  </td>
+                  <td className="table-cell text-right">
+                    <RowActions>
+                      {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditingTemplate(t); setShowTemplateForm(true); }} />}
+                      {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => { biz.remove('messageTemplates', t.id); toast.success('Modèle supprimé.'); }} />}
+                    </RowActions>
+                  </td>
+                </tr>
+              ))}
+            </Table>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {templates.map((t: BizMessageTemplate) => (
@@ -490,7 +540,8 @@ export default function ModuleMessages({ moduleKey }: { moduleKey: ModuleKey }) 
 
 // ─── La liste d'alertes ────────────────────────────────────────────────────────
 
-function AlertList({ alerts, perm, onSend, onRead, emptyTitle, emptyMessage }: {
+function AlertList({ view, alerts, perm, onSend, onRead, emptyTitle, emptyMessage }: {
+  view: 'grid' | 'table';
   alerts: RappelAlert[];
   perm: { creer: boolean; modifier: boolean };
   onSend: (a: RappelAlert) => void;
@@ -500,6 +551,53 @@ function AlertList({ alerts, perm, onSend, onRead, emptyTitle, emptyMessage }: {
 }) {
   if (alerts.length === 0) {
     return <EmptyState icon={CheckCircle2} title={emptyTitle} message={emptyMessage} />;
+  }
+  if (view === 'table') {
+    return (
+      <Table head={<>
+        <th className="table-head">Client</th><th className="table-head">Téléphone</th>
+        <th className="table-head">Véhicule</th><th className="table-head">Dernier passage</th>
+        <th className="table-head">Échéance</th><th className="table-head">Délai</th>
+        <th className="table-head text-right">Actions</th>
+      </>}>
+        {alerts.map((a: RappelAlert) => {
+          const phoneOk = !!normalizePhone(a.clientPhone);
+          return (
+            <tr key={a.id} className={a.daysLeft < 0 ? 'bg-red-50/50' : undefined}>
+              <td className="table-cell font-bold text-slate-700">{a.clientName}</td>
+              <td className="table-cell whitespace-nowrap">
+                {a.clientPhone
+                  ? displayPhone(normalizePhone(a.clientPhone) || a.clientPhone)
+                  : <span className="text-amber-700 font-bold">Aucun téléphone</span>}
+                {a.clientPhone && !phoneOk && <div className="text-[11px] font-bold text-amber-700">Numéro invalide</div>}
+              </td>
+              <td className="table-cell">
+                <div className="text-slate-600">{a.carText || 'Véhicule non précisé'}</div>
+                {typeof a.kilometrage === 'number' && (
+                  <div className="text-[11px] text-slate-400 tabular-nums">{a.kilometrage.toLocaleString('fr-FR')} km</div>
+                )}
+              </td>
+              <td className="table-cell whitespace-nowrap text-slate-500">
+                {a.kind === 'lavage' ? 'Lavage' : 'Vidange'} du {shortDate(a.lastVisit)}
+                <div className="text-[11px] text-slate-400">{a.ref}</div>
+              </td>
+              <td className="table-cell whitespace-nowrap text-slate-500">{shortDate(a.dueDate)}</td>
+              <td className="table-cell">
+                <Badge tone={a.daysLeft < 0 ? 'danger' : a.daysLeft === 0 ? 'warning' : 'info'}>
+                  {a.daysLeft < 0 ? `${-a.daysLeft} j de retard` : a.daysLeft === 0 ? "Aujourd'hui" : `dans ${a.daysLeft} j`}
+                </Badge>
+              </td>
+              <td className="table-cell text-right">
+                <RowActions>
+                  {perm.creer && <ActionBtn icon={Send} tone="blue" title={phoneOk ? 'Envoyer le message' : 'Numéro absent ou invalide'} disabled={!phoneOk} onClick={() => onSend(a)} />}
+                  {perm.modifier && <ActionBtn icon={Check} tone="slate" title="Marquer comme lu" onClick={() => onRead(a)} />}
+                </RowActions>
+              </td>
+            </tr>
+          );
+        })}
+      </Table>
+    );
   }
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

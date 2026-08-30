@@ -11,6 +11,7 @@ import { brigadeTankConsumption } from "../lib/brigadeTanks";
 import { tankLedgers } from "../lib/tankLevels";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
+import { ViewToggle, Table, Badge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 
 /** Litres, sans décimale et avec les séparateurs français. */
 const L = (n: number) => (Number(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 0 });
@@ -640,6 +641,9 @@ const Tanks = () => {
   const [converterTank, setConverterTank] = useState<Tank | null>(null);
   const [historyTank, setHistoryTank] = useState<Tank | null>(null);
   const [gplCalcTank, setGplCalcTank] = useState<Tank | null>(null);
+  // Tableau par défaut : les cuves se comparent en colonnes — niveau, reste,
+  // seuil d'alerte. Les jauges en cartes restent à un clic.
+  const [view, setView] = useState<"grid" | "table">("table");
   const [filterType, setFilterType] = useState<string>("all");
   /** N'afficher que les cuves épinglées. */
   const [onlyFavorites, setOnlyFavorites] = useState(false);
@@ -754,6 +758,7 @@ const Tanks = () => {
           <Star className={cn("w-3.5 h-3.5", onlyFavorites && "fill-current")} />
           Favoris{favoriteCount > 0 ? ` (${favoriteCount})` : ""}
         </button>
+        <div className="ml-auto"><ViewToggle view={view} onChange={setView} /></div>
       </div>
 
       {/* Tank grid */}
@@ -763,6 +768,62 @@ const Tanks = () => {
           description="Créez votre première cuve de carburant"
           icon={<Database className="w-8 h-8 text-slate-300" />}
         />
+      ) : view === "table" ? (
+        /* ── Le parc de cuves en tableau ──────────────────────────────────
+           Le même contenu que la jauge, en chiffres : niveau, place libre,
+           seuil d'alerte, et ce qui est entré / sorti depuis l'origine. */
+        <Table head={<>
+          <th className="table-head">Cuve</th><th className="table-head">Carburant</th>
+          <th className="table-head text-right">Capacité</th><th className="table-head text-right">Niveau</th>
+          <th className="table-head text-right">Rempli</th><th className="table-head text-right">Disponible</th>
+          <th className="table-head text-right">Reçu</th><th className="table-head text-right">Consommé</th>
+          <th className="table-head">État</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filtered.map(tank => {
+            const led = ledgers[tank.id];
+            const pct = tank.capacity > 0 ? Math.min(100, (tank.current / tank.capacity) * 100) : 0;
+            const isAlert = tank.current < tank.alertThreshold;
+            const available = Math.max(0, tank.capacity - tank.current);
+            return (
+              <tr key={tank.id} className={isAlert ? "bg-red-50/60" : undefined}>
+                <td className="table-cell font-bold text-primary">
+                  <span className="inline-flex items-center gap-1.5">
+                    {tank.isFavorite && <Star className="w-3.5 h-3.5 text-amber-500 fill-current" />}
+                    {tank.name}
+                  </span>
+                </td>
+                <td className="table-cell">{tank.type}</td>
+                <td className="table-cell tabular-nums text-right">{tank.capacity.toLocaleString()} L</td>
+                <td className={cn("table-cell tabular-nums text-right font-black", isAlert ? "text-red-600" : "text-primary")}>
+                  {tank.current.toLocaleString()} L
+                </td>
+                <td className="table-cell tabular-nums text-right">{Math.round(pct)} %</td>
+                <td className="table-cell tabular-nums text-right text-slate-500">{available.toLocaleString()} L</td>
+                <td className="table-cell tabular-nums text-right text-emerald-600">
+                  {(((led?.purchased) || 0) + ((led?.delivered) || 0)).toLocaleString()} L
+                </td>
+                <td className="table-cell tabular-nums text-right text-red-600">{((led?.consumed) || 0).toLocaleString()} L</td>
+                <td className="table-cell">
+                  {isAlert
+                    ? <Badge tone="danger">Sous le seuil ({tank.alertThreshold.toLocaleString()} L)</Badge>
+                    : <Badge tone="success">OK</Badge>}
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Star} tone={tank.isFavorite ? "amber" : "slate"}
+                      title={tank.isFavorite ? "Retirer des favoris" : "Mettre en favori (affichée en premier)"}
+                      onClick={() => toggleFavorite(tank)} />
+                    {tank.type === 'GPL' && <ActionBtn icon={Percent} tone="amber" title="Calcul GPL (%)" onClick={() => setGplCalcTank(tank)} />}
+                    <ActionBtn icon={Calculator} tone="blue" title="Convertisseur ° / L" onClick={() => setConverterTank(tank)} />
+                    <ActionBtn icon={History} tone="slate" title="Historique" onClick={() => setHistoryTank(tank)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditTank(tank); setShowModal(true); }} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setDeleteTank(tank)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
           {filtered.map(tank => (

@@ -98,7 +98,9 @@ const Clients = () => {
   );
 
   // Layout and filter states
-  const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
+  // Tableau par défaut : le fichier client se balaie en lignes — nom, dette,
+  // solde. Les cartes restent à un clic.
+  const [viewMode, setViewMode] = useState<"grid" | "table">("table");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedType, setSelectedType] = useState("Tous");
   const [selectedMode, setSelectedMode] = useState("Tous");

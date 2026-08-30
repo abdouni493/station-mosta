@@ -42,7 +42,8 @@ import { clientLedgers, clientOpening } from '../lib/clientLedger';
 import { fuelClientStatement, bizClientStatement, KIND_COLOR } from '../lib/clientStatement';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Confirm,
-  Table, money, formatDate, PeriodFilter, Period, inPeriod,
+  Table, ViewToggle, CardGrid, GlassCard, RowActions, ActionBtn,
+  money, formatDate, PeriodFilter, Period, inPeriod,
 } from '../components/biz/Kit';
 import { TX_LABEL } from './BankAccounts';
 
@@ -129,6 +130,9 @@ export default function CaisseGenerale() {
   } = state;
 
   const [period, setPeriod] = useState<Period>('month');
+  // Tableau par défaut : le journal se relit ligne à ligne, colonne par
+  // colonne. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [partFilter, setPartFilter] = useState<'all' | TreasuryPart>('all');
   const [natureFilter, setNatureFilter] = useState<string>('all');
@@ -1006,9 +1010,54 @@ export default function CaisseGenerale() {
           <h3 className="font-black text-[#002d87] flex items-center gap-2">
             <Layers className="w-5 h-5" /> Journal des opérations
           </h3>
+          <ViewToggle view={view} onChange={setView} />
         </div>
         {filtered.length === 0 ? (
           <p className="text-center text-slate-400 text-sm py-10">Aucune opération sur la période</p>
+        ) : view === 'grid' ? (
+          /* ── Le journal en cartes ───────────────────────────────────────
+             La même opération, lue d'un bloc : sa nature, sa partie, son
+             libellé et le sens dans lequel l'argent a bougé. */
+          <div className="p-4">
+            <CardGrid>
+              {filtered.slice(0, 400).map(m => {
+                const Icon = NATURE_ICON[m.nature] || Layers;
+                return (
+                  <GlassCard key={m.id}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="font-black text-slate-800 flex items-center gap-1.5">
+                          <Icon className="w-4 h-4 text-[#003087]" />{m.nature}
+                        </h3>
+                        <p className="text-[11px] text-slate-400 mt-0.5">{formatDate(m.date)}</p>
+                      </div>
+                      <Badge tone="neutral">{PART_META[m.part].label}</Badge>
+                    </div>
+                    <p className="text-sm text-slate-600 mt-2 line-clamp-2">{m.label || '—'}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">{m.account || '—'}</p>
+                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                      <span className={`font-black tabular-nums ${m.bank || m.internal ? 'text-slate-500' : m.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {m.internal || m.bank
+                          ? <span className="inline-flex items-center gap-1.5">
+                            {money(m.gross)}
+                            <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide ${m.internal ? 'bg-slate-100 text-slate-600' : 'bg-cyan-50 text-cyan-700'}`}>
+                              {m.internal ? 'Interne' : 'Banque'}
+                            </span>
+                          </span>
+                          : <>{m.amount >= 0 ? '+' : '−'}{money(Math.abs(m.amount))}</>}
+                      </span>
+                      {m.tx && (m.tx.kind === 'DEPOSIT' || m.tx.kind === 'WITHDRAW' || m.tx.kind === 'TRANSFER') ? (
+                        <RowActions>
+                          {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setTxForm(m.tx!)} />}
+                          {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(m.tx!)} />}
+                        </RowActions>
+                      ) : <span className="text-[11px] text-slate-300">document</span>}
+                    </div>
+                  </GlassCard>
+                );
+              })}
+            </CardGrid>
+          </div>
         ) : (
           <Table head={<>
             <th className="table-head">Date</th><th className="table-head">Nature</th>

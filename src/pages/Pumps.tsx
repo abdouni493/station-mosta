@@ -24,6 +24,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
 import ChartBox from "../components/ChartBox";
 import { useAppState, useAppDispatch, useModulePermission, Pump, PumpNozzle, FuelType, pumpTankIds, nozzleTankId, pumpsInCreationOrder } from "../store/AppContext";
 import toast from "react-hot-toast";
+import { ViewToggle, Table, Badge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 
 const Pumps = () => {
   const { t } = useTranslation();
@@ -36,6 +37,9 @@ const Pumps = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [selectedPump, setSelectedPump] = useState<Pump | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  // Tableau par défaut : les pompes se lisent en lignes — cuves desservies,
+  // pistolets, index. Les cartes restent à un clic.
+  const [view, setView] = useState<"grid" | "table">("table");
 
   // Nozzle management state
   const [showNozzleModal, setShowNozzleModal] = useState(false);
@@ -154,9 +158,80 @@ const Pumps = () => {
           className="w-full pl-12 pr-4 py-3 bg-white border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all outline-none font-medium"
         />
       </div>
+      <div className="flex justify-end -mt-4"><ViewToggle view={view} onChange={setView} /></div>
 
-      {/* Pump Cards Grid */}
-      {filteredPumps.length > 0 ? (
+      {/* Pump list — tableau par défaut, cartes à un clic */}
+      {filteredPumps.length === 0 ? (
+        <div className="card-glass p-16 text-center">
+          <Wrench className="w-16 h-16 text-slate-200 mx-auto mb-4" />
+          <p className="text-slate-500 font-medium">Aucune pompe trouvée</p>
+        </div>
+      ) : view === "table" ? (
+        /* ── Le parc de pompes en tableau ─────────────────────────────────
+           Ce que la carte raconte, en colonnes : quelles cuves la pompe
+           dessert, combien de pistolets elle porte et où en sont leurs index
+           — c'est ce dernier chiffre qu'on vient vérifier ici. */
+        <Table head={<>
+          <th className="table-head">Pompe</th><th className="table-head">Nom</th>
+          <th className="table-head">Cuves desservies</th><th className="table-head">Pistolets</th>
+          <th className="table-head text-right">Index cumulé</th>
+          <th className="table-head">Statut</th><th className="table-head text-right">Actions</th>
+        </>}>
+          {filteredPumps.map(pump => {
+            const cuves = pumpTanks(pump.id);
+            const nozzles = pumpNozzles.filter(n => n.pumpId === pump.id);
+            const totalIndex = nozzles.reduce((s, n) => s + (n.lastIndex || 0), 0);
+            return (
+              <tr key={pump.id}>
+                <td className="table-cell font-black text-primary uppercase">{pump.number}</td>
+                <td className="table-cell">{pump.name}</td>
+                <td className="table-cell">
+                  {cuves.length === 0
+                    ? <span className="text-slate-400">Aucune — définissez-la sur les pistolets</span>
+                    : <div className="flex flex-wrap gap-1 max-w-[240px]">
+                      {cuves.map(c => <Badge key={c.id} tone="info">{c.name} · {c.type}</Badge>)}
+                    </div>}
+                </td>
+                <td className="table-cell">
+                  {nozzles.length === 0
+                    ? <span className="text-slate-400">Aucun</span>
+                    : <div className="space-y-0.5 max-w-[280px]">
+                      {nozzles.map(n => (
+                        <div key={n.id} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", n.status === 'Actif' ? 'bg-green-400' : 'bg-slate-300')} />
+                            <span className="font-bold text-slate-700 truncate">{n.name}</span>
+                            <span className="text-slate-400 truncate">· {tankLabel(nozzleTankId(n, pumps))}</span>
+                          </span>
+                          <span className="font-black text-purple-700 tabular-nums shrink-0">
+                            {n.lastIndex.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} L
+                          </span>
+                        </div>
+                      ))}
+                    </div>}
+                </td>
+                <td className="table-cell tabular-nums text-right font-black text-purple-700">
+                  {totalIndex.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} L
+                </td>
+                <td className="table-cell">
+                  <Badge tone={pump.status === "Actif" ? "success" : pump.status === "Maintenance" ? "warning" : "danger"}>
+                    {pump.status}
+                  </Badge>
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    <ActionBtn icon={Eye} tone="blue" title="Voir la pompe" onClick={() => { setSelectedPump(pump); setDetailTab('overview'); setShowDetail(true); }} />
+                    {perm.modifier && <ActionBtn icon={Zap} tone="slate" title="Gérer les pistolets"
+                      onClick={() => { setNozzlePump(pump); setNozzleForm({ name: '', lastIndex: 0, tankId: pump.tankId || tanks[0]?.id || '' }); setEditingNozzle(null); setShowNozzleModal(true); }} />}
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => handleOpenEdit(pump)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setShowDeleteConfirm(pump.id)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      ) : (
         <motion.div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredPumps.map((pump, index) => {
             const cuves = pumpTanks(pump.id);
@@ -275,11 +350,6 @@ const Pumps = () => {
             );
           })}
         </motion.div>
-      ) : (
-        <div className="card-glass p-16 text-center">
-          <Wrench className="w-16 h-16 text-slate-200 mx-auto mb-4" />
-          <p className="text-slate-500 font-medium">Aucune pompe trouvée</p>
-        </div>
       )}
 
       {/* Add/Edit Modal */}

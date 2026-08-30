@@ -14,7 +14,7 @@ import { useBizSessions } from '@/src/hooks/useBizSessions';
 import { CloseSessionModal } from './ModulePOS';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
-  Table, Tabs, EmptyState,
+  Table, Tabs, EmptyState, ViewToggle, CardGrid, GlassCard, RowActions, ActionBtn,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 
@@ -26,6 +26,9 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const { caisse, sales, purchases, expenses, workers, products, comptoir, destructions } = biz.state;
 
   const [tab, setTab] = useState<'tresorerie' | 'sessions'>('tresorerie');
+  // Tableau par défaut sur les deux listes de l'écran — transactions de caisse
+  // et historique des sessions. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [period, setPeriod] = useState<Period>('month');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [form, setForm] = useState<BizCaisseTx | null | 'new'>(null);
@@ -238,9 +241,38 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
       <div className="card-glass overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
           <h3 className="font-black text-[#002d87] flex items-center gap-2"><Layers className="w-5 h-5" /> Transactions de caisse</h3>
-          {catFilter && <button onClick={() => setCatFilter(null)} className="text-xs text-slate-400 hover:text-red-500">Retirer filtre: {catFilter}</button>}
+          <div className="flex items-center gap-3">
+            {catFilter && <button onClick={() => setCatFilter(null)} className="text-xs text-slate-400 hover:text-red-500">Retirer filtre: {catFilter}</button>}
+            <ViewToggle view={view} onChange={setView} />
+          </div>
         </div>
-        {txList.length === 0 ? <p className="text-center text-slate-400 text-sm py-8">Aucune transaction sur la période</p> : (
+        {txList.length === 0 ? <p className="text-center text-slate-400 text-sm py-8">Aucune transaction sur la période</p> : view === 'table' ? (
+          <Table head={<>
+            <th className="table-head">Date</th><th className="table-head">Sens</th>
+            <th className="table-head">Description</th><th className="table-head">Catégorie</th>
+            <th className="table-head text-right">Montant</th><th className="table-head text-right">Actions</th>
+          </>}>
+            {txList.map(tx => (
+              <tr key={tx.id}>
+                <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(tx.date)}</td>
+                <td className="table-cell">
+                  <Badge tone={tx.type === 'deposit' ? 'success' : 'danger'}>{tx.type === 'deposit' ? 'Dépôt' : 'Retrait'}</Badge>
+                </td>
+                <td className="table-cell text-slate-600">{tx.description || (tx.type === 'deposit' ? 'Dépôt' : 'Retrait')}</td>
+                <td className="table-cell">{tx.category ? <Badge tone="neutral">{tx.category}</Badge> : <span className="text-slate-400">—</span>}</td>
+                <td className={`table-cell text-right tabular-nums font-black ${tx.type === 'deposit' ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {tx.type === 'deposit' ? '+' : '−'}{money(tx.amount)}
+                </td>
+                <td className="table-cell text-right">
+                  <RowActions>
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setForm(tx)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(tx)} />}
+                  </RowActions>
+                </td>
+              </tr>
+            ))}
+          </Table>
+        ) : (
           <div className="divide-y divide-slate-100">
             {txList.map(tx => (
               <div key={tx.id} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50">
@@ -325,6 +357,9 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
   const [status, setStatus] = useState<'all' | 'open' | 'closed'>('all');
   const [sessionFilter, setSessionFilter] = useState('all');
   const [viewing, setViewing] = useState<BizSession | null>(null);
+  // Tableau par défaut : une session se juge sur son décalage, aligné en
+  // colonne à côté du théorique et du déclaré. Les cartes restent à un clic.
+  const [view, setView] = useState<'grid' | 'table'>('table');
   const [closing, setClosing] = useState<BizSession | null>(null);
 
   /** Live figures — a still-open session has no frozen numbers yet. */
@@ -411,6 +446,7 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
           <span className="text-xs text-slate-400 ml-auto">
             Fonds d'ouverture cumulés : {money(totals.openingCash)} (hors théorique)
           </span>
+          <ViewToggle view={view} onChange={setView} />
         </div>
       </div>
 
@@ -446,6 +482,56 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
         <EmptyState icon={Clock} title="Aucune session"
           message="Les sessions ouvertes depuis le point de vente apparaîtront ici avec tout leur détail." />
       ) : (
+        view === 'grid' ? (
+        /* ── Les sessions en cartes ───────────────────────────────────────
+           Le même verdict que la ligne du tableau : ce que la caisse aurait
+           dû contenir, ce que l'employé a déclaré, et l'écart entre les deux. */
+        <CardGrid>
+          {filtered.map(s => {
+            const f = figuresOf(s);
+            return (
+              <GlassCard key={s.id}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="font-black text-slate-800 truncate">{s.ref}</h3>
+                    <p className="text-xs text-slate-400 truncate">{s.workerName}</p>
+                  </div>
+                  {s.status === 'open' ? <Badge tone="warning">Ouverte</Badge> : <Badge tone="success">Clôturée</Badge>}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  {new Date(s.openedAt).toLocaleString('fr-DZ')}
+                  {s.closedAt ? ` → ${new Date(s.closedAt).toLocaleString('fr-DZ')}` : ''}
+                </p>
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div className="rounded-xl bg-slate-50 p-2 text-center">
+                    <p className="text-[9px] uppercase font-bold text-slate-400">Théorique</p>
+                    <p className="font-black text-slate-700 tabular-nums text-xs">{money(f.theoretical)}</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 p-2 text-center">
+                    <p className="text-[9px] uppercase font-bold text-slate-400">Déclaré</p>
+                    <p className="font-black text-slate-700 tabular-nums text-xs">{f.declared === undefined ? '—' : money(f.declared)}</p>
+                  </div>
+                  <div className={`rounded-xl p-2 text-center ${f.decalage === undefined ? 'bg-slate-50' : f.decalage < 0 ? 'bg-red-50' : f.decalage > 0 ? 'bg-blue-50' : 'bg-emerald-50'}`}>
+                    <p className="text-[9px] uppercase font-bold text-slate-400">Décalage</p>
+                    <p className={`font-black tabular-nums text-xs ${f.decalage === undefined ? 'text-slate-300' : f.decalage < 0 ? 'text-red-600' : f.decalage > 0 ? 'text-[#003087]' : 'text-emerald-600'}`}>
+                      {f.decalage === undefined ? '—' : money(f.decalage)}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                  <span className="text-[11px] text-slate-400">Fond {money(s.openingCash)} • {f.count} vente(s)</span>
+                  <RowActions>
+                    {s.status === 'open' && canClose(s) && (
+                      <ActionBtn icon={StopCircle} tone="red" title="Clôturer cette session" onClick={() => setClosing(s)} />
+                    )}
+                    <ActionBtn icon={Eye} tone="blue" title="Détails" onClick={() => setViewing(s)} />
+                  </RowActions>
+                </div>
+              </GlassCard>
+            );
+          })}
+        </CardGrid>
+        ) : (
         <div className="card-glass overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100">
             <h3 className="font-black text-[#002d87] flex items-center gap-2"><Layers className="w-5 h-5" /> Historique des sessions</h3>
@@ -497,6 +583,7 @@ function SessionsPanel({ moduleKey }: { moduleKey: ModuleKey }) {
             })}
           </Table>
         </div>
+        )
       )}
 
       {viewing && <SessionDetail session={viewing} figures={figuresOf(viewing)} onClose={() => setViewing(null)} />}

@@ -15,6 +15,7 @@ import { GROUPS, getDefaultPermissions } from "../lib/permissionDefaults";
 import PermissionsEditor from "../components/PermissionsEditor";
 import EmptyState from "../components/EmptyState";
 import ConfirmDialog from "../components/ConfirmDialog";
+import { ViewToggle, Table, Badge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 
 type WorkerRole = 'pompiste' | 'chef_brigade' | 'gerant' | 'magasin';
 
@@ -38,6 +39,9 @@ const Permissions = () => {
     return <Navigate to="/dashboard" replace />;
   }
 
+  // Tableau par défaut : les modèles se comparent par rôle et par nombre
+  // d'interfaces ouvertes. Les cartes restent à un clic.
+  const [view, setView] = useState<"grid" | "table">("table");
   const [showEditor, setShowEditor] = useState(false);
   const [editing, setEditing] = useState<PermissionTemplate | null>(null);
   const [name, setName] = useState("");
@@ -106,9 +110,12 @@ const Permissions = () => {
             </p>
           </div>
         </div>
-        <button onClick={openCreate} className="btn-primary h-14 px-8 tracking-[0.2em] w-full md:w-auto">
-          <Plus className="w-4 h-4" /> CRÉER UN MODÈLE
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <ViewToggle view={view} onChange={setView} />
+          <button onClick={openCreate} className="btn-primary h-14 px-8 tracking-[0.2em] w-full md:w-auto">
+            <Plus className="w-4 h-4" /> CRÉER UN MODÈLE
+          </button>
+        </div>
       </div>
 
       {permissionTemplates.length === 0 ? (
@@ -119,6 +126,27 @@ const Permissions = () => {
           actionLabel="CRÉER UN MODÈLE"
           action={openCreate}
         />
+      ) : view === "table" ? (
+        /* ── Les modèles en tableau — le rôle et l'étendue de l'accès. */
+        <Table head={<>
+          <th className="table-head">Modèle</th><th className="table-head">Rôle</th>
+          <th className="table-head text-right">Interfaces ouvertes</th>
+          <th className="table-head text-right">Actions</th>
+        </>}>
+          {ROLE_OPTIONS.flatMap(r => (grouped[r] || []).map(t => (
+            <tr key={t.id}>
+              <td className="table-cell font-bold text-blue-900 uppercase tracking-tight">{t.name}</td>
+              <td className="table-cell"><Badge tone="primary">{ROLE_CONFIG[r].label}</Badge></td>
+              <td className="table-cell tabular-nums text-right">{countGranted(t.permissions)}</td>
+              <td className="table-cell text-right">
+                <RowActions>
+                  <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => openEdit(t)} />
+                  <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(t)} />
+                </RowActions>
+              </td>
+            </tr>
+          )))}
+        </Table>
       ) : (
         <div className="space-y-8">
           {ROLE_OPTIONS.map(r => {

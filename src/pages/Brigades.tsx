@@ -49,6 +49,7 @@ import { brigadeBankLines, isBankJustification, accountOfJustification } from ".
 import { planBrigadeExpenses, BRIGADE_EXPENSE_CATEGORY } from "../lib/brigadeExpenses";
 import ConfirmDialog from "../components/ConfirmDialog";
 import EmptyState from "../components/EmptyState";
+import { ViewToggle, Table as KitTable, Badge as KitBadge, RowActions, ActionBtn } from "@/src/components/biz/Kit";
 import Skeleton from "../components/Skeleton";
 import BrigadeDetailModal from "../components/BrigadeDetailModal";
 import BrigadeAccountingModal from "../components/BrigadeAccountingModal";
@@ -194,6 +195,9 @@ const Brigades = () => {
   const [filterChef, setFilterChef] = useState('');
   const [filterPompiste, setFilterPompiste] = useState('');
   const [searchId, setSearchId] = useState('');
+  // Tableau par défaut : l'historique des brigades se balaie en lignes — date,
+  // poste, chef, état, montant comptabilisé. Les cartes restent à un clic.
+  const [brigadeView, setBrigadeView] = useState<'grid' | 'table'>('table');
   const [filterDate, setFilterDate] = useState('');        // exact day (YYYY-MM-DD)
   const [filterStartDate, setFilterStartDate] = useState(''); // période — du
   const [filterEndDate, setFilterEndDate] = useState('');     // période — au
@@ -1446,15 +1450,72 @@ const Brigades = () => {
             <p className="text-xs font-black uppercase tracking-widest text-slate-400">
               {filteredBrigades.length} brigade{filteredBrigades.length !== 1 ? 's' : ''}{hasActiveFilters ? ' (filtrées)' : ''}
             </p>
-            {(filterDate || filterStartDate || filterEndDate) && (
-              <span className="px-3 py-1 bg-blue-50 border border-blue-200 rounded-lg text-[10px] font-black text-blue-700 uppercase tracking-wider">
-                {filterDate
-                  ? `📅 ${filterDate}`
-                  : `📅 ${filterStartDate || '…'} → ${filterEndDate || '…'}`}
-              </span>
-            )}
+            <div className="flex items-center gap-2 flex-wrap">
+              {(filterDate || filterStartDate || filterEndDate) && (
+                <span className="px-3 py-1 bg-blue-50 border border-blue-200 rounded-lg text-[10px] font-black text-blue-700 uppercase tracking-wider">
+                  {filterDate
+                    ? `📅 ${filterDate}`
+                    : `📅 ${filterStartDate || '…'} → ${filterEndDate || '…'}`}
+                </span>
+              )}
+              <ViewToggle view={brigadeView} onChange={setBrigadeView} />
+            </div>
           </div>
-          {filteredBrigades.length > 0 ? (
+          {filteredBrigades.length > 0 && brigadeView === 'table' ? (
+            /* ── L'historique des brigades en tableau ─────────────────────
+               Ce qu'on vient y chercher : quel jour, quel poste, quel chef,
+               combien de pompistes, et ce que la comptabilité en a tiré. */
+            <KitTable head={<>
+              <th className="table-head">Brigade</th><th className="table-head">Date</th>
+              <th className="table-head">Poste</th><th className="table-head">Horaires</th>
+              <th className="table-head">Chef</th><th className="table-head text-right">Pompistes</th>
+              <th className="table-head text-right">Litres</th><th className="table-head text-right">Encaissé</th>
+              <th className="table-head">État</th><th className="table-head text-right">Actions</th>
+            </>}>
+              {filteredBrigades.map(b => {
+                const brigadeChef = brigadeChefs.find(c => c.id === b.chefId);
+                const pompisteCount = (pompistes.filter(p => b.pompisteIds?.includes(p.id)) || []).length;
+                const accounting = brigadeAccountings.find(a => a.brigadeId === b.id);
+                const data = Object.values(b.pompisteData || {}) as any[];
+                const liters = data.reduce((s: number, d: any) => s + (d.litersSold || 0), 0);
+                const collected = data.reduce((s: number, d: any) => s + (d.totalCollected || 0), 0);
+                const endDatePart = b.endDatetime?.split('T')[0];
+                const displayDate = (endDatePart && endDatePart !== b.date) ? endDatePart : b.date;
+                return (
+                  <tr key={b.id}>
+                    <td className="table-cell font-mono text-xs text-slate-500">{b.id.slice(0, 8)}</td>
+                    <td className="table-cell font-black text-slate-800 whitespace-nowrap">{displayDate}</td>
+                    <td className="table-cell">{b.shift}</td>
+                    <td className="table-cell whitespace-nowrap text-slate-500">
+                      {b.startTime && b.endTime ? `${b.startTime} → ${b.endTime}` : '—'}
+                    </td>
+                    <td className="table-cell">{brigadeChef?.name || 'Non assigné'}</td>
+                    <td className="table-cell tabular-nums text-right">{pompisteCount}</td>
+                    <td className="table-cell tabular-nums text-right">
+                      {liters > 0 ? `${liters.toLocaleString('fr-FR', { maximumFractionDigits: 0 })} L` : '—'}
+                    </td>
+                    <td className="table-cell tabular-nums text-right font-bold text-emerald-600">
+                      {collected > 0 ? collected.toLocaleString('fr-FR', { maximumFractionDigits: 0 }) + ' DZD' : '—'}
+                    </td>
+                    <td className="table-cell">
+                      <div className="flex flex-wrap gap-1">
+                        <KitBadge tone={b.status === 'Clôturée' ? 'primary' : b.status === 'En attente' ? 'warning' : 'neutral'}>{b.status}</KitBadge>
+                        {accounting?.status === 'completed' && <KitBadge tone="success">Comptabilisée</KitBadge>}
+                      </div>
+                    </td>
+                    <td className="table-cell text-right">
+                      <RowActions>
+                        <ActionBtn icon={EyeIcon} tone="blue" title="Voir les détails" onClick={() => { setSelectedBrigade(b); setShowDetail(true); setDetailTab('info'); }} />
+                        <ActionBtn icon={FileText} tone="slate" title="Fiche de brigade" onClick={() => { setSelectedBrigade(b); setShowFicheModal(true); }} />
+                        {perm.modifier && <ActionBtn icon={Pencil} tone="amber" title="Modifier" onClick={() => { resetForm(); loadBrigadeIntoWizard(b); }} />}
+                        {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => { setSelectedBrigade(b); setShowConfirmDelete(true); }} />}
+                      </RowActions>
+                    </td>
+                  </tr>
+                );
+              })}
+            </KitTable>
+          ) : filteredBrigades.length > 0 ? (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredBrigades.map((b, index) => {
                 const brigadeChef = brigadeChefs.find(c => c.id === b.chefId);
