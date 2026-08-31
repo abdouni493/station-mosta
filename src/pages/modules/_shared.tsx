@@ -1490,6 +1490,310 @@ export function printInvoice(opts: PrintInvoiceOptions) {
   win.document.close();
 }
 
+// ─── Purchase invoice print (facture d'achat) ───────────────────────────────────
+/**
+ * La facture d'achat s'imprime avec la MÊME identité visuelle que la Fiche
+ * Journalière (`pages/DailyReport.tsx`) : bandeau bleu nuit dégradé, filet or,
+ * bandeau d'indicateurs, parties numérotées, tableaux à en-tête bleu et pied de
+ * page à signatures. Les documents qui sortent de la station se ressemblent
+ * enfin, au lieu d'avoir chacun leur mise en page.
+ *
+ * Le document porte DEUX horodatages, parce qu'ils ne disent pas la même chose :
+ * la date et l'heure de CRÉATION de la facture (quand l'achat a été enregistré)
+ * et celles de l'IMPRESSION (l'instant présent), qui datent la copie papier.
+ * La ligne « Créée le » n'apparaît que si l'achat porte vraiment cet horodatage :
+ * la répéter depuis la date de facture n'apprendrait rien de plus.
+ */
+export interface PrintPurchaseInvoiceOptions {
+  /** En-tête du document — « Facture d'achat » par défaut. */
+  title?: string;
+  ref: string;
+  /** Date de la facture (jour de l'achat). */
+  date: string;
+  /** Horodatage d'enregistrement dans l'application, quand il est connu. */
+  createdAt?: string;
+  createdBy?: string;
+  station?: PrintStation;
+  supplier?: { label?: string; name: string; phone?: string; address?: string };
+  /** Blocs libres imprimés avec le fournisseur (n° facture, BL, statut…). */
+  info?: { label: string; value: string }[];
+  items: { name: string; qty: number | string; unitPrice: number; total: number }[];
+  subtotal?: number;
+  reduction?: number;
+  tva?: number;
+  total: number;
+  paid: number;
+  rest: number;
+  payments?: PrintPaymentLine[];
+  notes?: string;
+  footerNote?: string;
+}
+
+/* Palette de la Fiche Journalière — même bleu, même or. */
+const PRINT_C = {
+  blue900: '#001233',
+  blue800: '#001f5c',
+  blue700: '#002d87',
+  blue600: '#003087',
+  gold: '#FFB800',
+};
+
+/** Montant à la française : « 12 345,60 » — comme la fiche journalière. */
+const frMoney = (n: number) =>
+  (Number.isFinite(n) ? n : 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** Quantité : entière quand elle l'est, deux décimales au plus sinon. */
+const frQty = (v: number | string) =>
+  typeof v === 'number' ? v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) : String(v ?? '');
+
+const asDate = (v?: string) => {
+  const d = v ? new Date(v) : new Date();
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+/** « 12/05/2026 » */
+const frDay = (v?: string) => {
+  const d = asDate(v);
+  return d ? d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : String(v ?? '—');
+};
+/** « 12/05/2026 à 14:32 » — l'heure n'est ajoutée que si la valeur en porte une. */
+const frMoment = (v?: string) => {
+  const d = asDate(v);
+  if (!d) return String(v ?? '—');
+  const day = d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (v !== undefined && !/\d{1,2}:\d{2}/.test(v)) return day;
+  return `${day} à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+};
+
+export function printPurchaseInvoice(opts: PrintPurchaseInvoiceOptions) {
+  const st = opts.station || {};
+  const stationName = st.name || 'Station';
+  const title = opts.title || "Facture d'achat";
+  const printedAt = new Date();
+  const printedLabel = `${printedAt.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })} à ${printedAt.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+
+  const items = opts.items || [];
+  // Certaines factures portent une quantite deja formatee (« 1 000 L ») : on ne
+  // totalise que ce qui est reellement un nombre, sinon la ligne TOTAL afficherait 0.
+  const qtyCountable = items.length > 0 && items.every(it => typeof it.qty === 'number');
+  const qtyTotal = items.reduce((s, it) => s + (typeof it.qty === 'number' ? it.qty : 0), 0);
+  const qtyTotalLabel = qtyCountable ? frQty(qtyTotal) : '—';
+
+  const rows = items.map((it, i) => `<tr${i % 2 ? ' class="alt"' : ''}>
+      <td class="b">${esc(it.name)}</td>
+      <td class="r">${esc(frQty(it.qty))}</td>
+      <td class="r" style="color:#b45309">${frMoney(it.unitPrice)} DA</td>
+      <td class="r b" style="color:#1d4ed8">${frMoney(it.total)} DA</td>
+    </tr>`).join('');
+
+  const infoBoxes = [
+    ...(opts.supplier?.phone ? [{ label: 'Téléphone', value: opts.supplier.phone }] : []),
+    ...(opts.supplier?.address ? [{ label: 'Adresse', value: opts.supplier.address }] : []),
+    ...(opts.info || []).filter(i => i.value),
+    ...(opts.createdBy ? [{ label: 'Enregistré par', value: opts.createdBy }] : []),
+  ].map(i => `<div class="box">
+      <p class="l">${esc(i.label)}</p><p class="v">${esc(i.value)}</p>
+    </div>`).join('');
+
+  const totalLine = (label: string, value: string, color: string, strong = false) =>
+    `<div class="tl"${strong ? ` style="border-top:2px solid ${PRINT_C.blue700};margin-top:4px;padding-top:8px"` : ''}>
+       <span>${esc(label)}</span><strong style="color:${color}">${value} DA</strong></div>`;
+
+  const paymentRows = (opts.payments || []).filter(p => p.amount > 0).map((p, i) => `<tr${i % 2 ? ' class="alt"' : ''}>
+      <td class="b">${esc(p.label)}</td>
+      <td style="color:#64748b">${esc(p.reference || '—')}</td>
+      <td class="r b" style="color:#047857">${frMoney(p.amount)} DA</td>
+    </tr>`).join('');
+
+  const kpis = [
+    { label: 'Total facture', value: `${frMoney(opts.total)} DA`, col: PRINT_C.blue700 },
+    { label: 'Payé', value: `${frMoney(opts.paid)} DA`, col: '#047857' },
+    { label: 'Reste dû', value: `${frMoney(opts.rest)} DA`, col: opts.rest > 0 ? '#dc2626' : '#15803d' },
+    { label: 'Articles', value: `${items.length}${qtyCountable && qtyTotal ? ` · ${frQty(qtyTotal)} u.` : ''}`, col: '#0e7490' },
+  ].map(k => `<div class="kpi" style="border-left-color:${k.col}">
+      <p class="l">${esc(k.label)}</p><p class="v" style="color:${k.col}">${esc(k.value)}</p>
+    </div>`).join('');
+
+  const part = (num: string, label: string, accent: string, body: string) => `
+    <section class="part" style="border-top-color:${accent}">
+      <div class="part-head"><span class="part-num">${num}</span><h3>${esc(label)}</h3></div>
+      <div class="part-body">${body}</div>
+    </section>`;
+
+  const win = window.open('', '_blank', 'width=880,height=1000');
+  if (!win) return;
+  win.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
+    <title>${esc(title)} ${esc(opts.ref)}</title>
+    <style>
+      @page { size: A4 portrait; margin: 5mm; }
+      * { box-sizing: border-box; }
+      html, body { margin:0; padding:0; }
+      body { font-family: Arial, Helvetica, sans-serif; color:#1e293b; background:#eef2f7;
+             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .sheet { width:794px; margin:16px auto; background:#fff; padding:0 0 10px; }
+      @media print { body { background:#fff; } .sheet { width:100%; margin:0; } }
+
+      /* ── Bandeau station (identique à la fiche journalière) ── */
+      .banner { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px;
+                background:linear-gradient(135deg, ${PRINT_C.blue900} 0%, ${PRINT_C.blue800} 55%, ${PRINT_C.blue600} 100%); }
+      .ident { display:flex; align-items:center; gap:14px; }
+      .logo { width:58px; height:58px; object-fit:contain; border-radius:8px; background:#fff; padding:3px; }
+      .logo-ph { width:58px; height:58px; border-radius:8px; background:rgba(255,184,0,0.15);
+                 border:1px solid rgba(255,184,0,0.4); display:flex; align-items:center; justify-content:center;
+                 color:${PRINT_C.gold}; font-size:28px; font-weight:900; }
+      .st-name { margin:0; font-weight:900; font-size:22px; color:#fff; letter-spacing:.3px; }
+      .st-addr { margin:2px 0 0; font-size:11px; color:rgba(255,255,255,.7); }
+      .st-legal { margin:2px 0 0; font-size:10px; color:rgba(255,255,255,.55); }
+      .doc { text-align:right; white-space:nowrap; }
+      .badge { display:inline-block; background:${PRINT_C.gold}; color:${PRINT_C.blue900}; font-weight:900;
+               font-size:11px; text-transform:uppercase; letter-spacing:1px; padding:6px 14px; border-radius:6px; }
+      .doc .ref { margin:7px 0 0; font-size:13px; font-weight:900; color:#fff; }
+      .doc .sub { margin:2px 0 0; font-size:11px; font-weight:700; color:rgba(255,255,255,.9); }
+      .doc .sub2 { margin:2px 0 0; font-size:10px; color:rgba(255,255,255,.6); }
+      .goldbar { height:4px; width:100%; background:linear-gradient(90deg, ${PRINT_C.gold}, transparent); margin-bottom:14px; }
+
+      /* ── Bandeau d'indicateurs ── */
+      .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:0 14px 16px; }
+      .kpi { border-left:3px solid; background:#f8fafc; border-radius:0 7px 7px 0; padding:8px 12px; }
+      .kpi .l { margin:0; font-size:8.5px; font-weight:900; text-transform:uppercase; letter-spacing:.5px; color:#94a3b8; }
+      .kpi .v { margin:3px 0 0; font-size:16px; font-weight:900; }
+
+      /* ── Parties numérotées ── */
+      /* Une partie longue (un tableau de 40 lignes) doit pouvoir se couper : on
+         protege seulement l'en-tete et chaque ligne, et on repete le thead. */
+      .part { border-top:2px solid ${PRINT_C.blue700}; margin:0 14px 14px; }
+      .part-head, tr { page-break-inside:avoid; }
+      thead { display:table-header-group; }
+      .part-head { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid #e2e8f0; }
+      .part-num { width:20px; height:20px; background:${PRINT_C.blue900}; color:${PRINT_C.gold}; border-radius:5px;
+                  display:flex; align-items:center; justify-content:center; font-weight:900; font-size:11px; }
+      .part-head h3 { margin:0; color:${PRINT_C.blue900}; font-weight:900; font-size:13px;
+                      text-transform:uppercase; letter-spacing:.8px; }
+      .part-body { padding-top:10px; }
+
+      /* ── Tableaux ── */
+      table { width:100%; border-collapse:collapse; }
+      thead tr { background:${PRINT_C.blue800}; }
+      th { padding:6px 9px; text-align:left; font-size:10px; font-weight:900; text-transform:uppercase;
+           letter-spacing:.4px; color:#fff; }
+      th.r { text-align:right; }
+      td { padding:5px 9px; font-size:11px; font-weight:600; color:#1e293b; border-bottom:1px solid #eef2f7; }
+      td.r { text-align:right; }
+      td.b { font-weight:900; }
+      tr.alt td { background:#f8fafc; }
+      tr.total td { background:#eff6ff; font-weight:900; color:${PRINT_C.blue900}; }
+
+      /* ── Blocs d'information ── */
+      .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+      .box { padding:10px 13px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; }
+      .box .l { margin:0; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:.5px; color:#64748b; }
+      .box .v { margin:3px 0 0; font-size:13px; font-weight:900; color:#0f172a; }
+      .box.hero { background:#eff6ff; border-color:#bfdbfe; }
+      .box.hero .v { font-size:16.5px; color:${PRINT_C.blue700}; }
+
+      /* ── Totaux ── */
+      .totals { width:300px; margin:12px 0 0 auto; }
+      .tl { display:flex; justify-content:space-between; padding:5px 0; font-size:12px; font-weight:700; color:#475569; }
+      .tl strong { font-size:13px; }
+
+      .note { margin-top:10px; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:10px 13px; }
+      .note .l { margin:0; font-size:9px; font-weight:900; text-transform:uppercase; letter-spacing:.5px; color:#b45309; }
+      .note .v { margin:4px 0 0; font-size:11.5px; font-weight:600; color:#78350f; }
+
+      /* ── Pied de page ── */
+      .footer { margin:0 14px; padding-top:10px; border-top:1px solid #e2e8f0; page-break-inside:avoid; }
+      .meta { display:flex; justify-content:space-between; font-size:9px; color:#94a3b8; margin-bottom:22px; }
+      .sign { display:grid; grid-template-columns:1fr 1fr; gap:60px; }
+      .sign p { font-size:10.5px; font-weight:900; color:#334155; margin:0 0 34px; }
+      .sign .line { border-bottom:1px solid #94a3b8; }
+      .thanks { margin:16px 14px 0; text-align:center; color:#94a3b8; font-size:10px; }
+    </style></head>
+    <body><div class="sheet">
+
+      <div class="banner">
+        <div class="ident">
+          ${st.logoUrl ? `<img class="logo" src="${esc(st.logoUrl)}" alt="logo">` : '<div class="logo-ph">&#9981;</div>'}
+          <div>
+            <p class="st-name">${esc(stationName)}</p>
+            ${st.address ? `<p class="st-addr">${esc(st.address)}</p>` : ''}
+            <p class="st-legal">${[
+              st.phone && `Tél: ${esc(st.phone)}`,
+              st.email && esc(st.email),
+              st.fiscalId && `NIF: ${esc(st.fiscalId)}`,
+              st.rc && `RC: ${esc(st.rc)}`,
+            ].filter(Boolean).join('  ·  ')}</p>
+          </div>
+        </div>
+        <div class="doc">
+          <span class="badge">${esc(title)}</span>
+          <p class="ref">N° ${esc(opts.ref)}</p>
+          <p class="sub">Date facture : ${esc(frDay(opts.date))}</p>
+          ${opts.createdAt ? `<p class="sub2">Créée le ${esc(frMoment(opts.createdAt))}</p>` : ''}
+          <p class="sub2">Imprimée le ${esc(printedLabel)}</p>
+        </div>
+      </div>
+      <div class="goldbar"></div>
+
+      <div class="kpis">${kpis}</div>
+
+      ${part('1', opts.supplier?.label || 'Fournisseur', PRINT_C.blue700, `
+        <div class="grid">
+          <div class="box hero"><p class="l">Fournisseur</p><p class="v">${esc(opts.supplier?.name || '—')}</p></div>
+          ${infoBoxes}
+        </div>`)}
+
+      ${part('2', 'Détail de la facture', '#c2410c', `
+        <table>
+          <thead><tr>
+            <th>Désignation</th><th class="r">Quantité</th><th class="r">Prix unitaire</th><th class="r">Total</th>
+          </tr></thead>
+          <tbody>
+            ${rows || '<tr><td class="b">Aucune ligne</td><td class="r">0</td><td class="r">0,00 DA</td><td class="r">0,00 DA</td></tr>'}
+            <tr class="total">
+              <td>TOTAL</td>
+              <td class="r">${esc(qtyTotalLabel)}</td>
+              <td class="r">—</td>
+              <td class="r">${frMoney(opts.total)} DA</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="totals">
+          ${opts.subtotal !== undefined ? totalLine('Sous-total', frMoney(opts.subtotal), '#334155') : ''}
+          ${opts.reduction ? totalLine('Remise', `- ${frMoney(opts.reduction)}`, '#b45309') : ''}
+          ${opts.tva ? totalLine('TVA', frMoney(opts.tva), '#334155') : ''}
+          ${totalLine('Total facture', frMoney(opts.total), PRINT_C.blue700, true)}
+          ${totalLine('Payé', frMoney(opts.paid), '#047857')}
+          ${totalLine('Reste dû', frMoney(opts.rest), opts.rest > 0 ? '#dc2626' : '#15803d')}
+        </div>`)}
+
+      ${part('3', 'Règlements', '#047857', `
+        ${paymentRows ? `<table>
+          <thead><tr><th>Mode / Compte</th><th>Référence</th><th class="r">Montant</th></tr></thead>
+          <tbody>${paymentRows}
+            <tr class="total"><td>TOTAL RÉGLÉ</td><td></td><td class="r">${frMoney(opts.paid)} DA</td></tr>
+          </tbody></table>`
+        : `<div class="grid">
+             <div class="box"><p class="l">Total facture</p><p class="v">${frMoney(opts.total)} DA</p></div>
+             <div class="box"><p class="l">Payé</p><p class="v" style="color:#047857">${frMoney(opts.paid)} DA</p></div>
+             <div class="box"><p class="l">Reste dû</p><p class="v" style="color:${opts.rest > 0 ? '#dc2626' : '#15803d'}">${frMoney(opts.rest)} DA</p></div>
+           </div>`}
+        ${opts.notes ? `<div class="note"><p class="l">Observations</p><p class="v">${esc(opts.notes)}</p></div>` : ''}`)}
+
+      <div class="footer">
+        <div class="meta">
+          <span>${opts.createdAt ? `Créée le ${esc(frMoment(opts.createdAt))} &nbsp;·&nbsp; ` : ''}Imprimée le ${esc(printedLabel)}</span>
+          <span>${esc(stationName)} — ${esc(title)} ${esc(opts.ref)}</span>
+        </div>
+        <div class="sign">
+          <div><p>Signature Fournisseur :</p><div class="line"></div></div>
+          <div><p>Cachet &amp; Signature Station :</p><div class="line"></div></div>
+        </div>
+      </div>
+      <p class="thanks">${esc(opts.footerNote || `${stationName} — Document généré automatiquement.`)}</p>
+
+    </div><script>window.onload=()=>window.print()</script></body></html>`);
+  win.document.close();
+}
+
 // ─── Payment receipt (reçu de règlement) ────────────────────────────────────────
 /**
  * Receipt handed to a client (or kept by the station) when a debt instalment is

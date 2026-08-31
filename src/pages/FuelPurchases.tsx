@@ -34,7 +34,7 @@ import {
   Table, EmptyState, SearchInput, RowActions, ActionBtn, FormSection, StaticField, ViewToggle,
   money, formatDate, PeriodFilter, Period, inPeriod,
 } from '../components/biz/Kit';
-import { printInvoice, stationFromSettings } from './modules/_shared';
+import { printPurchaseInvoice, stationFromSettings } from './modules/_shared';
 import { appointmentOf, apptTone, apptLabel } from '../lib/paymentAppointments';
 import {
   deleteFuelPurchase, tankDeltasBetween, tankDeltasOf, describeTankDeltas, litersOf,
@@ -149,12 +149,12 @@ export default function FuelPurchases() {
 
   const doPrint = (p: Purchase) => {
     const supplier = suppliers.find(s => s.id === p.supplierId);
-    printInvoice({
-      title: 'Achat carburant',
+    printPurchaseInvoice({
+      title: 'Facture d’achat carburant',
       ref: p.invoiceNumber || p.blNumber || p.id.slice(0, 8),
       date: p.date,
       station: stationFromSettings(settings),
-      party: { label: 'Fournisseur', name: supplier?.name || '—', phone: supplier?.phone, address: supplier?.address },
+      supplier: { name: supplier?.name || '—', phone: supplier?.phone, address: supplier?.address },
       info: [
         { label: 'N° facture', value: p.invoiceNumber || '' },
         { label: 'N° bon de livraison', value: p.blNumber || '' },

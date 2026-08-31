@@ -21,7 +21,7 @@ import {
   RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Select, Switch, FormSection,
   StaticField, money, formatDate,
 } from '@/src/components/biz/Kit';
-import { ProductModal, ContactModal, PayDebtModal, printInvoice, productMatches } from './_shared';
+import { ProductModal, ContactModal, PayDebtModal, printPurchaseInvoice, productMatches, stationFromSettings } from './_shared';
 
 export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
@@ -80,12 +80,25 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
    * le tableau et la fiche de l'achat appellent tous cette fonction, sinon la
    * mise en page finirait par diverger d'un bouton a l'autre.
    */
-  const printPurchase = (p: BizPurchase) => printInvoice({
-    title: 'Facture d\'achat', ref: p.ref, date: p.date, store: settings?.stationName,
-    party: { label: 'Fournisseur', name: p.supplierName },
-    items: p.items.map(i => ({ name: i.productName, qty: i.qty, unitPrice: i.unitPrice, total: i.qty * i.unitPrice })),
-    total: p.total, paid: p.paid, rest: p.rest,
-  });
+  const printPurchase = (p: BizPurchase) => {
+    const sup = suppliers.find(s => s.id === p.supplierId);
+    printPurchaseInvoice({
+      title: "Facture d'achat",
+      ref: p.ref,
+      date: p.date,
+      // L'horodatage de saisie de l'achat : le gabarit y ajoute l'heure
+      // d'impression, les deux ne disent pas la même chose.
+      createdAt: p.createdAt,
+      createdBy: p.createdBy,
+      station: stationFromSettings(settings),
+      supplier: { name: p.supplierName, phone: sup?.phone, address: sup?.address },
+      info: [{ label: 'Activité', value: cfg.label }],
+      items: p.items.map(i => ({
+        name: i.productName, qty: i.qty, unitPrice: i.unitPrice, total: i.qty * i.unitPrice,
+      })),
+      total: p.total, paid: p.paid, rest: p.rest,
+    });
+  };
 
   const onPay = (amount: number) => {
     if (!paying) return;
