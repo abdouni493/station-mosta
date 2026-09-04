@@ -23,6 +23,7 @@ import {
   ArrowRight,
   CreditCard,
   MessageCircle,
+  QrCode,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, litersFromDegrees } from "@/src/lib/utils";
@@ -37,6 +38,7 @@ import {
 import { useAuth } from "../hooks/useAuth";
 import { useNavigate } from "react-router-dom";
 import WhatsAppSettingsPanel from "../components/WhatsAppSettingsPanel";
+import QrCodePanel from "../components/QrCodePanel";
 
 const Settings = () => {
   const { t, i18n } = useTranslation();
@@ -473,6 +475,7 @@ const Settings = () => {
     { id: "appearance", label: "Apparence & Langue", icon: Palette },
     { id: "tpe", label: "Caisse TPE", icon: CreditCard },
     { id: "whatsapp", label: "WhatsApp", icon: MessageCircle },
+    { id: "qrcode", label: "QR Code", icon: QrCode },
     { id: "backup", label: "Sauvegarde & Système", icon: Database },
   ];
 
@@ -1212,6 +1215,16 @@ const Settings = () => {
                 {activeSection === "whatsapp" && (
                   <motion.div key="whatsapp" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
                     <WhatsAppSettingsPanel />
+                  </motion.div>
+                )}
+
+                {/* ── QR CODE ──
+                    Une adresse en carré noir et blanc, calculée sur le poste
+                    (`src/lib/qrcode.ts`, aucun appel réseau), puis téléchargée
+                    en PNG ou en SVG. */}
+                {activeSection === "qrcode" && (
+                  <motion.div key="qrcode" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                    <QrCodePanel />
                   </motion.div>
                 )}
 
