@@ -15,11 +15,13 @@
  *    avec exactement le même formulaire.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Car, Wrench, Droplets, Plus, Search, X, User, Wallet, Printer,
-  Eye, Edit2, Trash2, Clock, Package, CheckCircle2, Hourglass, Layers, Percent, Tag,
+  Car, Wrench, Droplets, Plus, Minus, Search, X, User, Users, Wallet, Printer,
+  Eye, Edit2, Trash2, Clock, Package, PackageSearch, CheckCircle2, Hourglass, Layers,
+  Percent, Tag, ScanLine, AlertTriangle, Banknote,
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
 import {
@@ -36,11 +38,38 @@ import {
 } from '@/src/components/biz/Kit';
 import { ContactModal, PayDebtModal, PayDebtMeta, withPayment, seedPayments, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
 import { ClientCarPicker } from './ClientCarPicker';
+import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 
-const KIND_META: Record<BizRepKind, { label: string; icon: React.ElementType }> = {
-  reparation: { label: 'Vidange', icon: Wrench },
-  lavage: { label: 'Lavage', icon: Droplets },
-  mixte: { label: 'Lavage + Vidange', icon: Layers },
+/**
+ * Chaque nature d'intervention porte SA couleur, et c'est la même partout :
+ * le bouton qui la crée, la ligne de prestation, le bandeau du formulaire et
+ * la pastille de la liste. Un lavage se lit en cyan, une vidange en violet,
+ * les deux réunis aux couleurs de la station.
+ */
+const KIND_META: Record<BizRepKind, {
+  label: string; icon: React.ElementType;
+  /** Dégradé plein — fonds de bouton et d'en-tête. */
+  grad: string;
+  /** Ombre portée assortie au dégradé. */
+  shadow: string;
+  /** Fond tendre et bordure, pour une carte de prestation. */
+  soft: string; border: string; text: string;
+}> = {
+  reparation: {
+    label: 'Vidange', icon: Wrench,
+    grad: 'linear-gradient(135deg,#6d28d9,#a78bfa)', shadow: '0 8px 20px rgba(109,40,217,0.30)',
+    soft: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-700',
+  },
+  lavage: {
+    label: 'Lavage', icon: Droplets,
+    grad: 'linear-gradient(135deg,#0e7490,#22d3ee)', shadow: '0 8px 20px rgba(14,116,144,0.30)',
+    soft: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700',
+  },
+  mixte: {
+    label: 'Lavage + Vidange', icon: Layers,
+    grad: 'linear-gradient(135deg,#003087,#0044bb)', shadow: '0 8px 20px rgba(0,48,135,0.32)',
+    soft: 'bg-blue-50', border: 'border-blue-200', text: 'text-[#002d87]',
+  },
 };
 
 /** Kind of the whole intervention, derived from what it actually contains. */
@@ -79,7 +108,13 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [creating, setCreating] = useState<null | { kind: BizRepKind; pending: boolean }>(null);
   const [viewing, setViewing] = useState<BizReparation | null>(null);
-  const [editing, setEditing] = useState<BizReparation | null>(null);
+  /**
+   * Le formulaire d'édition, et POURQUOI il s'ouvre : « Modifier » revient sur
+   * une intervention telle qu'elle est, « Finaliser » ouvre la MÊME fiche déjà
+   * basculée en finalisé — sans quoi le bouton vert de la liste rouvrait une
+   * intervention en attente qui se réenregistrait… en attente.
+   */
+  const [editing, setEditing] = useState<{ rep: BizReparation; finalize?: boolean } | null>(null);
   const [paying, setPaying] = useState<BizReparation | null>(null);
   const [toDelete, setToDelete] = useState<BizReparation | null>(null);
   const [askPrint, setAskPrint] = useState<BizReparation | null>(null);
@@ -266,11 +301,12 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                 <td className="table-cell text-right">
                   <RowActions>
                     {r.status === 'pending' && perm.modifier && (
-                      <ActionBtn icon={CheckCircle2} tone="green" title="Finaliser l'intervention" onClick={() => setEditing(r)} />
+                      <ActionBtn icon={CheckCircle2} tone="green" title="Finaliser l'intervention"
+                        onClick={() => setEditing({ rep: r, finalize: true })} />
                     )}
                     <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
                     <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(r)} />
-                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(r)} />}
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing({ rep: r })} />}
                     {r.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
                     {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
                   </RowActions>
@@ -325,7 +361,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                 <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-slate-100">
                   {r.status === 'pending' && perm.modifier
                     ? (
-                      <button onClick={() => setEditing(r)}
+                      <button onClick={() => setEditing({ rep: r, finalize: true })}
                         className="h-9 px-3 rounded-xl font-black text-xs text-white flex items-center gap-1.5 transition-transform active:scale-[0.98]"
                         style={{ background: 'linear-gradient(135deg, #059669, #10b981)', boxShadow: '0 4px 12px rgba(16,185,129,0.3)' }}>
                         <CheckCircle2 className="w-4 h-4" /> Finaliser
@@ -335,7 +371,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                   <RowActions>
                     <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
                     <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(r)} />
-                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing(r)} />}
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing({ rep: r })} />}
                     {r.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
                     {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
                   </RowActions>
@@ -358,8 +394,9 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
       {editing && (
         <ReparationForm
           moduleKey={moduleKey}
-          kind={editing.kind}
-          initial={editing}
+          kind={editing.rep.kind}
+          initial={editing.rep}
+          finalizing={editing.finalize}
           onClose={() => setEditing(null)}
           onSaved={r => { setEditing(null); if (r.status === 'finalized') setAskPrint(r); }}
         />
@@ -393,32 +430,38 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 function NewInterventionActions({
   onPick,
 }: { onPick: (v: { kind: BizRepKind; pending: boolean }) => void }) {
-  const TYPES: { kind: BizRepKind; label: string; short: string; icon: React.ElementType; cls: string }[] = [
-    { kind: 'lavage', label: 'Lavage', short: 'Lavage', icon: Droplets, cls: 'text-cyan-700 hover:bg-cyan-600 hover:text-white' },
-    { kind: 'reparation', label: 'Vidange', short: 'Vidange', icon: Wrench, cls: 'text-violet-700 hover:bg-violet-700 hover:text-white' },
-    { kind: 'mixte', label: 'Lavage + Vidange', short: 'Les deux', icon: Layers, cls: 'bg-[#003087] text-white hover:bg-[#001f5c]' },
+  const TYPES: { kind: BizRepKind; short: string }[] = [
+    { kind: 'lavage', short: 'Lavage' },
+    { kind: 'reparation', short: 'Vidange' },
+    { kind: 'mixte', short: 'Les deux' },
   ];
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="flex items-center gap-1 rounded-2xl bg-white border border-slate-200 p-1 shadow-sm">
+      <div className="flex items-center gap-1.5 rounded-2xl bg-white border border-slate-200 p-1.5 shadow-sm">
         <span className="hidden md:block pl-2 pr-1 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">
           Nouvelle
         </span>
         {TYPES.map(t => {
-          const Icon = t.icon;
+          const m = KIND_META[t.kind];
+          const Icon = m.icon;
           return (
             <button key={t.kind} onClick={() => onPick({ kind: t.kind, pending: false })}
-              title={`Nouvelle intervention — ${t.label}`}
-              className={`px-3 h-9 rounded-xl text-xs font-black flex items-center gap-1.5 transition-colors ${t.cls}`}>
+              title={`Nouvelle intervention — ${m.label}`}
+              style={{ background: m.grad, boxShadow: m.shadow }}
+              className="px-3.5 h-10 rounded-xl text-xs font-black text-white flex items-center gap-1.5
+                         transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 active:scale-95">
               <Icon className="w-4 h-4" />
-              <span className="hidden sm:inline">{t.label}</span>
+              <span className="hidden sm:inline">{m.label}</span>
               <span className="sm:hidden">{t.short}</span>
             </button>
           );
         })}
       </div>
-      <button className="btn-outline !py-2 !h-11" onClick={() => onPick({ kind: 'lavage', pending: true })}
-        title="Enregistrer une intervention à finaliser plus tard">
+      {/* Le véhicule est pris en charge, le travail se facturera plus tard. */}
+      <button onClick={() => onPick({ kind: 'lavage', pending: true })}
+        title="Enregistrer une intervention à finaliser plus tard"
+        className="h-[54px] px-4 rounded-2xl text-xs font-black text-amber-700 bg-amber-50 border-2 border-amber-200
+                   flex items-center gap-2 transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-100 active:scale-95">
         <Hourglass className="w-4 h-4" /> En attente
       </button>
     </div>
@@ -525,12 +568,19 @@ const keptLine = (l: LineDraft) =>
  * déduite du sous-total.
  */
 function ReparationForm({
-  moduleKey, kind, initial, asPending, onClose, onSaved,
+  moduleKey, kind, initial, asPending, finalizing, onClose, onSaved,
 }: {
   moduleKey: ModuleKey;
   kind: BizRepKind;
   initial?: BizReparation;
   asPending?: boolean;
+  /**
+   * On vient FINALISER une intervention en attente : le statut est déjà basculé
+   * en « finalisé » à l'ouverture, et le bouton d'enregistrement le dit. Sans
+   * cela, finaliser demandait un aller-retour par le bouton « Passer en
+   * finalisé » — et une fiche réenregistrée sans y penser restait en attente.
+   */
+  finalizing?: boolean;
   onClose: () => void;
   onSaved: (r: BizReparation) => void;
 }) {
@@ -569,7 +619,15 @@ function ReparationForm({
   const [used, setUsed] = useState<BizLineItem[]>(initial?.usedProducts || []);
   const [paidStr, setPaidStr] = useState<string>(initial ? String(initial.paid) : '');
   const [pQuery, setPQuery] = useState('');
-  const [pending, setPending] = useState<boolean>(initial ? initial.status === 'pending' : !!asPending);
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState('');
+  /** Le texte tapé dans un champ de quantité, tant qu'il n'est pas validé. */
+  const [qtyText, setQtyText] = useState<Record<string, string>>({});
+  /** Le produit que l'on vient de toucher — sa fiche s'allume une seconde. */
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const flashTimer = useRef<number | null>(null);
+  const [pending, setPending] = useState<boolean>(
+    initial ? (finalizing ? false : initial.status === 'pending') : !!asPending);
   const [discountMode, setDiscountMode] = useState<'none' | BizDiscountType>(
     initial?.discountAmount ? (initial.discountType || 'amount') : 'none');
   const [discountStr, setDiscountStr] = useState<string>(
@@ -608,18 +666,91 @@ function ReparationForm({
       ? { ...l, workerIds: l.workerIds.includes(workerId) ? l.workerIds.filter(w => w !== workerId) : [...l.workerIds, workerId] }
       : l));
 
-  // ── Products — search by name OR barcode ───────────────────────────────────
-  // Products out of stock stay searchable: an intervention may consume them and
-  // drive the stock negative (rattrapé au prochain achat), like the POS comptoir.
+  // ── Produits utilisés — recherche par nom OU code-barres ──────────────────
+  /**
+   * ─── POURQUOI LE PRODUIT CHOISI RESTE SOUS LES YEUX ────────────────────────
+   *
+   * La recherche s'effaçait dès qu'on cliquait un produit : la liste des
+   * résultats disparaissait, et rien ne disait ce qui venait d'être ajouté.
+   * Sur une vidange — huile, filtre à huile, filtre à air, joint — on perdait
+   * le fil à chaque article.
+   *
+   * La recherche est donc CONSERVÉE. Le produit déjà pris se reconnaît dans les
+   * résultats (pastille verte, quantité en cours), sa fiche s'allume un instant
+   * en bas, et un second clic ajoute simplement une unité de plus au lieu de ne
+   * rien faire.
+   *
+   * Les produits en rupture restent proposés : une intervention peut les
+   * consommer et faire passer le stock en négatif (rattrapé au prochain achat),
+   * exactement comme au point de vente. Le formulaire le DIT — « stock après »
+   * vire au rouge — au lieu de l'interdire.
+   */
   const productMatches = useMemo(() => {
     if (!pQuery.trim()) return [];
     return products
-      .filter(p => matchesSearch(pQuery, p.name, p.barcode))
-      .slice(0, 8);
+      .filter((p: BizProduct) => matchesSearch(pQuery, p.name, p.barcode))
+      .slice(0, 10);
   }, [products, pQuery]);
 
+  /** Le stock restant d'un produit, dit avec la couleur qui va avec. */
+  const stockTone = (q: number, min: number) => (
+    q <= 0 ? 'bg-red-100 text-red-600 border-red-200'
+      : q <= (min || 0) ? 'bg-amber-100 text-amber-700 border-amber-200'
+        : 'bg-emerald-100 text-emerald-700 border-emerald-200');
+
+  /** Met une fiche produit en évidence le temps de la retrouver des yeux. */
+  const flash = (id: string) => {
+    setFlashId(id);
+    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlashId(null), 1500);
+  };
+  useEffect(() => () => { if (flashTimer.current) window.clearTimeout(flashTimer.current); }, []);
+
+  /** Quantité d'une ligne, dans l'unité que l'utilisateur voit. */
+  const shownQty = (u: BizLineItem) => (u.detailQty !== undefined ? (u.detailQty || 0) : u.qty);
+
+  /** Quantité edit — in detail units when the product is sold au détail. */
+  const setQty = (productId: string, value: number) => {
+    const p = products.find((x: BizProduct) => x.id === productId);
+    setUsed(prev => prev.map(u => {
+      if (u.productId !== productId) return u;
+      if (u.detailQty !== undefined && p?.detailCapacity) {
+        const detailQty = Math.max(0, value);
+        return { ...u, detailQty, qty: detailQty / p.detailCapacity, total: detailQty * u.unitPrice };
+      }
+      const qty = Math.max(0, value);
+      return { ...u, qty, total: qty * u.unitPrice };
+    }));
+  };
+
+  /**
+   * Le champ garde SON texte le temps de la frappe : sans cela, l'effacer
+   * écrivait 0 et il fallait tout resélectionner pour taper « 10 ».
+   */
+  const typeQty = (id: string, text: string) => {
+    setQtyText(prev => ({ ...prev, [id]: text }));
+    setQty(id, text.trim() === '' ? 0 : Number(text) || 0);
+  };
+  /** À la sortie du champ, l'affichage revient sur la quantité retenue. */
+  const commitQty = (id: string) => setQtyText(prev => {
+    const next = { ...prev }; delete next[id]; return next;
+  });
+  /** Les boutons − / + : une unité de détail, ou une unité entière. */
+  const stepQty = (id: string, delta: number) => {
+    const u = used.find(x => x.productId === id);
+    if (!u) return;
+    setQty(id, Math.max(0, Math.round((shownQty(u) + delta) * 100) / 100));
+    commitQty(id);
+  };
+
   const addUsed = (p: BizProduct) => {
-    if (used.some(u => u.productId === p.id)) { setPQuery(''); return; }
+    if (used.some(u => u.productId === p.id)) {
+      // Déjà sur l'intervention : on en ajoute une de plus, on ne l'ignore pas.
+      stepQty(p.id, 1);
+      flash(p.id);
+      toast.success(`${p.name} — quantité +1`);
+      return;
+    }
     if (p.sellByDetail && (p.detailCapacity || 0) > 0) {
       const unitPrice = detailPrice(p);
       setUsed(prev => [...prev, {
@@ -631,23 +762,23 @@ function ReparationForm({
     } else {
       setUsed(prev => [...prev, { productId: p.id, productName: p.name, qty: 1, unitPrice: p.salePrice, unitCost: p.purchasePrice || 0, total: p.salePrice }]);
     }
-    setPQuery('');
+    flash(p.id);
   };
 
-  /** Quantity edit — in detail units when the product is sold au détail. */
-  const setQty = (productId: string, value: number) => {
-    const p = products.find(x => x.id === productId);
-    setUsed(prev => prev.map(u => {
-      if (u.productId !== productId) return u;
-      if (u.detailQty !== undefined && p?.detailCapacity) {
-        const detailQty = Math.max(0, value);
-        return { ...u, detailQty, qty: detailQty / p.detailCapacity, total: detailQty * u.unitPrice };
-      }
-      const qty = Math.max(0, value);
-      return { ...u, qty, total: qty * u.unitPrice };
-    }));
+  /**
+   * Un code lu à la caméra (ou par une douchette) tombe directement dans la
+   * liste des produits utilisés. Un code inconnu le dit, et la caméra continue.
+   */
+  const scanToUsed = (code: string): boolean => {
+    const clean = code.trim();
+    const found = products.find((p: BizProduct) => (p.barcode || '').trim() === clean);
+    if (!found) { setScanNote(`Code ${clean} inconnu — aucun produit ne le porte.`); return false; }
+    addUsed(found);
+    setScanNote(`${found.name} ajouté aux produits utilisés`);
+    return true;
   };
-  const rmUsed = (id: string) => setUsed(prev => prev.filter(u => u.productId !== id));
+
+  const rmUsed = (id: string) => { commitQty(id); setUsed(prev => prev.filter(u => u.productId !== id)); };
 
   // ── Save ───────────────────────────────────────────────────────────────────
   const save = () => {
@@ -748,197 +879,411 @@ function ReparationForm({
   return (
     <>
       <Modal open onClose={onClose} icon={KIND_META[repKind].icon} size="xl" title={title}
-        subtitle="Plusieurs prestations par intervention • remise • produits du stock"
+        subtitle={wasPending
+          ? 'Vérifiez le travail réalisé, puis finalisez — le stock sort à cet instant'
+          : 'Plusieurs prestations par intervention • remise • produits du stock'}
         footer={<>
           <button className="btn-ghost" onClick={onClose}>Annuler</button>
           {pending && (
-            <button className="btn-secondary" onClick={() => { setPending(false); }}>
+            <button className="btn-secondary" onClick={() => setPending(false)}>
               <CheckCircle2 className="w-4 h-4" /> Passer en finalisé
             </button>
           )}
-          <button className="btn-primary" onClick={save}>
-            {pending ? 'Enregistrer en attente' : (isEdit && wasPending ? 'Finaliser' : 'Enregistrer')}
+          <button onClick={save}
+            className="px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider text-white
+                       flex items-center gap-2 transition-all duration-200 hover:-translate-y-0.5
+                       hover:brightness-110 active:scale-[0.97]"
+            style={{
+              background: pending ? 'linear-gradient(135deg,#b45309,#f59e0b)' : 'linear-gradient(135deg,#047857,#10b981)',
+              boxShadow: pending ? '0 8px 20px rgba(245,158,11,0.35)' : '0 8px 20px rgba(16,185,129,0.35)',
+            }}>
+            {pending ? <Hourglass className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+            {pending ? 'Enregistrer en attente' : (isEdit && wasPending ? "Finaliser l'intervention" : 'Enregistrer')}
           </button>
         </>}>
-        <div className="space-y-5">
-          {/* Status + resulting kind */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Statut">
-              <div className="flex gap-2">
+        <div className="space-y-4">
+
+          {/* ── Finalisation d'une intervention prise en charge ───────────────
+              Un véhicule laissé le matin revient ici l'après-midi. On rappelle
+              en tête ce que l'enregistrement va déclencher — la sortie du stock,
+              qui n'a PAS eu lieu à la prise en charge. */}
+          {wasPending && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+              className="rounded-2xl p-4 flex flex-wrap items-center gap-3 text-white"
+              style={{ background: 'linear-gradient(135deg,#047857,#10b981)', boxShadow: '0 10px 28px rgba(16,185,129,0.32)' }}>
+              <span className="w-11 h-11 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-6 h-6" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="font-black text-[15px]">Finalisation de {initial!.ref}</p>
+                <p className="text-[12px] text-emerald-50 leading-relaxed">
+                  Véhicule pris en charge le {formatDate(initial!.date)}
+                  {initial!.clientName ? ` — ${initial!.clientName}` : ''}. Complétez les prestations et les
+                  produits, puis enregistrez : les produits utilisés sortent du stock à ce moment-là.
+                </p>
+              </div>
+            </motion.div>
+          )}
+
+          {/* ── Statut + nature déduite ─────────────────────────────────────── */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Statut de l'intervention">
+              <div className="grid grid-cols-2 gap-2">
                 <button onClick={() => setPending(true)}
-                  className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 ${pending ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                  <Hourglass className="w-4 h-4" /> En attente
+                  className={`h-[52px] rounded-2xl text-sm font-black flex items-center justify-center gap-2
+                              transition-all duration-200 active:scale-[0.97]
+                              ${pending ? 'text-white -translate-y-0.5' : 'bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600'}`}
+                  style={pending ? { background: 'linear-gradient(135deg,#b45309,#f59e0b)', boxShadow: '0 8px 20px rgba(245,158,11,0.35)' } : undefined}>
+                  <Hourglass className={`w-4 h-4 ${pending ? 'animate-pulse' : ''}`} /> En attente
                 </button>
                 <button onClick={() => setPending(false)}
-                  className={`flex-1 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-1.5 ${!pending ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  className={`h-[52px] rounded-2xl text-sm font-black flex items-center justify-center gap-2
+                              transition-all duration-200 active:scale-[0.97]
+                              ${!pending ? 'text-white -translate-y-0.5' : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`}
+                  style={!pending ? { background: 'linear-gradient(135deg,#047857,#10b981)', boxShadow: '0 8px 20px rgba(16,185,129,0.35)' } : undefined}>
                   <CheckCircle2 className="w-4 h-4" /> Finalisé
                 </button>
               </div>
             </Field>
             <Field label="Type d'intervention" hint="Déduit automatiquement des prestations ajoutées.">
-              <div className="h-[46px] rounded-xl bg-slate-100 flex items-center gap-2 px-4 font-bold text-sm text-[#002d87]">
-                {React.createElement(KIND_META[repKind].icon, { className: 'w-4 h-4' })}
+              <motion.div key={repKind}
+                initial={{ opacity: 0.5, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                className="h-[52px] rounded-2xl flex items-center gap-2.5 px-4 font-black text-sm text-white"
+                style={{ background: KIND_META[repKind].grad, boxShadow: KIND_META[repKind].shadow }}>
+                {React.createElement(KIND_META[repKind].icon, { className: 'w-5 h-5' })}
                 {KIND_META[repKind].label}
-                <span className="ml-auto text-[11px] font-semibold text-slate-400">
+                <span className="ml-auto text-[11px] font-black bg-white/20 rounded-lg px-2 py-1 tabular-nums">
                   {lines.length} prestation{lines.length > 1 ? 's' : ''}
                 </span>
-              </div>
+              </motion.div>
             </Field>
           </div>
 
-          {/* ── Prestations ─────────────────────────────────────────────────── */}
-          <div className="rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200">
-              <div>
-                <h4 className="text-[11px] font-black uppercase tracking-widest text-[#002d87] flex items-center gap-1.5">
-                  <Layers className="w-3.5 h-3.5" /> Prestations
-                </h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Ajoutez un lavage et/ou une vidange — chacun avec son montant et ses employés.
-                </p>
-              </div>
-              <div className="flex gap-2 shrink-0">
-                <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine('lavage')}>
-                  <Droplets className="w-3.5 h-3.5" /> + Lavage
-                </button>
-                <button className="btn-outline !py-1.5 !px-3 text-xs" onClick={() => addLine('reparation')}>
-                  <Wrench className="w-3.5 h-3.5" /> + Vidange
-                </button>
-              </div>
-            </div>
-
-            <div className="p-4 space-y-3">
+          {/* ── 1 · Prestations ─────────────────────────────────────────────── */}
+          <Block step={1} icon={Layers} title="Prestations réalisées"
+            hint="Un lavage, une vidange, ou les deux — chacun avec son montant et ses employés."
+            grad="linear-gradient(135deg,#003087,#0044bb)" border="border-blue-200" tint="bg-slate-50/60"
+            action={
+              <div className="flex gap-2">
+                {(['lavage', 'reparation'] as const).map(k => {
+                  const m = KIND_META[k]; const Icon = m.icon;
+                  return (
+                    <button key={k} onClick={() => addLine(k)}
+                      className="h-9 px-3 rounded-xl text-[11px] font-black text-white flex items-center gap-1.5
+                                 transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 active:scale-95"
+                      style={{ background: m.grad, boxShadow: m.shadow }}>
+                      <Plus className="w-3.5 h-3.5" /><Icon className="w-3.5 h-3.5" /> {m.label}
+                    </button>
+                  );
+                })}
+              </div>}>
+            <div className="space-y-2.5">
               {lines.length === 0 && (
-                <p className="text-sm text-slate-400 italic text-center py-3">
-                  Aucune prestation — l'intervention ne facturera que les produits utilisés.
+                <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white px-4 py-6 text-center">
+                  <Layers className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  <p className="text-sm font-bold text-slate-500">Aucune prestation</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    L'intervention ne facturera que les produits utilisés.
+                  </p>
+                </div>
+              )}
+              <AnimatePresence initial={false}>
+                {lines.map((l, i) => {
+                  const m = KIND_META[l.kind];
+                  const pool = workersForKind(workers, l.kind);
+                  return (
+                    <motion.div key={l.id} layout
+                      initial={{ opacity: 0, y: -10, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, x: -20, scale: 0.96 }}
+                      transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                      className={`rounded-2xl border-2 ${m.border} bg-white overflow-hidden shadow-sm`}>
+                      {/* En-tête de la prestation — sa couleur dit sa nature. */}
+                      <div className={`flex flex-wrap items-center gap-2 px-3 py-2.5 ${m.soft} border-b ${m.border}`}>
+                        <span className="w-7 h-7 rounded-xl text-white flex items-center justify-center text-[11px] font-black shrink-0"
+                          style={{ background: m.grad }}>
+                          {i + 1}
+                        </span>
+                        <div className="flex gap-1.5">
+                          {(['lavage', 'reparation'] as const).map(k => {
+                            const km = KIND_META[k]; const Icon = km.icon; const on = l.kind === k;
+                            return (
+                              <button key={k} onClick={() => setLineKind(l.id, k)}
+                                className={`px-3 py-1.5 rounded-lg text-[11px] font-black flex items-center gap-1.5
+                                            transition-all duration-200 active:scale-95
+                                            ${on ? 'text-white' : 'bg-white text-slate-400 border border-slate-200 hover:text-slate-600'}`}
+                                style={on ? { background: km.grad, boxShadow: km.shadow } : undefined}>
+                                <Icon className="w-3.5 h-3.5" /> {km.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <span className={`ml-auto text-sm font-black tabular-nums ${m.text}`}>
+                          {money(Number(l.amountStr) || 0)}
+                        </span>
+                        <button onClick={() => rmLine(l.id)} title="Retirer la prestation"
+                          className="text-slate-300 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors shrink-0">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="p-3 space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <div className="sm:col-span-2">
+                            <Input placeholder={l.kind === 'lavage' ? 'Ex: Lavage complet intérieur/extérieur' : 'Ex: Vidange moteur + filtre à huile'}
+                              value={l.label} onChange={e => patchLine(l.id, { label: e.target.value })} />
+                          </div>
+                          <Input type="number" placeholder="Montant (DA)" value={l.amountStr}
+                            onChange={e => patchLine(l.id, { amountStr: e.target.value, amount: Number(e.target.value) || 0 })} />
+                        </div>
+
+                        <div>
+                          <p className="text-[10px] uppercase font-black tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5" /> Employé(s) de cette prestation
+                          </p>
+                          {pool.length === 0 ? (
+                            <p className="text-xs text-slate-400 italic">
+                              Aucun employé « {l.kind === 'lavage' ? 'lavage' : 'vidange'} » enregistré.
+                            </p>
+                          ) : (
+                            <div className="flex flex-wrap gap-1.5">
+                              {pool.map((w: BizWorker) => {
+                                const on = l.workerIds.includes(w.id);
+                                return (
+                                  <button key={w.id} onClick={() => toggleLineWorker(l.id, w.id)}
+                                    className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1
+                                                transition-all duration-200 active:scale-95
+                                                ${on ? 'text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                    style={on ? { background: 'linear-gradient(135deg,#047857,#10b981)', boxShadow: '0 4px 12px rgba(16,185,129,0.3)' } : undefined}>
+                                    {on && <CheckCircle2 className="w-3 h-3" />} {w.name}
+                                    {w.salaryType === 'pourcentage' && <span className="opacity-70">· {w.percentage || 0}%</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+
+              {allWorkerIds.length > 0 && (
+                <p className="text-[11px] text-slate-500 flex items-center gap-1.5 px-1">
+                  <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <b>{allWorkerIds.length}</b> employé(s) sur cette intervention :{' '}
+                  {allWorkerIds.map(id => workers.find((w: BizWorker) => w.id === id)?.name).filter(Boolean).join(', ')}
                 </p>
               )}
-              {lines.map((l, i) => {
-                const pool = workersForKind(workers, l.kind);
-                return (
-                  <div key={l.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="w-6 h-6 rounded-lg bg-[#001f5c] text-[#FFB800] flex items-center justify-center text-[11px] font-black shrink-0">
-                        {i + 1}
-                      </span>
-                      <div className="flex gap-1.5">
-                        {(['lavage', 'reparation'] as const).map(k => {
-                          const Icon = KIND_META[k].icon;
-                          return (
-                            <button key={k} onClick={() => setLineKind(l.id, k)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 ${l.kind === k ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500'}`}>
-                              <Icon className="w-3.5 h-3.5" /> {KIND_META[k].label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <span className="ml-auto text-xs font-black tabular-nums text-[#002d87]">
-                        {money(Number(l.amountStr) || 0)}
-                      </span>
-                      <button onClick={() => rmLine(l.id)} title="Retirer la prestation"
-                        className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg shrink-0">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+            </div>
+          </Block>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <div className="sm:col-span-2">
-                        <Input placeholder={l.kind === 'lavage' ? 'Ex: Lavage complet intérieur/extérieur' : 'Ex: Vidange moteur + filtre à huile'}
-                          value={l.label} onChange={e => patchLine(l.id, { label: e.target.value })} />
-                      </div>
-                      <Input type="number" placeholder="Montant (DA)" value={l.amountStr}
-                        onChange={e => patchLine(l.id, { amountStr: e.target.value, amount: Number(e.target.value) || 0 })} />
-                    </div>
+          {/* ── 2 · Produits utilisés ───────────────────────────────────────── */}
+          <Block step={2} icon={PackageSearch} title="Produits utilisés"
+            hint="Cherchez par nom ou code-barres — le produit choisi reste affiché, sa quantité se règle ici."
+            grad="linear-gradient(135deg,#047857,#10b981)" border="border-emerald-200" tint="bg-emerald-50/40"
+            action={
+              <div className="flex items-center gap-1.5">
+                <span className="h-8 px-2.5 rounded-xl bg-white/20 flex items-center text-[11px] font-black tabular-nums">
+                  {used.length} produit{used.length > 1 ? 's' : ''}
+                </span>
+                <span className="h-8 px-2.5 rounded-xl bg-white/20 flex items-center text-[11px] font-black tabular-nums">
+                  {money(productsTotal)}
+                </span>
+              </div>}>
+            <div className="space-y-3">
+              {/* Recherche + douchette + caméra */}
+              <div className="flex flex-wrap gap-2">
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search className="w-4 h-4 text-emerald-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input value={pQuery} onChange={e => setPQuery(e.target.value)}
+                    placeholder="Rechercher un produit par nom ou code-barres…"
+                    className="w-full rounded-xl border-2 border-emerald-200 bg-white py-3 pl-9 pr-9 text-sm font-semibold
+                               text-slate-800 outline-none transition-all placeholder:text-slate-400
+                               focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                    onKeyDown={e => {
+                      // Une douchette USB écrit ici puis envoie « Entrée » : seul un
+                      // code-barres EXACT ajoute le produit — valider une recherche
+                      // par nom prendrait le premier de la liste au hasard.
+                      if (e.key !== 'Enter') return;
+                      const code = pQuery.trim();
+                      const hit = products.find((x: BizProduct) => (x.barcode || '').trim() === code);
+                      if (!code || !hit) return;
+                      e.preventDefault();
+                      addUsed(hit);
+                      setPQuery('');
+                    }} />
+                  {pQuery && (
+                    <button onClick={() => setPQuery('')} title="Effacer la recherche"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-300 hover:text-red-500 transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <button onClick={() => { setScanNote(''); setScanning(true); }}
+                  title="Scanner un code-barres avec la caméra"
+                  className="h-[50px] px-4 rounded-xl text-xs font-black text-white flex items-center gap-2
+                             transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 active:scale-95"
+                  style={{ background: 'linear-gradient(135deg,#047857,#10b981)', boxShadow: '0 8px 20px rgba(16,185,129,0.32)' }}>
+                  <ScanLine className="w-4 h-4" /> Scanner
+                </button>
+              </div>
 
-                    <div>
-                      <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">
-                        Employé(s) de cette prestation
-                      </p>
-                      {pool.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">
-                          Aucun employé « {l.kind === 'lavage' ? 'lavage' : 'vidange'} » enregistré.
+              {/* Résultats — dans le fil de la page, jamais par-dessus la liste */}
+              <AnimatePresence initial={false}>
+                {!!pQuery.trim() && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                    className="overflow-hidden">
+                    <div className="rounded-2xl border-2 border-emerald-200 bg-white overflow-hidden shadow-sm">
+                      {productMatches.length === 0 ? (
+                        <p className="px-4 py-5 text-center text-sm font-semibold text-slate-400">
+                          Aucun produit ne correspond à « {pQuery} ».
                         </p>
                       ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {pool.map(w => {
-                            const on = l.workerIds.includes(w.id);
+                        <div className="max-h-64 overflow-y-auto custom-scrollbar divide-y divide-slate-100">
+                          {productMatches.map((p: BizProduct) => {
+                            const line = used.find(u => u.productId === p.id);
+                            const detail = !!(p.sellByDetail && p.detailCapacity);
                             return (
-                              <button key={w.id} onClick={() => toggleLineWorker(l.id, w.id)}
-                                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 ${on ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                                {on && <CheckCircle2 className="w-3 h-3" />} {w.name}
-                                {w.salaryType === 'pourcentage' && <span className="opacity-70">· {w.percentage || 0}%</span>}
+                              <button key={p.id} onClick={() => addUsed(p)}
+                                className={`w-full text-left px-3 py-2.5 flex items-center gap-3 transition-colors
+                                            ${line ? 'bg-emerald-50' : 'hover:bg-emerald-50/60'}`}>
+                                <span className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-white"
+                                  style={{ background: line ? 'linear-gradient(135deg,#047857,#10b981)' : 'linear-gradient(135deg,#64748b,#94a3b8)' }}>
+                                  {line ? <CheckCircle2 className="w-5 h-5" /> : <Package className="w-4 h-4" />}
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-sm font-black text-slate-800 truncate">{p.name}</span>
+                                  <span className="block text-[11px] text-slate-400 truncate">
+                                    {p.barcode ? `${p.barcode} • ` : ''}{p.categoryName || 'Sans catégorie'}
+                                    {detail ? ` • au détail (${p.detailCapacity} ${p.detailUnit || 'L'})` : ''}
+                                  </span>
+                                </span>
+                                <span className={`hidden sm:inline-flex text-[10px] font-black px-2 py-1 rounded-lg border tabular-nums shrink-0 ${stockTone(p.currentQty, p.minQty)}`}>
+                                  Stock {formatQty(p.currentQty)}
+                                </span>
+                                <span className="hidden md:block text-xs font-black tabular-nums text-slate-600 shrink-0">
+                                  {detail ? `${money(detailPrice(p))}/${p.detailUnit || 'L'}` : money(p.salePrice)}
+                                </span>
+                                <span className={`shrink-0 text-[10px] font-black px-2.5 py-1.5 rounded-lg tabular-nums
+                                                  ${line ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                  {line
+                                    ? `✓ ${formatQty(shownQty(line))} ${line.detailUnit || p.unit || 'u'}`
+                                    : '+ Ajouter'}
+                                </span>
                               </button>
                             );
                           })}
                         </div>
                       )}
                     </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Les produits RETENUS — nom en clair et quantité réglable */}
+              {used.length === 0 ? (
+                <div className="rounded-2xl border-2 border-dashed border-emerald-200 bg-white px-4 py-6 text-center">
+                  <Package className="w-8 h-8 mx-auto mb-2 text-emerald-300" />
+                  <p className="text-sm font-bold text-slate-500">Aucun produit sur cette intervention</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    L'huile, les filtres et le shampoing ajoutés ici sortent du stock à la finalisation.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <AnimatePresence initial={false}>
+                    {used.map((u, i) => {
+                      const p = products.find((x: BizProduct) => x.id === u.productId);
+                      const isDetail = u.detailQty !== undefined;
+                      const unitLabel = isDetail ? (u.detailUnit || 'L') : (p?.unit || 'u');
+                      const stockAfter = p ? p.currentQty - u.qty : null;
+                      const short = stockAfter !== null && stockAfter < 0;
+                      const lit = flashId === u.productId;
+                      return (
+                        <motion.div key={u.productId} layout
+                          initial={{ opacity: 0, y: -10, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, x: -20, scale: 0.96 }}
+                          transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                          className={`rounded-2xl border-2 p-3 bg-gradient-to-r from-emerald-50/80 to-white transition-shadow duration-300
+                                      ${lit ? 'border-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.18)]' : 'border-emerald-200 shadow-sm'}`}>
+                          <div className="flex items-start gap-3">
+                            <span className="w-8 h-8 rounded-xl text-white flex items-center justify-center text-[11px] font-black shrink-0"
+                              style={{ background: 'linear-gradient(135deg,#047857,#10b981)' }}>
+                              {i + 1}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              {/* Le NOM reste entier : c'est lui qu'on relit avant de valider. */}
+                              <p className="text-sm font-black text-slate-800 leading-snug break-words">{u.productName}</p>
+                              <p className="text-[11px] font-semibold text-slate-500 mt-0.5">
+                                {money(u.unitPrice)} / {unitLabel}
+                                {isDetail && p?.detailCapacity ? ` • bidon de ${p.detailCapacity} ${u.detailUnit || 'L'}` : ''}
+                              </p>
+                            </div>
+                            <button onClick={() => rmUsed(u.productId)} title="Retirer ce produit"
+                              className="text-slate-300 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors shrink-0">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                            {/* − quantité + : réglable au doigt comme au clavier */}
+                            <div className="flex items-center rounded-xl border-2 border-emerald-200 bg-white overflow-hidden">
+                              <button onClick={() => stepQty(u.productId, -1)} title="Une unité de moins"
+                                className="w-9 h-10 flex items-center justify-center text-emerald-700 hover:bg-emerald-50 active:scale-90 transition-all">
+                                <Minus className="w-4 h-4" />
+                              </button>
+                              <input type="number" step="0.01" min={0} inputMode="decimal"
+                                value={qtyText[u.productId] ?? String(shownQty(u))}
+                                onChange={e => typeQty(u.productId, e.target.value)}
+                                onBlur={() => commitQty(u.productId)}
+                                onFocus={e => e.currentTarget.select()}
+                                className="w-16 h-10 text-center text-sm font-black tabular-nums text-slate-800
+                                           border-x-2 border-emerald-100 outline-none focus:bg-emerald-50/60" />
+                              <span className="h-10 px-2 flex items-center text-[11px] font-black text-emerald-700 bg-emerald-50">
+                                {unitLabel}
+                              </span>
+                              <button onClick={() => stepQty(u.productId, 1)} title="Une unité de plus"
+                                className="w-9 h-10 flex items-center justify-center text-emerald-700 hover:bg-emerald-50 active:scale-90 transition-all">
+                                <Plus className="w-4 h-4" />
+                              </button>
+                            </div>
+
+                            {stockAfter !== null && (
+                              <span className={`text-[10px] font-black px-2 py-1.5 rounded-lg border flex items-center gap-1 tabular-nums
+                                                ${short ? 'bg-red-100 text-red-600 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                                {short && <AlertTriangle className="w-3 h-3" />}
+                                Stock après : {formatQty(stockAfter)}
+                              </span>
+                            )}
+
+                            <span className="ml-auto text-sm font-black tabular-nums text-emerald-700">
+                              {money(u.total ?? u.qty * u.unitPrice)}
+                            </span>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+
+                  <div className="flex items-center justify-between rounded-xl px-4 py-2.5 text-white"
+                    style={{ background: 'linear-gradient(135deg,#047857,#10b981)' }}>
+                    <span className="text-[11px] font-black uppercase tracking-widest">Total produits</span>
+                    <span className="font-black tabular-nums">{money(productsTotal)}</span>
                   </div>
-                );
-              })}
-
-              {allWorkerIds.length > 0 && (
-                <p className="text-[11px] text-slate-500">
-                  <b>{allWorkerIds.length}</b> employé(s) sur cette intervention :{' '}
-                  {allWorkerIds.map(id => workers.find(w => w.id === id)?.name).filter(Boolean).join(', ')}
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Used products — search by name or barcode */}
-          <div>
-            <label className="label-field">Produits utilisés (déduits du stock)</label>
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input value={pQuery} onChange={e => setPQuery(e.target.value)}
-                placeholder="Rechercher par nom ou code-barres…" className="input-field pl-9" />
-              {productMatches.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
-                  {productMatches.map(p => (
-                    <button key={p.id} onClick={() => addUsed(p)} className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between">
-                      <span className="text-sm font-semibold">
-                        {p.name}
-                        {p.sellByDetail && <span className="ml-1.5 text-[10px] font-bold text-[#003087]">au détail</span>}
-                      </span>
-                      <span className="text-xs text-slate-400">
-                        {p.sellByDetail && p.detailCapacity
-                          ? `${money(detailPrice(p))}/${p.detailUnit} • stock ${p.currentQty} × ${p.detailCapacity}${p.detailUnit}`
-                          : `${money(p.salePrice)} • stock ${p.currentQty}`}
-                      </span>
-                    </button>
-                  ))}
                 </div>
               )}
             </div>
-            {used.length > 0 && (
-              <div className="mt-2 space-y-1.5">
-                {used.map(u => {
-                  const p = products.find(x => x.id === u.productId);
-                  const isDetail = u.detailQty !== undefined;
-                  return (
-                    <div key={u.productId} className="flex items-center gap-2 bg-slate-50 rounded-xl p-2">
-                      <span className="flex-1 text-sm font-semibold text-slate-700 min-w-0 truncate">
-                        {u.productName}
-                        {isDetail && p?.detailCapacity && (
-                          <span className="ml-1 text-[10px] text-slate-400">sur {p.detailCapacity} {u.detailUnit}</span>
-                        )}
-                      </span>
-                      <input type="number" step="0.01" min={0}
-                        value={isDetail ? u.detailQty : u.qty}
-                        onChange={e => setQty(u.productId, Number(e.target.value))}
-                        className="input-field !py-1 !px-2 w-20 text-center" />
-                      <span className="text-[11px] text-slate-400 w-8">{isDetail ? u.detailUnit : (p?.unit || 'u')}</span>
-                      <span className="text-sm font-bold tabular-nums w-24 text-right">{money(u.total ?? u.qty * u.unitPrice)}</span>
-                      <button onClick={() => rmUsed(u.productId)} className="text-red-500 p-1"><X className="w-4 h-4" /></button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          </Block>
 
-          {/* ── Le client, puis SA voiture ─────────────────────────────────
+          {/* ── 3 · Le client, puis SA voiture ───────────────────────────────
               Recherche par nom ou téléphone, parc du client proposé, et le
               kilométrage relevé sur place. La saisie libre reste disponible :
               un client de passage n'a pas de fiche.
@@ -948,31 +1293,42 @@ function ReparationForm({
               seulement une fois le total connu qu'on cherche à qui le
               facturer. Le demander en premier obligeait à interrompre la
               saisie pour aller chercher une fiche client. */}
-          <ClientCarPicker
-            clients={clients}
-            clientId={clientId}
-            onClientId={setClientId}
-            car={car}
-            onCar={setCar}
-            onCreateClient={() => setShowClient(true)}
-            passageLabel={PASSAGE} />
+          <Block step={3} icon={Users} title="Client & véhicule"
+            hint="Sans client, l'intervention part au nom d'un « Client de passage »."
+            grad="linear-gradient(135deg,#3730a3,#6366f1)" border="border-indigo-200" tint="bg-white">
+            <div className="space-y-3">
+              <ClientCarPicker
+                clients={clients}
+                clientId={clientId}
+                onClientId={setClientId}
+                car={car}
+                onCar={setCar}
+                onCreateClient={() => setShowClient(true)}
+                passageLabel={PASSAGE} />
 
-          <Field label="Description du problème / observations">
-            <Textarea value={problem} onChange={e => setProblem(e.target.value)} placeholder="Décrivez le travail à réaliser…" />
-          </Field>
-
-          {/* ── Remise ──────────────────────────────────────────────────────── */}
-          <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Tag className="w-4 h-4 text-amber-600" />
-              <h4 className="text-[11px] font-black uppercase tracking-widest text-amber-700">Remise client</h4>
+              <Field label="Description du problème / observations">
+                <Textarea value={problem} onChange={e => setProblem(e.target.value)}
+                  placeholder="Décrivez le travail à réaliser…" />
+              </Field>
             </div>
+          </Block>
+
+          {/* ── 4 · Remise ──────────────────────────────────────────────────── */}
+          <Block step={4} icon={Tag} title="Remise client"
+            hint="Déduite du sous-total — prestations et produits confondus."
+            grad="linear-gradient(135deg,#b45309,#f59e0b)" border="border-amber-200" tint="bg-amber-50/40"
+            action={
+              <span className="h-8 px-3 rounded-xl bg-white/20 flex items-center text-[11px] font-black tabular-nums">
+                −{money(discountAmount)}
+              </span>}>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label="Type de remise">
                 <div className="flex gap-1.5">
                   {([['none', 'Aucune'], ['percent', '%'], ['amount', 'DA']] as const).map(([m, lbl]) => (
                     <button key={m} onClick={() => setDiscountMode(m)}
-                      className={`flex-1 py-2 rounded-lg text-xs font-bold ${discountMode === m ? 'bg-amber-500 text-white' : 'bg-white text-slate-500 border border-slate-200'}`}>
+                      className={`flex-1 h-[46px] rounded-xl text-xs font-black transition-all duration-200 active:scale-95
+                                  ${discountMode === m ? 'text-white' : 'bg-white text-slate-500 border-2 border-slate-200 hover:border-amber-300'}`}
+                      style={discountMode === m ? { background: 'linear-gradient(135deg,#b45309,#f59e0b)', boxShadow: '0 6px 16px rgba(245,158,11,0.32)' } : undefined}>
                       {lbl}
                     </button>
                   ))}
@@ -988,55 +1344,137 @@ function ReparationForm({
                 </div>
               </Field>
               <Field label="Remise déduite">
-                <div className="h-[46px] rounded-xl bg-white border border-amber-200 flex items-center px-4 font-black tabular-nums text-amber-700">
+                <div className="h-[46px] rounded-xl bg-white border-2 border-amber-200 flex items-center px-4 font-black tabular-nums text-amber-700">
                   −{money(discountAmount)}
                 </div>
               </Field>
             </div>
-          </div>
+          </Block>
 
-          {/* Totals */}
-          <div className="rounded-2xl bg-[#001f5c] text-white p-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
-              <div className="rounded-xl bg-white/10 p-3">
-                <p className="text-[10px] uppercase font-bold text-blue-200">Prestations</p>
-                <p className="font-black tabular-nums">{money(serviceTotal)}</p>
-              </div>
-              <div className="rounded-xl bg-white/10 p-3">
-                <p className="text-[10px] uppercase font-bold text-blue-200">Produits</p>
-                <p className="font-black tabular-nums">{money(productsTotal)}</p>
-              </div>
-              <div className="rounded-xl bg-white/10 p-3">
-                <p className="text-[10px] uppercase font-bold text-blue-200">Sous-total</p>
-                <p className="font-black tabular-nums">{money(subtotal)}</p>
-              </div>
-              <div className="rounded-xl bg-white/10 p-3">
-                <p className="text-[10px] uppercase font-bold text-blue-200">Remise</p>
-                <p className="font-black tabular-nums text-amber-300">−{money(discountAmount)}</p>
-              </div>
+          {/* ── 5 · Règlement ───────────────────────────────────────────────── */}
+          <div className="rounded-2xl overflow-hidden text-white shadow-lg"
+            style={{ background: 'linear-gradient(135deg,#001435,#003087 55%,#0044bb)' }}>
+            <div className="flex flex-wrap items-center gap-2.5 px-4 py-3 border-b border-white/10">
+              <span className="w-7 h-7 rounded-xl bg-white/15 flex items-center justify-center text-xs font-black shrink-0">5</span>
+              <h4 className="text-xs font-black uppercase tracking-wider flex items-center gap-2">
+                <Banknote className="w-4 h-4 text-[#FFB800]" /> Règlement
+              </h4>
+              <span className="ml-auto text-[11px] font-bold text-blue-200">
+                {pending ? 'Encaissement possible plus tard' : "Encaissé à l'enregistrement"}
+              </span>
             </div>
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-sm font-semibold text-blue-200">Total à payer</span>
-              <span className="text-xl font-black tabular-nums text-[#FFB800]">{money(total)}</span>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-[11px] font-bold uppercase text-blue-200">Payé</label>
-                <input type="number" value={paidStr} onChange={e => setPaidStr(e.target.value)} placeholder={String(pending ? 0 : total)} className="input-field mt-1" />
+            <div className="p-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3">
+                <div className="rounded-xl bg-white/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-blue-200">Prestations</p>
+                  <p className="font-black tabular-nums">{money(serviceTotal)}</p>
+                </div>
+                <div className="rounded-xl bg-white/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-blue-200">Produits</p>
+                  <p className="font-black tabular-nums text-emerald-300">{money(productsTotal)}</p>
+                </div>
+                <div className="rounded-xl bg-white/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-blue-200">Sous-total</p>
+                  <p className="font-black tabular-nums">{money(subtotal)}</p>
+                </div>
+                <div className="rounded-xl bg-white/10 p-3">
+                  <p className="text-[10px] uppercase font-black text-blue-200">Remise</p>
+                  <p className="font-black tabular-nums text-amber-300">−{money(discountAmount)}</p>
+                </div>
               </div>
-              <div>
-                <label className="text-[11px] font-bold uppercase text-blue-200">Reste</label>
-                <div className="mt-1 h-[46px] rounded-xl bg-white/10 flex items-center px-4 font-black tabular-nums text-red-300">{money(rest)}</div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 rounded-xl bg-white/10 px-4 py-2.5">
+                <span className="text-sm font-black text-blue-100 uppercase tracking-wider">Total à payer</span>
+                <motion.span key={total}
+                  initial={{ scale: 0.92, opacity: 0.6 }} animate={{ scale: 1, opacity: 1 }}
+                  transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                  className="text-2xl font-black tabular-nums text-[#FFB800]">
+                  {money(total)}
+                </motion.span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-blue-200">Payé</label>
+                  <input type="number" value={paidStr} onChange={e => setPaidStr(e.target.value)}
+                    placeholder={String(pending ? 0 : total)} className="input-field mt-1" />
+                  <div className="flex gap-1.5 mt-1.5">
+                    <button onClick={() => setPaidStr(String(total))}
+                      className="flex-1 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-black transition-colors active:scale-95">
+                      Payé en entier
+                    </button>
+                    <button onClick={() => setPaidStr('0')}
+                      className="flex-1 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-black transition-colors active:scale-95">
+                      Rien payé
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-blue-200">Reste</label>
+                  <div className={`mt-1 h-[46px] rounded-xl bg-white/10 flex items-center px-4 font-black tabular-nums
+                                   ${rest > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                    {money(rest)}
+                  </div>
+                  <p className="text-[11px] text-blue-200 mt-1.5 px-1">
+                    {rest > 0 ? 'Le reste entrera dans la dette du client.' : 'Intervention entièrement réglée.'}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </Modal>
+
       {/* Un client créé depuis la fiche arrive parfois avec son parc : s'il n'a
           qu'une voiture, elle est reprise d'office — sinon le choix reste à
           faire dans la liste ci-dessus. */}
       <ContactModal biz={biz} coll="clients" open={showClient} onClose={() => setShowClient(false)}
         onSaved={c => { setClientId(c.id); if ((c.cars || []).length === 1) setCar({ ...c.cars![0] }); }} />
+
+      {/* Scanner : les produits entrent les uns après les autres, la fenêtre
+          reste ouverte le temps de passer l'huile, le filtre et le joint. */}
+      <BarcodeScannerModal
+        open={scanning}
+        continuous
+        title="Scanner un produit utilisé"
+        subtitle="Chaque code lu entre dans les produits de l'intervention"
+        lastResult={scanNote}
+        onClose={() => setScanning(false)}
+        onDetect={scanToUsed} />
     </>
+  );
+}
+
+// ─── Bloc coloré du formulaire ────────────────────────────────────────────────
+/**
+ * Une étape du formulaire d'intervention, avec SA couleur : les prestations en
+ * bleu station, les produits en vert, le client en indigo, la remise en ambre,
+ * le règlement en marine. Un formulaire long se relit alors par blocs — on
+ * retrouve « les produits » à la couleur avant même d'avoir lu le titre.
+ */
+function Block({ step, icon: Icon, title, hint, grad, border, tint, action, children }: {
+  step: number; icon: React.ElementType; title: string; hint?: string;
+  /** Dégradé de l'en-tête. */
+  grad: string;
+  /** Bordure de la carte, assortie. */
+  border: string;
+  /** Teinte très douce du corps. */
+  tint: string;
+  action?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <section className={`rounded-2xl border-2 ${border} bg-white shadow-sm overflow-hidden`}>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-white" style={{ background: grad }}>
+        <span className="w-7 h-7 rounded-xl bg-white/20 flex items-center justify-center text-xs font-black shrink-0">
+          {step}
+        </span>
+        <div className="min-w-0 flex-1">
+          <h4 className="text-xs sm:text-[13px] font-black uppercase tracking-wider flex items-center gap-2">
+            <Icon className="w-4 h-4 shrink-0" /> <span className="truncate">{title}</span>
+          </h4>
+          {hint && <p className="text-[11px] text-white/75 mt-0.5">{hint}</p>}
+        </div>
+        {action && <div className="shrink-0 w-full sm:w-auto">{action}</div>}
+      </header>
+      <div className={`p-3 sm:p-4 ${tint}`}>{children}</div>
+    </section>
   );
 }
