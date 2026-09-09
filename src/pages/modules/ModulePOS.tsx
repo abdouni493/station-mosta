@@ -20,6 +20,12 @@
  *    vente encaissée (voir `components/biz/CustomerDisplay`).
  *  • Vente au détail : un produit « au détail » demande la quantité dans son
  *    unité (10 L sur un bidon de 50 L) et le stock est décrémenté d'autant.
+ *  • ENCAISSEMENT DIRECT — cette même demande de quantité offre, à côté de
+ *    « Ajouter au panier », un bouton « Encaisser » qui vend l'article SEUL,
+ *    tout de suite : la vente est écrite dans l'historique sans que rien
+ *    n'entre au panier, et le panier en cours n'est pas touché. C'est la vente
+ *    la plus fréquente du comptoir — un article, réglé en espèces — et elle ne
+ *    coûte plus deux gestes (voir `sellNow`).
  *  • Vente rapide de fiches techniques : une fiche marquée « vente directe »
  *    (ex: café au lait) s'affiche sur le comptoir et déduit ses ingrédients du
  *    stock à la vente, sans passer par la production.
@@ -389,16 +395,40 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
   const shortLines = cart.filter(l => shortOf(l) > 0);
 
   // ── Checkout ──────────────────────────────────────────────────────────────
-  const checkout = () => {
-    if (!mySession) { toast.error('Ouvrez votre session de travail pour vendre'); return; }
-    if (cart.length === 0) { toast.error('Panier vide'); return; }
-    if (!passage && !clientId) { toast.error('Sélectionnez un client'); return; }
-    if (passage && rest > 0) { toast.error('Un client est requis pour une vente à crédit'); return; }
+  /**
+   * ─── L'ÉCRITURE D'UNE VENTE ────────────────────────────────────────────────
+   * Le SEUL endroit qui pose une ligne dans l'historique des ventes et qui sort
+   * la marchandise du stock. Deux chemins y mènent :
+   *
+   *  • le panier, encaissé par « Valider la vente » ;
+   *  • l'encaissement DIRECT d'un article vendu au détail, qui ne passe jamais
+   *    par le panier (voir `sellNow`).
+   *
+   * La différence tient dans les arguments — les lignes, la remise, le client —
+   * jamais dans le traitement : même numérotation, même déduction de stock,
+   * même rattachement à la session du caissier.
+   */
+  const registerSale = (opts: {
+    lines: CartLine[];
+    /** Remise déjà chiffrée en dinars — 0 quand la vente part au prix plein. */
+    reduction: number;
+    discountType?: BizDiscountType;
+    discountValue?: number;
+    /** Encaissé en espèces ; ce qui manque part en crédit sur le client. */
+    paid: number;
+    clientId?: string;
+    clientName: string;
+  }): BizSale => {
+    const lines = opts.lines;
+    const saleSubtotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+    const saleReduction = Math.min(saleSubtotal, Math.max(0, opts.reduction));
+    const saleTotal = Math.max(0, saleSubtotal - saleReduction);
+    const salePaid = Math.max(0, opts.paid);
+    const saleRest = Math.max(0, saleTotal - salePaid);
 
-    const client = clients.find(c => c.id === clientId);
     // `unitCost` accompagne chaque ligne : il est toujours exprimé pour UNE unité
     // de `qty`, donc pour une unité conditionnée sur une vente au détail.
-    const items: BizLineItem[] = cart.map(l => l.detailCapacity
+    const items: BizLineItem[] = lines.map(l => l.detailCapacity
       ? {
         productId: l.id, productName: l.name,
         qty: l.qty / l.detailCapacity, unitPrice: l.unitPrice, unitCost: l.unitCost,
@@ -410,23 +440,23 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     const soldAt = new Date().toISOString();
     const sale: BizSale = {
       id: newId(), ref: `V-${String(biz.state.sales.length + 1).padStart(4, '0')}`,
-      clientId: passage ? undefined : clientId,
-      clientName: passage ? 'Client de passage' : (client?.name || '—'),
-      items, subtotal,
-      reduction: discountAmount,
-      discountType: discountMode === 'none' ? undefined : discountMode,
-      discountValue: discountMode === 'none' ? undefined : Number(discountStr) || 0,
-      total, paid, rest,
-      date: soldAt, status: rest > 0 ? 'crédit' : 'payée',
+      clientId: opts.clientId,
+      clientName: opts.clientName,
+      items, subtotal: saleSubtotal,
+      reduction: saleReduction,
+      discountType: opts.discountType,
+      discountValue: opts.discountValue,
+      total: saleTotal, paid: salePaid, rest: saleRest,
+      date: soldAt, status: saleRest > 0 ? 'crédit' : 'payée',
       // L'encaissement du comptoir est daté dès la vente : le relevé du client
       // n'a alors rien à reconstruire.
-      payments: paid > 0
-        ? [{ id: newId(), date: soldAt, amount: paid, mode: 'Espèces', by: currentUserName || 'Admin' }]
+      payments: salePaid > 0
+        ? [{ id: newId(), date: soldAt, amount: salePaid, mode: 'Espèces', by: currentUserName || 'Admin' }]
         : undefined,
       createdBy: currentUserName || 'Admin',
-      sessionId: mySession.id,
-      workerId: mySession.workerId,
-      workerName: mySession.workerName,
+      sessionId: mySession!.id,
+      workerId: mySession!.workerId,
+      workerName: mySession!.workerName,
     };
     biz.add('sales', sale);
 
@@ -440,7 +470,7 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     const take = (productId: string, qty: number) =>
       draw.set(productId, (draw.get(productId) || 0) + qty);
 
-    cart.forEach(l => {
+    lines.forEach(l => {
       if (l.kind === 'comptoir') {
         const c = comptoir.find(x => x.id === l.id);
         if (c) biz.update('comptoir', { ...c, qty: roundQty(c.qty - l.qty) });
@@ -465,6 +495,26 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
       if (p) biz.update('products', { ...p, currentQty: roundQty(p.currentQty - consumed) });
     });
 
+    return sale;
+  };
+
+  const checkout = () => {
+    if (!mySession) { toast.error('Ouvrez votre session de travail pour vendre'); return; }
+    if (cart.length === 0) { toast.error('Panier vide'); return; }
+    if (!passage && !clientId) { toast.error('Sélectionnez un client'); return; }
+    if (passage && rest > 0) { toast.error('Un client est requis pour une vente à crédit'); return; }
+
+    const client = clients.find(c => c.id === clientId);
+    const sale = registerSale({
+      lines: cart,
+      reduction: discountAmount,
+      discountType: discountMode === 'none' ? undefined : discountMode,
+      discountValue: discountMode === 'none' ? undefined : Number(discountStr) || 0,
+      paid,
+      clientId: passage ? undefined : clientId,
+      clientName: passage ? 'Client de passage' : (client?.name || '—'),
+    });
+
     const shortNote = shortLines.length
       ? ` — ${shortLines.length} article(s) vendu(s) à découvert, stock en négatif`
       : '';
@@ -475,6 +525,49 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
     // monnaie qu'on lui doit, au lieu d'un panier redevenu vide.
     setLastReceipt({ total, paid, change: Math.max(0, paid - total) });
     setCart([]); setDiscountMode('none'); setDiscountStr(''); setPaidStr(''); setClientId(''); setPassage(true);
+    setAskPrint(sale);
+  };
+
+  /**
+   * ─── ENCAISSEMENT DIRECT ───────────────────────────────────────────────────
+   * Un article vendu au détail — 5 L pris sur un bidon, 2 kg pris sur un sac —
+   * part TOUT DE SUITE sans jamais entrer dans le panier : le caissier saisit la
+   * quantité, touche « Encaisser », et la vente est déjà dans l'historique.
+   *
+   * C'est la vente la plus fréquente du comptoir : un seul article, réglé en
+   * espèces, sans remise et sans client nommé. La faire passer par le panier
+   * obligeait à ajouter, puis valider, pour un ticket d'une seule ligne.
+   *
+   * Ce raccourci ne touche JAMAIS au panier en cours : un caissier qui compose
+   * la note d'un client peut encaisser un passant entre deux articles, il
+   * retrouve sa note intacte. Le ticket direct est donc toujours au prix plein
+   * et au client de passage : la remise et le crédit restent l'affaire du
+   * panier, qui seul porte un client et un montant payé.
+   */
+  const sellNow = (s: Source, qty: number) => {
+    if (!mySession) { toast.error('Ouvrez votre session de travail pour vendre'); return; }
+    if (!perm.creer) { toast.error("Vous n'avez pas le droit d'enregistrer une vente"); return; }
+    if (qty <= 0) return;
+
+    const amount = qty * s.price;
+    const sale = registerSale({
+      lines: [{
+        id: s.id, name: s.name, unitPrice: s.price, qty,
+        max: s.avail, unit: s.unit, kind: s.kind, unitCost: s.unitCost,
+        detailCapacity: s.detailCapacity, detailUnit: s.detailUnit,
+      }],
+      reduction: 0,
+      paid: amount,
+      clientName: 'Client de passage',
+    });
+
+    const short = Math.max(0, roundQty(qty - s.avail));
+    toast.success(`${s.name} encaissé — ${money(amount)}`
+      + (short > 0 ? ` (${formatQty(short)} ${s.detailUnit || ''} à découvert)` : ''));
+    // L'afficheur ne bascule sur le ticket que si aucun panier n'est en cours :
+    // le client qui suit sa note à l'écran ne doit pas la voir remplacée par
+    // l'encaissement de quelqu'un d'autre.
+    if (cart.length === 0) setLastReceipt({ total: amount, paid: amount, change: 0 });
     setAskPrint(sale);
   };
 
@@ -975,8 +1068,10 @@ export default function ModulePOS({ moduleKey }: { moduleKey: ModuleKey }) {
 
       {/* Detail quantity prompt */}
       {detailPrompt && (
-        <DetailQtyModal source={detailPrompt} onClose={() => setDetailPrompt(null)}
-          onConfirm={qty => { pushLine(detailPrompt, qty); setDetailPrompt(null); }} />
+        <DetailQtyModal source={detailPrompt} canSell={perm.creer && !!mySession}
+          onClose={() => setDetailPrompt(null)}
+          onConfirm={qty => { pushLine(detailPrompt, qty); setDetailPrompt(null); }}
+          onSell={qty => { sellNow(detailPrompt, qty); setDetailPrompt(null); }} />
       )}
 
       {showOrganize && (
@@ -1194,8 +1289,23 @@ function OrganizeModal({ sources, pinned, sales, onSave, onClose }: {
 }
 
 // ─── Detail quantity prompt ────────────────────────────────────────────────────
-function DetailQtyModal({ source, onClose, onConfirm }: {
-  source: Source; onClose: () => void; onConfirm: (qty: number) => void;
+/**
+ * La quantité d'un article vendu au détail, et les DEUX sorties qu'on lui donne :
+ *
+ *  • « Ajouter » — la quantité entre au panier, la note se compose article par
+ *    article et se règle à la fin. C'est le chemin d'un client qui prend
+ *    plusieurs choses.
+ *  • « Encaisser » — la vente part immédiatement, seule, en espèces et au prix
+ *    plein. C'est le chemin du client qui ne prend QUE ça : un aller simple,
+ *    sans panier à valider derrière.
+ *
+ * Le second est de loin le plus courant au comptoir, mais il écrit une vente
+ * définitive d'un seul geste : il garde donc sa propre couleur, pour qu'on ne
+ * le touche jamais en croyant remplir le panier.
+ */
+function DetailQtyModal({ source, canSell, onClose, onConfirm, onSell }: {
+  source: Source; canSell: boolean; onClose: () => void;
+  onConfirm: (qty: number) => void; onSell: (qty: number) => void;
 }) {
   // La quantité au détail démarre à zéro : le caissier saisit lui-même ce qu'il
   // vend au lieu de partir d'une unité déjà comptée.
@@ -1204,27 +1314,50 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
   // Selling more than the stock is allowed — the stock simply goes negative and
   // is recovered on the next purchase; we only inform the cashier.
   const tooMuch = value > source.avail;
+  const amount = value * source.price;
   return (
-    <Modal open onClose={onClose} icon={Package} size="sm"
+    <Modal open onClose={onClose} icon={Package} size="md"
       title={source.name} subtitle={`Vente au détail — ${source.detailUnit} sur ${source.detailCapacity} ${source.detailUnit} par unité`}
-      footer={<>
-        <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={() => onConfirm(value)} disabled={value <= 0}>Ajouter</button>
-      </>}>
+      footer={
+        /* Trois actions dans une boîte étroite : elles passent à la ligne au
+           lieu de se comprimer sur l'écran d'un poste de caisse. */
+        <div className="flex flex-wrap items-center justify-end gap-2 w-full">
+          <button className="btn-ghost" onClick={onClose}>Annuler</button>
+          <button className="btn-outline" onClick={() => onConfirm(value)} disabled={value <= 0}>
+            <Plus className="w-4 h-4" /> Ajouter au panier
+          </button>
+          <button className="btn-secondary" onClick={() => onSell(value)} disabled={value <= 0 || !canSell}
+            title={canSell ? 'Enregistre la vente tout de suite, sans passer par le panier'
+              : "Vous n'avez pas le droit d'enregistrer une vente"}>
+            {/* Le montant n'est PAS répété ici : il changerait de largeur à
+                chaque chiffre tapé et ferait sauter la rangée de boutons. Il se
+                lit en gros dans la case « Montant », juste au-dessus. */}
+            <Wallet className="w-4 h-4" /> Encaisser
+          </button>
+        </div>
+      }>
       <div className="space-y-4">
         <Field label={`Quantité à vendre (${source.detailUnit})`} required>
           <Input type="number" step="0.01" min={0} value={qty} onChange={e => setQty(e.target.value)} placeholder="0" autoFocus />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-[10px] uppercase font-bold text-slate-400">Disponible</p>
             <p className={`font-black tabular-nums ${source.avail <= 0 ? 'text-red-600' : 'text-slate-700'}`}>
               {formatQty(source.avail)} {source.detailUnit}
             </p>
           </div>
+          {/* Le prix au détail, sous les yeux du caissier : c'est lui qu'on
+              annonce au client, et il n'apparaissait nulle part dans la boîte. */}
           <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-[10px] uppercase font-bold text-slate-400">Montant</p>
-            <p className="font-black text-[#002d87] tabular-nums">{money(value * source.price)}</p>
+            <p className="text-[10px] uppercase font-bold text-slate-400">Prix</p>
+            <p className="font-black tabular-nums text-slate-700">
+              {money(source.price)}<span className="text-[11px] font-bold text-slate-400"> / {source.detailUnit}</span>
+            </p>
+          </div>
+          <div className="rounded-xl bg-[#002d87] p-3 col-span-2 sm:col-span-1">
+            <p className="text-[10px] uppercase font-bold text-white/60">Montant</p>
+            <p className="font-black text-[#FFB800] tabular-nums">{money(amount)}</p>
           </div>
         </div>
         {tooMuch && (
@@ -1232,6 +1365,14 @@ function DetailQtyModal({ source, onClose, onConfirm }: {
             <AlertTriangle className="w-3.5 h-3.5" /> Quantité supérieure au stock — le stock passera en négatif (rattrapé au prochain achat).
           </p>
         )}
+        {/* Ce que font les deux boutons — dit une fois, en clair, pour qu'un
+            encaissement direct ne soit jamais une surprise. */}
+        <p className="rounded-xl bg-slate-50 border border-slate-100 p-3 text-[11px] leading-relaxed text-slate-500">
+          <strong className="text-slate-600">Ajouter au panier</strong> pour continuer la note du client.{' '}
+          <strong className="text-slate-600">Encaisser</strong> enregistre la vente immédiatement — seule,
+          en espèces, au prix plein et au client de passage — et elle part directement dans l'historique
+          des ventes.
+        </p>
       </div>
     </Modal>
   );
