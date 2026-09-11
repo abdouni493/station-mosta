@@ -266,20 +266,36 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
       {filtered.length === 0 ? (
         <EmptyState icon={Car} title="Aucune intervention" message="Créez un lavage ou une vidange, ou enregistrez-la en attente." />
       ) : view === 'table' ? (
+        /* Les ACTIONS ouvrent la ligne. Ce qu'on vient faire ici, c'est
+           finaliser, encaisser ou imprimer une intervention : le bouton doit
+           être sous le pouce dès que la ligne est trouvée, pas au bout d'un
+           défilement horizontal de neuf colonnes. La référence, elle, ne sert
+           qu'à recopier un numéro — elle ferme la marche. */
         <Table head={<>
-          <th className="table-head">Réf</th><th className="table-head">Client</th><th className="table-head">Véhicule</th>
+          <th className="table-head">Actions</th><th className="table-head">Client</th>
+          <th className="table-head">Véhicule</th>
           <th className="table-head">Prestations</th><th className="table-head">Date</th>
           <th className="table-head text-right">Total</th><th className="table-head text-right">Payé</th>
           <th className="table-head text-right">Reste</th><th className="table-head">État</th>
-          <th className="table-head text-right">Actions</th>
+          <th className="table-head">Réf</th>
         </>}>
           {filtered.map(r => {
             const KM = KIND_META[r.kind]; const KIcon = KM.icon;
             const carLabel = [r.car?.marque, r.car?.name, r.car?.immatriculation].filter(Boolean).join(' • ');
             return (
               <tr key={r.id} className={r.status === 'pending' ? 'bg-amber-50/60' : undefined}>
-                <td className="table-cell font-bold">
-                  <span className="inline-flex items-center gap-1.5"><KIcon className="w-4 h-4 text-[#003087]" />{r.ref}</span>
+                <td className="table-cell">
+                  <RowActions>
+                    {r.status === 'pending' && perm.modifier && (
+                      <ActionBtn icon={CheckCircle2} tone="green" title="Finaliser l'intervention"
+                        onClick={() => setEditing({ rep: r, finalize: true })} />
+                    )}
+                    <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
+                    <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(r)} />
+                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing({ rep: r })} />}
+                    {r.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
+                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
+                  </RowActions>
                 </td>
                 <td className="table-cell">{r.clientName}</td>
                 <td className="table-cell text-slate-500 max-w-[200px] truncate" title={carLabel || undefined}>{carLabel || '—'}</td>
@@ -298,18 +314,8 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                 <td className="table-cell tabular-nums text-right text-emerald-600">{money(r.paid)}</td>
                 <td className="table-cell tabular-nums text-right text-red-600">{money(r.rest)}</td>
                 <td className="table-cell"><Badge tone={STATUS_META[r.status].tone}>{STATUS_META[r.status].label}</Badge></td>
-                <td className="table-cell text-right">
-                  <RowActions>
-                    {r.status === 'pending' && perm.modifier && (
-                      <ActionBtn icon={CheckCircle2} tone="green" title="Finaliser l'intervention"
-                        onClick={() => setEditing({ rep: r, finalize: true })} />
-                    )}
-                    <ActionBtn icon={Eye} tone="blue" title="Voir" onClick={() => setViewing(r)} />
-                    <ActionBtn icon={Printer} tone="slate" title="Imprimer" onClick={() => doPrint(r)} />
-                    {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => setEditing({ rep: r })} />}
-                    {r.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(r)} />}
-                    {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(r)} />}
-                  </RowActions>
+                <td className="table-cell font-bold whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1.5"><KIcon className="w-4 h-4 text-[#003087]" />{r.ref}</span>
                 </td>
               </tr>
             );
