@@ -24,7 +24,9 @@ import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/prod
 import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
 import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 import { uploadFile } from '@/src/lib/supabase';
-import { barcodeLabelHTML, LABEL_40_20, LabelSize, LabelOptions } from '@/src/lib/barcodeLabel';
+import {
+  barcodeLabelHTML, barcodeLabelsHTML, LABEL_40_20, LabelSize, LabelOptions,
+} from '@/src/lib/barcodeLabel';
 
 // ─── Barcode helpers ──────────────────────────────────────────────────────────
 export function genBarcode(): string {
@@ -79,6 +81,43 @@ export function printBarcode(
   }
   win.document.open();
   win.document.write(barcodeLabelHTML({ ...product, barcode: code }, sizeOrOptions));
+  win.document.close();
+}
+
+/**
+ * Le même aperçu, mais pour TOUT UN LOT de produits — la réception d'un achat.
+ *
+ * Une facture apporte douze références : les étiqueter une par une, c'est douze
+ * fenêtres, douze dialogues d'impression, et le rouleau qu'on finit par régler
+ * de travers en chemin. Ici la fenêtre s'ouvre une fois, montre la planche
+ * entière, et le rouleau se règle pour tout le lot d'un coup.
+ *
+ * Chaque entrée porte son propre nombre d'exemplaires (`copies`) — la quantité
+ * reçue. Les produits SANS code-barres sont écartés ici, et pas en silence :
+ * l'appelant sait combien manquent, il les montre avant d'arriver jusque-là.
+ */
+export function printBarcodes(
+  items: { name?: string; barcode?: string; salePrice?: number; copies?: number }[],
+  sizeOrOptions: LabelSize | LabelOptions = LABEL_40_20,
+) {
+  const printable = (items || [])
+    .map(i => ({ ...i, barcode: (i.barcode || '').trim() }))
+    .filter(i => i.barcode);
+  if (!printable.length) {
+    toast.error("Aucun de ces produits n'a de code-barres : générez-en d'abord.");
+    return;
+  }
+  const win = window.open('', '_blank', 'width=980,height=900');
+  if (!win) {
+    toast.error(
+      "L'aperçu des étiquettes a été bloqué par le navigateur. "
+      + 'Autorisez les fenêtres pop-up pour ce site, puis réessayez.',
+      { duration: 6000 },
+    );
+    return;
+  }
+  win.document.open();
+  win.document.write(barcodeLabelsHTML(printable, sizeOrOptions));
   win.document.close();
 }
 

@@ -328,25 +328,58 @@ export const LABEL_PREFS_KEY = 'etiquette.format.v2';
 /** L'ancienne clé, relue une seule fois pour ne pas reperdre le format choisi. */
 export const LABEL_PREFS_KEY_V1 = 'etiquette.format.v1';
 
+
+/** Une vignette du lot : un produit, et le nombre d'exemplaires voulu. */
+export interface BarcodeLabelItem extends BarcodeLabelProduct {
+  /**
+   * Exemplaires de CETTE vignette — la quantité reçue, par exemple. Le réglage
+   * « copies » de la fenêtre les MULTIPLIE, il ne les remplace pas : on choisit
+   * ses quantités dans l'application, et on double tout le lot d'un clic si
+   * l'imprimante a bavé.
+   */
+  copies?: number;
+}
+
 /**
- * La page d'impression complète.
+ * La page d'impression d'UNE étiquette — le chemin de tous les écrans qui
+ * étiquettent un produit à l'unité (fiche produit, formulaire de saisie).
+ */
+export function barcodeLabelHTML(
+  product: BarcodeLabelProduct,
+  sizeOrOptions: LabelSize | LabelOptions = LABEL_40_20,
+): string {
+  return barcodeLabelsHTML([product], sizeOrOptions);
+}
+
+/**
+ * La page d'impression complète — une vignette, ou TOUT UN LOT.
  *
- * À l'écran elle montre l'étiquette AGRANDIE — une vignette de 40 × 20 mm est
- * illisible sur un moniteur — avec les trois réglages qui décident de ce qui
- * sort vraiment : le sens, le format du rouleau, le nombre de copies. À
+ * À l'écran elle montre les étiquettes AGRANDIES — une vignette de 40 × 20 mm
+ * est illisible sur un moniteur — avec les trois réglages qui décident de ce
+ * qui sort vraiment : le sens, le format du rouleau, le nombre de copies. À
  * l'imprimante, seules les vignettes partent, exactement à leur taille.
+ *
+ * Le LOT existe pour la réception d'un achat. Une facture apporte douze
+ * produits, et il faut douze planches d'étiquettes avant de remplir le rayon :
+ * les ouvrir une par une, c'est douze fenêtres, douze dialogues d'impression et
+ * autant d'occasions de se tromper de rouleau en chemin. Ici chaque produit
+ * garde son propre nombre d'exemplaires — la quantité reçue — et tout part sur
+ * la même bande.
  *
  * Le format et le sens vivent dans des VARIABLES CSS et dans une règle `@page`
  * réécrite à la volée : changer de rouleau ne redemande pas la page, l'aperçu
- * suit immédiatement, et le choix est retenu pour l'étiquette suivante.
+ * suit immédiatement, et le choix est retenu pour l'étiquette suivante. Le
+ * nombre de copies, lui, n'est retenu que pour une étiquette SEULE : sur un lot
+ * il vaut multiplicateur, et le reprendre d'une session à l'autre sortirait
+ * trois fois trop de papier sans rien annoncer.
  *
  * La fenêtre ne déclenche PLUS l'impression toute seule. Le dialogue s'ouvrait
  * par-dessus les réglages, donc par-dessus le seul endroit où corriger un
  * mauvais sens : on voyait le problème sans pouvoir l'atteindre. Le bouton
  * « Imprimer » prend le focus au chargement — une touche Entrée suffit.
  */
-export function barcodeLabelHTML(
-  product: BarcodeLabelProduct,
+export function barcodeLabelsHTML(
+  items: BarcodeLabelItem[],
   sizeOrOptions: LabelSize | LabelOptions = LABEL_40_20,
 ): string {
   const opts: LabelOptions = 'widthMm' in (sizeOrOptions as LabelSize)
@@ -356,11 +389,26 @@ export function barcodeLabelHTML(
   const rotate = normalizeRotation(opts.rotate);
   const copies = Math.max(1, Math.min(50, Math.round(opts.copies || 1)));
 
-  const code = String(product.barcode ?? '').trim();
-  const svg = barcodeLabelSVG(code);
-  const name = escapeHtml(product.name || '');
-  const price = escapeHtml(labelPrice(product.salePrice));
-  const modules = code128Widths(code)?.modules ?? 0;
+  // Une liste vide garde une vignette : la fenêtre dit « code illisible »
+  // plutôt que de s'ouvrir sur du blanc, ce qui ne s'explique pas.
+  const list: BarcodeLabelItem[] = items && items.length ? items : [{}];
+  const multi = list.length > 1;
+
+  const labels = list.map(item => {
+    const code = String(item.barcode ?? '').trim();
+    return {
+      code,
+      svg: barcodeLabelSVG(code),
+      name: escapeHtml(item.name || ''),
+      price: escapeHtml(labelPrice(item.salePrice)),
+      copies: Math.max(1, Math.min(99, Math.round(item.copies || 1))),
+      modules: code128Widths(code)?.modules ?? 0,
+    };
+  });
+
+  // L'avertissement « code trop dense » vaut pour le lot entier : c'est le code
+  // le PLUS long qui décide si les barres deviennent illisibles sur ce rouleau.
+  const modules = labels.reduce((m, l) => Math.max(m, l.modules), 0);
   const W = size.widthMm;
   const H = size.heightMm;
   // La page envoyée à l'imprimante : les côtés s'échangent sur un quart de tour.
@@ -376,10 +424,31 @@ export function barcodeLabelHTML(
     `<option value="${r.value}"${r.value === rotate ? ' selected' : ''}>${escapeHtml(r.label)}</option>`
   ).join('');
 
+  const pageTitle = multi
+    ? `Étiquettes — ${labels.length} produits`
+    : `Étiquette ${escapeHtml(labels[0].code)}`;
+
+  const stages = labels.map(l => `
+      <div class="item">
+        <div class="stage">
+          <div class="sheet">
+            <div class="label">
+              ${l.svg ? `
+              <div class="name" data-fit="height">${l.name || '&nbsp;'}</div>
+              <div class="bars">${l.svg}</div>
+              <div class="foot${l.price ? '' : ' solo'}" data-fit="width">
+                <span class="code">${escapeHtml(l.code)}</span>${l.price ? `<span class="price">${l.price}</span>` : ''}
+              </div>`
+              : `<div class="empty">Code-barres illisible</div>`}
+            </div>
+          </div>
+        </div>${multi ? '\n        <p class="cap screen-only"></p>' : ''}
+      </div>`).join('');
+
   return `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Étiquette ${escapeHtml(code)}</title>
+<title>${pageTitle}</title>
 <style id="page-size">@page{size:${PW}mm ${PH}mm;margin:0}</style>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
@@ -412,6 +481,9 @@ export function barcodeLabelHTML(
   }
   /* La dernière copie ne pousse pas une page blanche derrière elle. */
   .sheet:last-child{break-after:auto;page-break-after:auto}
+  /* …sauf s'il reste un produit derrière : la règle du dessus ne parle que de
+     la dernière copie d'UN produit, pas de la dernière du lot. */
+  #sheets .item:not(:last-child) .sheet:last-child{break-after:page;page-break-after:always}
 
   .label{
     position:absolute;top:0;left:0;
@@ -484,7 +556,7 @@ export function barcodeLabelHTML(
     font-size:calc(var(--lh) * 0.12);font-weight:700;text-align:center;
   }
 
-  /* ── Écran : la vignette agrandie, et les réglages qui la commandent ────── */
+  /* ── Écran : les vignettes agrandies, et les réglages qui les commandent ── */
   @media screen{
     body{
       min-height:100vh;padding:22px 16px 32px;
@@ -492,6 +564,16 @@ export function barcodeLabelHTML(
     }
     h1{font-size:12px;text-transform:uppercase;letter-spacing:.16em;color:#64748b;text-align:center}
     #dims{font:700 15px/1.3 Arial,Helvetica,sans-serif;color:#0f172a;text-align:center;margin-top:-8px}
+
+    /* Le lot s'étale en galerie — une vignette par produit, autant de rangées
+       qu'il en faut : une facture de vingt références se relit d'un coup d'œil
+       avant d'engager le rouleau. */
+    #sheets{display:flex;flex-wrap:wrap;gap:18px 16px;justify-content:center;max-width:100%}
+    .item{display:flex;flex-direction:column;align-items:center;gap:5px}
+    .cap{
+      font:900 11px/1 Arial,Helvetica,sans-serif;color:#475569;
+      background:#fff;border:1px solid #e2e8f0;border-radius:999px;padding:4px 10px;
+    }
 
     /* La scène fait la taille de la PAGE, au grossissement près : ce qui se
        voit à l'écran est le rectangle qui sortira, bord pour bord. */
@@ -502,8 +584,9 @@ export function barcodeLabelHTML(
       overflow:hidden;flex:none;
     }
     .stage .sheet{transform:scale(var(--zoom));transform-origin:top left}
-    /* Une seule vignette à l'écran : les copies ne concernent que le papier. */
-    #sheets .sheet:not(:first-child){display:none}
+    /* Une seule vignette par produit à l'écran : les copies ne concernent que
+       le papier. */
+    .stage .sheet:not(:first-child){display:none}
 
     .panel{
       display:flex;flex-wrap:wrap;gap:12px 16px;justify-content:center;align-items:flex-end;
@@ -570,6 +653,7 @@ export function barcodeLabelHTML(
   @media print{
     html,body{background:#fff;padding:0;margin:0;display:block}
     .screen-only{display:none!important}
+    #sheets,.item{display:block}
     .stage{
       width:auto;height:auto;box-shadow:none;border-radius:0;
       outline:0;overflow:visible;
@@ -578,23 +662,10 @@ export function barcodeLabelHTML(
   }
 </style></head>
 <body data-rotate="${rotate}">
-  <h1 class="screen-only">Aperçu de l'étiquette</h1>
+  <h1 class="screen-only">${multi ? 'Aperçu des étiquettes' : "Aperçu de l'étiquette"}</h1>
   <p class="screen-only" id="dims"></p>
 
-  <div class="stage">
-    <div id="sheets">
-      <div class="sheet">
-        <div class="label">
-          ${svg ? `
-          <div class="name" data-fit="height">${name || '&nbsp;'}</div>
-          <div class="bars">${svg}</div>
-          <div class="foot${price ? '' : ' solo'}" data-fit="width">
-            <span class="code">${escapeHtml(code)}</span>${price ? `<span class="price">${price}</span>` : ''}
-          </div>`
-          : `<div class="empty">Code-barres illisible</div>`}
-        </div>
-      </div>
-    </div>
+  <div id="sheets">${stages}
   </div>
 
   <div class="panel screen-only">
@@ -604,7 +675,7 @@ export function barcodeLabelHTML(
     <label>Format du rouleau
       <select id="fmt">${presetOptions}</select>
     </label>
-    <label>Copies
+    <label>${multi ? 'Copies (× chaque produit)' : 'Copies'}
       <span class="stepper">
         <button type="button" class="ghost" id="less" title="Une de moins">&minus;</button>
         <input type="number" id="cop" min="1" max="50" step="1" value="${copies}">
@@ -638,6 +709,9 @@ export function barcodeLabelHTML(
     var MODULES = ${modules};
     var PAD_X = ${PAD_X_RATIO};
     var MIN_MODULE = ${MIN_MODULE_MM};
+    /** Exemplaires voulus produit par produit, dans l'ordre des vignettes. */
+    var ITEMS = ${JSON.stringify(labels.map(l => l.copies))};
+    var MULTI = ${multi};
 
     var root = document.documentElement;
     var pageStyle = document.getElementById("page-size");
@@ -661,13 +735,19 @@ export function barcodeLabelHTML(
     // booléen, coché un jour pour essayer, faisait sortir toutes les étiquettes
     // debout jusqu'à ce que quelqu'un pense à le décocher : le sens repart
     // d'horizontale, celui du rouleau.
+    //
+    // Le nombre de copies n'est repris que pour une étiquette SEULE. Sur un lot
+    // c'est un multiplicateur : un "3" enregistré au comptoir la semaine
+    // dernière sortirait trois fois la facture entière sans rien annoncer.
+    var prefCopies = 1;
     try {
       var saved = JSON.parse(localStorage.getItem(PREFS) || "null");
       if (saved && saved.w > 0 && saved.h > 0) {
         state.w = saved.w;
         state.h = saved.h;
         state.rotate = clean(saved.rotate);
-        state.copies = Math.max(1, Math.min(50, saved.copies || 1));
+        prefCopies = Math.max(1, Math.min(50, saved.copies || 1));
+        if (!MULTI) state.copies = prefCopies;
       } else {
         var old = JSON.parse(localStorage.getItem(PREFS_V1) || "null");
         if (old && old.w > 0 && old.h > 0) { state.w = old.w; state.h = old.h; }
@@ -675,7 +755,12 @@ export function barcodeLabelHTML(
     } catch (e) { /* navigation privée, stockage bloqué : on garde le défaut */ }
 
     function save() {
-      try { localStorage.setItem(PREFS, JSON.stringify(state)); } catch (e) {}
+      try {
+        localStorage.setItem(PREFS, JSON.stringify({
+          w: state.w, h: state.h, rotate: state.rotate,
+          copies: MULTI ? prefCopies : state.copies,
+        }));
+      } catch (e) {}
     }
 
     // ── Réduire un texte jusqu'à ce qu'il tienne dans sa boîte ─────────────
@@ -735,18 +820,31 @@ export function barcodeLabelHTML(
       root.style.setProperty("--ph", ph + "mm");
       // L'aperçu vise ~112 mm de large et ~150 mm de haut à l'écran : assez
       // grand pour relire un prix, assez petit pour tenir dans la fenêtre quel
-      // que soit le rouleau — y compris un 20 × 40 debout.
-      var zoom = Math.min(112 / pw, 150 / ph);
+      // que soit le rouleau — y compris un 20 × 40 debout. Un lot se contente
+      // de moins : l'intérêt est d'en voir plusieurs à la fois.
+      var zoom = Math.min((MULTI ? 74 : 112) / pw, (MULTI ? 98 : 150) / ph);
       root.style.setProperty("--zoom", Math.max(1.2, Math.min(6, Math.round(zoom * 100) / 100)));
       document.body.setAttribute("data-rotate", String(state.rotate));
 
-      // Autant de pages que de copies, toutes identiques à la première.
-      var first = sheets.firstElementChild;
-      while (sheets.children.length > state.copies) sheets.removeChild(sheets.lastElementChild);
-      while (sheets.children.length < state.copies) sheets.appendChild(first.cloneNode(true));
+      // Autant de pages que de copies, toutes identiques à la première — et ce
+      // produit par produit : chacun garde la quantité qu'on lui a donnée.
+      var stages = sheets.querySelectorAll(".stage");
+      var total = 0;
+      for (var i = 0; i < stages.length; i++) {
+        var st = stages[i];
+        var want = Math.max(1, Math.min(500, (ITEMS[i] || 1) * state.copies));
+        var first = st.firstElementChild;
+        while (st.children.length > want) st.removeChild(st.lastElementChild);
+        while (st.children.length < want) st.appendChild(first.cloneNode(true));
+        var cap = st.parentNode.querySelector(".cap");
+        if (cap) cap.textContent = "\\u00D7 " + want;
+        total += want;
+      }
 
       var turned = state.rotate ? " \\u00B7 " + state.rotate + "\\u00B0" : "";
-      var many = state.copies > 1 ? " \\u00B7 " + state.copies + " copies" : "";
+      var many = MULTI
+        ? " \\u00B7 " + stages.length + " produits \\u00B7 " + total + " \\u00E9tiquettes"
+        : (total > 1 ? " \\u00B7 " + total + " copies" : "");
       document.getElementById("dims").textContent =
         state.w + " \\u00D7 " + state.h + " mm" + turned + many;
       document.getElementById("paper").textContent = pw + " \\u00D7 " + ph + " mm";

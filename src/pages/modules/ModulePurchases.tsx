@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   ShoppingCart, Plus, Search, Trash2 as TrashIcon, X, Truck, Receipt, Wallet, CircleDollarSign, Package,
-  Tag, Banknote, Droplet, Scale, Info, Printer,
+  Tag, Banknote, Droplet, Scale, Info, Printer, Barcode,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
@@ -22,6 +22,7 @@ import {
   StaticField, money, formatDate,
 } from '@/src/components/biz/Kit';
 import { ProductModal, ContactModal, PayDebtModal, printPurchaseInvoice, productMatches, stationFromSettings } from './_shared';
+import PurchaseLabelsModal from '@/src/components/biz/PurchaseLabelsModal';
 
 export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
@@ -40,6 +41,13 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
   const [viewing, setViewing] = useState<BizPurchase | null>(null);
   const [paying, setPaying] = useState<BizPurchase | null>(null);
   const [toDelete, setToDelete] = useState<BizPurchase | null>(null);
+  /**
+   * Facture dont on étiquette la marchandise. La réception est le moment où les
+   * étiquettes se posent : la facture porte déjà la liste de ce qui est arrivé
+   * et en quelle quantité, inutile de la retrouver produit par produit dans la
+   * Gestion de stock.
+   */
+  const [labeling, setLabeling] = useState<BizPurchase | null>(null);
 
   const filtered = useMemo(() => {
     return [...purchases]
@@ -162,6 +170,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />}
                   {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
                   <ActionBtn icon={Printer} tone="slate" title="Imprimer la facture d’achat" onClick={() => printPurchase(p)} />
+                  <ActionBtn icon={Barcode} tone="blue" title="Imprimer les étiquettes code-barres des produits" onClick={() => setLabeling(p)} />
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </div>
@@ -193,6 +202,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
                   {perm.modifier && <ActionBtn icon={Edit2} tone="amber" title="Modifier" onClick={() => { setEditing(p); setShowForm(true); }} />}
                   {p.rest > 0 && perm.modifier && <ActionBtn icon={Wallet} tone="green" title="Payer dette" onClick={() => setPaying(p)} />}
                   <ActionBtn icon={Printer} tone="slate" title="Imprimer la facture d’achat" onClick={() => printPurchase(p)} />
+                  <ActionBtn icon={Barcode} tone="blue" title="Imprimer les étiquettes code-barres des produits" onClick={() => setLabeling(p)} />
                   {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => setToDelete(p)} />}
                 </RowActions>
               </td>
@@ -210,6 +220,11 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
       <Modal open={!!viewing} onClose={() => setViewing(null)} icon={Receipt} size="2xl" title={`Achat ${viewing?.ref || ''}`} subtitle={viewing?.supplierName}
         footer={<>
           <button className="btn-ghost" onClick={() => setViewing(null)}>Fermer</button>
+          {/* La marchandise qu'on vient de relire est celle qu'il faut
+              étiqueter : le rayon se remplit dans la foulée. */}
+          <button className="btn-outline" onClick={() => viewing && setLabeling(viewing)}>
+            <Barcode className="w-4 h-4" /> Étiquettes code-barres
+          </button>
           {/* On imprime la facture qu'on est en train de lire : c'est ici qu'on
               décide qu'elle est juste, pas dans la liste. */}
           <button className="btn-primary" onClick={() => viewing && printPurchase(viewing)}>
@@ -292,6 +307,10 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
           </div>
         )}
       </Modal>
+
+      {/* Les étiquettes de la marchandise reçue sur cette facture. */}
+      <PurchaseLabelsModal open={!!labeling} onClose={() => setLabeling(null)}
+        purchase={labeling} biz={biz} canEdit={perm.modifier} />
 
       <PayDebtModal open={!!paying} onClose={() => setPaying(null)} total={paying?.total || 0} alreadyPaid={paying?.paid || 0} onPay={onPay} />
       <Confirm open={!!toDelete} title="Supprimer l'achat"

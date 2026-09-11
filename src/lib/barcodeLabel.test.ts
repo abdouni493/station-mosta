@@ -21,7 +21,7 @@
  */
 import {
   code128Values, code128Widths, barcodeSVG, barcodeLabelSVG,
-  moduleWidthMm, labelPrice, barcodeLabelHTML, MIN_MODULE_MM,
+  moduleWidthMm, labelPrice, barcodeLabelHTML, barcodeLabelsHTML, MIN_MODULE_MM,
   LABEL_40_20, LABEL_PRESETS, LABEL_PREFS_KEY, LABEL_PREFS_KEY_V1,
   LABEL_ROTATIONS, PAD_X_RATIO, normalizeRotation,
 } from './barcodeLabel';
@@ -306,6 +306,53 @@ ok('le SVG à taille fixe, lui, porte sa largeur',
 check('un code vide ne rend rien', barcodeLabelSVG(''), '');
 ok('les barres sont dessinées en noir', barcodeLabelSVG(CODE).includes('<g fill="#000">'));
 ok('la zone de silence est réservée à gauche', barcodeLabelSVG(CODE).includes('<rect x="10"'));
+
+console.log('\n── La planche d\'étiquettes d\'un achat ──');
+/**
+ * Une facture apporte plusieurs références d'un coup, et il faut les étiqueter
+ * AVANT de remplir le rayon. Les sortir une par une, c'est autant de fenêtres,
+ * autant de dialogues d'impression, et un rouleau qu'on finit par régler de
+ * travers en chemin. La planche les met toutes sur la même bande.
+ */
+const CODE_B = '6100000000002';
+const CODE_C = '6100000000003';
+const lot = barcodeLabelsHTML([
+  { name: 'Huile 5W40', barcode: CODE, salePrice: 2400, copies: 3 },
+  { name: 'Filtre à air', barcode: CODE_B, salePrice: 900, copies: 2 },
+  { name: 'Bougie', barcode: CODE_C, copies: 1 },
+]);
+ok('les trois produits sont sur la même planche',
+  lot.includes(`>${CODE}<`) && lot.includes(`>${CODE_B}<`) && lot.includes(`>${CODE_C}<`));
+check('chaque produit a sa vignette', (lot.match(/class="stage"/g) || []).length, 3);
+check('et chacun garde SA quantité', /var ITEMS = (\[[^\]]*\])/.exec(lot)![1], '[3,2,1]');
+ok('la page se sait être un lot', lot.includes('var MULTI = true;'));
+ok('le réglage de copies devient un multiplicateur', lot.includes('Copies (× chaque produit)'));
+/**
+ * Le multiplicateur ne se reprend PAS du poste : un « 3 » réglé au comptoir la
+ * semaine dernière sortirait trois fois la facture entière sans rien annoncer.
+ * Le format du rouleau et le sens, eux, restent repris — ils ne changent pas
+ * d'une étiquette à l'autre.
+ */
+ok('le multiplicateur repart de 1, quoi qu\'ait retenu le poste',
+  lot.includes('if (!MULTI) state.copies = prefCopies;'));
+ok('et le lot ne réécrit pas les copies enregistrées',
+  lot.includes('copies: MULTI ? prefCopies : state.copies,'));
+/**
+ * Chaque produit repart sur SA page. Sans cette règle, la dernière copie d'un
+ * produit et la première du suivant se disputeraient la même étiquette.
+ */
+ok('un produit qui en suit un autre repart sur sa page',
+  lot.includes('#sheets .item:not(:last-child) .sheet:last-child{break-after:page;page-break-after:always}'));
+check('l\'avertissement « code dense » regarde le code le plus long du lot',
+  /var MODULES = (\d+);/.exec(lot)![1],
+  String(Math.max(code128Widths(CODE)!.modules, code128Widths(CODE_B)!.modules,
+    code128Widths(CODE_C)!.modules)));
+
+/** Une étiquette seule ne change pas d'un iota : c'est la même page qu'avant. */
+check('une étiquette seule passe toujours par le même chemin',
+  barcodeLabelsHTML([{ name: 'Huile moteur 5W40', barcode: CODE, salePrice: 2400 }]), html);
+ok('et elle ne se croit pas un lot', html.includes('var MULTI = false;'));
+ok('une liste vide rend quand même une page', barcodeLabelsHTML([]).includes('Code-barres illisible'));
 
 console.log(`\n${failed === 0 ? '✅' : '❌'} ${passed} réussis, ${failed} échoués\n`);
 process.exit(failed === 0 ? 0 : 1);
