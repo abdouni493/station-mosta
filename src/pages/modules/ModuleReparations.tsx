@@ -27,6 +27,7 @@ import { newId, matchesSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizReparation, BizRepKind, BizPrestation, BizDiscountType,
   BizCar, BizLineItem, BizProduct, BizWorker, detailPrice, discountOf, prestationsOf, formatQty,
+  compactRef, productRefLabel, productCarLabel,
 } from '@/src/lib/bizConfig';
 import { applyRestock, describeRestock, restockPlan, totalRestocked } from '@/src/lib/bizRestock';
 import { useBiz } from '@/src/store/BizContext';
@@ -36,7 +37,10 @@ import {
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, money, formatDate,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
-import { ContactModal, PayDebtModal, PayDebtMeta, withPayment, seedPayments, printInvoice, AskPrintModal, stationFromSettings } from './_shared';
+import {
+  ContactModal, PayDebtModal, PayDebtMeta, withPayment, seedPayments, printInvoice, AskPrintModal,
+  stationFromSettings, productMatches as matchesProduct,
+} from './_shared';
 import { ClientCarPicker } from './ClientCarPicker';
 import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 
@@ -132,6 +136,33 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
     revenue: reparations.reduce((s, r) => s + r.total, 0),
     rest: reparations.reduce((s, r) => s + r.rest, 0),
   }), [reparations]);
+
+  /**
+   * ─── QUI A FAIT LE TRAVAIL ────────────────────────────────────────────────
+   * Une intervention nomme ses employés dans `workers`, mais c'est CHAQUE
+   * prestation qui dit lequel l'a réalisée. La liste affiche donc l'équipe de
+   * la ligne, chacun avec les prestations qui lui reviennent : sur une fiche
+   * qui porte un lavage ET une vidange, « Karim » seul ne dit pas lequel des
+   * deux il a fait — et c'est pourtant là-dessus qu'il est payé.
+   *
+   * Un employé nommé sur l'intervention sans être rattaché à une prestation
+   * (ancienne fiche, ou intervention de produits seuls) reste listé : le
+   * travail lui compte quand même, sur le total.
+   */
+  const crewOf = (r: BizReparation) => {
+    const crew = new Map<string, { id: string; name: string; jobs: string[] }>();
+    const add = (id: string, job?: string) => {
+      const name = workers.find(w => w.id === id)?.name;
+      if (!name) return;
+      const entry = crew.get(id) || { id, name, jobs: [] };
+      if (job) entry.jobs.push(job);
+      crew.set(id, entry);
+    };
+    prestationsOf(r).forEach(l =>
+      (l.workerIds || []).forEach(id => add(id, l.label || KIND_META[l.kind].label)));
+    (r.workers || []).forEach(id => add(id));
+    return [...crew.values()];
+  };
 
   /**
    * Supprimer une intervention ANNULE la sortie des pièces et consommables
@@ -274,7 +305,8 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
         <Table head={<>
           <th className="table-head">Actions</th><th className="table-head">Client</th>
           <th className="table-head">Véhicule</th>
-          <th className="table-head">Prestations</th><th className="table-head">Date</th>
+          <th className="table-head">Prestations</th><th className="table-head">Employés</th>
+          <th className="table-head">Date</th>
           <th className="table-head text-right">Total</th><th className="table-head text-right">Payé</th>
           <th className="table-head text-right">Reste</th><th className="table-head">État</th>
           <th className="table-head">Réf</th>
@@ -282,6 +314,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
           {filtered.map(r => {
             const KM = KIND_META[r.kind]; const KIcon = KM.icon;
             const carLabel = [r.car?.marque, r.car?.name, r.car?.immatriculation].filter(Boolean).join(' • ');
+            const crew = crewOf(r);
             return (
               <tr key={r.id} className={r.status === 'pending' ? 'bg-amber-50/60' : undefined}>
                 <td className="table-cell">
@@ -309,6 +342,21 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                     {r.usedProducts.length > 0 && <Badge tone="neutral">{r.usedProducts.length} produit(s)</Badge>}
                   </div>
                 </td>
+                <td className="table-cell">
+                  {crew.length === 0 ? <span className="text-slate-300">—</span> : (
+                    <div className="flex flex-wrap gap-1 max-w-[220px]">
+                      {crew.map(c => (
+                        <span key={c.id}
+                          title={c.jobs.length ? `${c.name} — ${c.jobs.join(' · ')}` : `${c.name} — intervention entière`}
+                          className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-0.5
+                                     text-[11px] font-bold text-slate-600 max-w-full">
+                          <User className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="truncate">{c.name}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </td>
                 <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(r.date)}</td>
                 <td className="table-cell tabular-nums text-right font-bold">{money(r.total)}</td>
                 <td className="table-cell tabular-nums text-right text-emerald-600">{money(r.paid)}</td>
@@ -325,6 +373,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
         <CardGrid>
           {filtered.map(r => {
             const KM = KIND_META[r.kind]; const KIcon = KM.icon;
+            const crew = crewOf(r);
             return (
               <GlassCard key={r.id}
                 className={r.status === 'pending' ? '!border-amber-300 ring-1 ring-amber-200' : undefined}>
@@ -353,11 +402,18 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                     </Badge>
                   )}
                 </div>
-                {r.workers.length > 0 && (
-                  <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 truncate">
-                    <User className="w-3 h-3 shrink-0" />
-                    {r.workers.map(id => workers.find(w => w.id === id)?.name).filter(Boolean).join(', ')}
-                  </p>
+                {/* L'équipe de l'intervention — chaque nom porte ses prestations. */}
+                {crew.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                    <User className="w-3 h-3 text-slate-400 shrink-0" />
+                    {crew.map(c => (
+                      <span key={c.id}
+                        title={c.jobs.length ? `${c.name} — ${c.jobs.join(' · ')}` : `${c.name} — intervention entière`}
+                        className="inline-flex items-center rounded-lg bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">
+                        {c.name}
+                      </span>
+                    ))}
+                  </div>
                 )}
                 <div className="grid grid-cols-3 gap-2 mt-3">
                   <div className="rounded-xl bg-slate-50 p-2 text-center"><p className="text-[9px] uppercase font-bold text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm">{money(r.total)}</p></div>
@@ -672,7 +728,7 @@ function ReparationForm({
       ? { ...l, workerIds: l.workerIds.includes(workerId) ? l.workerIds.filter(w => w !== workerId) : [...l.workerIds, workerId] }
       : l));
 
-  // ── Produits utilisés — recherche par nom OU code-barres ──────────────────
+  // ── Produits utilisés — nom, code-barres, RÉFÉRENCES et véhicules ─────────
   /**
    * ─── POURQUOI LE PRODUIT CHOISI RESTE SOUS LES YEUX ────────────────────────
    *
@@ -690,13 +746,46 @@ function ReparationForm({
    * consommer et faire passer le stock en négatif (rattrapé au prochain achat),
    * exactement comme au point de vente. Le formulaire le DIT — « stock après »
    * vire au rouge — au lieu de l'interdire.
+   *
+   * ─── CE QUI EST CHERCHÉ ────────────────────────────────────────────────────
+   * Cet écran ne regardait que le NOM et le code-barres. Une pièce porte
+   * pourtant plusieurs numéros — celui du constructeur, celui de
+   * l'équipementier, celui du catalogue du fournisseur — et c'est avec l'un
+   * d'eux que le client arrive. Une pièce bien rangée, avec toutes ses
+   * références sur sa fiche, restait donc introuvable ici alors que la Gestion
+   * de stock, les Achats et le point de vente la sortaient sans hésiter.
+   *
+   * La règle est désormais LA MÊME que sur ces trois écrans (`productMatches`
+   * de `_shared`) : nom, description, code-barres, marque, catégorie, CHACUNE
+   * des références — telle qu'elle s'écrit ET compactée, pour que « 7701478261 »
+   * retrouve « 7701 478 261 » — et chacun des véhicules que la pièce équipe.
    */
   const productMatches = useMemo(() => {
     if (!pQuery.trim()) return [];
     return products
-      .filter((p: BizProduct) => matchesSearch(pQuery, p.name, p.barcode))
-      .slice(0, 10);
+      .filter((p: BizProduct) => matchesProduct(p, pQuery))
+      // Une recherche par référence ramène plus large qu'une recherche par nom
+      // (le même numéro équipe plusieurs pièces) : la liste défile, on ne la
+      // tronque donc plus à dix.
+      .slice(0, 30);
   }, [products, pQuery]);
+
+  /**
+   * Le produit désigné par un code EXACT — son code-barres, ou l'une de ses
+   * références. Les références sont comparées SANS leurs séparateurs : le même
+   * numéro se note « 7701 478 261 » sur la fiche et se tape « 7701478261 », et
+   * une douchette ne met jamais les espaces.
+   *
+   * C'est ce que lisent la touche « Entrée » et la caméra : elles ne doivent
+   * ajouter un produit que lorsqu'il n'y a aucun doute sur lequel.
+   */
+  const byExactCode = (code: string): BizProduct | undefined => {
+    const clean = code.trim();
+    if (!clean) return undefined;
+    const compact = compactRef(clean);
+    return products.find((p: BizProduct) => (p.barcode || '').trim() === clean)
+      || products.find((p: BizProduct) => (p.refs || []).some(r => !!r.ref && compactRef(r.ref) === compact));
+  };
 
   /** Le stock restant d'un produit, dit avec la couleur qui va avec. */
   const stockTone = (q: number, min: number) => (
@@ -774,10 +863,14 @@ function ReparationForm({
   /**
    * Un code lu à la caméra (ou par une douchette) tombe directement dans la
    * liste des produits utilisés. Un code inconnu le dit, et la caméra continue.
+   *
+   * Le code-barres n'est pas le seul numéro imprimé sur un carton de pièces :
+   * la référence de l'équipementier y figure souvent seule. Elle est donc
+   * acceptée elle aussi.
    */
   const scanToUsed = (code: string): boolean => {
     const clean = code.trim();
-    const found = products.find((p: BizProduct) => (p.barcode || '').trim() === clean);
+    const found = byExactCode(clean);
     if (!found) { setScanNote(`Code ${clean} inconnu — aucun produit ne le porte.`); return false; }
     addUsed(found);
     setScanNote(`${found.name} ajouté aux produits utilisés`);
@@ -1090,7 +1183,7 @@ function ReparationForm({
 
           {/* ── 2 · Produits utilisés ───────────────────────────────────────── */}
           <Block step={2} icon={PackageSearch} title="Produits utilisés"
-            hint="Cherchez par nom ou code-barres — le produit choisi reste affiché, sa quantité se règle ici."
+            hint="Nom, code-barres, référence ou véhicule — le produit choisi reste affiché, sa quantité se règle ici."
             grad="linear-gradient(135deg,#047857,#10b981)" border="border-emerald-200" tint="bg-emerald-50/40"
             action={
               <div className="flex items-center gap-1.5">
@@ -1107,18 +1200,23 @@ function ReparationForm({
                 <div className="relative flex-1 min-w-[220px]">
                   <Search className="w-4 h-4 text-emerald-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input value={pQuery} onChange={e => setPQuery(e.target.value)}
-                    placeholder="Rechercher un produit par nom ou code-barres…"
+                    placeholder="Nom, code-barres, référence (7701 478 261) ou véhicule (Clio 4 2015)…"
                     className="w-full rounded-xl border-2 border-emerald-200 bg-white py-3 pl-9 pr-9 text-sm font-semibold
                                text-slate-800 outline-none transition-all placeholder:text-slate-400
                                focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
                     onKeyDown={e => {
-                      // Une douchette USB écrit ici puis envoie « Entrée » : seul un
-                      // code-barres EXACT ajoute le produit — valider une recherche
-                      // par nom prendrait le premier de la liste au hasard.
+                      // Une douchette USB écrit ici puis envoie « Entrée ». Un code
+                      // EXACT — code-barres ou référence — ajoute son produit sans
+                      // discussion ; sinon, « Entrée » ne valide que lorsqu'il ne
+                      // reste QU'UN seul résultat à l'écran. Devant une liste, elle
+                      // ne choisit jamais à la place de l'utilisateur : prendre le
+                      // premier au hasard sortait la mauvaise pièce.
                       if (e.key !== 'Enter') return;
                       const code = pQuery.trim();
-                      const hit = products.find((x: BizProduct) => (x.barcode || '').trim() === code);
-                      if (!code || !hit) return;
+                      if (!code) return;
+                      const hit = byExactCode(code)
+                        || (productMatches.length === 1 ? productMatches[0] : undefined);
+                      if (!hit) return;
                       e.preventDefault();
                       addUsed(hit);
                       setPQuery('');
@@ -1148,9 +1246,16 @@ function ReparationForm({
                     className="overflow-hidden">
                     <div className="rounded-2xl border-2 border-emerald-200 bg-white overflow-hidden shadow-sm">
                       {productMatches.length === 0 ? (
-                        <p className="px-4 py-5 text-center text-sm font-semibold text-slate-400">
-                          Aucun produit ne correspond à « {pQuery} ».
-                        </p>
+                        <div className="px-4 py-5 text-center">
+                          <p className="text-sm font-semibold text-slate-400">
+                            Aucun produit ne correspond à « {pQuery} ».
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            Le nom, le code-barres, toutes les références de la pièce et les véhicules
+                            qu'elle équipe ont été cherchés. Une pièce absente d'ici l'est aussi de la
+                            Gestion de stock — ou sa référence n'est pas encore sur sa fiche.
+                          </p>
+                        </div>
                       ) : (
                         <div className="max-h-64 overflow-y-auto custom-scrollbar divide-y divide-slate-100">
                           {productMatches.map((p: BizProduct) => {
@@ -1170,6 +1275,21 @@ function ReparationForm({
                                     {p.barcode ? `${p.barcode} • ` : ''}{p.categoryName || 'Sans catégorie'}
                                     {detail ? ` • au détail (${p.detailCapacity} ${p.detailUnit || 'L'})` : ''}
                                   </span>
+                                  {/* Les numéros de la pièce et les voitures qu'elle équipe : c'est
+                                      souvent par eux qu'on vient de la trouver, il faut donc les VOIR
+                                      pour reconnaître la bonne parmi plusieurs homonymes. */}
+                                  {!!p.refs?.length && (
+                                    <span className="block text-[11px] font-mono font-bold text-violet-600 truncate"
+                                      title={p.refs.map(productRefLabel).join(' · ')}>
+                                      {p.refs.map(productRefLabel).join(' · ')}
+                                    </span>
+                                  )}
+                                  {!!p.cars?.length && (
+                                    <span className="block text-[11px] text-slate-400 truncate"
+                                      title={p.cars.map(productCarLabel).join(' · ')}>
+                                      🚗 {p.cars.map(productCarLabel).join(' · ')}
+                                    </span>
+                                  )}
                                 </span>
                                 <span className={`hidden sm:inline-flex text-[10px] font-black px-2 py-1 rounded-lg border tabular-nums shrink-0 ${stockTone(p.currentQty, p.minQty)}`}>
                                   Stock {formatQty(p.currentQty)}

@@ -168,7 +168,7 @@ export function productCarLabel(c: BizProductCar | undefined | null): string {
  * bloc : sans cette forme compacte, la référence enregistrée avec ses espaces
  * resterait introuvable.
  */
-const compactRef = (s: string): string => (s || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+export const compactRef = (s: string): string => (s || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
 /**
  * Les années couvertes par un millésime écrit comme dans un catalogue.
