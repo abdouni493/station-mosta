@@ -107,7 +107,22 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   // Tableau par défaut : une journée d'atelier se lit en lignes — réf, client,
   // véhicule, reste à encaisser. Les cartes restent à un clic.
   const [view, setView] = useState<'grid' | 'table'>('table');
-  const [status, setStatus] = useState<'all' | 'pending' | 'finalized' | 'canceled'>('all');
+  /**
+   * ─── LA LISTE S'OUVRE SUR CE QUI ATTEND ───────────────────────────────────
+   * Ce qu'on vient faire ici, c'est finaliser un véhicule pris en charge : la
+   * liste s'ouvre donc sur les interventions EN ATTENTE, pas sur un historique
+   * où elles se noient. Quand l'atelier est à jour — plus rien en attente —
+   * elle s'ouvre sur tout : un filtre qui n'affiche rien n'apprend rien.
+   */
+  const [status, setStatus] = useState<'all' | 'pending' | 'finalized' | 'canceled'>('pending');
+  /** L'utilisateur a choisi son filtre : plus rien ne le lui change sous les yeux. */
+  const statusPicked = useRef(false);
+  const chooseStatus = (s: typeof status) => { statusPicked.current = true; setStatus(s); };
+  useEffect(() => {
+    if (statusPicked.current || reparations.length === 0) return;
+    statusPicked.current = true;
+    if (!reparations.some(r => r.status === 'pending')) setStatus('all');
+  }, [reparations]);
   const [period, setPeriod] = useState<Period>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [creating, setCreating] = useState<null | { kind: BizRepKind; pending: boolean }>(null);
@@ -244,7 +259,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
       {/* Alerte — des interventions attendent d'être finalisées. */}
       {stats.pending > 0 && (
-        <button onClick={() => setStatus('pending')}
+        <button onClick={() => chooseStatus('pending')}
           className="w-full text-left rounded-2xl p-4 flex flex-wrap items-center gap-3 transition-transform hover:-translate-y-0.5"
           style={{ background: 'linear-gradient(135deg, #b45309, #f59e0b)', boxShadow: '0 8px 24px rgba(245,158,11,0.28)' }}>
           <span className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
@@ -255,11 +270,13 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
               {stats.pending} intervention{stats.pending > 1 ? 's' : ''} en attente
             </span>
             <span className="block text-[12px] text-amber-50">
-              Lavages / vidanges à finaliser — cliquez pour n'afficher que celles-ci.
+              {status === 'pending'
+                ? "Lavages / vidanges à finaliser — c'est ce que la liste affiche."
+                : "Lavages / vidanges à finaliser — cliquez pour n'afficher que celles-ci."}
             </span>
           </span>
           <span className="ml-auto text-xs font-black text-white bg-white/20 rounded-lg px-3 py-1.5 shrink-0">
-            Voir les interventions
+            {status === 'pending' ? 'Liste filtrée' : 'Voir les interventions'}
           </span>
         </button>
       )}
@@ -278,7 +295,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
             {(['all', 'pending', 'finalized', 'canceled'] as const).map(s => {
               const n = s === 'all' ? reparations.length : reparations.filter(r => r.status === s).length;
               return (
-                <button key={s} onClick={() => setStatus(s)}
+                <button key={s} onClick={() => chooseStatus(s)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors ${status === s ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
                   {s === 'all' ? 'Tous' : STATUS_META[s].label}
                   <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-black tabular-nums ${
@@ -295,7 +312,15 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
       </div>
 
       {filtered.length === 0 ? (
-        <EmptyState icon={Car} title="Aucune intervention" message="Créez un lavage ou une vidange, ou enregistrez-la en attente." />
+        <EmptyState
+          icon={status === 'pending' ? Hourglass : Car}
+          title={status === 'pending' ? 'Aucune intervention en attente' : 'Aucune intervention'}
+          message={status === 'pending'
+            ? "L'atelier est à jour — tout est finalisé. L'historique complet reste à un clic."
+            : 'Créez un lavage ou une vidange, ou enregistrez-la en attente.'}
+          action={status === 'pending'
+            ? <button className="btn-secondary" onClick={() => chooseStatus('all')}>Voir toutes les interventions</button>
+            : undefined} />
       ) : view === 'table' ? (
         /* Les ACTIONS ouvrent la ligne. Ce qu'on vient faire ici, c'est
            finaliser, encaisser ou imprimer une intervention : le bouton doit
@@ -679,7 +704,26 @@ function ReparationForm({
   const [car, setCar] = useState<BizCar>(initial?.car || {});
   const [problem, setProblem] = useState(initial?.problem || '');
   const [used, setUsed] = useState<BizLineItem[]>(initial?.usedProducts || []);
+  /**
+   * ─── CE QUE LE CLIENT DOIT EST DÉJÀ ÉCRIT ─────────────────────────
+   *
+   * Le montant encaissé n'est pas une question à reposer : une intervention
+   * qu'on finalise est réglée en entier neuf fois sur dix. Le champ « Payé »
+   * SUIT donc le total — il se remet à jour quand on ajoute une prestation, un
+   * produit ou une remise — et la première frappe le fige sur ce que
+   * l'utilisateur a décidé : un client qui ne paie qu'une partie se saisit
+   * exactement comme avant.
+   *
+   * Sans cela, finaliser un véhicule pris en charge le matin rouvrait la fiche
+   * sur « Payé : 0 ». Il fallait relire le total, le retaper à l'identique, et
+   * la moindre faute de frappe ouvrait une dette à un client qui avait payé.
+   */
   const [paidStr, setPaidStr] = useState<string>(initial ? String(initial.paid) : '');
+  /** `true` dès que le montant encaissé a été saisi à la main. Une intervention
+   *  DÉJÀ finalisée garde le sien ; une intervention en attente n'a rien
+   *  encaissé — on lui propose ce qu'il y a à payer. */
+  const [paidEdited, setPaidEdited] = useState<boolean>(!!initial && initial.status !== 'pending');
+  const typePaid = (v: string) => { setPaidEdited(true); setPaidStr(v); };
   const [pQuery, setPQuery] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState('');
@@ -701,7 +745,13 @@ function ReparationForm({
   const subtotal = serviceTotal + productsTotal;
   const discountAmount = discountMode === 'none' ? 0 : discountOf(subtotal, discountMode, Number(discountStr) || 0);
   const total = Math.max(0, subtotal - discountAmount);
-  const paid = paidStr === '' ? (pending ? 0 : total) : Number(paidStr);
+  /**
+   * Le montant proposé tant que personne ne l'a corrigé : tout ce qu'il y a à
+   * payer sur une intervention finalisée, et ce qui a déjà été versé (souvent
+   * rien) sur une intervention laissée en attente.
+   */
+  const autoPaid = pending ? Number(initial?.paid) || 0 : total;
+  const paid = paidEdited ? Number(paidStr) || 0 : autoPaid;
   const rest = Math.max(0, total - paid);
 
   const repKind = kindOfPrestations(lines.filter(keptLine), kind);
@@ -1519,19 +1569,41 @@ function ReparationForm({
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[11px] font-black uppercase tracking-wider text-blue-200">Payé</label>
-                  <input type="number" value={paidStr} onChange={e => setPaidStr(e.target.value)}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="text-[11px] font-black uppercase tracking-wider text-blue-200">Payé</label>
+                    {paidEdited ? (
+                      <button onClick={() => { setPaidEdited(false); setPaidStr(''); }}
+                        title="Reprendre le montant calculé"
+                        className="text-[10px] font-black uppercase tracking-wider text-blue-100 bg-white/10
+                                   hover:bg-white/20 rounded-lg px-2 py-0.5 transition-colors active:scale-95">
+                        Montant saisi — remettre le total
+                      </button>
+                    ) : (
+                      <span className="text-[10px] font-black uppercase tracking-wider text-emerald-200
+                                       bg-emerald-400/20 rounded-lg px-2 py-0.5">
+                        Proposé — modifiable
+                      </span>
+                    )}
+                  </div>
+                  <input type="number"
+                    value={paidEdited ? paidStr : (autoPaid ? String(Math.round(autoPaid * 100) / 100) : '')}
+                    onChange={e => typePaid(e.target.value)}
                     placeholder={String(pending ? 0 : total)} className="input-field mt-1" />
                   <div className="flex gap-1.5 mt-1.5">
-                    <button onClick={() => setPaidStr(String(total))}
+                    <button onClick={() => typePaid(String(total))}
                       className="flex-1 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-black transition-colors active:scale-95">
                       Payé en entier
                     </button>
-                    <button onClick={() => setPaidStr('0')}
+                    <button onClick={() => typePaid('0')}
                       className="flex-1 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-black transition-colors active:scale-95">
                       Rien payé
                     </button>
                   </div>
+                  <p className="text-[11px] text-blue-200 mt-1.5 px-1">
+                    {paidEdited
+                      ? 'Montant saisi à la main — il ne suit plus le total.'
+                      : "Le total à payer est repris automatiquement : corrigez-le si le client n'a pas tout réglé."}
+                  </p>
                 </div>
                 <div>
                   <label className="text-[11px] font-black uppercase tracking-wider text-blue-200">Reste</label>

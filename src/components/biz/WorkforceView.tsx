@@ -33,6 +33,13 @@ const fmtDateTime = (s?: string) => {
   return Number.isNaN(d.getTime()) ? s : d.toLocaleString('fr-DZ', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
 };
 const liters = (n: number) => `${(n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`;
+/**
+ * La fenêtre lue, même quand elle est ouverte d'un côté : le panneau est aussi
+ * appelé depuis la Caisse d'une partie, où « ce mois » n'a pas de borne haute.
+ */
+const rangeLabel = (from?: string, to?: string) => (!from && !to
+  ? 'toutes les dates'
+  : `${from ? fmtDate(from) : 'origine'} → ${to ? fmtDate(to) : "aujourd'hui"}`);
 
 const PART_ICON: Record<WorkforcePart, React.ElementType> = {
   carburant: Fuel, cafeteria: Coffee, lavage: Droplets,
@@ -1089,7 +1096,7 @@ export function ServiceWorksPanel({ workers, from, to }: {
           {allOpen ? 'Tout replier' : 'Tout déplier'}
         </button>
         <span className="text-[11px] text-slate-400 font-bold tabular-nums ml-auto">
-          {shown.length} / {workers.length} employé(s) · {fmtDate(from)} → {fmtDate(to)}
+          {shown.length} / {workers.length} employé(s) · {rangeLabel(from, to)}
         </span>
       </div>
 

@@ -2,20 +2,22 @@ import React, { useMemo, useState } from 'react';
 import {
   Wallet, PiggyBank, ArrowDownCircle, ArrowUpCircle, Plus, TrendingUp, TrendingDown, Layers,
   Edit2, Trash2, Boxes, ShoppingCart, CreditCard, Banknote, Beaker,
-  Clock, UserCheck, PlayCircle, StopCircle, Scale, Eye, Flame,
+  Clock, UserCheck, PlayCircle, StopCircle, Scale, Eye, Flame, Car, Percent,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale, netCashOfSale, bizExpensePaidInCash } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizCaisseTx, BizSession, BizSale } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
-import { moduleCaisseMovements, caisseFlowOf, appExpensesOfPart } from '@/src/lib/bizReporting';
+import { computeModuleReport, caisseFlowOf } from '@/src/lib/bizReporting';
+import { computeBizWorkforce, WorkforceWorker } from '@/src/lib/workforceReporting';
+import { ServiceWorksPanel } from '@/src/components/biz/WorkforceView';
 import { useBizSessions } from '@/src/hooks/useBizSessions';
 import { CloseSessionModal } from './ModulePOS';
 import {
   PageHeader, StatCard, Badge, Modal, Field, Input, Textarea, Select, Switch, Confirm,
   Table, Tabs, EmptyState, ViewToggle, CardGrid, GlassCard, RowActions, ActionBtn,
-  money, formatDate, PeriodFilter, Period, inPeriod,
+  money, formatDate, PeriodFilter, Period, inPeriod, periodRange,
 } from '@/src/components/biz/Kit';
 
 export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
@@ -23,9 +25,9 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'caisse');
   const app = useAppState();
-  const { caisse, sales, purchases, expenses, workers, products, comptoir, destructions } = biz.state;
+  const { caisse, comptoir, destructions } = biz.state;
 
-  const [tab, setTab] = useState<'tresorerie' | 'sessions'>('tresorerie');
+  const [tab, setTab] = useState<'tresorerie' | 'travaux' | 'sessions'>('tresorerie');
   // Tableau par défaut sur les deux listes de l'écran — transactions de caisse
   // et historique des sessions. Les cartes restent à un clic.
   const [view, setView] = useState<'grid' | 'table'>('table');
@@ -35,54 +37,57 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
   const [toDelete, setToDelete] = useState<BizCaisseTx | null>(null);
   const [catFilter, setCatFilter] = useState<string | null>(null);
 
-  // ── Global totals (for balance) ──
-  //
-  // Les DESTRUCTIONS (produits périmés, cassés, volés — enregistrées depuis la
-  // Gestion de stock ou le Comptoir) ne sortent pas d'argent de la caisse : elles
-  // détruisent de la MARCHANDISE. Leur coût est donc suivi à part et retranché du
-  // résultat de la période, pas du solde d'espèces — la valeur du stock a déjà
-  // baissé d'autant.
   /**
-   * Les mouvements du tiroir — la SEULE définition, celle que lisent aussi le
-   * rapport de la partie et l'écran Caisse Générale. Le calcul qui vivait ici
-   * ignorait les interventions payées, les virements du grand livre et les
-   * dépenses de la station imputées à cette partie, et retranchait en revanche
-   * les dépenses réglées par la BANQUE — de l'argent jamais sorti du tiroir.
-   * Trois écrans annonçaient donc trois soldes.
+   * ─── CET ÉCRAN COMPTE COMME LE RAPPORT, SUR LA MÊME FENÊTRE ────────────────
+   *
+   * Les chiffres de cet écran étaient calculés ici, à la main, et ils ne
+   * disaient pas la même chose que le Rapport de la partie ni que les Rapports
+   * Généraux :
+   *
+   *   • « Ventes encaissées » ne lisait que les factures du point de vente et
+   *     IGNORAIT LES INTERVENTIONS — dans un atelier de lavage, c'est-à-dire
+   *     l'essentiel de la recette ;
+   *   • achats, dépenses et salaires étaient sommés sur TOUTES LES DATES, sous
+   *     un filtre de période qui laissait croire le contraire ;
+   *   • « Résultat après pertes » retranchait les destructions d'un flux
+   *     d'ESPÈCES : ni un solde de caisse, ni un gain — aucun autre écran
+   *     n'affichait ce nombre.
+   *
+   * Tout passe désormais par `computeModuleReport` — le moteur du rapport — sur
+   * la fenêtre rendue par `periodRange`, celle-là même qui filtre les listes de
+   * l'écran. Les deux écrans ne peuvent plus se contredire.
    */
-  const movements = useMemo(
-    () => (biz.state ? moduleCaisseMovements(biz.state, moduleKey, app.treasuryTransactions, app.expenses) : []),
-    [biz.state, moduleKey, app.treasuryTransactions, app.expenses]);
+  const range = useMemo(() => periodRange(period, from, to), [period, from, to]);
+  const report = useMemo(
+    () => computeModuleReport(biz.state, moduleKey, range.from, range.to, app.treasuryTransactions, app.expenses),
+    [biz.state, moduleKey, range, app.treasuryTransactions, app.expenses]);
+
+  /** La fenêtre lue, dite en toutes lettres sous les cartes de la période. */
+  const rangeLabel = period === 'all'
+    ? 'toutes les dates'
+    : `${range.from ? formatDate(range.from) : 'origine'} → ${range.to ? formatDate(range.to) : "aujourd'hui"}`;
+
+  /**
+   * Les mouvements du tiroir, TOUTES DATES — la seule définition, celle que
+   * lisent aussi le rapport de la partie et l'écran Caisse Générale.
+   *
+   * Les DESTRUCTIONS (produits périmés, cassés, volés) n'y figurent pas : elles
+   * ne sortent pas d'argent du tiroir, elles détruisent de la MARCHANDISE. Leur
+   * coût pèse sur le gain de la période, pas sur le solde d'espèces — la valeur
+   * du stock a déjà baissé d'autant.
+   */
+  const movements = report.caisseMovements;
 
   const totals = useMemo(() => {
-    const deposits = caisse.filter(c => c.type === 'deposit').reduce((s, c) => s + c.amount, 0);
-    const withdrawals = caisse.filter(c => c.type === 'withdraw').reduce((s, c) => s + c.amount, 0);
-    // `netCashOfSale` : une vente retournée ne laisse dans le tiroir que ce qui
-    // n'a pas été remboursé, une vente échangée rien du tout (son remplacement
-    // porte l'encaissement). Compter `paid` brut gonflait la caisse d'un argent
-    // déjà rendu au client.
-    const salesPaid = sales.reduce((s, x) => s + netCashOfSale(x), 0);
-    const purchasesPaid = purchases.reduce((s, x) => s + x.paid, 0);
-    // Les dépenses de la partie : les siennes ET celles que la station lui a
-    // imputées. Seules celles réglées en espèces ont vidé le tiroir.
-    const appExp = appExpensesOfPart(moduleKey, app.expenses);
-    const exp = expenses.reduce((s, x) => s + x.amount, 0)
-      + appExp.reduce((s: number, x: any) => s + (Number(x.amount) || 0), 0);
-    const expCash = expenses.filter(bizExpensePaidInCash).reduce((s, x) => s + x.amount, 0)
-      + appExp.filter((x: any) => !x.accountId || String(x.accountId).startsWith('CAISSE'))
-        .reduce((s: number, x: any) => s + (Number(x.amount) || 0), 0);
-    const salaries = workers.reduce((s, w) => s + w.payments.reduce((a, p) => a + p.amount, 0), 0);
-    const balance = movements.reduce((s, m) => s + m.amount, 0);
-    const allFlow = caisseFlowOf(movements);
-    const stockValue = products.reduce((s, p) => s + p.currentQty * p.purchasePrice, 0);
+    const balance = report.caisseBalance;
     const comptoirValue = comptoir.reduce((s, c) => s + c.qty * c.unitPrice, 0);
     const destroyed = (destructions || []).filter(d => !d.recovered).reduce((s, d) => s + d.value, 0);
     return {
-      deposits, withdrawals, salesPaid, purchasesPaid, exp, expCash, salaries, balance,
-      cashIn: allFlow.in, cashOut: allFlow.out,
-      stockValue, comptoirValue, destroyed, tresorerie: balance + stockValue + comptoirValue,
+      balance, cashIn: report.caisseFlow.in, cashOut: report.caisseFlow.out,
+      stockValue: report.stockValue, comptoirValue, destroyed,
+      tresorerie: balance + report.stockValue + comptoirValue,
     };
-  }, [caisse, sales, purchases, expenses, workers, products, comptoir, destructions, movements, moduleKey, app.expenses]);
+  }, [report, comptoir, destructions]);
 
   // ── Period flows — lus sur les MÊMES mouvements que le solde ──
   const flow = useMemo(() => {
@@ -90,6 +95,37 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
     const f = caisseFlowOf(rows);
     return { inTotal: f.in, outTotal: f.out, net: f.in - f.out };
   }, [movements, period, from, to]);
+
+  /** La part des dépenses de la période qui est bien sortie du tiroir. */
+  const expensesCash = useMemo(
+    () => report.expenses
+      .filter(e => e.kind === 'Dépense' && e.paidInCash)
+      .reduce((s, e) => s + e.amount, 0),
+    [report]);
+
+  /**
+   * Les employés de l'activité et TOUT ce qu'ils ont fait sur la période — le
+   * même calcul que le rapport général. Réservé aux activités de service
+   * (Lavage & Vidange) : une cafétéria n'a pas de travaux nominatifs.
+   */
+  const crew: WorkforceWorker[] = useMemo(
+    () => (cfg.isService ? computeBizWorkforce(biz.state, moduleKey, range.from, range.to) : []),
+    [cfg.isService, biz.state, moduleKey, range]);
+
+  /**
+   * Les chiffres de l'équipe, repris à l'identique du rapport général : une
+   * intervention faite à deux n'est comptée qu'UNE fois dans le total de
+   * l'atelier, alors qu'elle compte bien pour chacun des deux.
+   */
+  const crewTotals = useMemo(() => {
+    const jobs = new Set<string>();
+    let earned = 0, base = 0, due = 0;
+    crew.forEach(w => {
+      w.works.forEach(x => jobs.add(x.id));
+      earned += w.earned; base += w.worksBase; due += w.dueNow;
+    });
+    return { jobs: jobs.size, earned, base, due, active: crew.filter(w => w.works.length > 0).length };
+  }, [crew]);
 
   // ── Destructions de la période (pertes de marchandise) ─────────────────────
   const destructionsInPeriod = useMemo(
@@ -116,19 +152,45 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <PageHeader icon={Wallet} title="Caisse" subtitle={`${cfg.label} — trésorerie, mouvements & sessions de travail`}
+      <PageHeader icon={Wallet} title="Caisse"
+        subtitle={`${cfg.label} — trésorerie, mouvements${cfg.isService ? ', travaux des employés' : ''} & sessions de travail`}
         actions={perm.creer ? <button className="btn-primary" onClick={() => setForm('new')}><Plus className="w-4 h-4" /> Dépôt / Retrait</button> : undefined} />
 
       <Tabs
         tabs={[
           { id: 'tresorerie', label: 'Trésorerie', icon: Wallet },
+          // Le travail des employés n'a d'onglet que là où il existe : une
+          // activité de service (Lavage & Vidange) paie ses employés SUR leurs
+          // interventions, et c'est ici qu'on les paie.
+          ...(cfg.isService ? [{ id: 'travaux', label: 'Travaux des employés', icon: Car }] : []),
           { id: 'sessions', label: 'Sessions de travail', icon: Clock },
         ]}
         active={tab}
-        onChange={id => setTab(id as 'tresorerie' | 'sessions')}
+        onChange={id => setTab(id as 'tresorerie' | 'travaux' | 'sessions')}
       />
 
       {tab === 'sessions' && <SessionsPanel moduleKey={moduleKey} />}
+
+      {/* ── Le travail des employés, employé par employé ────────────────────
+          La caisse d'un atelier ne sert pas qu'à compter les billets : c'est
+          d'ici que l'on règle les employés payés au pourcentage. Ce qu'ils ont
+          fait sur la période est donc lisible sur place — chaque intervention,
+          chaque prestation, la base retenue, leur part et ce qui leur reste dû
+          — au lieu d'obliger à ouvrir les Rapports Généraux pour le savoir. */}
+      {tab === 'travaux' && (
+        <div className="space-y-4">
+          <div className="card-glass p-4 space-y-2">
+            <PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} />
+            <p className="text-[11px] text-slate-400">
+              Même période que l'onglet Trésorerie — {rangeLabel}. Le <b>reste à payer</b> d'un employé couvre en
+              revanche TOUTES les dates : un travail d'un mois passé jamais réglé reste dû.
+            </p>
+          </div>
+          <div className="card-glass p-4 sm:p-5">
+            <ServiceWorksPanel workers={crew} from={range.from} to={range.to} />
+          </div>
+        </div>
+      )}
 
       {tab === 'tresorerie' && <>
       {/* Hero banners */}
@@ -167,27 +229,101 @@ export default function ModuleCaisse({ moduleKey }: { moduleKey: ModuleKey }) {
       {/* Period */}
       <div className="card-glass p-4"><PeriodFilter period={period} onChange={setPeriod} from={from} to={to} onFrom={setFrom} onTo={setTo} /></div>
 
-      {/* Flow cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* ── Les espèces de la période ─────────────────────────────────────
+          Ce que le tiroir a reçu et rendu entre les deux bornes, lu sur les
+          mêmes mouvements que le solde affiché en tête. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1">
+        <h3 className="font-black text-[#002d87] flex items-center gap-2"><Wallet className="w-5 h-5" /> Espèces de la période</h3>
+        <span className="text-[11px] font-bold text-slate-400">{rangeLabel}</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="card-glass p-5"><div className="flex items-center gap-2 text-emerald-600"><ArrowDownCircle className="w-5 h-5" /><span className="text-xs font-bold uppercase">Entrées</span></div><p className="text-2xl font-black tabular-nums text-emerald-600 mt-2">+{money(flow.inTotal)}</p></div>
         <div className="card-glass p-5"><div className="flex items-center gap-2 text-red-600"><ArrowUpCircle className="w-5 h-5" /><span className="text-xs font-bold uppercase">Sorties</span></div><p className="text-2xl font-black tabular-nums text-red-600 mt-2">−{money(flow.outTotal)}</p></div>
         <div className="card-glass p-5"><div className="flex items-center gap-2 text-[#003087]"><TrendingUp className="w-5 h-5" /><span className="text-xs font-bold uppercase">Flux net</span></div><p className={`text-2xl font-black tabular-nums mt-2 ${flow.net >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(flow.net)}</p></div>
-        <div className="card-glass p-5">
-          <div className="flex items-center gap-2 text-amber-600"><Flame className="w-5 h-5" /><span className="text-xs font-bold uppercase">Résultat après pertes</span></div>
-          <p className={`text-2xl font-black tabular-nums mt-2 ${flow.net - destroyedInPeriod >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{money(flow.net - destroyedInPeriod)}</p>
-          <p className="text-[11px] text-slate-400 mt-1">Flux net − {money(destroyedInPeriod)} de destructions</p>
-        </div>
       </div>
 
-      {/* Business stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard icon={TrendingUp} label="Ventes encaissées" value={money(totals.salesPaid)} tone="green" />
-        <StatCard icon={ShoppingCart} label="Achats payés" value={money(totals.purchasesPaid)} tone="purple" />
-        <StatCard icon={CreditCard} label="Dépenses" value={money(totals.exp)} tone="red"
-          sub={`dont ${money(totals.expCash)} en espèces`} />
-        <StatCard icon={Banknote} label="Salaires versés" value={money(totals.salaries)} tone="amber" />
-        <StatCard icon={Flame} label="Destructions" value={money(totals.destroyed)} tone="red" sub="marchandise perdue" />
+      {/* ── L'activité de la période — LES MÊMES CHIFFRES QUE LE RAPPORT ───
+          Tout ce bloc sort de `computeModuleReport` : carte par carte, c'est
+          ligne pour ligne ce qu'affichent le Rapport de la partie et les
+          Rapports Généraux sur la même période. */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1">
+        <h3 className="font-black text-[#002d87] flex items-center gap-2"><Layers className="w-5 h-5" /> Activité de la période</h3>
+        <span className="text-[11px] font-bold text-slate-400">
+          {rangeLabel} — identique au rapport de l'activité
+        </span>
       </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard icon={TrendingUp} label="Chiffre d'affaires" value={money(report.salesTotal)} tone="blue"
+          sub={`${report.counts.sales} opération(s)${cfg.isService ? ' — ventes & interventions' : ''}`} />
+        <StatCard icon={Banknote} label="Ventes encaissées" value={money(report.salesPaid)} tone="green"
+          sub={cfg.isService ? 'factures ET interventions réglées' : 'ce que les ventes ont fait rentrer'} />
+        <StatCard icon={ShoppingCart} label="Achats payés" value={money(report.purchasesPaid)} tone="purple"
+          sub={`sur ${money(report.purchasesTotal)} facturés`} />
+        <StatCard icon={CreditCard} label="Dépenses" value={money(report.expensesTotal)} tone="red"
+          sub={`dont ${money(expensesCash)} en espèces`} />
+        <StatCard icon={Percent} label="Marge brute" value={money(report.grossMargin)} tone="blue"
+          sub={`CA − ${money(report.cogs)} de marchandises`} />
+        <StatCard icon={Banknote} label="Salaires versés" value={money(report.salariesPaid)} tone="amber"
+          sub={`+ ${money(report.acomptesPeriod)} d'acomptes`} />
+        <StatCard icon={Flame} label="Destructions" value={money(report.destroyedValue)} tone="red"
+          sub="marchandise perdue" />
+        <StatCard icon={Scale} label="Gain net" value={money(report.netGain)}
+          tone={report.netGain >= 0 ? 'green' : 'red'}
+          sub="marge − dépenses − salaires − pertes" />
+      </div>
+      <p className="text-[11px] text-slate-400 px-1 leading-relaxed">
+        Le <b>flux net</b> ({money(flow.net)}) est de l'ARGENT : ce que le tiroir a reçu moins ce qu'il a rendu sur la
+        période. Le <b>gain net</b> ({money(report.netGain)}) est un RÉSULTAT : il retranche du chiffre d'affaires le
+        coût des marchandises vendues, les dépenses, les salaires et les pertes, qu'ils aient été réglés en espèces ou
+        non. Les deux ne peuvent pas être égaux — un achat payé d'avance vide le tiroir sans rien coûter tant que la
+        marchandise n'est pas vendue. Le <b>solde de caisse</b> affiché en tête, lui, couvre toutes les dates.
+      </p>
+
+      {/* ── Le travail des employés, à un clic ──────────────────────────────
+          Une caisse d'atelier sert aussi à payer des employés au pourcentage :
+          ce qu'ils ont fait sur la période s'annonce ici, et le détail complet
+          — chaque intervention, chaque prestation, sa base et sa part —
+          s'ouvre dans son onglet. */}
+      {cfg.isService && crew.length > 0 && (
+        <button onClick={() => setTab('travaux')}
+          className="w-full text-left rounded-2xl p-4 sm:p-5 text-white transition-transform hover:-translate-y-0.5"
+          style={{ background: 'linear-gradient(135deg,#0e7490,#22d3ee)', boxShadow: '0 10px 28px rgba(14,116,144,0.30)' }}>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="w-11 h-11 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+              <Car className="w-6 h-6" />
+            </span>
+            <div className="min-w-0">
+              <p className="font-black text-[15px]">Travaux des employés — {rangeLabel}</p>
+              <p className="text-[12px] text-cyan-50">
+                Qui a travaillé, sur quoi, et ce qu'il faut lui payer. Cliquez pour tout déplier.
+              </p>
+            </div>
+            <span className="ml-auto text-xs font-black bg-white/20 rounded-lg px-3 py-1.5 shrink-0">
+              Voir le détail
+            </span>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3">
+            <div className="rounded-xl bg-white/15 p-3">
+              <p className="text-[10px] uppercase font-black text-cyan-50">Interventions</p>
+              <p className="font-black tabular-nums text-lg">{crewTotals.jobs}</p>
+            </div>
+            <div className="rounded-xl bg-white/15 p-3">
+              <p className="text-[10px] uppercase font-black text-cyan-50">Employés au travail</p>
+              <p className="font-black tabular-nums text-lg">{crewTotals.active} <span className="text-xs font-bold">/ {crew.length}</span></p>
+            </div>
+            <div className="rounded-xl bg-white/15 p-3">
+              <p className="text-[10px] uppercase font-black text-cyan-50">Part des employés</p>
+              <p className="font-black tabular-nums text-lg">{money(crewTotals.earned)}</p>
+              <p className="text-[10px] text-cyan-50">sur {money(crewTotals.base)} de base retenue</p>
+            </div>
+            <div className="rounded-xl bg-white/15 p-3">
+              <p className="text-[10px] uppercase font-black text-cyan-50">Reste à leur payer</p>
+              <p className="font-black tabular-nums text-lg">{money(crewTotals.due)}</p>
+              <p className="text-[10px] text-cyan-50">travaux non encore réglés, toutes dates</p>
+            </div>
+          </div>
+        </button>
+      )}
 
       {/* Destructions de la période — le détail de la marchandise perdue */}
       <div className="card-glass overflow-hidden">

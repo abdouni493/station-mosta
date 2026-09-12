@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Search, LayoutGrid, List, Inbox, Eye, Edit2, Trash2, Plus } from 'lucide-react';
 import { cn, formatCurrency, formatDate, formatDateTime, formatTime } from '@/src/lib/utils';
+import { within } from '@/src/lib/period';
 
 /**
  * Renders a dialog straight into <body>.
@@ -408,21 +409,43 @@ export function Table({ head, children }: { head: React.ReactNode; children: Rea
 
 // ─── Date-period filter helper ───────────────────────────────────────────────
 export type Period = 'all' | 'today' | 'week' | 'month' | 'year' | 'custom';
-export function inPeriod(dateStr: string, period: Period, from?: string, to?: string): boolean {
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return true;
+
+/**
+ * ─── LA FENÊTRE DE DATES D'UNE PÉRIODE, ÉCRITE UNE SEULE FOIS ───────────────
+ *
+ * Le filtre de période d'un écran (`inPeriod`) et les moteurs de calcul, qui
+ * prennent une fenêtre `from`/`to` (`computeModuleReport`, `computeWorkforce`),
+ * lisaient la même période de deux façons différentes. Un écran pouvait donc
+ * lister les mouvements d'un mois en affichant au-dessus les totaux d'un autre.
+ *
+ * `periodRange` rend cette fenêtre sous la forme que les rapports attendent —
+ * des dates `AAAA-MM-JJ`, une borne vide valant « pas de limite de ce côté ».
+ * `inPeriod` s'en sert lui aussi : une seule définition, deux usages.
+ *
+ * Les périodes relatives (semaine, mois, année) n'ont volontairement PAS de
+ * borne haute : une pièce datée de demain reste visible plutôt que de
+ * disparaître sans explication.
+ */
+export function periodRange(period: Period, from?: string, to?: string): { from: string; to: string } {
+  const iso = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
   const now = new Date();
+  const since = (apply: (d: Date) => void) => { const d = new Date(now); apply(d); return { from: iso(d), to: '' }; };
   switch (period) {
-    case 'today': return d.toDateString() === now.toDateString();
-    case 'week': { const w = new Date(now); w.setDate(now.getDate() - 7); return d >= w; }
-    case 'month': { const mo = new Date(now); mo.setMonth(now.getMonth() - 1); return d >= mo; }
-    case 'year': { const y = new Date(now); y.setFullYear(now.getFullYear() - 1); return d >= y; }
-    case 'custom':
-      if (from && d < new Date(from)) return false;
-      if (to && d > new Date(to + 'T23:59:59')) return false;
-      return true;
-    default: return true;
+    case 'today': return { from: iso(now), to: iso(now) };
+    case 'week': return since(d => d.setDate(now.getDate() - 7));
+    case 'month': return since(d => d.setMonth(now.getMonth() - 1));
+    case 'year': return since(d => d.setFullYear(now.getFullYear() - 1));
+    case 'custom': return { from: from || '', to: to || '' };
+    default: return { from: '', to: '' };
   }
+}
+
+export function inPeriod(dateStr: string, period: Period, from?: string, to?: string): boolean {
+  // Une date illisible ne se laisse pas filtrer : la ligne reste visible plutôt
+  // que de disparaître sans que rien ne le dise.
+  if (isNaN(new Date(dateStr).getTime())) return true;
+  const r = periodRange(period, from, to);
+  return within(dateStr, r.from, r.to);
 }
 
 export function PeriodFilter({ period, onChange, from, to, onFrom, onTo }: {

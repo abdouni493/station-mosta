@@ -519,6 +519,24 @@ function fuelWorker(
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
+/**
+ * Les employés d'UNE partie commerciale, avec tout ce qu'ils ont fait sur la
+ * période — exactement le même calcul que le rapport général, sans avoir à
+ * reconstruire les pompistes et les brigades pour l'obtenir.
+ *
+ * C'est ce que lit la Caisse d'une partie de service : l'écran où l'on paie les
+ * employés doit montrer le travail sur lequel ils sont payés, et il ne peut pas
+ * le compter autrement que le rapport.
+ */
+export function computeBizWorkforce(
+  st: { workers?: BizWorker[]; reparations?: BizReparation[]; sessions?: BizSession[]; sales?: BizSale[] },
+  key: ModuleKey, from: string, to: string,
+): WorkforceWorker[] {
+  return (st.workers || [])
+    .map(w => bizWorker(w, key, from, to, st.reparations || [], st.sessions || [], st.sales || []))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function computeWorkforce(app: any, biz: BizState, from: string, to: string): WorkforceReport {
   const workers: WorkforceWorker[] = [
     ...(app.pompistes || []).map((p: any) => fuelWorker(app, p, 'Pompiste', from, to, { brigadeRole: 'Pompiste' })),
@@ -527,9 +545,7 @@ export function computeWorkforce(app: any, biz: BizState, from: string, to: stri
     ...(app.magasinWorkers || []).map((m: any) => fuelWorker(app, m, 'Employé magasin', from, to, { sellerSales: true })),
     ...(Object.keys(MODULES) as ModuleKey[]).flatMap(key => {
       const st = biz[key];
-      if (!st) return [];
-      return (st.workers || []).map(w =>
-        bizWorker(w, key, from, to, st.reparations || [], st.sessions || [], st.sales || []));
+      return st ? computeBizWorkforce(st, key, from, to) : [];
     }),
   ].sort((a, b) => a.part.localeCompare(b.part) || a.name.localeCompare(b.name));
 
