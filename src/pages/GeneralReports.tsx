@@ -15,7 +15,7 @@ import { useAppState, useAppDispatch, CAISSE_ID } from '@/src/store/AppContext';
 import { removeBizExpenseLedger } from '@/src/lib/bizExpenseLedger';
 import { money, formatDate, Modal, Badge, Confirm, Table } from '@/src/components/biz/Kit';
 import { computeModuleReport, computeCarburantReport, consolidate, within, PartReport, GlobalReport } from '@/src/lib/bizReporting';
-import { computeWorkforce, WorkforceReport } from '@/src/lib/workforceReporting';
+import { computeWorkforce, WorkforceReport, WorkforceWorker } from '@/src/lib/workforceReporting';
 import { computeTreasuryReport, TreasuryReport } from '@/src/lib/treasuryReporting';
 import { computeStockValuation, StockValuation } from '@/src/lib/stockValuation';
 import { computeWorkingCapital, WorkingCapitalReport } from '@/src/lib/workingCapital';
@@ -696,6 +696,18 @@ export default function GeneralReports() {
   const activeReport: PartReport | null = PART_SECTIONS.includes(active)
     ? reports[active as 'carburant' | ModuleKey]
     : null;
+
+  /**
+   * Les employés de l'activité affichée, mais SEULEMENT quand c'est une activité
+   * de service (Lavage & Vidange) : son rapport déplie alors, employé par
+   * employé, les travaux de la période. Les pompistes et la cafétéria n'ont pas
+   * de travaux nominatifs — leur activité se lit dans « Employés & Personnel ».
+   */
+  const serviceWorkers: WorkforceWorker[] = useMemo(() => {
+    const key = active as ModuleKey;
+    if (!MODULES[key]?.isService) return [];
+    return workforce.workers.filter(w => w.part === key);
+  }, [workforce, active]);
   const activeInfo = SECTIONS.find(s => s.id === active)!;
   const ActiveIcon = activeInfo.icon;
 
@@ -868,7 +880,7 @@ export default function GeneralReports() {
                   {active === 'zakat' && <ZakatView inputs={zakatInputs} config={zakatConfig} onConfig={setZakatConfig} />}
                   {active === 'employes' && <WorkforceView report={workforce} />}
                   {active === 'tresorerie' && <TreasuryView report={treasury} />}
-                  {activeReport && <ReportView report={activeReport} />}
+                  {activeReport && <ReportView report={activeReport} serviceWorkers={serviceWorkers} />}
                 </motion.div>
               </AnimatePresence>
             </div>

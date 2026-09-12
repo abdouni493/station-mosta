@@ -274,6 +274,9 @@ function WorkRow({ w, rate }: { w: WorkforceWorker['works'][number]; rate: numbe
               </span>
             ))}
             {w.prestations.every(p => !p.mine) && <span className="text-xs text-slate-400 italic">Intervention entière</span>}
+            {/* Le stock sorti se voit AVANT d'ouvrir : c'est ce qui distingue une
+                vidange d'un simple lavage, et ce qu'on vient vérifier. */}
+            {w.products.length > 0 && <span className="badge badge-neutral">{w.products.length} produit(s)</span>}
           </div>
         </td>
         <td className="table-cell tabular-nums text-right">{money(w.total)}</td>
@@ -328,6 +331,71 @@ function WorkRow({ w, rate }: { w: WorkforceWorker['works'][number]; rate: numbe
         </td></tr>
       )}
     </>
+  );
+}
+
+// ─── Salaires, acomptes, absences ────────────────────────────────────────────
+/**
+ * Les trois mouvements d'argent d'un employé sur la période. Partagés par la
+ * fiche complète (« Employés & Personnel ») et par le panneau des travaux du
+ * rapport Lavage & Vidange : une même ligne de paie ne peut donc pas s'écrire
+ * de deux façons selon l'écran d'où on la regarde.
+ */
+function MoneyMovements({ w }: { w: WorkforceWorker }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <Section title="Paiements de salaire" icon={Banknote} count={w.payments.length}>
+        {w.payments.length === 0 ? <Empty text="Aucun paiement sur la période" /> : (
+          <div className="space-y-1">
+            {w.payments.map(p => (
+              <div key={p.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border border-slate-100 gap-2">
+                <div className="min-w-0">
+                  <p className="font-bold text-slate-700 truncate">{p.label}</p>
+                  <p className="text-slate-400">
+                    {fmtDate(p.date)}{p.mode ? ` • ${p.mode}` : ''}{p.worksCount ? ` • ${p.worksCount} travaux` : ''}
+                    {p.description ? ` • ${p.description}` : ''}
+                  </p>
+                </div>
+                <span className="font-black tabular-nums text-emerald-600 shrink-0">{money(p.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+      <Section title="Acomptes" icon={Wallet} count={w.acomptes.length}>
+        {w.acomptes.length === 0 ? <Empty text="Aucun acompte sur la période" /> : (
+          <div className="space-y-1">
+            {w.acomptes.map(a => (
+              <div key={a.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border border-slate-100 gap-2">
+                <div className="min-w-0">
+                  <p className="text-slate-600 truncate">{a.description || 'Acompte'}</p>
+                  <p className="text-slate-400">{fmtDate(a.date)}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="font-black tabular-nums text-amber-700">{money(a.amount)}</span>
+                  <p className={cn('text-[10px] font-bold', a.paid ? 'text-emerald-600' : 'text-red-500')}>{a.paid ? 'Décompté' : 'Dû'}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+      <Section title="Absences & retenues" icon={CalendarMinus} count={w.absences.length}>
+        {w.absences.length === 0 ? <Empty text="Aucune absence sur la période" /> : (
+          <div className="space-y-1">
+            {w.absences.map(a => (
+              <div key={a.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border border-slate-100 gap-2">
+                <div className="min-w-0">
+                  <p className="text-slate-600 truncate">{a.description || 'Absence'}</p>
+                  <p className="text-slate-400">{fmtDate(a.date)}</p>
+                </div>
+                <span className="font-black tabular-nums text-red-600 shrink-0">−{money(a.cost)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </div>
   );
 }
 
@@ -499,60 +567,7 @@ function WorkerCard({ w }: { w: WorkforceWorker; key?: React.Key }) {
                 </Section>
               )}
 
-              {/* Money movements */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <Section title="Paiements de salaire" icon={Banknote} count={w.payments.length}>
-                  {w.payments.length === 0 ? <Empty text="Aucun paiement sur la période" /> : (
-                    <div className="space-y-1">
-                      {w.payments.map(p => (
-                        <div key={p.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border border-slate-100 gap-2">
-                          <div className="min-w-0">
-                            <p className="font-bold text-slate-700 truncate">{p.label}</p>
-                            <p className="text-slate-400">
-                              {fmtDate(p.date)}{p.mode ? ` • ${p.mode}` : ''}{p.worksCount ? ` • ${p.worksCount} travaux` : ''}
-                              {p.description ? ` • ${p.description}` : ''}
-                            </p>
-                          </div>
-                          <span className="font-black tabular-nums text-emerald-600 shrink-0">{money(p.amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Section>
-                <Section title="Acomptes" icon={Wallet} count={w.acomptes.length}>
-                  {w.acomptes.length === 0 ? <Empty text="Aucun acompte sur la période" /> : (
-                    <div className="space-y-1">
-                      {w.acomptes.map(a => (
-                        <div key={a.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border border-slate-100 gap-2">
-                          <div className="min-w-0">
-                            <p className="text-slate-600 truncate">{a.description || 'Acompte'}</p>
-                            <p className="text-slate-400">{fmtDate(a.date)}</p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <span className="font-black tabular-nums text-amber-700">{money(a.amount)}</span>
-                            <p className={cn('text-[10px] font-bold', a.paid ? 'text-emerald-600' : 'text-red-500')}>{a.paid ? 'Décompté' : 'Dû'}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Section>
-                <Section title="Absences & retenues" icon={CalendarMinus} count={w.absences.length}>
-                  {w.absences.length === 0 ? <Empty text="Aucune absence sur la période" /> : (
-                    <div className="space-y-1">
-                      {w.absences.map(a => (
-                        <div key={a.id} className="flex items-center justify-between text-xs bg-white rounded-lg px-3 py-2 border border-slate-100 gap-2">
-                          <div className="min-w-0">
-                            <p className="text-slate-600 truncate">{a.description || 'Absence'}</p>
-                            <p className="text-slate-400">{fmtDate(a.date)}</p>
-                          </div>
-                          <span className="font-black tabular-nums text-red-600 shrink-0">−{money(a.cost)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Section>
-              </div>
+              <MoneyMovements w={w} />
 
               {w.brigades.length === 0 && w.sessions.length === 0 && w.works.length === 0 && w.sales.length === 0 && (
                 <p className="text-xs text-slate-400 italic text-center py-2">
@@ -700,6 +715,394 @@ export default function WorkforceView({ report }: { report: WorkforceReport }) {
           Cliquez un employé pour dérouler ses brigades, sessions, travaux, ventes, salaires, acomptes et absences.
         </p>
       </div>
+    </div>
+  );
+}
+
+// ─── Le travail des employés d'une activité de service (rapport général) ──────
+/**
+ * ─── QUI A TRAVAILLÉ, SUR QUOI, ET CE QUE ÇA LUI FAIT ─────────────────────────
+ *
+ * Le rapport de la partie Lavage & Vidange annonçait le chiffre d'affaires des
+ * prestations sans jamais dire QUI les avait faites. Or la paie de ces employés
+ * EST un pourcentage de leurs propres travaux : pour vérifier un montant que le
+ * rapport affichait déjà, le gérant devait sortir de l'écran et rouvrir la fiche
+ * de chaque employé, une par une.
+ *
+ * Ce panneau répond à la question sur la période choisie, employé par employé :
+ *   • chacune de ses interventions — référence, date, client, véhicule,
+ *     prestations qu'il a réalisées, produits sortis, remise, total, payé et
+ *     reste dû par le client ;
+ *   • la base retenue pour son pourcentage et sa part, travail par travail ;
+ *   • ce qui lui a déjà été réglé, ce qui reste à lui payer, et ce qui n'est pas
+ *     encore payable parce que l'intervention n'est pas finalisée ;
+ *   • la répartition de son travail par nature (lavage / vidange) et par
+ *     prestation ;
+ *   • ses salaires, acomptes et absences de la même période.
+ *
+ * Il lit EXACTEMENT le même calcul que « Employés & Personnel »
+ * (`computeWorkforce`) : les deux écrans ne peuvent donc pas annoncer deux
+ * chiffres différents pour le même employé.
+ */
+
+/** Ce qu'un employé de service a produit sur la période, prestation comprise. */
+function serviceStats(w: WorkforceWorker) {
+  const byKind: Record<string, { count: number; amount: number }> = {
+    Lavage: { count: 0, amount: 0 }, Vidange: { count: 0, amount: 0 },
+  };
+  const byLabel = new Map<string, { key: string; label: string; kindLabel: string; count: number; amount: number }>();
+  let products = 0, discounts = 0, clientRest = 0;
+  /** Part déjà réglée par un paiement, part à payer, part pas encore payable. */
+  let settledShare = 0, dueShare = 0, openShare = 0;
+  let done = 0, waiting = 0, canceled = 0;
+
+  w.works.forEach(x => {
+    x.prestations.filter(p => p.mine).forEach(p => {
+      const slot = byKind[p.kindLabel] || (byKind[p.kindLabel] = { count: 0, amount: 0 });
+      slot.count++; slot.amount += p.amount;
+      const key = `${p.kindLabel}|${p.label || p.kindLabel}`;
+      const e = byLabel.get(key)
+        || { key, label: p.label || p.kindLabel, kindLabel: p.kindLabel, count: 0, amount: 0 };
+      e.count++; e.amount += p.amount;
+      byLabel.set(key, e);
+    });
+    products += x.products.reduce((t, p) => t + p.total, 0);
+    discounts += x.discount;
+    clientRest += x.rest;
+    // Une intervention non finalisée ne se paie pas : sa part est ANNONCÉE,
+    // pas encore due. C'est ce qui explique l'écart entre « part générée » et
+    // « à payer » quand des véhicules sont encore à l'atelier.
+    if (x.settled) settledShare += x.share;
+    else if (x.status === 'Finalisé') dueShare += x.share;
+    else openShare += x.share;
+    if (x.status === 'Finalisé') done++;
+    else if (x.status === 'En attente') waiting++;
+    else canceled++;
+  });
+
+  return {
+    byKind,
+    prestations: [...byLabel.values()].sort((a, b) => b.amount - a.amount),
+    products, discounts, clientRest,
+    settledShare, dueShare, openShare,
+    done, waiting, canceled,
+  };
+}
+
+/** Un employé du panneau : l'entête se lit fermé, tout le détail s'ouvre. */
+function ServiceWorkerRow({ w, open, onToggle }: {
+  w: WorkforceWorker; open: boolean; onToggle: () => void; key?: React.Key;
+}) {
+  const s = useMemo(() => serviceStats(w), [w]);
+  const rate = w.percentage || 0;
+  const isPercent = w.salaryType === 'pourcentage';
+
+  return (
+    <div className={cn('rounded-2xl border bg-white overflow-hidden transition-all',
+      open ? 'border-cyan-300 shadow-lg' : 'border-slate-100 shadow-sm hover:border-slate-200')}>
+      <button onClick={onToggle} className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-slate-50/60">
+        <div className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-white shrink-0"
+          style={{ background: `linear-gradient(135deg, ${PART_META[w.part].color}, #0044bb)` }}>
+          {w.name[0]?.toUpperCase() || '?'}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-black text-[#002d87] truncate">{w.name}</p>
+            <span className="badge badge-neutral">{w.role}</span>
+            {w.speciality && <span className="badge badge-info">{w.speciality}</span>}
+            {isPercent && <span className="badge badge-success">{rate} %</span>}
+            {w.works.length === 0 && <span className="badge badge-warning">Aucun travail</span>}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+            <Briefcase className="w-3 h-3" /> {w.worksCount} travail(aux)
+            <span>•</span> 🧽 {s.byKind.Lavage.count} lavage(s)
+            <span>•</span> 🔧 {s.byKind.Vidange.count} vidange(s)
+            <span>•</span> {w.payMode}
+          </p>
+        </div>
+        <div className="hidden md:flex items-center gap-2 shrink-0">
+          <div className="text-right px-3 py-1 rounded-xl bg-slate-50 min-w-[96px]">
+            <p className="text-[9px] uppercase font-black text-slate-400 tracking-wide">Facturé</p>
+            <p className="text-xs font-black tabular-nums text-[#002d87]">{money(w.worksAmount)}</p>
+          </div>
+          <div className="text-right px-3 py-1 rounded-xl bg-emerald-50 min-w-[96px]">
+            <p className="text-[9px] uppercase font-black text-emerald-600/60 tracking-wide">Sa part</p>
+            <p className="text-xs font-black tabular-nums text-emerald-600">{isPercent ? money(w.earned) : '—'}</p>
+          </div>
+          <div className={cn('text-right px-3 py-1 rounded-xl min-w-[96px]', w.dueNow > 0 ? 'bg-red-50' : 'bg-slate-50')}>
+            <p className="text-[9px] uppercase font-black text-slate-400 tracking-wide">Reste dû</p>
+            <p className={cn('text-xs font-black tabular-nums', w.dueNow > 0 ? 'text-red-600' : 'text-slate-400')}>
+              {isPercent ? money(w.dueNow) : '—'}
+            </p>
+          </div>
+        </div>
+        {open ? <ChevronDown className="w-5 h-5 text-slate-400 shrink-0" /> : <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />}
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }} className="overflow-hidden">
+            <div className="px-4 pb-5 pt-4 space-y-6 border-t border-slate-100">
+
+              {/* Qui il est, et comment il est payé */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+                <Chip label="Fonction" value={w.role} />
+                <Chip label="Spécialité" value={w.speciality || 'Polyvalent'} tone="blue" />
+                <Chip label="Statut" value={w.status} />
+                <Chip label="Téléphone" value={w.phone || '—'} />
+                <Chip label="CIN" value={w.cin || '—'} />
+                <Chip label="Embauche" value={fmtDate(w.hireDate)} />
+                <Chip label="Mode de paie" value={w.payMode} tone="blue" />
+                <Chip label="Taux / salaire" value={isPercent ? `${rate} %` : money(w.salaryAmount)} tone="blue" />
+                <Chip label="Salaires versés" value={money(w.paymentsTotal)} tone="green" />
+                <Chip label="Acomptes" value={money(w.acomptesTotal)} tone={w.acomptesTotal > 0 ? 'amber' : 'slate'} />
+                <Chip label="Absences" value={money(w.absencesTotal)} tone={w.absencesTotal > 0 ? 'red' : 'slate'} />
+                <Chip label="Compte" value={w.hasAccount ? (w.accountActive ? `Actif — ${w.username || '—'}` : 'À activer') : 'Aucun'}
+                  tone={w.hasAccount && w.accountActive ? 'green' : 'slate'} />
+              </div>
+
+              {/* Ce que la période lui a fait gagner, poste par poste */}
+              <Section title="Son travail sur la période" icon={Percent}>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                  <Chip label="Interventions" value={String(w.worksCount)} tone="blue" />
+                  <Chip label="Montant facturé" value={money(w.worksAmount)} />
+                  <Chip label="Base retenue" value={money(w.worksBase)} />
+                  <Chip label={`Part générée (${rate} %)`} value={isPercent ? money(w.earned) : '—'} tone="green" />
+                  <Chip label="Déjà réglée" value={isPercent ? money(s.settledShare) : '—'} tone="green" />
+                  <Chip label="À lui payer" value={isPercent ? money(s.dueShare) : '—'} tone={s.dueShare > 0 ? 'red' : 'slate'} />
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                  <Chip label="Finalisées" value={String(s.done)} tone="green" />
+                  <Chip label="En attente" value={String(s.waiting)} tone={s.waiting > 0 ? 'amber' : 'slate'} />
+                  <Chip label="Annulées" value={String(s.canceled)} tone={s.canceled > 0 ? 'red' : 'slate'} />
+                  <Chip label="Pas encore payable" value={isPercent ? money(s.openShare) : '—'}
+                    tone={s.openShare > 0 ? 'amber' : 'slate'} />
+                  <Chip label="Produits sortis" value={money(s.products)} tone="amber" />
+                  <Chip label="Remises accordées" value={money(s.discounts)} tone={s.discounts > 0 ? 'amber' : 'slate'} />
+                  {/* Ce que ses clients n'ont pas encore payé. Ce n'est PAS sa
+                      dette — sa part lui est due quoi qu'il arrive — mais c'est
+                      la créance que son travail a laissée derrière lui. */}
+                  <Chip label="Reste dû par les clients" value={money(s.clientRest)}
+                    tone={s.clientRest > 0 ? 'red' : 'slate'} />
+                </div>
+                <p className="text-[11px] text-slate-400 italic">
+                  La base, c'est le montant des prestations QU'IL A réalisées — pas le total de la facture :
+                  les produits et les prestations d'un collègue n'entrent pas dans sa part. Une intervention
+                  sans affectation par prestation (ancienne fiche) compte, elle, sur son total entier.
+                  {' '}Le reste dû ({money(w.dueNow)}) couvre TOUTES les dates, pas seulement la période
+                  affichée : c'est ce qu'il faut lui régler.
+                </p>
+              </Section>
+
+              {/* Par nature et par prestation */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <Section title="Par nature de travail" icon={Layers}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl bg-cyan-50 px-3 py-2.5">
+                      <p className="text-[10px] uppercase font-black text-cyan-700/70">🧽 Lavages</p>
+                      <p className="font-black tabular-nums text-cyan-700">{s.byKind.Lavage.count}</p>
+                      <p className="text-[11px] font-bold text-cyan-600 tabular-nums">{money(s.byKind.Lavage.amount)}</p>
+                    </div>
+                    <div className="rounded-xl bg-violet-50 px-3 py-2.5">
+                      <p className="text-[10px] uppercase font-black text-violet-700/70">🔧 Vidanges</p>
+                      <p className="font-black tabular-nums text-violet-700">{s.byKind.Vidange.count}</p>
+                      <p className="text-[11px] font-bold text-violet-600 tabular-nums">{money(s.byKind.Vidange.amount)}</p>
+                    </div>
+                  </div>
+                </Section>
+                <Section title="Par prestation" icon={ClipboardList} count={s.prestations.length}>
+                  {s.prestations.length === 0 ? <Empty text="Aucune prestation nominative sur la période" /> : (
+                    <div className="space-y-1 max-h-52 overflow-y-auto custom-scrollbar pr-1">
+                      {s.prestations.map(p => (
+                        <div key={p.key} className="flex items-center justify-between gap-2 text-xs bg-white rounded-lg px-3 py-2 border border-slate-100">
+                          <span className="truncate flex-1">
+                            <b>{p.kindLabel === 'Lavage' ? '🧽' : '🔧'} {p.label}</b>
+                            <span className="text-slate-400"> × {p.count}</span>
+                          </span>
+                          <span className="font-black tabular-nums text-[#002d87] shrink-0">{money(p.amount)}</span>
+                          {rate > 0 && (
+                            <span className="font-black tabular-nums text-emerald-600 shrink-0 w-24 text-right">
+                              part {money((p.amount * rate) / 100)}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Section>
+              </div>
+
+              {/* Chaque intervention, dépliable jusqu'au dernier détail */}
+              <Section title="Ses interventions, une par une" icon={Car} count={w.works.length}>
+                {w.works.length === 0 ? (
+                  <Empty text="Aucune intervention ne lui est assignée sur cette période." />
+                ) : (
+                  <>
+                    <Table head={<>
+                      <th className="table-head w-6" /><th className="table-head">Réf</th><th className="table-head">Date</th>
+                      <th className="table-head">Client</th><th className="table-head">Véhicule</th>
+                      <th className="table-head">Prestations réalisées</th><th className="table-head text-right">Total</th>
+                      <th className="table-head text-right">Base</th><th className="table-head text-right">Part</th>
+                      <th className="table-head">Règlement</th>
+                    </>}>
+                      {w.works.map(x => <WorkRow key={x.id} w={x} rate={rate} />)}
+                    </Table>
+                    <p className="text-[11px] text-slate-400 italic">
+                      Cliquez une intervention pour voir toutes ses prestations (celles de l'employé sont
+                      surlignées), les produits sortis du stock, la remise accordée et ce que le client a payé.
+                    </p>
+                  </>
+                )}
+              </Section>
+
+              {/* Salaires, acomptes, absences */}
+              <MoneyMovements w={w} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+export function ServiceWorksPanel({ workers, from, to }: {
+  workers: WorkforceWorker[]; from: string; to: string;
+}) {
+  const [search, setSearch] = useState('');
+  /**
+   * Un petit atelier s'ouvre DÉJÀ déplié : à deux ou trois employés, le clic de
+   * plus n'apprend rien à personne et cache l'essentiel derrière un entête.
+   * Au-delà, la liste reste fermée pour qu'elle tienne encore à l'écran.
+   */
+  const [openIds, setOpenIds] = useState<string[]>(() => {
+    const busy = workers.filter(w => w.works.length > 0);
+    return busy.length > 0 && busy.length <= 3 ? busy.map(w => w.id) : [];
+  });
+  const [onlyActive, setOnlyActive] = useState(false);
+
+  /**
+   * Le total de l'activité. Les interventions sont comptées UNE fois même
+   * lorsque deux employés se les partagent — sinon un lavage fait à deux aurait
+   * doublé le chiffre d'affaires de l'atelier.
+   */
+  const totals = useMemo(() => {
+    const seen = new Map<string, number>();
+    let base = 0, earned = 0, due = 0, settled = 0, lavages = 0, vidanges = 0;
+    workers.forEach(w => {
+      w.works.forEach(x => seen.set(x.id, x.total));
+      base += w.worksBase; earned += w.earned; due += w.dueNow;
+      const s = serviceStats(w);
+      settled += s.settledShare; lavages += s.byKind.Lavage.count; vidanges += s.byKind.Vidange.count;
+    });
+    return {
+      works: seen.size,
+      amount: [...seen.values()].reduce((t, v) => t + v, 0),
+      base, earned, due, settled, lavages, vidanges,
+      active: workers.filter(w => w.works.length > 0).length,
+    };
+  }, [workers]);
+
+  /** Les prestations de l'activité, toutes équipes confondues. */
+  const prestations = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; kindLabel: string; count: number; amount: number }>();
+    workers.forEach(w => serviceStats(w).prestations.forEach(p => {
+      const e = map.get(p.key) || { ...p, count: 0, amount: 0 };
+      e.count += p.count; e.amount += p.amount;
+      map.set(p.key, e);
+    }));
+    return [...map.values()].sort((a, b) => b.amount - a.amount);
+  }, [workers]);
+
+  const shown: WorkforceWorker[] = useMemo(() => workers
+    .filter(w => (!onlyActive || w.works.length > 0))
+    .filter(w => matchesSearch(search, w.name, w.role, w.speciality, w.phone))
+    .sort((a, b) => b.earned - a.earned || b.worksCount - a.worksCount || a.name.localeCompare(b.name)),
+    [workers, search, onlyActive]);
+
+  const allOpen = shown.length > 0 && shown.every(w => openIds.includes(w.id));
+  const toggleAll = () => setOpenIds(allOpen ? [] : shown.map(w => w.id));
+  const toggle = (id: string) =>
+    setOpenIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+
+  if (workers.length === 0) {
+    return <Empty text="Aucun employé n'est rattaché à cette activité." />;
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Les totaux de l'équipe */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Kpi icon={UsersRound} tone="cyan" label="Employés au travail" value={String(totals.active)}
+          sub={`sur ${workers.length} rattaché(s) à l'activité`} />
+        <Kpi icon={Car} tone="blue" label="Interventions" value={String(totals.works)}
+          sub={`${money(totals.amount)} — 🧽 ${totals.lavages} · 🔧 ${totals.vidanges}`} />
+        <Kpi icon={Percent} tone="green" label="Part des employés" value={money(totals.earned)}
+          sub={`sur ${money(totals.base)} de base retenue`} />
+        <Kpi icon={Wallet} tone={totals.due > 0 ? 'red' : 'slate'} label="Reste à leur payer" value={money(totals.due)}
+          sub={`${money(totals.settled)} déjà réglés sur la période`} />
+      </div>
+
+      {/* Ce que l'équipe a vendu, prestation par prestation */}
+      {prestations.length > 0 && (
+        <Section title="Les prestations de la période — toute l'équipe" icon={ClipboardList} count={prestations.length}>
+          <Table head={<>
+            <th className="table-head">Prestation</th><th className="table-head">Nature</th>
+            <th className="table-head text-right">Réalisées</th><th className="table-head text-right">Montant</th>
+          </>}>
+            {prestations.map(p => (
+              <tr key={p.key}>
+                <td className="table-cell font-bold">{p.label}</td>
+                <td className="table-cell">
+                  <span className={cn('badge', p.kindLabel === 'Lavage' ? 'badge-info' : 'badge-primary')}>
+                    {p.kindLabel === 'Lavage' ? '🧽' : '🔧'} {p.kindLabel}
+                  </span>
+                </td>
+                <td className="table-cell tabular-nums text-right">{p.count}</td>
+                <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(p.amount)}</td>
+              </tr>
+            ))}
+          </Table>
+          <p className="text-[11px] text-slate-400 italic">
+            Une prestation n'est comptée ici que si elle porte le nom d'un employé : c'est la même règle
+            que celle qui sert à le payer.
+          </p>
+        </Section>
+      )}
+
+      {/* Filtres */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Chercher un employé — nom, fonction, spécialité…"
+            className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm font-semibold
+                       text-slate-700 outline-none focus:border-[#003087] focus:ring-4 focus:ring-[#003087]/10" />
+        </div>
+        <button onClick={() => setOnlyActive(v => !v)}
+          className={cn('h-10 px-3 rounded-xl text-xs font-black transition-colors',
+            onlyActive ? 'bg-[#003087] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200')}>
+          Seulement ceux qui ont travaillé
+        </button>
+        <button onClick={toggleAll}
+          className="h-10 px-3 rounded-xl text-xs font-black bg-slate-100 text-slate-500 hover:bg-slate-200 transition-colors">
+          {allOpen ? 'Tout replier' : 'Tout déplier'}
+        </button>
+        <span className="text-[11px] text-slate-400 font-bold tabular-nums ml-auto">
+          {shown.length} / {workers.length} employé(s) · {fmtDate(from)} → {fmtDate(to)}
+        </span>
+      </div>
+
+      {/* Un employé, tout son travail */}
+      {shown.length === 0 ? (
+        <Empty text="Aucun employé ne correspond à ce filtre." />
+      ) : (
+        <div className="space-y-2">
+          {shown.map(w => (
+            <ServiceWorkerRow key={w.id} w={w} open={openIds.includes(w.id)} onToggle={() => toggle(w.id)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

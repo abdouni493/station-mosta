@@ -13,11 +13,18 @@ import {
   TrendingUp, ShoppingCart, CreditCard, CircleDollarSign, Wallet, Boxes, Users, Truck,
   AlertTriangle, CalendarClock, Banknote, PackageX, Beaker, ChevronDown, ChevronRight, Layers,
   Undo2, PackageCheck, Fuel, Droplets, Landmark, ArrowDownCircle, ArrowUpCircle,
+  Briefcase, Percent, Car,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { Modal, money, formatDate, Table, Badge } from '@/src/components/biz/Kit';
 import { PartReport } from '@/src/lib/bizReporting';
+import { WorkforceWorker } from '@/src/lib/workforceReporting';
+import { ServiceWorksPanel } from '@/src/components/biz/WorkforceView';
+
+/** Une seule liste vide, partagée : sans elle, `[]` changerait d'identité à
+    chaque rendu et relancerait les calculs qui en dépendent pour rien. */
+const NO_CREW: WorkforceWorker[] = [];
 
 const fmtDate = (s: string) => (s ? formatDate(s) : '—');
 const liters = (n: number) => `${(n || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} L`;
@@ -687,11 +694,32 @@ function Section({ title, icon: Icon, children, right }: { title: string; icon: 
 type DetailKey =
   | 'sales' | 'purchases' | 'gains' | 'gain' | 'expenses' | 'clientDebts' | 'supplierDebts'
   | 'stock' | 'stockValue' | 'expiry' | 'workers' | 'destructions' | 'returns'
-  | 'caisse' | 'brigades' | null;
+  | 'caisse' | 'brigades' | 'serviceWorks' | null;
 
 // ─── Main view ───────────────────────────────────────────────────────────────
-export default function ReportView({ report: r }: { report: PartReport }) {
+export default function ReportView({ report: r, serviceWorkers }: {
+  report: PartReport;
+  /**
+   * Les employés de l'activité, quand celle-ci est une activité de SERVICE
+   * (Lavage & Vidange) : le rapport déplie alors, employé par employé, tout ce
+   * qu'ils ont fait sur la période. Absent ailleurs — un rapport de cafétéria
+   * ou de carburant n'a pas de travaux nominatifs à montrer.
+   */
+  serviceWorkers?: WorkforceWorker[];
+}) {
   const [detail, setDetail] = useState<DetailKey>(null);
+  const crew: WorkforceWorker[] = serviceWorkers || NO_CREW;
+
+  /** Les chiffres de l'équipe, repris des cartes cliquables ci-dessous. */
+  const crewTotals = React.useMemo(() => {
+    const jobs = new Set<string>();
+    let earned = 0, base = 0, due = 0;
+    crew.forEach(w => {
+      w.works.forEach(x => jobs.add(x.id));
+      earned += w.earned; base += w.worksBase; due += w.dueNow;
+    });
+    return { jobs: jobs.size, earned, base, due, active: crew.filter(w => w.works.length > 0).length };
+  }, [crew]);
 
   const financial: [string, number, ('good' | 'bad' | 'neutral')?][] = [
     ["Chiffre d'affaires", r.salesTotal, 'good'], ['Ventes encaissées', r.salesPaid], ['Coût marchandises', r.cogs],
@@ -720,6 +748,7 @@ export default function ReportView({ report: r }: { report: PartReport }) {
     returns: 'Retours & échanges — ventes annulées',
     caisse: 'Solde de caisse — le calcul, mouvement par mouvement',
     brigades: 'Brigades — les ventes de carburant de la période',
+    serviceWorks: 'Travaux des employés — le détail, employé par employé',
   };
 
   const isFuel = r.fuelBrigades.length > 0;
@@ -755,6 +784,23 @@ export default function ReportView({ report: r }: { report: PartReport }) {
             sub="remises par les pompistes" onClick={() => setDetail('brigades')} />
           <MetricCard icon={Landmark} tone="cyan" label="TPE / TAG" value={money(r.fuelBrigades.reduce((s, b) => s + b.tpe, 0))}
             sub="encaissé en banque" onClick={() => setDetail('brigades')} />
+        </div>
+      )}
+
+      {/* ─── Le travail des employés (activité de service) ───────────────────
+          Le rapport disait ce que l'atelier avait facturé sans jamais dire qui
+          l'avait fait. Ces quatre cartes ouvrent le détail complet, employé par
+          employé, sur la période choisie. */}
+      {crew.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <MetricCard icon={Briefcase} tone="cyan" label="Travaux des employés" value={String(crewTotals.jobs)}
+            sub="interventions réalisées" count={crewTotals.jobs} onClick={() => setDetail('serviceWorks')} />
+          <MetricCard icon={Users} tone="blue" label="Employés au travail" value={String(crewTotals.active)}
+            sub={`sur ${crew.length} de l'activité`} onClick={() => setDetail('serviceWorks')} />
+          <MetricCard icon={Percent} tone="green" label="Part des employés" value={money(crewTotals.earned)}
+            sub={`sur ${money(crewTotals.base)} de base retenue`} onClick={() => setDetail('serviceWorks')} />
+          <MetricCard icon={Wallet} tone={crewTotals.due > 0 ? 'red' : 'slate'} label="Reste à leur payer"
+            value={money(crewTotals.due)} sub="travaux non encore réglés" onClick={() => setDetail('serviceWorks')} />
         </div>
       )}
 
@@ -853,6 +899,14 @@ export default function ReportView({ report: r }: { report: PartReport }) {
         <Section title="Alertes d'expiration" icon={CalendarClock}><ExpiryTable rows={r.expiryAlerts} /></Section>
       </div>
 
+      {/* Le travail des employés, déplié sur place */}
+      {crew.length > 0 && (
+        <Section title="Travaux des employés — le détail de la période" icon={Car}
+          right={<span className="text-[11px] text-slate-400 font-medium">Cliquez un employé pour ses interventions, puis une intervention pour ses prestations</span>}>
+          <ServiceWorksPanel workers={crew} from={r.from} to={r.to} />
+        </Section>
+      )}
+
       {/* Workers */}
       {r.workers.length > 0 && (
         <Section title="Comptes des employés" icon={Users} right={<span className="text-[11px] text-slate-400 font-medium">Cliquez une ligne pour les acomptes, absences & paiements</span>}>
@@ -923,6 +977,7 @@ export default function ReportView({ report: r }: { report: PartReport }) {
             {detail === 'returns' && <ReturnTable rows={r.returns} />}
             {detail === 'caisse' && <CaisseTable rows={r.caisseMovements} balance={r.caisseBalance} flow={r.caisseFlow} />}
             {detail === 'brigades' && <FuelBrigadeTable rows={r.fuelBrigades} />}
+            {detail === 'serviceWorks' && <ServiceWorksPanel workers={crew} from={r.from} to={r.to} />}
           </motion.div>
         </AnimatePresence>
       </Modal>
