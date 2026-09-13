@@ -54,8 +54,8 @@ export function PageHeader({
 
 // ─── StatCard ────────────────────────────────────────────────────────────────
 export function StatCard({
-  icon: Icon, label, value, sub, tone = 'blue',
-}: { icon?: React.ElementType; label: string; value: React.ReactNode; sub?: string; tone?: 'blue' | 'green' | 'amber' | 'red' | 'purple' | 'slate' }) {
+  icon: Icon, label, value, sub, tone = 'blue', onClick,
+}: { icon?: React.ElementType; label: string; value: React.ReactNode; sub?: string; tone?: 'blue' | 'green' | 'amber' | 'red' | 'purple' | 'slate'; onClick?: () => void }) {
   const tones: Record<string, string> = {
     blue: 'from-[#003087] to-[#0044bb]',
     green: 'from-emerald-500 to-emerald-600',
@@ -64,8 +64,8 @@ export function StatCard({
     purple: 'from-purple-500 to-purple-600',
     slate: 'from-slate-500 to-slate-600',
   };
-  return (
-    <div className="stat-card">
+  const body = (
+    <>
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{label}</span>
         {Icon && (
@@ -76,8 +76,18 @@ export function StatCard({
       </div>
       <div className="text-2xl font-black text-[#002d87] tabular-nums leading-tight">{value}</div>
       {sub && <div className="text-xs text-slate-400 font-medium">{sub}</div>}
-    </div>
+    </>
   );
+  // Une carte qui FILTRE la liste se clique : c'est alors un vrai bouton — au
+  // clavier comme à la souris — et non un bloc décoré qui réagit en silence.
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className="stat-card w-full text-left cursor-pointer">
+        {body}
+      </button>
+    );
+  }
+  return <div className="stat-card">{body}</div>;
 }
 
 // ─── Badge ───────────────────────────────────────────────────────────────────

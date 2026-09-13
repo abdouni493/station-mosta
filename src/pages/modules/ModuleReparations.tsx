@@ -18,7 +18,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Car, Wrench, Droplets, Plus, Minus, Search, X, User, Users, Wallet, Printer,
-  Eye, Edit2, Trash2, Clock, Package, PackageSearch, CheckCircle2, Hourglass, Layers,
+  Eye, Edit2, Trash2, Package, PackageSearch, CheckCircle2, Hourglass, Layers,
   Percent, Tag, ScanLine, AlertTriangle, Banknote,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -145,11 +145,22 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
     [reparations, clients, search, status, period, from, to]);
 
+  /**
+   * ─── TROIS CHIFFRES, PAS UN DE PLUS ───────────────────────────────────────
+   * L'en-tête ne dit que ce sur quoi on agit aujourd'hui : ce qui est PASSÉ
+   * dans la journée, ce qui ATTEND d'être finalisé, ce qui RESTE à encaisser.
+   *
+   * « Interventions » compte la JOURNÉE — pas l'historique : sur un atelier
+   * ouvert depuis des mois, le total de toujours ne se lit plus, il décore.
+   * La journée se découpe avec le même `inPeriod` que le filtre « Aujourd'hui »
+   * de la liste, pour que la carte et la liste ne se contredisent jamais.
+   */
   const stats = useMemo(() => ({
+    today: reparations.filter(r => inPeriod(r.date, 'today')).length,
     total: reparations.length,
     pending: reparations.filter(r => r.status === 'pending').length,
-    revenue: reparations.reduce((s, r) => s + r.total, 0),
     rest: reparations.reduce((s, r) => s + r.rest, 0),
+    unpaid: reparations.filter(r => r.rest > 0).length,
   }), [reparations]);
 
   /**
@@ -257,35 +268,27 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
       <PageHeader icon={Car} title="Vidanges & Lavage" subtitle={`${cfg.label} — atelier & interventions`}
         actions={perm.creer ? <NewInterventionActions onPick={setCreating} /> : undefined} />
 
-      {/* Alerte — des interventions attendent d'être finalisées. */}
-      {stats.pending > 0 && (
-        <button onClick={() => chooseStatus('pending')}
-          className="w-full text-left rounded-2xl p-4 flex flex-wrap items-center gap-3 transition-transform hover:-translate-y-0.5"
-          style={{ background: 'linear-gradient(135deg, #b45309, #f59e0b)', boxShadow: '0 8px 24px rgba(245,158,11,0.28)' }}>
-          <span className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-            <Hourglass className="w-5 h-5 text-white animate-pulse" />
-          </span>
-          <span className="min-w-0">
-            <span className="block font-black text-white">
-              {stats.pending} intervention{stats.pending > 1 ? 's' : ''} en attente
-            </span>
-            <span className="block text-[12px] text-amber-50">
-              {status === 'pending'
-                ? "Lavages / vidanges à finaliser — c'est ce que la liste affiche."
-                : "Lavages / vidanges à finaliser — cliquez pour n'afficher que celles-ci."}
-            </span>
-          </span>
-          <span className="ml-auto text-xs font-black text-white bg-white/20 rounded-lg px-3 py-1.5 shrink-0">
-            {status === 'pending' ? 'Liste filtrée' : 'Voir les interventions'}
-          </span>
-        </button>
-      )}
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard icon={Car} label="Interventions" value={stats.total} tone="blue" />
-        <StatCard icon={Clock} label="En attente" value={stats.pending} tone="amber" />
-        <StatCard icon={Wallet} label="Chiffre d'affaires" value={money(stats.revenue)} tone="green" />
-        <StatCard icon={Wallet} label="Reste à encaisser" value={money(stats.rest)} tone="red" />
+      {/*
+        ─── TROIS CARTES QUI FILTRENT ──────────────────────────────────────
+        Chaque carte OUVRE la liste sur ce qu'elle compte : la journée, ce qui
+        attend, ce qui n'est pas payé. Le chiffre et la liste racontent donc
+        toujours la même chose, et le grand bandeau d'alerte qui répétait « en
+        attente » juste au-dessus n'a plus lieu d'être — la carte ambre le dit,
+        et elle emmène au même endroit.
+      */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <StatCard icon={Car} label="Interventions du jour" value={stats.today} tone="blue"
+          sub={`${stats.total} au total`}
+          onClick={() => { chooseStatus('all'); setPeriod('today'); }} />
+        <StatCard icon={stats.pending > 0 ? Hourglass : CheckCircle2} label="En attente" value={stats.pending} tone="amber"
+          sub={stats.pending > 0
+            ? (status === 'pending' ? "C'est ce que la liste affiche" : 'À finaliser — cliquez pour les voir')
+            : 'À jour — tout est finalisé'}
+          onClick={() => { chooseStatus('pending'); setPeriod('all'); }} />
+        <StatCard icon={Wallet} label="Reste à encaisser" value={money(stats.rest)} tone="red"
+          sub={stats.unpaid > 0
+            ? `${stats.unpaid} intervention${stats.unpaid > 1 ? 's' : ''} impayée${stats.unpaid > 1 ? 's' : ''}`
+            : 'Tout est encaissé'} />
       </div>
 
       <div className="card-glass p-4 space-y-3">
