@@ -11,8 +11,11 @@
  *    déduite du sous-total (prestations + produits).
  *  • Les produits utilisés sont cherchés par nom OU code-barres ; un produit
  *    vendu au détail se saisit dans son unité de détail (ex: 10 L sur 50 L).
- *  • Une intervention peut être créée « en attente » puis finalisée plus tard
- *    avec exactement le même formulaire.
+ *  • Une intervention s'ouvre TOUJOURS « en attente » : le véhicule arrive
+ *    avant que le travail soit fait, et les produits ne sortent du stock qu'à
+ *    la finalisation. Le sélecteur de statut de la fiche bascule en
+ *    « finalisé » d'un clic, sans la refermer — et le même formulaire sert
+ *    plus tard à finaliser un véhicule laissé le matin.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -320,7 +323,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
           title={status === 'pending' ? 'Aucune intervention en attente' : 'Aucune intervention'}
           message={status === 'pending'
             ? "L'atelier est à jour — tout est finalisé. L'historique complet reste à un clic."
-            : 'Créez un lavage ou une vidange, ou enregistrez-la en attente.'}
+            : "Créez un lavage ou une vidange : la fiche s'ouvre en attente et se finalise d'un clic."}
           action={status === 'pending'
             ? <button className="btn-secondary" onClick={() => chooseStatus('all')}>Voir toutes les interventions</button>
             : undefined} />
@@ -511,11 +514,18 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
 // ─── Header actions ────────────────────────────────────────────────────────────
 /**
- * The four ways to open the intervention form, grouped so the choice reads at a
- * glance instead of four look-alike buttons wrapping onto two lines:
- *   • un segment « Nouvelle intervention » — Lavage / Vidange / les deux
- *   • un bouton distinct « En attente » — le véhicule est pris en charge et
- *     l'intervention sera finalisée plus tard.
+ * ─── UN SEUL GESTE POUR OUVRIR L'ATELIER ────────────────────────────────────
+ *
+ * Trois boutons, un par nature de travail — Lavage / Vidange / les deux. Ils
+ * ouvrent TOUS la fiche « en attente » : c'est l'ordre réel des choses, le
+ * véhicule arrive avant d'être fini, et rien ne sort du stock tant que le
+ * travail n'est pas fait.
+ *
+ * Le quatrième bouton « En attente » qui doublait ces trois-là a disparu : il
+ * ne servait qu'à choisir un statut que la fiche pose maintenant d'elle-même,
+ * et il imposait de démarrer en Lavage même pour une vidange. Finaliser tout
+ * de suite reste à UN clic — le sélecteur « Finalisé » en tête de fiche, ou le
+ * bouton vert du pied de page.
  */
 function NewInterventionActions({
   onPick,
@@ -535,8 +545,8 @@ function NewInterventionActions({
           const m = KIND_META[t.kind];
           const Icon = m.icon;
           return (
-            <button key={t.kind} onClick={() => onPick({ kind: t.kind, pending: false })}
-              title={`Nouvelle intervention — ${m.label}`}
+            <button key={t.kind} onClick={() => onPick({ kind: t.kind, pending: true })}
+              title={`Nouvelle intervention — ${m.label} (ouverte en attente, finalisable aussitôt)`}
               style={{ background: m.grad, boxShadow: m.shadow }}
               className="px-3.5 h-10 rounded-xl text-xs font-black text-white flex items-center gap-1.5
                          transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 active:scale-95">
@@ -547,13 +557,12 @@ function NewInterventionActions({
           );
         })}
       </div>
-      {/* Le véhicule est pris en charge, le travail se facturera plus tard. */}
-      <button onClick={() => onPick({ kind: 'lavage', pending: true })}
-        title="Enregistrer une intervention à finaliser plus tard"
-        className="h-[54px] px-4 rounded-2xl text-xs font-black text-amber-700 bg-amber-50 border-2 border-amber-200
-                   flex items-center gap-2 transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-100 active:scale-95">
-        <Hourglass className="w-4 h-4" /> En attente
-      </button>
+      {/* Ce que font ces trois boutons, dit une fois — plutôt qu'un quatrième
+          bouton qui refaisait la moitié du travail. */}
+      <span className="hidden lg:flex items-center gap-1.5 text-[11px] font-bold text-amber-700">
+        <Hourglass className="w-3.5 h-3.5" />
+        Ouvre en attente — finalisez quand le travail est fait
+      </span>
     </div>
   );
 }
@@ -663,6 +672,7 @@ function ReparationForm({
   moduleKey: ModuleKey;
   kind: BizRepKind;
   initial?: BizReparation;
+  /** Statut d'ouverture d'une intervention NEUVE. Par défaut « en attente ». */
   asPending?: boolean;
   /**
    * On vient FINALISER une intervention en attente : le statut est déjà basculé
@@ -735,8 +745,15 @@ function ReparationForm({
   /** Le produit que l'on vient de toucher — sa fiche s'allume une seconde. */
   const [flashId, setFlashId] = useState<string | null>(null);
   const flashTimer = useRef<number | null>(null);
+  /**
+   * Une intervention NEUVE naît « en attente » : le véhicule est là, le travail
+   * ne l'est pas encore, et le stock ne doit pas bouger avant. Le sélecteur de
+   * statut — en tête de fiche, et le bouton vert du pied de page — bascule en
+   * « finalisé » sans quitter l'écran, pour le lavage réglé au comptoir.
+   * `asPending={false}` reste possible pour ouvrir directement en finalisé.
+   */
   const [pending, setPending] = useState<boolean>(
-    initial ? (finalizing ? false : initial.status === 'pending') : !!asPending);
+    initial ? (finalizing ? false : initial.status === 'pending') : (asPending ?? true));
   const [discountMode, setDiscountMode] = useState<'none' | BizDiscountType>(
     initial?.discountAmount ? (initial.discountType || 'amount') : 'none');
   const [discountStr, setDiscountStr] = useState<string>(
@@ -1026,18 +1043,31 @@ function ReparationForm({
 
   const title = isEdit
     ? (wasPending ? `Finaliser ${initial!.ref}` : `Modifier ${initial!.ref}`)
-    : (pending ? 'Nouvelle intervention en attente' : `Nouvelle intervention — ${KIND_META[repKind].label}`);
+    : `Nouvelle intervention — ${KIND_META[repKind].label}`;
+  /** Ce que l'enregistrement va faire, dit avant qu'on le fasse. */
+  const subtitle = wasPending
+    ? 'Vérifiez le travail réalisé, puis finalisez — le stock sort à cet instant'
+    : (!isEdit && pending
+      ? 'Prise en charge — passez en « Finalisé » dès que le travail est terminé'
+      : 'Plusieurs prestations par intervention • remise • produits du stock');
 
   return (
     <>
       <Modal open onClose={onClose} icon={KIND_META[repKind].icon} size="xl" title={title}
-        subtitle={wasPending
-          ? 'Vérifiez le travail réalisé, puis finalisez — le stock sort à cet instant'
-          : 'Plusieurs prestations par intervention • remise • produits du stock'}
+        subtitle={subtitle}
         footer={<>
           <button className="btn-ghost" onClick={onClose}>Annuler</button>
+          {/* ── LA CONVERSION, SANS SORTIR DE LA FICHE ────────────────────
+              La fiche s'ouvre en attente ; un lavage réglé au comptoir se
+              finalise ICI, d'un clic. Le montant encaissé se remplit alors tout
+              seul avec le total — visible avant d'enregistrer, corrigeable pour
+              un client qui ne paie qu'une partie. */}
           {pending && (
-            <button className="btn-secondary" onClick={() => setPending(false)}>
+            <button onClick={() => setPending(false)}
+              title="Le travail est terminé : bascule la fiche en finalisé"
+              className="px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider text-emerald-700
+                         bg-emerald-50 border-2 border-emerald-200 flex items-center gap-2
+                         transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-100 active:scale-[0.97]">
               <CheckCircle2 className="w-4 h-4" /> Passer en finalisé
             </button>
           )}
@@ -1081,7 +1111,8 @@ function ReparationForm({
 
           {/* ── Statut + nature déduite ─────────────────────────────────────── */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="Statut de l'intervention">
+            <Field label="Statut de l'intervention"
+              hint="Une intervention neuve démarre en attente — passez-la en finalisé dès que le travail est fait.">
               <div className="grid grid-cols-2 gap-2">
                 <button onClick={() => setPending(true)}
                   className={`h-[52px] rounded-2xl text-sm font-black flex items-center justify-center gap-2
@@ -1582,9 +1613,9 @@ function ReparationForm({
                         Montant saisi — remettre le total
                       </button>
                     ) : (
-                      <span className="text-[10px] font-black uppercase tracking-wider text-emerald-200
-                                       bg-emerald-400/20 rounded-lg px-2 py-0.5">
-                        Proposé — modifiable
+                      <span className={`text-[10px] font-black uppercase tracking-wider rounded-lg px-2 py-0.5
+                                        ${pending ? 'text-amber-200 bg-amber-400/20' : 'text-emerald-200 bg-emerald-400/20'}`}>
+                        {pending ? 'Acompte — facultatif' : 'Proposé — modifiable'}
                       </span>
                     )}
                   </div>
@@ -1605,7 +1636,12 @@ function ReparationForm({
                   <p className="text-[11px] text-blue-200 mt-1.5 px-1">
                     {paidEdited
                       ? 'Montant saisi à la main — il ne suit plus le total.'
-                      : "Le total à payer est repris automatiquement : corrigez-le si le client n'a pas tout réglé."}
+                      : (pending
+                        /* Une prise en charge n'a rien encaissé : proposer le
+                           total ici ouvrirait un paiement qui n'a pas eu lieu.
+                           Le champ se remplira tout seul à la finalisation. */
+                        ? "Rien d'encaissé sur une intervention en attente — saisissez un acompte si le client en a versé un."
+                        : "Le total à payer est repris automatiquement : corrigez-le si le client n'a pas tout réglé.")}
                   </p>
                 </div>
                 <div>
