@@ -75,7 +75,120 @@ export interface CaisseMovementRow {
   /** Signé sur la caisse : > 0 = espèces entrées, < 0 = espèces sorties. */
   amount: number;
   reference?: string;
+  /**
+   * Le mode de règlement de la pièce, quand elle en porte un (ESPECES, CHEQUE,
+   * VIREMENT, TPE…). Un mouvement de caisse est toujours en espèces — mais le
+   * dire NOIR SUR BLANC sur la ligne du client évite d'avoir à le deviner : le
+   * gérant qui déroule « Règlement client » voit enfin par quel moyen chacun a
+   * payé, au lieu d'une liste de noms et de montants muette.
+   */
+  mode?: string;
 }
+/**
+ * ─── Un règlement encaissé d'un client ───────────────────────────────────────
+ * Ce que le client a REMIS sur la période — le règlement d'une dette ou la
+ * recharge de son compte d'avance — avec le MOYEN par lequel il l'a remis.
+ *
+ * Le rapport ne disait jamais ce moyen : deux clients ayant versé 50 000 DA
+ * s'affichaient à l'identique, que l'un ait posé des billets sur le comptoir et
+ * l'autre signé un chèque encaissé trois semaines plus tard. Ce n'est pourtant
+ * pas le même argent : seules les espèces sont déjà dans le tiroir.
+ */
+export interface ClientPaymentRow {
+  id: string;
+  date: string;
+  clientId: string;
+  clientName: string;
+  /** Règlement d'une dette, ou recharge du compte d'avance. */
+  kind: 'Règlement' | 'Recharge';
+  /** Le mode brut enregistré sur la pièce (ESPECES, CHEQUE, VIREMENT, TPE…). */
+  mode: string;
+  /** Le même mode, en toutes lettres — ce que l'écran affiche. */
+  modeLabel: string;
+  amount: number;
+  reference?: string;
+  notes?: string;
+}
+
+/** Les modes de règlement d'un client, en toutes lettres. */
+export const PAYMENT_MODE_LABEL: Record<string, string> = {
+  ESPECES: 'Espèces', 'ESPÈCES': 'Espèces', CASH: 'Espèces', LIQUIDE: 'Espèces',
+  CHEQUE: 'Chèque', 'CHÈQUE': 'Chèque', VIREMENT: 'Virement',
+  TPE: 'Carte / TPE', CARTE: 'Carte / TPE', TAG: 'TAG',
+};
+
+/** Un règlement sans mode enregistré est réputé encaissé en espèces. */
+export const isCashMode = (mode?: string): boolean => {
+  const m = String(mode ?? '').trim().toUpperCase();
+  return m === '' || m === 'ESPECES' || m === 'ESPÈCES' || m === 'CASH' || m === 'LIQUIDE';
+};
+
+export const paymentModeLabel = (mode?: string): string => {
+  const m = String(mode ?? '').trim().toUpperCase();
+  return PAYMENT_MODE_LABEL[m] || (m ? String(mode) : 'Espèces');
+};
+
+/**
+ * Tous les règlements versés par les clients de la station sur la période, quel
+ * qu'en soit le mode. La caisse, elle, ne retient que les espèces — un chèque
+ * n'a jamais rempli le tiroir — d'où deux lectures qui ne se contredisent pas :
+ * celle-ci dit ce que les clients ont REMIS, celle de la caisse ce qui est
+ * ENTRÉ en billets.
+ */
+export function clientPaymentsOf(app: any, from: string, to: string): ClientPaymentRow[] {
+  const rows: ClientPaymentRow[] = [];
+  for (const c of (app?.clients || []) as any[]) {
+    for (const t of (c.transactionHistory || []) as any[]) {
+      if (t.type !== 'PAYMENT' && t.type !== 'RECHARGE') continue;
+      if (!within(t.date, from, to)) continue;
+      const amount = num(t.amount);
+      if (!amount) continue;
+      const isRecharge = t.type === 'RECHARGE';
+      rows.push({
+        id: `${isRecharge ? 'rec' : 'pay'}-${t.id}`,
+        date: t.date,
+        clientId: c.id,
+        clientName: c.name || 'Client',
+        kind: isRecharge ? 'Recharge' : 'Règlement',
+        mode: String(t.mode || 'ESPECES').trim().toUpperCase(),
+        modeLabel: paymentModeLabel(t.mode),
+        amount,
+        reference: t.receiptNumber,
+        notes: t.notes,
+      });
+    }
+  }
+  return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
+/**
+ * Ce que les règlements EN ESPÈCES de la période pèsent : combien de clients
+ * ont payé en billets, combien de règlements, et quelle somme. Le compte est
+ * celui des CLIENTS, pas des pièces — un client venu régler trois fois dans le
+ * mois reste un seul client.
+ */
+export const clientCashSummary = (rows: ClientPaymentRow[]) => {
+  const cash = rows.filter(r => isCashMode(r.mode));
+  return {
+    clients: new Set(cash.map(r => r.clientId)).size,
+    payments: cash.length,
+    total: cash.reduce((s, r) => s + r.amount, 0),
+  };
+};
+
+/** Le total de chaque mode de règlement, du plus gros au plus petit. */
+export const clientPaymentsByMode = (rows: ClientPaymentRow[]) => {
+  const by = new Map<string, { mode: string; label: string; count: number; clients: Set<string>; total: number }>();
+  rows.forEach(r => {
+    const g = by.get(r.mode) || { mode: r.mode, label: r.modeLabel, count: 0, clients: new Set<string>(), total: 0 };
+    g.count += 1; g.clients.add(r.clientId); g.total += r.amount;
+    by.set(r.mode, g);
+  });
+  return [...by.values()]
+    .map(g => ({ mode: g.mode, label: g.label, count: g.count, clients: g.clients.size, total: g.total }))
+    .sort((a, b) => b.total - a.total);
+};
+
 export interface DestructionRow {
   id: string; name: string; qty: number; value: number; reason?: string; date: string;
   /** D'où vient le produit détruit : le catalogue (stock) ou le comptoir. */
@@ -174,6 +287,12 @@ export interface PartReport {
   caisseMovements: CaisseMovementRow[];
   /** Entrées / sorties d'espèces qui composent `caisseBalance`. */
   caisseFlow: { in: number; out: number };
+  /**
+   * Les règlements versés par les clients sur la période, avec leur mode de
+   * paiement. Rempli pour le Carburant ; vide pour les parties commerciales,
+   * dont les règlements vivent dans leur propre blob.
+   */
+  clientPayments: ClientPaymentRow[];
   /** Brigades de la période — la vraie vente de carburant. Vide ailleurs. */
   fuelBrigades: FuelBrigadeSale[];
   /** Litres de carburant vendus sur la période. */
@@ -771,6 +890,7 @@ export function computeModuleReport(
       }))
       .sort((a, b) => b.value - a.value),
     caisseMovements, caisseFlow: flowOf(caisseMovements),
+    clientPayments: [],
     fuelBrigades: [], fuelLiters: 0,
     counts: {
       products: st.products.length, clients: st.clients.length, suppliers: st.suppliers.length,
@@ -814,6 +934,14 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
   // ── Carburant : les brigades de la période ──
   const fuel = computeCarburantSales(app, from, to);
   const cash = computeCarburantCash(app);
+
+  // ── Ce que les clients ont REMIS sur la période, mode par mode ────────────
+  // Contrairement à la caisse, qui ne retient que les billets, cette liste
+  // couvre TOUS les modes : espèces, chèque, virement et TPE. C'est elle qui
+  // permet de dire combien de clients ont réglé en espèces — et combien cela
+  // fait — sans confondre l'argent déjà dans le tiroir avec celui qui est parti
+  // en banque.
+  const clientPayments = clientPaymentsOf(app, from, to);
 
   // Shop by product
   const shopByProduct: Record<string, { qty: number; revenue: number; cost: number; unit?: string }> = {};
@@ -1016,6 +1144,7 @@ export function computeCarburantReport(app: any, from: string, to: string): Part
     stockAlerts, expiryAlerts: [], workers, caisse: [], destructions: [], productions: [], returns: [],
     stockLines,
     caisseMovements: cash.lines, caisseFlow: { in: cash.inflow, out: cash.outflow },
+    clientPayments,
     fuelBrigades: fuel.brigades, fuelLiters: fuel.liters,
     counts: {
       products: products.length, clients: clients.length, suppliers: suppliers.length,

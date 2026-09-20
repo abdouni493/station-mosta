@@ -406,6 +406,13 @@ export interface CarburantCashLine {
   /** Signé sur la caisse : > 0 = espèces entrées, < 0 = espèces sorties. */
   amount: number;
   reference?: string;
+  /**
+   * Le mode de règlement inscrit sur la pièce, quand elle en porte un. Tout ce
+   * qui figure ici est par construction encaissé en ESPÈCES : le dire sur la
+   * ligne évite au gérant de le déduire, et rend la liste des clients lisible
+   * telle quelle.
+   */
+  mode?: string;
 }
 
 export interface CarburantCash {
@@ -505,6 +512,7 @@ export function computeCarburantCash(app: any): CarburantCash {
         label: isRecharge ? `Recharge avance — ${c.name}` : `Règlement dette — ${c.name}`,
         amount,
         reference: t.receiptNumber,
+        mode: t.mode || 'ESPECES',
       });
     }
   }

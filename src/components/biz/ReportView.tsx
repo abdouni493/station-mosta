@@ -13,12 +13,14 @@ import {
   TrendingUp, ShoppingCart, CreditCard, CircleDollarSign, Wallet, Boxes, Users, Truck,
   AlertTriangle, CalendarClock, Banknote, PackageX, Beaker, ChevronDown, ChevronRight, Layers,
   Undo2, PackageCheck, Fuel, Droplets, Landmark, ArrowDownCircle, ArrowUpCircle,
-  Briefcase, Percent, Car,
+  Briefcase, Percent, Car, Receipt, HandCoins,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { Modal, money, formatDate, Table, Badge } from '@/src/components/biz/Kit';
-import { PartReport } from '@/src/lib/bizReporting';
+import {
+  PartReport, clientCashSummary, clientPaymentsByMode, isCashMode,
+} from '@/src/lib/bizReporting';
 import { WorkforceWorker } from '@/src/lib/workforceReporting';
 import { ServiceWorksPanel } from '@/src/components/biz/WorkforceView';
 
@@ -463,6 +465,7 @@ export function CaisseTable({ rows, balance, flow }: {
                             <div key={r.id} className="flex items-center justify-between gap-3 rounded-xl bg-white border border-slate-100 px-3 py-2">
                               <span className="text-[11px] text-slate-400 shrink-0 w-24">{fmtDate(r.date)}</span>
                               <span className="text-xs text-slate-600 flex-1 truncate">{r.label}</span>
+                              {r.mode && <ModeBadge mode={r.mode} />}
                               {r.reference && <span className="badge badge-neutral shrink-0">{r.reference}</span>}
                               <span className={cn('font-black tabular-nums text-xs shrink-0', r.amount >= 0 ? 'text-emerald-600' : 'text-red-600')}>
                                 {r.amount >= 0 ? '+' : '−'}{money(Math.abs(r.amount))}
@@ -488,6 +491,91 @@ export function CaisseTable({ rows, balance, flow }: {
         Seules les espèces comptent ici : un achat réglé par chèque ou par virement n'est jamais passé par
         le tiroir. Le solde couvre TOUTES les dates — ce qu'il y a dans la caisse aujourd'hui ne dépend pas
         de la période choisie. C'est le même chiffre que l'écran Caisse Générale.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * ─── Le mode de règlement, en une pastille ────────────────────────────────────
+ * Les espèces au vert — l'argent est dans le tiroir — le reste au bleu : il est
+ * en banque, ou en route pour y être.
+ */
+function ModeBadge({ mode }: { mode: string }) {
+  const cash = isCashMode(mode);
+  const label = MODE_LABEL[String(mode || '').trim().toUpperCase()] || mode || 'Espèces';
+  return (
+    <span className={cn('text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap',
+      cash ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+        : 'bg-blue-50 text-blue-700 border border-blue-100')}>
+      {label}
+    </span>
+  );
+}
+
+const MODE_LABEL: Record<string, string> = {
+  ESPECES: 'Espèces', 'ESPÈCES': 'Espèces', CASH: 'Espèces', LIQUIDE: 'Espèces',
+  CHEQUE: 'Chèque', 'CHÈQUE': 'Chèque', VIREMENT: 'Virement',
+  TPE: 'Carte / TPE', CARTE: 'Carte / TPE', TAG: 'TAG',
+};
+
+/**
+ * ─── Les règlements des clients, mode de paiement compris ────────────────────
+ * La liste des clients qui ont payé sur la période disait QUI et COMBIEN, mais
+ * jamais PAR QUEL MOYEN : un chèque de 200 000 DA et 200 000 DA de billets s'y
+ * ressemblaient trait pour trait, alors que l'un dort chez le banquier et
+ * l'autre est déjà dans le tiroir. Le mode figure maintenant sur chaque ligne,
+ * et le récapitulatif du haut donne le poids de chacun.
+ */
+export function ClientPaymentsTable({ rows }: { rows: PartReport['clientPayments'] }) {
+  if (!rows.length) return <Empty text="Aucun règlement client sur la période" />;
+  const byMode = clientPaymentsByMode(rows);
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+  const clients = new Set(rows.map(r => r.clientId)).size;
+
+  return (
+    <div className="space-y-3">
+      {/* Récapitulatif par mode — les espèces d'abord, c'est le seul argent
+          déjà présent en caisse. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {byMode.map(m => (
+          <div key={m.mode} className={cn('rounded-xl border p-3',
+            isCashMode(m.mode) ? 'border-emerald-100 bg-emerald-50/50' : 'border-slate-100 bg-slate-50/60')}>
+            <p className="text-[10px] uppercase font-bold text-slate-400">{m.label}</p>
+            <p className={cn('font-black tabular-nums text-sm', isCashMode(m.mode) ? 'text-emerald-700' : 'text-blue-700')}>{money(m.total)}</p>
+            <p className="text-[10px] text-slate-400 font-medium">{m.clients} client(s) · {m.count} règlement(s)</p>
+          </div>
+        ))}
+      </div>
+
+      <Table head={<>
+        <th className="table-head">Date</th><th className="table-head">Client</th>
+        <th className="table-head">Type</th><th className="table-head">Mode de paiement</th>
+        <th className="table-head">Référence</th><th className="table-head text-right">Montant</th>
+      </>}>
+        {rows.map(r => (
+          <tr key={r.id}>
+            <td className="table-cell whitespace-nowrap text-slate-500">{fmtDate(r.date)}</td>
+            <td className="table-cell font-bold">{r.clientName}</td>
+            <td className="table-cell"><Badge tone={r.kind === 'Recharge' ? 'info' : 'success'}>{r.kind}</Badge></td>
+            <td className="table-cell"><ModeBadge mode={r.mode} /></td>
+            <td className="table-cell text-slate-400">{r.reference || '—'}</td>
+            <td className={cn('table-cell tabular-nums text-right font-black',
+              isCashMode(r.mode) ? 'text-emerald-600' : 'text-blue-700')}>{money(r.amount)}</td>
+          </tr>
+        ))}
+        <tr className="bg-blue-50/60">
+          <td className="table-cell font-black text-[#002d87]" colSpan={5}>
+            TOTAL — {rows.length} règlement(s) de {clients} client(s)
+          </td>
+          <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(total)}</td>
+        </tr>
+      </Table>
+
+      <p className="text-[11px] text-slate-400 italic px-1">
+        Seuls les règlements en ESPÈCES sont entrés dans le tiroir : un chèque, un virement ou un paiement
+        par TPE est encaissé sur un compte bancaire. Le « Solde caisse » ne compte donc que les premiers —
+        les deux listes ne se contredisent pas, elles ne parlent pas du même argent.
       </p>
     </div>
   );
@@ -694,7 +782,7 @@ function Section({ title, icon: Icon, children, right }: { title: string; icon: 
 type DetailKey =
   | 'sales' | 'purchases' | 'gains' | 'gain' | 'expenses' | 'clientDebts' | 'supplierDebts'
   | 'stock' | 'stockValue' | 'expiry' | 'workers' | 'destructions' | 'returns'
-  | 'caisse' | 'brigades' | 'serviceWorks' | null;
+  | 'caisse' | 'brigades' | 'serviceWorks' | 'clientPayments' | 'clientCash' | null;
 
 // ─── Main view ───────────────────────────────────────────────────────────────
 export default function ReportView({ report: r, serviceWorkers }: {
@@ -749,9 +837,16 @@ export default function ReportView({ report: r, serviceWorkers }: {
     caisse: 'Solde de caisse — le calcul, mouvement par mouvement',
     brigades: 'Brigades — les ventes de carburant de la période',
     serviceWorks: 'Travaux des employés — le détail, employé par employé',
+    clientPayments: 'Règlements des clients — mode de paiement par client',
+    clientCash: 'Règlements encaissés en espèces — client par client',
   };
 
   const isFuel = r.fuelBrigades.length > 0;
+
+  /** Les règlements des clients sur la période, et ce que les espèces y pèsent. */
+  const clientCash = React.useMemo(() => clientCashSummary(r.clientPayments), [r.clientPayments]);
+  const cashPayments = React.useMemo(
+    () => r.clientPayments.filter(p => isCashMode(p.mode)), [r.clientPayments]);
 
   return (
     <div className="space-y-8">
@@ -784,6 +879,24 @@ export default function ReportView({ report: r, serviceWorkers }: {
             sub="remises par les pompistes" onClick={() => setDetail('brigades')} />
           <MetricCard icon={Landmark} tone="cyan" label="TPE / TAG" value={money(r.fuelBrigades.reduce((s, b) => s + b.tpe, 0))}
             sub="encaissé en banque" onClick={() => setDetail('brigades')} />
+        </div>
+      )}
+
+      {/* ─── Ce que les clients ont remis sur la période ──────────────────────
+          La carte de gauche ouvre TOUS les règlements, mode de paiement compris ;
+          celle de droite isole les ESPÈCES — combien de clients ont payé en
+          billets, et quelle somme cela représente. Les deux se lisent sur la
+          période choisie, pas sur l'encours de toutes les dates. */}
+      {r.clientPayments.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <MetricCard icon={Receipt} tone="blue" label="Règlements clients"
+            value={money(r.clientPayments.reduce((s, p) => s + p.amount, 0))}
+            sub={`${r.clientPayments.length} règlement(s) · ${new Set(r.clientPayments.map(p => p.clientId)).size} client(s)`}
+            count={r.clientPayments.length} onClick={() => setDetail('clientPayments')} />
+          <MetricCard icon={HandCoins} tone="green" label="Clients réglés en espèces"
+            value={String(clientCash.clients)}
+            sub={`${money(clientCash.total)} encaissés · ${clientCash.payments} règlement(s)`}
+            count={clientCash.clients} onClick={() => setDetail('clientCash')} />
         </div>
       )}
 
@@ -842,6 +955,16 @@ export default function ReportView({ report: r, serviceWorkers }: {
         right={<span className="text-[11px] text-slate-400 font-medium">Cliquez une nature pour dérouler ses mouvements</span>}>
         <CaisseTable rows={r.caisseMovements} balance={r.caisseBalance} flow={r.caisseFlow} />
       </Section>
+
+      {/* Les règlements des clients, mode de paiement compris */}
+      {r.clientPayments.length > 0 && (
+        <Section title="Règlements des clients — par mode de paiement" icon={Receipt}
+          right={<span className="text-[11px] text-slate-400 font-medium">
+            {clientCash.clients} client(s) ont réglé en espèces, pour {money(clientCash.total)}
+          </span>}>
+          <ClientPaymentsTable rows={r.clientPayments} />
+        </Section>
+      )}
 
       {/* Carburant — les brigades de la période */}
       {isFuel && (
@@ -977,6 +1100,8 @@ export default function ReportView({ report: r, serviceWorkers }: {
             {detail === 'returns' && <ReturnTable rows={r.returns} />}
             {detail === 'caisse' && <CaisseTable rows={r.caisseMovements} balance={r.caisseBalance} flow={r.caisseFlow} />}
             {detail === 'brigades' && <FuelBrigadeTable rows={r.fuelBrigades} />}
+            {detail === 'clientPayments' && <ClientPaymentsTable rows={r.clientPayments} />}
+            {detail === 'clientCash' && <ClientPaymentsTable rows={cashPayments} />}
             {detail === 'serviceWorks' && <ServiceWorksPanel workers={crew} from={r.from} to={r.to} />}
           </motion.div>
         </AnimatePresence>
