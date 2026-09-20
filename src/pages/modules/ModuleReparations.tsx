@@ -37,7 +37,7 @@ import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
-  RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, money, formatDate,
+  RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, money, formatDate, formatTime, formatDateTime,
   PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 import {
@@ -218,7 +218,7 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
 
   const onPay = (amount: number, meta: PayDebtMeta) => {
     if (!paying) return;
-    biz.update('reparations', withPayment(paying, amount, meta));
+    biz.update('reparations', { ...withPayment(paying, amount, meta), updatedAt: new Date().toISOString() });
     toast.success('Paiement enregistré'); setPaying(null);
   };
 
@@ -388,7 +388,17 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                     </div>
                   )}
                 </td>
-                <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(r.date)}</td>
+                {/* Le jour SEUL ne reconnaît pas une fiche : l'atelier en ouvre
+                    des dizaines dans la même journée, et c'est l'heure de prise
+                    en charge qui dit laquelle est laquelle. */}
+                <td className="table-cell whitespace-nowrap text-slate-500">
+                  <span className="block">{formatDate(r.date)}</span>
+                  {formatTime(r.date) && (
+                    <span className="block text-[11px] font-bold text-slate-400 tabular-nums">
+                      à {formatTime(r.date)}
+                    </span>
+                  )}
+                </td>
                 <td className="table-cell tabular-nums text-right font-bold">{money(r.total)}</td>
                 <td className="table-cell tabular-nums text-right text-emerald-600">{money(r.paid)}</td>
                 <td className="table-cell tabular-nums text-right text-red-600">{money(r.rest)}</td>
@@ -412,6 +422,11 @@ export default function ModuleReparations({ moduleKey }: { moduleKey: ModuleKey 
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5"><KIcon className="w-4 h-4 text-[#003087]" /><h3 className="font-black text-slate-800">{r.ref}</h3></div>
                     <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><User className="w-3 h-3" />{r.clientName}</p>
+                    {/* Même repère que la colonne « Date » du tableau : le jour
+                        et l'heure de prise en charge. */}
+                    <p className="text-[11px] text-slate-400 font-bold tabular-nums mt-0.5">
+                      {formatDateTime(r.date) || formatDate(r.date)}
+                    </p>
                   </div>
                   <Badge tone={STATUS_META[r.status].tone}>{STATUS_META[r.status].label}</Badge>
                 </div>
@@ -567,6 +582,59 @@ function NewInterventionActions({
   );
 }
 
+/**
+ * ─── LE DÉROULÉ D'UNE INTERVENTION, À LA MINUTE ───────────────────────────────
+ * Une fiche d'atelier n'est pas un instant : elle s'ouvre quand le véhicule
+ * arrive, se retouche pendant le travail, et se referme quand la voiture
+ * repart. Cette frise dit CHACUN de ces moments avec son heure — c'est ce
+ * qu'on vient relire quand un client conteste un délai, ou quand on veut
+ * savoir combien de temps un lavage a réellement pris.
+ *
+ * Une étape qui n'a pas eu lieu ne s'affiche pas : une fiche encore en attente
+ * n'a ni finalisation ni sortie, et l'inventer donnerait une fausse heure.
+ * Les fiches enregistrées AVANT cette mise à jour n'ont que leur prise en
+ * charge — le reste apparaîtra dès leur prochaine écriture.
+ */
+function RepTimeline({ rep }: { rep: BizReparation }) {
+  /**
+   * Finaliser une fiche, c'est la clôturer : le travail est déclaré fait et le
+   * véhicule repart dans le même geste. Les deux moments ne se séparent donc
+   * qu'en reprenant une vieille fiche dont la sortie avait été notée à part.
+   */
+  const closedTogether = !!rep.finalizedAt && rep.outDate === rep.finalizedAt;
+  const steps: { label: string; at?: string; tone: string; icon: React.ElementType }[] = [
+    { label: 'Créée (prise en charge)', at: rep.date, tone: 'text-blue-600', icon: Hourglass },
+    { label: 'Dernière modification', at: rep.updatedAt, tone: 'text-amber-600', icon: Edit2 },
+    {
+      label: closedTogether ? 'Finalisée et clôturée (sortie du véhicule)' : 'Finalisée',
+      at: rep.finalizedAt, tone: 'text-emerald-600', icon: CheckCircle2,
+    },
+    ...(closedTogether ? [] : [{ label: 'Clôturée — sortie du véhicule', at: rep.outDate, tone: 'text-emerald-600', icon: Car }]),
+    { label: 'Annulée', at: rep.canceledAt, tone: 'text-red-600', icon: X },
+    { label: 'Imprimée', at: rep.printedAt, tone: 'text-slate-500', icon: Printer },
+  ];
+  const shown = steps.filter(st => !!st.at && !isNaN(new Date(st.at!).getTime()));
+
+  return (
+    <div className="rounded-xl bg-slate-50 p-3">
+      <p className="text-[10px] uppercase font-bold text-slate-400 mb-2">Suivi horaire</p>
+      <div className="space-y-1.5">
+        {shown.map(st => {
+          const Icon = st.icon;
+          return (
+            <div key={st.label} className="flex items-center justify-between gap-3 text-sm">
+              <span className="flex items-center gap-1.5 font-semibold text-slate-600">
+                <Icon className={`w-3.5 h-3.5 ${st.tone}`} /> {st.label}
+              </span>
+              <span className="font-bold text-slate-700 tabular-nums shrink-0">{formatDateTime(st.at!)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Detail view ───────────────────────────────────────────────────────────────
 function ViewRep({ rep, workers, onClose, onPrint }: {
   rep: BizReparation; workers: { id: string; name: string }[]; onClose: () => void; onPrint: () => void;
@@ -582,9 +650,17 @@ function ViewRep({ rep, workers, onClose, onPrint }: {
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Client</p><p className="font-bold text-slate-700">{rep.clientName}</p></div>
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Statut</p><p className="font-bold text-slate-700">{STATUS_META[rep.status].label}</p></div>
-          <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Date</p><p className="font-bold text-slate-700">{formatDate(rep.date)}</p></div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-[10px] uppercase font-bold text-slate-400">Prise en charge</p>
+            <p className="font-bold text-slate-700">{formatDate(rep.date)}</p>
+            {formatTime(rep.date) && (
+              <p className="text-[11px] font-bold text-slate-400 tabular-nums">à {formatTime(rep.date)}</p>
+            )}
+          </div>
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400">Employé(s)</p><p className="font-bold text-slate-700">{workerNames || '—'}</p></div>
         </div>
+        <RepTimeline rep={rep} />
+
         {(rep.car?.marque || rep.car?.name || rep.car?.immatriculation) && (
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Véhicule</p>
             <p className="text-sm font-semibold text-slate-700">{[rep.car.marque, rep.car.name, rep.car.color, rep.car.year, rep.car.immatriculation].filter(Boolean).join(' • ')}</p></div>
@@ -972,6 +1048,22 @@ function ReparationForm({
     // Une intervention éditée garde SA date : c'est elle qui date aussi son
     // encaissement d'origine dans le relevé du client.
     const repDate = initial?.date || new Date().toISOString();
+    /**
+     * ─── ON HORODATE CE QUI VIENT DE SE PASSER ──────────────────────────────
+     * La prise en charge est déjà datée par `repDate`. Ce qu'on ajoute ici,
+     * c'est le reste de la vie de la fiche : l'instant de CETTE écriture, et,
+     * quand elle bascule, l'instant exact de la finalisation ou de
+     * l'annulation — pris une seule fois, jamais réécrit par une correction
+     * de montant passée après coup.
+     *
+     * La sortie du véhicule (`outDate`) est la finalisation elle-même : c'est
+     * au moment où le travail est déclaré fait que la voiture repart.
+     *
+     * Ce formulaire n'annule pas une intervention — un `canceledAt` déjà posé
+     * est simplement reconduit, jamais effacé par une reprise de la fiche.
+     */
+    const stamp = new Date().toISOString();
+    const finalizedAt = status === 'finalized' ? (initial?.finalizedAt || stamp) : initial?.finalizedAt;
     const rep: BizReparation = {
       id: initial?.id || newId(),
       ref: initial?.ref || `${prefix}-${String(biz.state.reparations.length + 1).padStart(4, '0')}`,
@@ -989,8 +1081,11 @@ function ReparationForm({
       discountAmount,
       total, paid, rest, status,
       date: repDate,
+      updatedAt: isEdit ? stamp : undefined,
+      finalizedAt,
+      canceledAt: initial?.canceledAt,
       payments: seedPayments(initial?.payments, paid, repDate, initial?.createdBy),
-      outDate: initial?.outDate,
+      outDate: initial?.outDate || finalizedAt,
       workers: Array.from(new Set(cleanLines.flatMap(l => l.workerIds))),
       createdBy: initial?.createdBy || 'Admin',
       printedAt: initial?.printedAt,
@@ -1101,7 +1196,7 @@ function ReparationForm({
               <div className="min-w-0 flex-1">
                 <p className="font-black text-[15px]">Finalisation de {initial!.ref}</p>
                 <p className="text-[12px] text-emerald-50 leading-relaxed">
-                  Véhicule pris en charge le {formatDate(initial!.date)}
+                  Véhicule pris en charge le {formatDateTime(initial!.date)}
                   {initial!.clientName ? ` — ${initial!.clientName}` : ''}. Complétez les prestations et les
                   produits, puis enregistrez : les produits utilisés sortent du stock à ce moment-là.
                 </p>

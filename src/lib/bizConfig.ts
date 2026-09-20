@@ -875,8 +875,26 @@ export interface BizReparation {
   paid: number;
   rest: number;
   status: 'pending' | 'finalized' | 'canceled';
+  /**
+   * Sortie du véhicule — la CLÔTURE de l'intervention, horodatée à la minute.
+   * Elle tombe au moment où la fiche passe en « finalisé » : le travail est
+   * fait, la voiture repart.
+   */
   outDate?: string;
+  /**
+   * ─── LA VIE D'UNE FICHE SE LIT À LA MINUTE ────────────────────────────────
+   * `date` est la PRISE EN CHARGE : l'instant où le véhicule est arrivé. Un
+   * atelier en sort des dizaines par jour, et le jour seul ne dit plus rien —
+   * ces quatre horodatages ISO complets disent, à la minute près, quand la
+   * fiche est née, quand on l'a retouchée, et quand elle s'est refermée.
+   */
   date: string;
+  /** Dernière modification de la fiche (absente tant qu'elle n'a pas été rouverte). */
+  updatedAt?: string;
+  /** Passage en « finalisé » — la première fois seulement. */
+  finalizedAt?: string;
+  /** Passage en « annulé ». */
+  canceledAt?: string;
   workers: string[];
   createdBy?: string;
   printedAt?: string;
