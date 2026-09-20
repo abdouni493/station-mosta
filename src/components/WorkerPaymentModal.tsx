@@ -339,7 +339,9 @@ export default function WorkerPaymentModal(props: WorkerPaymentModalProps) {
             {/* Décalages (pompiste) */}
             {decalages.length > 0 && (
               <Section icon={Scale} title="Décalages (par brigade)" tone="blue"
-                hint="Primes (surplus) ajoutées, retenues (manque) soustraites. Cochez celles à appliquer.">
+                hint="Primes (surplus) ajoutées, retenues (manque) soustraites. Cochez celles à encaisser sur CE paiement ; décochez celles qui attendront le suivant."
+                action={<SelectAll all={selectAllState(selDecalages.size, decalages.length)}
+                  onToggle={() => setSelDecalages(s => s.size === decalages.length ? new Set() : new Set(decalages.map(d => d.id)))} />}>
                 <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar pr-1">
                   {decalages.map(d => (
                     <ChkRow key={d.id} checked={selDecalages.has(d.id)} onToggle={() => setSelDecalages(s => setToggle(s, d.id))}
