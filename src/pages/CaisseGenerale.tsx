@@ -31,7 +31,7 @@ import { newId } from '@/src/lib/utils';
 import {
   useAppState, useAppDispatch, useModulePermission,
   TreasuryTransaction, TreasuryPart, CAISSE_ID, CAISSE_PART_ID, CASH_ACCOUNT_LABEL,
-  accountLabelOf, isCashAccount, bankBalanceOf, caisseBalanceOf,
+  accountLabelOf, isCashAccount, bankBalanceOf, caisseBalanceOf, dedupeLedger,
   cashAccountOfPart, expensePartOf, isBrigadeExpense, cashEffectOf, treasuryEffectOf,
 } from '../store/AppContext';
 import { useBizAll } from '../store/BizContext';
@@ -250,13 +250,17 @@ export default function CaisseGenerale() {
   const movements = useMemo<Movement[]>(() => {
     const out: Movement[] = [];
     const accName = (id?: string) => (id ? accountLabelOf(id, accounts, '') || undefined : undefined);
+    // Même dédoublonnage que les soldes : une brigade ré-enregistrée pouvait
+    // laisser deux encaissements au grand livre. Sans ce filtre, le journal
+    // l'affichait deux fois et gonflait les encaissements de la période.
+    const ledger = dedupeLedger(treasuryTransactions);
 
     // 1. Treasury ledger — the only rows that move the caisses of the station.
     //    Le signe vient des DEUX COMPTES de la ligne, jamais de sa nature : un
     //    achat ou une dépense réglé par virement bancaire a débité la banque, et
     //    n'a jamais vidé un tiroir. Le compter ici comme une sortie d'espèces
     //    faisait payer le même montant deux fois à l'écran.
-    for (const t of treasuryTransactions) {
+    for (const t of ledger) {
       const nature = TX_LABEL[t.kind] || t.kind;
       const amount = cashEffectOf(t);
       // Un virement d'un tiroir vers un AUTRE tiroir ne fait sortir aucune
@@ -284,7 +288,7 @@ export default function CaisseGenerale() {
     // 2. Fuel part documents — only those that have NOT written a ledger line of
     //    their own, otherwise the same money would be listed twice.
     const ledgered = new Set(
-      treasuryTransactions.filter(t => t.refType && t.refId).map(t => `${t.refType}:${t.refId}`));
+      ledger.filter(t => t.refType && t.refId).map(t => `${t.refType}:${t.refId}`));
     for (const p of purchases) {
       if (ledgered.has(`purchase:${p.id}`)) continue;
       const supplier = state.suppliers.find(s => s.id === p.supplierId);
@@ -1157,6 +1161,7 @@ export default function CaisseGenerale() {
           part={detailPart}
           balance={partBalances[detailPart]}
           flow={partFlow[detailPart]}
+          allLines={partLines[detailPart]}
           onClose={() => setDetailPart(null)}
         />
       )}
@@ -1259,19 +1264,42 @@ export default function CaisseGenerale() {
  * dont la somme a été prise, groupée par nature puis détaillée — pour qu'un
  * tiroir qui a baissé dise pourquoi.
  */
-function CaisseDetailModal({ part, balance, flow, onClose }: {
+function CaisseDetailModal({ part, balance, flow, allLines, onClose }: {
   part: TreasuryPart;
   balance: number;
   flow: { in: number; out: number; count: number; outside: number; lines: CashLine[] };
+  /** TOUTES les lignes du solde, toutes dates confondues — la liste dont la
+   *  somme FAIT le chiffre affiché. C'est ici qu'un écart se traque. */
+  allLines: CashLine[];
   onClose: () => void;
 }) {
   const meta = PART_META[part];
   const [nature, setNature] = useState<string | null>(null);
+  /**
+   * Sur quoi porte le détail : la période filtrée, ou TOUT l'historique. Le
+   * solde d'un tiroir est cumulatif — un écart peut venir d'une saisie de mois
+   * passés qu'un filtre « ce mois-ci » cache dans le seul « Hors période ». Pour
+   * réconcilier avec l'argent réellement présent, il faut pouvoir tout dérouler.
+   */
+  const [scope, setScope] = useState<'period' | 'all'>('period');
 
-  /** Les mouvements de la période, regroupés par nature et par sens. */
+  // Le jeu de lignes regardé, trié du plus récent au plus ancien.
+  const view = useMemo(() => {
+    const rows = scope === 'all'
+      ? [...allLines].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      : flow.lines;
+    const inTotal = rows.filter(l => l.amount > 0).reduce((s, l) => s + l.amount, 0);
+    const outTotal = rows.filter(l => l.amount < 0).reduce((s, l) => s - l.amount, 0);
+    // « Hors vue » : la part du solde que ces lignes n'expliquent pas. Nulle en
+    // mode « tout l'historique » (le solde EST la somme de toutes les lignes).
+    const outside = scope === 'all' ? 0 : flow.outside;
+    return { rows, inTotal, outTotal, outside };
+  }, [scope, allLines, flow]);
+
+  /** Les mouvements regardés, regroupés par nature et par sens. */
   const groups = useMemo(() => {
     const map = new Map<string, { key: string; label: string; direction: 'in' | 'out'; count: number; total: number }>();
-    for (const l of flow.lines) {
+    for (const l of view.rows) {
       const direction: 'in' | 'out' = l.amount >= 0 ? 'in' : 'out';
       const key = `${l.nature}|${direction}`;
       const g = map.get(key) || { key, label: l.nature, direction, count: 0, total: 0 };
@@ -1280,23 +1308,56 @@ function CaisseDetailModal({ part, balance, flow, onClose }: {
       map.set(key, g);
     }
     return [...map.values()].sort((a, b) => b.total - a.total);
-  }, [flow.lines]);
+  }, [view.rows]);
 
-  const lines = nature ? flow.lines.filter(l => `${l.nature}|${l.amount >= 0 ? 'in' : 'out'}` === nature) : flow.lines;
+  const lines = nature ? view.rows.filter(l => `${l.nature}|${l.amount >= 0 ? 'in' : 'out'}` === nature) : view.rows;
+
+  /**
+   * Le solde APRÈS chaque ligne, du plus ancien au plus récent : un journal de
+   * caisse qui n'aligne que des montants ne se vérifie pas. On part du « Hors
+   * vue » (ce qui précède la fenêtre regardée) puis on cumule — la dernière
+   * ligne retombe donc exactement sur le solde affiché.
+   */
+  const running = useMemo(() => {
+    const out: Record<string, number> = {};
+    let acc = view.outside;
+    for (let i = view.rows.length - 1; i >= 0; i--) { acc += view.rows[i].amount; out[view.rows[i].id] = acc; }
+    return out;
+  }, [view]);
+
+  const scopeLabel = scope === 'all' ? "tout l'historique" : 'la période';
 
   return (
     <Modal open onClose={onClose} icon={meta.icon} size="2xl" fullHeight
       title={`Caisse ${meta.label}`}
-      subtitle={`${flow.count} mouvement(s) sur la période — le détail du solde affiché`}
+      subtitle={`${view.rows.length} mouvement(s) sur ${scopeLabel} — le détail du solde affiché`}
       footer={<>
         <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
-          <span className="text-emerald-600">Entrées +{money(flow.in)}</span>
-          <span className="text-red-600">Sorties −{money(flow.out)}</span>
+          <span className="text-emerald-600">Entrées +{money(view.inTotal)}</span>
+          <span className="text-red-600">Sorties −{money(view.outTotal)}</span>
           <span className={balance >= 0 ? 'text-[#002d87]' : 'text-red-600'}>Solde {money(balance)}</span>
         </div>
         <button className="btn-primary" onClick={onClose}>Fermer</button>
       </>}>
       <div className="space-y-5">
+        {/* Choix de la fenêtre : la période filtrée, ou tout l'historique. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Fenêtre</span>
+          <div className="inline-flex rounded-xl bg-slate-100 p-0.5">
+            {([['period', 'La période'], ['all', "Tout l'historique"]] as const).map(([k, lbl]) => (
+              <button key={k} onClick={() => setScope(k)}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wide transition-all ${scope === k ? 'bg-white text-[#003087] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+          <span className="text-[11px] text-slate-400">
+            {scope === 'all'
+              ? "Toutes dates confondues : la somme de ces lignes FAIT le solde affiché."
+              : "Le solde décomposé sur la période — bascule sur « Tout l'historique » pour dérouler chaque ligne."}
+          </span>
+        </div>
+
         {/* Le calcul, écrit en entier : rien à recomposer de tête. */}
         <div className="card-glass p-4">
           <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">
@@ -1304,9 +1365,9 @@ function CaisseDetailModal({ part, balance, flow, onClose }: {
           </p>
           <div className="flex flex-wrap items-stretch gap-2">
             {[
-              { label: 'Hors période', value: flow.outside, sign: '', tone: 'text-slate-700' },
-              { label: 'Entrées de la période', value: flow.in, sign: '+', tone: 'text-emerald-600' },
-              { label: 'Sorties de la période', value: flow.out, sign: '−', tone: 'text-red-600' },
+              { label: scope === 'all' ? 'Point de départ' : 'Hors période', value: view.outside, sign: '', tone: 'text-slate-700' },
+              { label: scope === 'all' ? 'Total des entrées' : 'Entrées de la période', value: view.inTotal, sign: '+', tone: 'text-emerald-600' },
+              { label: scope === 'all' ? 'Total des sorties' : 'Sorties de la période', value: view.outTotal, sign: '−', tone: 'text-red-600' },
               { label: 'Solde actuel', value: balance, sign: '=', tone: balance >= 0 ? 'text-emerald-600' : 'text-red-600' },
             ].map(s => (
               <React.Fragment key={s.label}>
@@ -1338,7 +1399,7 @@ function CaisseDetailModal({ part, balance, flow, onClose }: {
             )}
           </div>
           {groups.length === 0 ? (
-            <p className="text-center text-slate-400 text-sm py-8 italic">Aucun mouvement sur cette période.</p>
+            <p className="text-center text-slate-400 text-sm py-8 italic">Aucun mouvement sur {scopeLabel}.</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
               {groups.map(g => {
@@ -1371,16 +1432,18 @@ function CaisseDetailModal({ part, balance, flow, onClose }: {
           )}
         </div>
 
-        {/* Ligne par ligne */}
+        {/* Ligne par ligne — avec, hors filtre de nature, le solde du tiroir
+            APRÈS chaque opération : c'est là qu'un écart se repère à l'œil. */}
         <div>
           {lines.length === 0 ? (
-            <p className="text-center text-slate-400 text-sm py-8 italic">Aucun mouvement sur cette période.</p>
+            <p className="text-center text-slate-400 text-sm py-8 italic">Aucun mouvement sur {scopeLabel}.</p>
           ) : (
             <Table head={<>
               <th className="table-head">Date</th>
               <th className="table-head">Nature</th>
               <th className="table-head">Description</th>
               <th className="table-head text-right">Effet sur la caisse</th>
+              {!nature && <th className="table-head text-right">Solde après</th>}
             </>}>
               {lines.slice(0, 400).map(l => {
                 const Icon = NATURE_ICON[l.nature] || Layers;
@@ -1399,10 +1462,20 @@ function CaisseDetailModal({ part, balance, flow, onClose }: {
                     <td className={`table-cell text-right tabular-nums font-bold whitespace-nowrap ${l.amount >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                       {l.amount >= 0 ? '+' : '−'}{money(Math.abs(l.amount))}
                     </td>
+                    {!nature && (
+                      <td className={`table-cell text-right tabular-nums font-black whitespace-nowrap ${running[l.id] >= 0 ? 'text-[#002d87]' : 'text-red-600'}`}>
+                        {money(running[l.id] || 0)}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
             </Table>
+          )}
+          {lines.length > 400 && (
+            <p className="text-center text-[11px] text-slate-400 italic mt-2">
+              400 premières lignes affichées sur {lines.length}.
+            </p>
           )}
         </div>
       </div>

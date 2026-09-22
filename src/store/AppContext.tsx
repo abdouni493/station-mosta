@@ -733,10 +733,41 @@ export interface TreasuryTransaction {
   createdAt: string;
 }
 
+/**
+ * Écarte les DOUBLONS d'encaissement de brigade au grand livre.
+ *
+ * Une brigade n'écrit qu'UNE ligne d'espèces (`kind === 'BRIGADE'`) vers un
+ * tiroir. Mais ré-enregistrer la comptabilité d'une brigade pouvait laisser
+ * l'ancienne ligne en place : deux encaissements pour la même brigade, et la
+ * caisse — donc toute la trésorerie — gonflée d'autant. Vu en production sur la
+ * brigade du 29/08, comptée à la fois 1 220 425 ET 1 221 725 (créées à 11 min
+ * d'écart) : +1 220 425 de trop dans la caisse générale.
+ *
+ * On ne garde, par brigade, que la ligne d'espèces la PLUS RÉCENTE — celle que
+ * la dernière sauvegarde a écrite. Rien d'autre n'est touché : les lignes
+ * TAG/TPE d'une brigade portent une nature distincte (`kind` ≠ `BRIGADE`) même
+ * quand elles partagent son `refId`, et les règlements MULTIPLES d'un même achat
+ * (`kind === 'PURCHASE'`) sont autant de vrais versements — les fondre
+ * effacerait de l'argent réellement payé.
+ */
+export function dedupeLedger(txs: TreasuryTransaction[]): TreasuryTransaction[] {
+  const keep = new Map<string, TreasuryTransaction>();
+  for (const t of txs) {
+    if (t.kind !== 'BRIGADE' || !t.refId) continue;
+    const cur = keep.get(t.refId);
+    if (!cur || new Date(t.createdAt).getTime() >= new Date(cur.createdAt).getTime()) {
+      keep.set(t.refId, t);
+    }
+  }
+  if (keep.size === 0) return txs;
+  return txs.filter(t =>
+    t.kind !== 'BRIGADE' || !t.refId || keep.get(t.refId)!.id === t.id);
+}
+
 /** Net effect of the ledger on one account id (`CAISSE_ID` or a bank id). */
 export function ledgerNetFor(accountId: string, txs: TreasuryTransaction[]): number {
   let net = 0;
-  for (const t of txs) {
+  for (const t of dedupeLedger(txs)) {
     if (t.accountTo === accountId) net += t.amount;
     if (t.accountFrom === accountId) net -= t.amount;
   }
