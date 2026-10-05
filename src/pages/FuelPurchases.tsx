@@ -16,7 +16,7 @@
  * banque sont retirés du compte concerné (journal de trésorerie).
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ShoppingCart, Plus, Trash2, Edit2, Wallet, Droplets, Percent, X,
   FileText, CircleDollarSign, TrendingUp, Landmark, Banknote, Printer, Eye,
@@ -55,6 +55,12 @@ interface PayLine {
   mode: PurchasePayment['mode'];
   chequeNumber: string; bordereauNumber: string;
   date: string; notes: string;
+  /**
+   * Montant pré-rempli, pas encore tapé : il suit le reste à payer. Sans cela,
+   * un « Espèces » ajouté AVANT de saisir les cuves restait à 0 DA — l'achat
+   * partait en dette et aucune caisse ne voyait sortir l'argent.
+   */
+  auto?: boolean;
 }
 
 const PAY_MODES: { id: PurchasePayment['mode']; label: string }[] = [
@@ -504,11 +510,35 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
     id: newId(), accountId, amount: String(Math.max(0, total - paid) || ''),
     mode: modeForAccount(accountId),
     chequeNumber: '', bordereauNumber: '', date: date || todayISO(), notes: '',
+    auto: true,
   }]);
+  // Une ligne pré-remplie (jamais tapée) suit le total : saisir ou corriger les
+  // cuves APRÈS avoir choisi « Espèces » règle bien l'achat entier.
+  useEffect(() => {
+    setPays(prev => {
+      if (!prev.some(p => p.auto)) return prev;
+      let changed = false;
+      const fixed = prev.filter(p => !p.auto).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      let left = Math.max(0, total - fixed);
+      const next = prev.map(p => {
+        if (!p.auto) return p;
+        const amount = left > 0.001 ? String(Math.round(left * 100) / 100) : '';
+        left = 0;
+        if (amount === p.amount) return p;
+        changed = true;
+        return { ...p, amount };
+      });
+      return changed ? next : prev;
+    });
+  }, [total]);
   const setPay = (id: string, patch: Partial<PayLine>) =>
     setPays(prev => prev.map(p => {
       if (p.id !== id) return p;
       const next = { ...p, ...patch };
+      if (patch.amount !== undefined) next.auto = false;
+      // Des espèces sortent forcément d'un tiroir : choisir « Espèces » sur une
+      // ligne bancaire laissait la banque débitée et la caisse intacte.
+      if (patch.mode === 'ESPECES' && patch.accountId === undefined) next.accountId = CAISSE_ID;
       // Switching account realigns the mode (cash ⇄ bank) unless it was typed.
       if (patch.accountId !== undefined && patch.mode === undefined) {
         const wasDefault = p.mode === modeForAccount(p.accountId);
@@ -520,7 +550,7 @@ function PurchaseForm({ initial, onClose }: { initial: Purchase | null; onClose:
   /** Puts the whole remaining balance on one line. */
   const fillRest = (id: string) => setPays(prev => {
     const others = prev.filter(p => p.id !== id).reduce((s, p) => s + (Number(p.amount) || 0), 0);
-    return prev.map(p => p.id === id ? { ...p, amount: String(Math.max(0, total - others)) } : p);
+    return prev.map(p => p.id === id ? { ...p, amount: String(Math.max(0, total - others)), auto: false } : p);
   });
 
   const accountBalance = (accountId: string) => accountId === CAISSE_ID
@@ -1225,6 +1255,8 @@ function PayPurchaseDebtModal({ purchase, onClose }: { purchase: Purchase; onClo
     setLines(prev => prev.map(l => {
       if (l.id !== id) return l;
       const next = { ...l, ...patch };
+      // Des espèces sortent forcément d'un tiroir, jamais d'un compte bancaire.
+      if (patch.mode === 'ESPECES' && patch.accountId === undefined) next.accountId = CAISSE_ID;
       if (patch.accountId !== undefined && patch.mode === undefined && l.mode === modeForAccount(l.accountId)) {
         next.mode = modeForAccount(patch.accountId);
       }
