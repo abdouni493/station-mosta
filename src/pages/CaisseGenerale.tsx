@@ -138,6 +138,7 @@ export default function CaisseGenerale() {
   const [natureFilter, setNatureFilter] = useState<string>('all');
   const [txForm, setTxForm] = useState<null | 'new' | TreasuryTransaction>(null);
   const [transferring, setTransferring] = useState(false);
+  const [opForm, setOpForm] = useState<null | 'DEPOSIT' | 'WITHDRAW'>(null);
   const [toDelete, setToDelete] = useState<TreasuryTransaction | null>(null);
   /** Caisse dont on déroule le calcul, ligne par ligne. */
   const [detailPart, setDetailPart] = useState<TreasuryPart | null>(null);
@@ -663,11 +664,16 @@ export default function CaisseGenerale() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader icon={PiggyBank} title="Caisse Générale" subtitle="Finance — trésorerie consolidée de la station"
         actions={perm.creer ? <div className="flex gap-2">
+          <button onClick={() => setOpForm('DEPOSIT')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white shadow-sm bg-gradient-to-br from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 transition-colors">
+            <ArrowDownCircle className="w-4 h-4" /> Nouveau dépôt
+          </button>
+          <button onClick={() => setOpForm('WITHDRAW')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white shadow-sm bg-gradient-to-br from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 transition-colors">
+            <ArrowUpCircle className="w-4 h-4" /> Nouveau retrait
+          </button>
           <button className="btn-secondary" onClick={() => setTransferring(true)}>
             <ArrowLeftRight className="w-4 h-4" /> Virement d'une caisse
-          </button>
-          <button className="btn-primary" onClick={() => setTxForm('new')}>
-            <Plus className="w-4 h-4" /> Dépôt / Retrait
           </button>
         </div> : undefined} />
 
@@ -1138,6 +1144,22 @@ export default function CaisseGenerale() {
         />
       )}
 
+      {opForm && (
+        <CashOperationModal
+          mode={opForm}
+          accounts={accounts}
+          caisseBalance={financeCash}
+          partBalances={partBalances}
+          createdBy={currentUserName}
+          onClose={() => setOpForm(null)}
+          onSave={txs => {
+            txs.forEach(tx => dispatch({ type: 'ADD_TREASURY_TX', payload: tx }));
+            toast.success(opForm === 'DEPOSIT' ? 'Dépôt enregistré' : 'Retrait enregistré');
+            setOpForm(null);
+          }}
+        />
+      )}
+
       {transferring && (
         <CaisseTransferModal
           accounts={accounts}
@@ -1494,6 +1516,8 @@ function CashTxModal({
 }) {
   const isEdit = !!initial;
   const isTransfer = initial?.kind === 'TRANSFER';
+  const onOwnAccount = !!initial && !isTransfer &&
+    ((initial.accountFrom && initial.accountFrom !== CAISSE_ID) || (initial.accountTo && initial.accountTo !== CAISSE_ID));
   const [kind, setKind] = useState<'DEPOSIT' | 'WITHDRAW'>(
     initial && initial.kind === 'WITHDRAW' ? 'WITHDRAW' : 'DEPOSIT');
   const [amount, setAmount] = useState(String(initial?.amount ?? ''));
@@ -1512,9 +1536,11 @@ function CashTxModal({
       kind: isTransfer ? 'TRANSFER' : kind,
       amount: value,
       description: description.trim() || undefined,
-      accountFrom: isTransfer ? initial!.accountFrom : (kind === 'WITHDRAW' ? CAISSE_ID : undefined),
-      accountTo: isTransfer ? initial!.accountTo : (kind === 'DEPOSIT' ? CAISSE_ID : undefined),
-      part,
+      // A line written by the dépôt/retrait form may sit on a coffer or a bank
+      // account: editing it keeps that account (and its part) untouched.
+      accountFrom: isTransfer || onOwnAccount ? initial!.accountFrom : (kind === 'WITHDRAW' ? CAISSE_ID : undefined),
+      accountTo: isTransfer || onOwnAccount ? initial!.accountTo : (kind === 'DEPOSIT' ? CAISSE_ID : undefined),
+      part: onOwnAccount ? initial!.part : part,
       createdBy: initial?.createdBy || createdBy,
       createdAt: initial?.createdAt || new Date().toISOString(),
     });
@@ -1529,7 +1555,7 @@ function CashTxModal({
         <button className="btn-primary" onClick={save} disabled={value <= 0}>{isEdit ? 'Enregistrer' : 'Valider'}</button>
       </>}>
       <div className="space-y-4">
-        {!isTransfer && (
+        {!isTransfer && !onOwnAccount && (
           <div className="flex gap-2">
             <button onClick={() => setKind('DEPOSIT')}
               className={`flex-1 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-1.5 ${kind === 'DEPOSIT' ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
@@ -1548,14 +1574,14 @@ function CashTxModal({
         {/* Ce choix n'est plus un simple classement : il décide à QUELLE caisse
             d'activité le montant est imputé. Le libellé promettait un rangement
             dans le journal, et l'argent n'arrivait effectivement nulle part. */}
-        <Field label="Partie concernée"
+        {!onOwnAccount && <Field label="Partie concernée"
           hint={part === 'systeme'
             ? "L'argent entre ou sort de la caisse générale, sans être imputé à une activité."
             : `L'argent entre ou sort de la caisse générale ET compte dans la caisse ${PART_META[part].label}.`}>
           <Select value={part} onChange={e => setPart(e.target.value as TreasuryPart)}>
             {(Object.keys(PART_META) as TreasuryPart[]).map(p => <option key={p} value={p}>{PART_META[p].label}</option>)}
           </Select>
-        </Field>
+        </Field>}
         <Field label="Description"><Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Motif de l'opération" /></Field>
       </div>
     </Modal>
@@ -1728,6 +1754,321 @@ function CaisseTransferModal({
               <p className="text-[11px] text-emerald-300 tabular-nums">→ {money(targetBalance + value)}</p>
             </div>
           </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Nouveau dépôt / Nouveau retrait ───────────────────────────────────────────
+/**
+ * One form for both directions, each opened by its own button.
+ *
+ *   • Retrait — the money LEAVES the chosen account (a caisse or a bank
+ *     account). By default it leaves the station in espèces (`WITHDRAW`). When
+ *     « répartir » is on, part or all of it goes to other accounts of the
+ *     station instead : one `TRANSFER` per destination, the remainder (if any)
+ *     still leaving in espèces.
+ *   • Dépôt — the money ENTERS the chosen account. By default it comes from
+ *     outside in espèces (`DEPOSIT`). When « répartir » is on, part or all of it
+ *     is taken from other accounts : one `TRANSFER` per source, so each source
+ *     drops by exactly what the destination gains.
+ *
+ * Every line is an ordinary manual ledger line (no `refType`), editable and
+ * deletable one by one from the journal like any dépôt, retrait or virement.
+ */
+interface SplitRow { key: string; accountId: string; amount: string }
+
+const partOfAccount = (id: string): TreasuryPart => {
+  const hit = (Object.keys(CAISSE_PART_ID) as (keyof typeof CAISSE_PART_ID)[]).find(k => CAISSE_PART_ID[k] === id);
+  return hit || 'systeme';
+};
+
+interface OpAccount { id: string; label: string; icon: React.ElementType; balance: number; bank: boolean }
+
+const OP_THEME = {
+  DEPOSIT: {
+    icon: ArrowDownCircle, text: 'text-emerald-700', track: 'bg-emerald-600',
+    ring: 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-500/20',
+    hero: 'linear-gradient(135deg, #064e3b, #059669)', btn: 'bg-emerald-600 hover:bg-emerald-700',
+  },
+  WITHDRAW: {
+    icon: ArrowUpCircle, text: 'text-rose-700', track: 'bg-rose-600',
+    ring: 'border-rose-500 bg-rose-50 ring-2 ring-rose-500/20',
+    hero: 'linear-gradient(135deg, #881337, #e11d48)', btn: 'bg-rose-600 hover:bg-rose-700',
+  },
+} as const;
+
+function OpAccountCard({ a, on, ring, text, onPick }: {
+  key?: string; a: OpAccount; on: boolean; ring: string; text: string; onPick: (id: string) => void;
+}) {
+  const A = a.icon;
+  return (
+    <button type="button" onClick={() => onPick(a.id)}
+      className={`rounded-xl p-3 text-left border transition-all ${on ? ring : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'}`}>
+      <div className="flex items-center gap-1.5">
+        <A className={`w-4 h-4 ${on ? text : 'text-slate-400'}`} />
+        {on && <Check className={`w-3.5 h-3.5 ml-auto ${text}`} />}
+      </div>
+      <p className={`text-[11px] font-bold mt-1.5 leading-tight truncate ${on ? text : 'text-slate-600'}`}>{a.label}</p>
+      <p className={`text-sm font-black tabular-nums ${a.balance >= 0 ? 'text-slate-800' : 'text-red-600'}`}>{money(a.balance)}</p>
+    </button>
+  );
+}
+
+function CashOperationModal({
+  mode, accounts, caisseBalance, partBalances, createdBy, onClose, onSave,
+}: {
+  mode: 'DEPOSIT' | 'WITHDRAW';
+  accounts: { id: string; name: string; balance: number }[];
+  caisseBalance: number;
+  partBalances: Record<'carburant' | 'cafeteria' | 'lavage', number>;
+  createdBy?: string;
+  onClose: () => void;
+  onSave: (txs: TreasuryTransaction[]) => void;
+}) {
+  const isDeposit = mode === 'DEPOSIT';
+  const theme = OP_THEME[mode];
+
+  /** Every account of the station, caisses first, with its live solde. */
+  const all: OpAccount[] = useMemo(() => ([
+    { id: CAISSE_ID, label: CASH_ACCOUNT_LABEL[CAISSE_ID], icon: PiggyBank, balance: caisseBalance, bank: false },
+    ...(['carburant', 'cafeteria', 'lavage'] as const).map(k => ({
+      id: CAISSE_PART_ID[k] as string, label: PART_META[k].label, icon: PART_META[k].icon, balance: partBalances[k], bank: false,
+    })),
+    ...accounts.map(a => ({ id: a.id, label: a.name, icon: Landmark, balance: a.balance, bank: true })),
+  ]), [accounts, caisseBalance, partBalances]);
+
+  const [accountId, setAccountId] = useState<string>(CAISSE_ID);
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(todayISO());
+  const [description, setDescription] = useState('');
+  const [split, setSplit] = useState(false);
+  const [rows, setRows] = useState<SplitRow[]>([]);
+
+  const value = Number(amount) || 0;
+  const main = all.find(a => a.id === accountId)!;
+  const others = all.filter(a => a.id !== accountId);
+  const usedRows = split ? rows.filter(r => r.accountId && (Number(r.amount) || 0) > 0) : [];
+  const allocated = usedRows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const cashPart = Math.max(0, value - allocated);
+  const overAllocated = allocated > value + 0.001;
+  const duplicate = new Set(usedRows.map(r => r.accountId)).size !== usedRows.length;
+  const labelOf = (id: string) => all.find(a => a.id === id)?.label || '';
+
+  const pickMain = (id: string) => {
+    setAccountId(id);
+    setRows(rs => rs.map(r => (r.accountId === id ? { ...r, accountId: '' } : r)));
+  };
+  const addRow = () => setRows(rs => {
+    const rest = Math.max(0, value - rs.reduce((s, r) => s + (Number(r.amount) || 0), 0));
+    return [...rs, {
+      key: newId(),
+      accountId: others.find(o => !rs.some(r => r.accountId === o.id))?.id || '',
+      amount: rest > 0 ? String(rest) : '',
+    }];
+  });
+  const toggleSplit = () => {
+    const on = !split;
+    setSplit(on);
+    if (on && rows.length === 0) addRow();
+  };
+  const setRow = (key: string, patch: Partial<SplitRow>) =>
+    setRows(rs => rs.map(r => (r.key === key ? { ...r, ...patch } : r)));
+
+  const save = () => {
+    if (value <= 0) { toast.error('Montant requis'); return; }
+    if (overAllocated) { toast.error('La répartition dépasse le montant'); return; }
+    if (duplicate) { toast.error('Un même compte est choisi deux fois'); return; }
+    if (split && rows.some(r => (Number(r.amount) || 0) > 0 && !r.accountId)) {
+      toast.error('Choisissez le compte de chaque ligne'); return;
+    }
+    const iso = new Date(date).toISOString();
+    const now = new Date().toISOString();
+    const desc = description.trim();
+    const txs: TreasuryTransaction[] = [];
+    if (cashPart > 0) {
+      txs.push({
+        id: newId(), date: iso, kind: mode, amount: cashPart,
+        description: desc || (isDeposit ? `Dépôt espèces → ${main.label}` : `Retrait espèces — ${main.label}`),
+        accountFrom: isDeposit ? undefined : accountId,
+        accountTo: isDeposit ? accountId : undefined,
+        part: partOfAccount(accountId),
+        createdBy, createdAt: now,
+      });
+    }
+    for (const r of usedRows) {
+      const from = isDeposit ? r.accountId : accountId;
+      const to = isDeposit ? accountId : r.accountId;
+      txs.push({
+        id: newId(), date: iso, kind: 'TRANSFER', amount: Number(r.amount),
+        description: (desc ? `${desc} — ` : '') + `${isDeposit ? 'Dépôt' : 'Retrait'} ${labelOf(from)} → ${labelOf(to)}`,
+        accountFrom: from, accountTo: to,
+        // The movement belongs to the activity whose caisse pays.
+        part: partOfAccount(from),
+        createdBy, createdAt: now,
+      });
+    }
+    onSave(txs);
+  };
+
+  const delta = isDeposit ? value : -value;
+
+  return (
+    <Modal open onClose={onClose} icon={theme.icon} size="lg"
+      title={isDeposit ? 'Nouveau dépôt' : 'Nouveau retrait'}
+      subtitle={isDeposit ? "L'argent entre dans le compte choisi" : "L'argent sort du compte choisi"}
+      footer={<>
+        <button className="btn-ghost" onClick={onClose}>Annuler</button>
+        <button onClick={save} disabled={value <= 0 || overAllocated || duplicate}
+          className={`inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-sm font-bold text-white disabled:opacity-50 ${theme.btn}`}>
+          <Check className="w-4 h-4" /> {isDeposit ? 'Valider le dépôt' : 'Valider le retrait'}
+        </button>
+      </>}>
+      <div className="space-y-5">
+        {/* 1. Account */}
+        <div>
+          <label className="label-field">1. {isDeposit ? 'Compte qui reçoit le dépôt' : "Compte d'où sort le retrait"}</label>
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">Caisses</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {all.filter(a => !a.bank).map(a => (
+              <OpAccountCard key={a.id} a={a} on={a.id === accountId} ring={theme.ring} text={theme.text} onPick={pickMain} />
+            ))}
+          </div>
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mt-3 mb-1.5">Comptes bancaires</p>
+          {accounts.length > 0 ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {all.filter(a => a.bank).map(a => (
+                <OpAccountCard key={a.id} a={a} on={a.id === accountId} ring={theme.ring} text={theme.text} onPick={pickMain} />
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400 italic">Aucun compte bancaire enregistré.</p>
+          )}
+        </div>
+
+        {/* 2. Amount, date, description */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="2. Montant (DA)" required>
+            <div className="flex gap-2">
+              <Input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" />
+              {!isDeposit && (
+                <button className="btn-outline !px-3 shrink-0 text-xs whitespace-nowrap"
+                  onClick={() => setAmount(String(Math.max(0, main.balance)))} title="Retirer tout le solde">Tout</button>
+              )}
+            </div>
+          </Field>
+          <Field label="Date"><Input type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+        </div>
+        <Field label="Description">
+          <Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Motif de l'opération" />
+        </Field>
+
+        {/* 3. Split across other accounts */}
+        <div className={`rounded-2xl border p-4 transition-colors ${split ? 'border-slate-300 bg-slate-50' : 'border-dashed border-slate-300'}`}>
+          <button type="button" onClick={toggleSplit} className="w-full flex items-center gap-3 text-left">
+            <span className={`relative w-10 h-6 rounded-full transition-colors shrink-0 ${split ? theme.track : 'bg-slate-300'}`}>
+              <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${split ? 'left-[18px]' : 'left-0.5'}`} />
+            </span>
+            <span className="flex-1">
+              <span className="block text-sm font-bold text-slate-700">
+                {isDeposit ? 'Ce dépôt ne vient pas (seulement) en espèces' : 'Ce retrait ne part pas (seulement) en espèces'}
+              </span>
+              <span className="block text-[11px] text-slate-500">
+                {isDeposit
+                  ? "Prélever le montant sur une ou plusieurs caisses / comptes bancaires — chacun baisse d'autant."
+                  : "Envoyer le montant vers une ou plusieurs caisses / comptes bancaires — chacun monte d'autant."}
+              </span>
+            </span>
+          </button>
+
+          {split && (
+            <div className="mt-4 space-y-2">
+              {rows.map(r => {
+                const acc = all.find(a => a.id === r.accountId);
+                return (
+                  <div key={r.key} className="flex flex-col sm:flex-row gap-2 sm:items-center bg-white rounded-xl border border-slate-200 p-2">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 sm:w-14 shrink-0">{isDeposit ? 'Depuis' : 'Vers'}</span>
+                    <div className="flex-1 min-w-0">
+                      <Select value={r.accountId} onChange={e => setRow(r.key, { accountId: e.target.value })}>
+                        <option value="">— Sélectionner —</option>
+                        <optgroup label="Caisses">
+                          {others.filter(o => !o.bank).map(o => <option key={o.id} value={o.id}>{o.label} — {money(o.balance)}</option>)}
+                        </optgroup>
+                        {others.some(o => o.bank) && (
+                          <optgroup label="Comptes bancaires">
+                            {others.filter(o => o.bank).map(o => <option key={o.id} value={o.id}>{o.label} — {money(o.balance)}</option>)}
+                          </optgroup>
+                        )}
+                      </Select>
+                      {isDeposit && acc && (Number(r.amount) || 0) > acc.balance && (
+                        <p className="text-[10px] text-amber-600 font-bold mt-0.5">Solde insuffisant — le compte passera en négatif</p>
+                      )}
+                    </div>
+                    <div className="flex gap-2 items-center sm:w-44 shrink-0">
+                      <Input type="number" value={r.amount} onChange={e => setRow(r.key, { amount: e.target.value })} placeholder="Montant" />
+                      <button type="button" onClick={() => setRows(rs => rs.filter(x => x.key !== r.key))} title="Retirer la ligne"
+                        className="w-9 h-9 shrink-0 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 flex items-center justify-center">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              <button type="button" onClick={addRow} disabled={rows.length >= others.length}
+                className="w-full py-2 rounded-xl border border-dashed border-slate-300 text-xs font-bold text-slate-500 hover:bg-white hover:text-slate-700 disabled:opacity-40 flex items-center justify-center gap-1.5">
+                <Plus className="w-3.5 h-3.5" /> Ajouter {isDeposit ? 'une source' : 'une destination'}
+              </button>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs pt-1">
+                <span className="text-slate-500">Réparti : <strong className="tabular-nums text-slate-800">{money(allocated)}</strong></span>
+                <span className="text-slate-500">Reste en espèces : <strong className="tabular-nums text-slate-800">{money(cashPart)}</strong></span>
+                {overAllocated && <span className="text-red-600 font-bold">La répartition dépasse le montant de {money(allocated - value)}</span>}
+                {duplicate && <span className="text-red-600 font-bold">Un compte est choisi deux fois</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {!isDeposit && value > main.balance && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm text-amber-700">
+            Le montant dépasse le solde de « {main.label} » — le compte passera en négatif.
+          </div>
+        )}
+
+        {/* Recap */}
+        <div className="rounded-2xl text-white p-4 space-y-3" style={{ background: theme.hero }}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase font-bold text-white/70 truncate">{main.label}</p>
+              <p className="font-black tabular-nums">{money(main.balance)} <span className="text-white/60">→</span> {money(main.balance + delta)}</p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-[10px] uppercase font-bold text-white/70">{isDeposit ? 'Dépôt' : 'Retrait'}</p>
+              <p className="text-xl font-black tabular-nums text-[#FFB800]">{isDeposit ? '+' : '−'}{money(value)}</p>
+            </div>
+          </div>
+          {value > 0 && (
+            <ul className="text-[11px] space-y-1 border-t border-white/20 pt-2">
+              {cashPart > 0 && (
+                <li className="flex justify-between gap-2">
+                  <span>{isDeposit ? 'Espèces apportées' : 'Espèces sorties de la station'}</span>
+                  <span className="tabular-nums font-bold">{money(cashPart)}</span>
+                </li>
+              )}
+              {usedRows.map(r => {
+                const acc = all.find(a => a.id === r.accountId)!; const v = Number(r.amount) || 0;
+                return (
+                  <li key={r.key} className="flex justify-between gap-2">
+                    <span className="truncate">
+                      {isDeposit ? `Depuis ${acc.label}` : `Vers ${acc.label}`}{' '}
+                      <span className="text-white/60">({money(acc.balance)} → {money(acc.balance + (isDeposit ? -v : v))})</span>
+                    </span>
+                    <span className="tabular-nums font-bold">{money(v)}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       </div>
     </Modal>
