@@ -6,11 +6,12 @@
  * l'achat ne garde que son adresse — jamais l'image dans le blob biz.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import React, { useRef, useState } from 'react';
-import { Camera, ImagePlus, Loader2, Trash2, RefreshCw, ExternalLink, FileImage, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Camera, ImagePlus, Loader2, Trash2, RefreshCw, ExternalLink, FileImage, X, ScanLine, FolderOpen } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { uploadFile, BUCKETS } from '@/src/lib/supabase';
 import { IMAGE_PRESETS, compressImage } from '@/src/lib/imageCompress';
+import { scanFolderSupported, readyScanFolder, pickScanFolder, waitForScan } from '@/src/lib/scanFolder';
 
 const kb = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} Mo` : `${Math.max(1, Math.round(n / 1024))} Ko`);
 
@@ -24,10 +25,41 @@ export function InvoiceImageField({ value, onChange, onBusy }: {
   const [busy, setBusy] = useState(false);
   const [gain, setGain] = useState<string | null>(null);
 
-  const handle = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [waiting, setWaiting] = useState<{ folder: string; abort: AbortController } | null>(null);
+  useEffect(() => () => waiting?.abort.abort(), [waiting]);
+
+  const handle = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';                       // re-choisir la même photo reste possible
-    if (!file) return;
+    if (file) attach(file);
+  };
+
+  /**
+   * « Scanner » : guette le dossier où le logiciel du scanner range ses scans
+   * et prend tout seul la première image qui y arrive après le clic.
+   */
+  const scan = async (changeFolder = false) => {
+    if (!scanFolderSupported()) {
+      toast.error('Le scanner se relie depuis Chrome ou Edge sur ordinateur. Sinon : « Choisir une image ».');
+      return;
+    }
+    waiting?.abort.abort();
+    const since = Date.now() - 2000;
+    let dir = changeFolder ? null : await readyScanFolder();
+    if (!dir) {
+      toast('Choisissez le dossier où votre scanner enregistre ses scans (une seule fois).', { icon: '📁' });
+      dir = await pickScanFolder();
+      if (!dir) return;
+    }
+    const abort = new AbortController();
+    setWaiting({ folder: dir.name, abort });
+    const file = await waitForScan(dir, since, abort.signal);
+    setWaiting(w => (w?.abort === abort ? null : w));
+    if (file) attach(file);
+    else if (!abort.signal.aborted) toast.error('Aucun scan reçu — relancez « Scanner » puis numérisez la facture.');
+  };
+
+  const attach = async (file: File) => {
     if (!file.type.startsWith('image/')) { toast.error('Choisissez une image (photo ou scan de la facture).'); return; }
     setBusy(true); onBusy?.(true);
     try {
@@ -52,6 +84,27 @@ export function InvoiceImageField({ value, onChange, onBusy }: {
     <input ref={pick} type="file" accept="image/*" className="hidden" onChange={handle} />
     <input ref={shoot} type="file" accept="image/*" capture="environment" className="hidden" onChange={handle} />
   </>;
+
+  if (waiting) {
+    return (
+      <div className="rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50/60 p-6 flex flex-col items-center gap-2 text-center">
+        <ScanLine className="w-8 h-8 text-violet-600 animate-pulse" />
+        <p className="text-sm font-black text-violet-800">En attente du scan…</p>
+        <p className="text-[11px] text-slate-500 max-w-sm">
+          Posez la facture et lancez la numérisation (bouton « Scan » du scanner ou son logiciel).
+          L'image arrivée dans <b>{waiting.folder}</b> sera jointe automatiquement.
+        </p>
+        <div className="flex flex-wrap justify-center gap-2 mt-1">
+          <button type="button" className="btn-outline !py-1.5 !text-xs" onClick={() => scan(true)}>
+            <FolderOpen className="w-3.5 h-3.5" /> Changer de dossier
+          </button>
+          <button type="button" className="btn-ghost !py-1.5 !text-xs" onClick={() => { waiting.abort.abort(); setWaiting(null); }}>
+            <X className="w-3.5 h-3.5" /> Annuler
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (busy) {
     return (
@@ -82,6 +135,9 @@ export function InvoiceImageField({ value, onChange, onBusy }: {
             <button type="button" className="btn-outline !py-1.5 !text-xs" onClick={() => pick.current?.click()}>
               <RefreshCw className="w-3.5 h-3.5" /> Remplacer
             </button>
+            <button type="button" className="btn-outline !py-1.5 !text-xs" onClick={() => scan()}>
+              <ScanLine className="w-3.5 h-3.5" /> Re-scanner
+            </button>
             <button type="button" className="btn-ghost !py-1.5 !text-xs text-red-600" onClick={() => { onChange(undefined); setGain(null); }}>
               <Trash2 className="w-3.5 h-3.5" /> Retirer
             </button>
@@ -92,7 +148,7 @@ export function InvoiceImageField({ value, onChange, onBusy }: {
   }
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
       {inputs}
       <button type="button" onClick={() => pick.current?.click()}
         className="rounded-2xl border-2 border-dashed border-slate-200 hover:border-[#003087]/40 hover:bg-blue-50/40 transition-colors p-5 flex flex-col items-center gap-1.5 text-slate-500">
@@ -105,6 +161,12 @@ export function InvoiceImageField({ value, onChange, onBusy }: {
         <Camera className="w-7 h-7 text-[#003087]" />
         <span className="text-sm font-black text-slate-700">Prendre en photo</span>
         <span className="text-[11px]">Appareil photo du téléphone ou de la tablette</span>
+      </button>
+      <button type="button" onClick={() => scan()}
+        className="rounded-2xl border-2 border-dashed border-violet-200 hover:border-violet-400 hover:bg-violet-50/50 transition-colors p-5 flex flex-col items-center gap-1.5 text-slate-500">
+        <ScanLine className="w-7 h-7 text-violet-600" />
+        <span className="text-sm font-black text-slate-700">Scanner</span>
+        <span className="text-[11px]">Scanner branché au poste — le scan est joint tout seul</span>
       </button>
     </div>
   );
