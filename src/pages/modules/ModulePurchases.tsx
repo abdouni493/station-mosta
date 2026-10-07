@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   ShoppingCart, Plus, Search, Trash2 as TrashIcon, X, Truck, Receipt, Wallet, CircleDollarSign, Package,
   Tag, Banknote, Droplet, Scale, Info, Printer, Barcode, FileImage,
@@ -331,6 +331,13 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
 function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; initial: BizPurchase | null; onClose: () => void }) {
   const biz = useBiz(moduleKey);
   const { products, suppliers } = biz.state;
+  /**
+   * Catalogue À JOUR, lisible après un `await` : pendant que la facture part au
+   * serveur, le point de vente peut encore vendre, et la quantité reçue doit
+   * s'ajouter au stock du moment — pas à celui d'avant l'envoi.
+   */
+  const productsRef = useRef(products);
+  productsRef.current = products;
   const isEdit = !!initial;
   /** Pièces détachées : la partie Lavage & Vidange est la seule concernée. */
   const isLavage = moduleKey === 'lavage';
@@ -352,6 +359,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const [paidStr, setPaidStr] = useState<string>(initial ? String(initial.paid) : '');
   const [invoiceImage, setInvoiceImage] = useState<string | undefined>(initial?.invoiceImage);
   const [uploading, setUploading] = useState(false);
+  /** La facture est en route vers le serveur : un second clic la doublerait. */
+  const [saving, setSaving] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
   const [showSupplierModal, setShowSupplierModal] = useState(false);
 
@@ -423,7 +432,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
     addStock: boolean,
     snap?: { resultAvgCost: number },
   ) => {
-    const prod = products.find(p => p.id === it.productId);
+    const prod = productsRef.current.find(p => p.id === it.productId);
     if (!prod) return;
     biz.update('products', {
       ...prod,
@@ -443,7 +452,24 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
     });
   };
 
-  const save = () => {
+  /**
+   * LA FACTURE D'ABORD, LE STOCK ENSUITE.
+   *
+   * Le stock part dans sa propre table (`biz_products`, ~1 Ko, une demi-seconde)
+   * alors que la facture part dans le blob partagé (plusieurs Mo, envoi différé
+   * de 2,5 s). L'ancienne version écrivait les deux sans rien attendre et
+   * refermait la fenêtre : quand l'envoi du blob n'aboutissait pas (réseau,
+   * page fermée ou rechargée entre-temps), le stock était augmenté mais la
+   * facture n'existait nulle part — ni dans la liste des achats, ni dans
+   * l'historique du produit, ni dans la caisse (incident du 2026-10-07 :
+   * « TD 15/40 VRAC » +200 L sans aucun achat).
+   *
+   * Désormais la facture est confirmée par le serveur AVANT que le moindre
+   * produit bouge ; en cas d'échec la fenêtre reste ouverte, rien n'est
+   * appliqué, et il suffit de réessayer.
+   */
+  const save = async () => {
+    if (saving) return;
     if (uploading) { toast.error("Patientez : la facture est en cours d'envoi"); return; }
     if (items.length === 0) { toast.error('Ajoutez au moins un produit'); return; }
     if (!supplierId) { toast.error('Sélectionnez un fournisseur'); return; }
@@ -473,15 +499,33 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
       ...(isEdit ? (initial?.useAverageCost ? { useAverageCost: true } : {}) : (useAvg ? { useAverageCost: true } : {})),
     };
 
+    setSaving(true);
+    let outcome: { ok: boolean; error?: string };
+    try {
+      outcome = isEdit
+        ? await biz.updateAndConfirm('purchases', purchase)
+        : await biz.addAndConfirm('purchases', purchase);
+    } catch (e: any) {
+      outcome = { ok: false, error: e?.message || String(e) };
+    }
+    if (!outcome.ok) {
+      setSaving(false);
+      // Une création non confirmée est RETIRÉE : sans cela l'envoi différé la
+      // ferait arriver plus tard, seule, sans son stock — l'erreur inverse. La
+      // pierre tombale l'efface aussi si le serveur l'avait reçue malgré tout.
+      if (!isEdit) biz.remove('purchases', purchase.id);
+      // Le stock n'a PAS été touché : on le dit, plutôt que d'annoncer un succès.
+      toast.error(`Achat non confirmé par le serveur — stock inchangé. ${outcome.error || ''} Réessayez.`);
+      return;
+    }
+
     if (isEdit) {
-      biz.update('purchases', purchase);
       // Le stock n'est ajouté qu'à la création — une modification ne réapplique
       // que les prix et le seuil, sinon la quantité serait comptée deux fois.
       // Le coût moyen n'est pas recalculé non plus, pour la même raison : la
       // photo figée sur la facture reste la vérité de cette réception.
       items.forEach(it => applyToProduct(it, false, undefined));
     } else {
-      biz.add('purchases', purchase);
       savedItems.forEach(it => {
         const snap = applyAvg ? lineSnapshot(it) : null;
         applyToProduct(it, true, snap ? { resultAvgCost: snap.resultAvgCost } : undefined);
@@ -496,6 +540,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
       : applyAvg
         ? 'Achat créé — stock, prix et coût moyen pondéré mis à jour'
         : 'Achat créé, stock et prix mis à jour');
+    setSaving(false);
     onClose();
   };
 
@@ -511,7 +556,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
             {rest > 0 && <span className="text-red-600">Dette {money(rest)}</span>}
           </div>
           <button className="btn-ghost" onClick={onClose}>Annuler</button>
-          <button className="btn-primary" onClick={save} disabled={uploading}>{isEdit ? 'Enregistrer' : 'Créer l\'achat'}</button>
+          <button className="btn-primary" onClick={save} disabled={uploading || saving}>{saving ? 'Enregistrement…' : isEdit ? 'Enregistrer' : 'Créer l\'achat'}</button>
         </>}>
         <div className="space-y-4 sm:space-y-5">
           {/* Récapitulatif de l'achat — repris en permanence dans le pied de page. */}
