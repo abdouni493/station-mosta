@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { compressImage, fileToDataUrl } from '@/src/lib/imageCompress';
 import {
   FlaskConical, FileText, Plus, AlertTriangle, Clock, User, Eye, Trash2 as Trash, Beaker, Search, X,
   TrendingUp, PackageCheck, Layers, Calculator, Upload, Image as ImageIcon,
@@ -511,14 +512,10 @@ function FicheForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; init
       if (url) {
         setImageUrl(url);
       } else {
-        const reader = new FileReader();
-        reader.onloadend = () => setImageUrl(reader.result as string);
-        reader.readAsDataURL(file);
+        setImageUrl(await fileToDataUrl(await compressImage(file)));
       }
     } catch {
-      const reader = new FileReader();
-      reader.onloadend = () => setImageUrl(reader.result as string);
-      reader.readAsDataURL(file);
+      try { setImageUrl(await fileToDataUrl(await compressImage(file))); } catch { /* image illisible */ }
     } finally {
       setUploadingImage(false);
     }

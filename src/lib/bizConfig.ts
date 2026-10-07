@@ -319,6 +319,8 @@ export interface BizPurchase {
   date: string;
   createdAt: string;
   createdBy?: string;
+  /** Photo de la facture du fournisseur (URL du bucket `purchase-invoices`). */
+  invoiceImage?: string;
   /**
    * Cette facture a été enregistrée en coût moyen pondéré : ses lignes portent
    * la photo du calcul et elle a fait évoluer le CUMP des produits reçus.

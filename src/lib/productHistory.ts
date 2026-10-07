@@ -120,6 +120,26 @@ export interface ProductHistory {
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
+/**
+ * L'instant d'un document, à la minute. Beaucoup de bons ne gardent que le
+ * JOUR (« 2026-10-07 ») : l'heure se reprend alors de `createdAt`, s'il tombe
+ * le même jour — sinon on garde le jour tel quel (l'heure ne s'invente pas).
+ */
+export function stampOf(doc: { date?: string; createdAt?: string }): string {
+  const d = doc.date || '';
+  if (hasTime(d)) return d;
+  const c = doc.createdAt || '';
+  if (c && (!d || c.slice(0, 10) === d.slice(0, 10))) return c;
+  return d || c;
+}
+
+/**
+ * Le jour seul n'a pas d'heure — ni « 2026-10-07 », ni le minuit UTC qu'en fait
+ * `new Date('2026-10-07').toISOString()` : on n'affiche pas un « 01:00 » fabriqué.
+ */
+export const hasTime = (date: string): boolean =>
+  /[T ]\d{2}:\d{2}/.test(date || '') && !/T00:00(:00(\.0+)?)?(Z|[+-]00:?00)?$/.test(date || '');
+
 /** La ligne parle-t-elle bien de ce produit ? (id d'abord, nom en secours) */
 const isTarget = (it: { productId?: string; productName?: string }, p: BizProduct): boolean =>
   (!!it.productId && it.productId === p.id) || (!!it.productName && it.productName === p.name);
@@ -130,7 +150,7 @@ function purchaseDoc(p: BizPurchase, target: BizProduct): ProductDocument {
     kind: 'purchase',
     title: 'Bon d\'achat',
     ref: p.ref,
-    date: p.date,
+    date: stampOf(p as any),
     partyLabel: 'Fournisseur',
     partyName: p.supplierName || '—',
     lines: p.items.map(it => ({
@@ -155,7 +175,7 @@ function saleDoc(s: BizSale, target: BizProduct): ProductDocument {
     kind: 'sale',
     title: 'Bon de vente',
     ref: s.ref,
-    date: s.date,
+    date: stampOf(s as any),
     partyLabel: 'Client',
     partyName: s.clientName || 'Client de passage',
     lines: s.items.map(it => ({
@@ -193,7 +213,7 @@ function reparationDoc(r: BizReparation, target: BizProduct): ProductDocument {
     kind: 'reparation',
     title: r.kind === 'lavage' ? 'Bon de lavage' : r.kind === 'reparation' ? 'Bon de vidange' : 'Bon lavage + vidange',
     ref: r.ref,
-    date: r.date,
+    date: stampOf(r as any),
     partyLabel: 'Client',
     partyName: r.clientName || 'Client de passage',
     lines: [...prestations, ...products],
@@ -227,7 +247,7 @@ export function computeProductHistory(st: ModuleState, product: BizProduct): Pro
         id: `pur-${p.id}-${i}`,
         kind: 'purchase',
         ref: p.ref,
-        date: p.date,
+        date: stampOf(p as any),
         party: p.supplierName || '—',
         direction: 'in',
         qty: num(it.qty),
@@ -254,7 +274,7 @@ export function computeProductHistory(st: ModuleState, product: BizProduct): Pro
         id: `sal-${s.id}-${i}`,
         kind: 'sale',
         ref: s.ref,
-        date: s.date,
+        date: stampOf(s as any),
         party: s.clientName || 'Client de passage',
         direction: 'out',
         qty,
@@ -281,7 +301,7 @@ export function computeProductHistory(st: ModuleState, product: BizProduct): Pro
         id: `rep-${r.id}-${i}`,
         kind: 'reparation',
         ref: r.ref,
-        date: r.date,
+        date: stampOf(r as any),
         party: r.clientName || 'Client de passage',
         direction: 'out',
         qty,
@@ -303,7 +323,7 @@ export function computeProductHistory(st: ModuleState, product: BizProduct): Pro
         id: `prd-${p.id}-${i}`,
         kind: 'production',
         ref: p.name,
-        date: p.date,
+        date: stampOf(p as any),
         party: p.createdBy || 'Production',
         direction: 'out',
         qty: num(ing.quantityUsed),
@@ -324,7 +344,7 @@ export function computeProductHistory(st: ModuleState, product: BizProduct): Pro
       id: `des-${d.id}`,
       kind: 'destruction',
       ref: d.reason || 'Perte',
-      date: d.date,
+      date: stampOf(d as any),
       party: d.createdBy || '—',
       direction: 'out',
       qty: num(d.qty),

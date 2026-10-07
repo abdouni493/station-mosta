@@ -5,6 +5,7 @@
  * everywhere the prompt requires it.
  * ──────────────────────────────────────────────────────────────────────────────
  */
+import { compressImage, fileToDataUrl } from '@/src/lib/imageCompress';
 import React, { useMemo, useState } from 'react';
 import {
   Package, Printer, RefreshCw, User, Truck, Wallet, Upload, Image as ImageIcon, X, Beaker, EyeOff,
@@ -531,14 +532,10 @@ export function ProductModal({
       if (url) {
         set('imageUrl', url);
       } else {
-        const reader = new FileReader();
-        reader.onloadend = () => set('imageUrl', reader.result as string);
-        reader.readAsDataURL(file);
+        set('imageUrl', await fileToDataUrl(await compressImage(file)));
       }
     } catch {
-      const reader = new FileReader();
-      reader.onloadend = () => set('imageUrl', reader.result as string);
-      reader.readAsDataURL(file);
+      try { set('imageUrl', await fileToDataUrl(await compressImage(file))); } catch { /* image illisible */ }
     } finally {
       setUploadingImage(false);
     }

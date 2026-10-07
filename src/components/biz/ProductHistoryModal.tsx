@@ -9,15 +9,15 @@
 import React, { useMemo, useState } from 'react';
 import {
   History, ShoppingCart, TrendingUp, CircleDollarSign, Boxes, Search, Receipt,
-  ArrowDownRight, ArrowUpRight, Printer, Flame, Beaker, Wrench, FileText, Info,
+  ArrowDownRight, ArrowUpRight, Printer, Flame, Beaker, Wrench, FileText, Info, Clock, ChevronRight,
 } from 'lucide-react';
 import { cn, matchesSearch } from '@/src/lib/utils';
 import {
-  Modal, Table, Badge, Select, money, formatDate, PeriodFilter, Period, inPeriod,
+  Modal, Table, Badge, Select, money, formatDate, formatTime, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
 import { BizProduct, ModuleState, formatQty } from '@/src/lib/bizConfig';
 import {
-  computeProductHistory, ProductMovement, ProductDocument, MovementKind, MOVEMENT_LABEL,
+  computeProductHistory, ProductMovement, ProductDocument, MovementKind, MOVEMENT_LABEL, hasTime,
 } from '@/src/lib/productHistory';
 import { printInvoice, stationFromSettings } from '@/src/pages/modules/_shared';
 
@@ -27,6 +27,36 @@ const KIND_ICON: Record<MovementKind, React.ElementType> = {
 const KIND_TONE: Record<MovementKind, 'success' | 'info' | 'warning' | 'danger' | 'neutral'> = {
   purchase: 'success', sale: 'info', reparation: 'warning', production: 'neutral', destruction: 'danger',
 };
+
+/** « 7 octobre 2026 » au-dessus, « 14:32 » en dessous — l'heure seulement si le bon l'a gardée. */
+function When({ date }: { date: string }) {
+  return (
+    <div className="leading-tight">
+      <p className="font-bold text-slate-700 whitespace-nowrap">{formatDate(date)}</p>
+      {hasTime(date) && (
+        <p className="text-[11px] text-slate-400 font-semibold tabular-nums inline-flex items-center gap-1 mt-0.5">
+          <Clock className="w-3 h-3" /> {formatTime(date)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+const docLabel = (m: ProductMovement) =>
+  m.kind === 'purchase' ? 'Bon d\'achat' : m.kind === 'sale' ? 'Bon de vente' : 'Bon';
+
+/** Le bouton qui ouvre le bon d'origine — ou une mention quand il n'y en a pas. */
+function DocButton({ m, onOpen, block }: { m: ProductMovement; onOpen: () => void; block?: boolean }) {
+  if (!m.doc) return <span className="text-[10px] text-slate-300 italic">Aucun bon</span>;
+  return (
+    <button onClick={onOpen} title={`Ouvrir ${docLabel(m).toLowerCase()} ${m.ref}`}
+      className={cn('inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap',
+        'bg-[#003087]/5 text-[#003087] border border-[#003087]/15 hover:bg-[#003087] hover:text-white transition-colors',
+        block && 'w-full py-2 text-xs')}>
+      <FileText className="w-3.5 h-3.5" /> {docLabel(m)} <ChevronRight className="w-3.5 h-3.5 opacity-60" />
+    </button>
+  );
+}
 
 function Stat({ icon: Icon, label, value, sub, tone }: {
   icon: React.ElementType; label: string; value: string; sub?: string;
@@ -76,7 +106,7 @@ function DocumentModal({ doc, settings, onClose }: {
 
   return (
     <Modal open onClose={onClose} icon={FileText} size="xl"
-      title={`${doc.title} ${doc.ref}`} subtitle={`${doc.partyLabel} : ${doc.partyName} · ${formatDate(doc.date)}`}
+      title={`${doc.title} ${doc.ref}`} subtitle={`${doc.partyLabel} : ${doc.partyName} · ${formatDate(doc.date)}${hasTime(doc.date) ? ` à ${formatTime(doc.date)}` : ''}`}
       footer={<>
         <div className="mr-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm font-bold">
           <span className="text-[#002d87]">Total {money(doc.total)}</span>
@@ -90,7 +120,7 @@ function DocumentModal({ doc, settings, onClose }: {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
           {([
             [doc.partyLabel, doc.partyName],
-            ['Date', formatDate(doc.date)],
+            ['Date', formatDate(doc.date) + (hasTime(doc.date) ? ` à ${formatTime(doc.date)}` : '')],
             ['Statut', doc.status ? String(doc.status) : '—'],
             ['Enregistré par', doc.createdBy || '—'],
             ...(doc.car ? ([['Véhicule', doc.car]] as [string, string][]) : []),
@@ -272,8 +302,49 @@ export default function ProductHistoryModal({ product, state, settings, onClose 
               </p>
             </div>
           ) : (
+            <>
+            {/* Téléphone : une carte par mouvement */}
+            <div className="md:hidden space-y-2.5">
+              {rows.map(m => {
+                const Icon = KIND_ICON[m.kind];
+                return (
+                  <div key={m.id} className={cn('rounded-2xl border border-slate-100 bg-white p-3.5 shadow-sm space-y-2.5', m.canceled && 'opacity-60')}>
+                    <div className="flex items-start justify-between gap-2">
+                      <When date={m.date} />
+                      <Badge tone={KIND_TONE[m.kind]}><Icon className="w-3 h-3" /> {MOVEMENT_LABEL[m.kind]}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-700 truncate">{m.ref}</p>
+                        <p className="text-[11px] text-slate-400 truncate">{m.party}{m.status ? ` · ${m.status}` : ''}</p>
+                      </div>
+                      <span className={cn('font-black tabular-nums whitespace-nowrap', m.direction === 'in' ? 'text-emerald-600' : 'text-red-600')}>
+                        {m.direction === 'in' ? '+' : '−'}{formatQty(m.qty)} {product.unit || ''}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      {([
+                        ['P.U.', money(m.unitPrice), 'text-slate-600'],
+                        ['Montant', money(m.total), m.canceled ? 'line-through text-slate-400' : 'text-[#002d87]'],
+                        ['Gain', m.kind === 'sale' || m.kind === 'reparation' ? money(m.gain) : '—',
+                          m.gain > 0 ? 'text-emerald-600' : m.gain < 0 ? 'text-red-600' : 'text-slate-300'],
+                      ] as [string, string, string][]).map(([k, v, c]) => (
+                        <div key={k} className="rounded-lg bg-slate-50 py-1.5">
+                          <p className="text-[9px] uppercase font-black text-slate-400">{k}</p>
+                          <p className={cn('text-xs font-black tabular-nums', c)}>{v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {m.doc && <DocButton m={m} onOpen={() => setDoc(m.doc)} block />}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Écran large : le tableau */}
+            <div className="hidden md:block">
             <Table head={<>
-              <th className="table-head">Date</th>
+              <th className="table-head">Date &amp; heure</th>
               <th className="table-head">Nature</th>
               <th className="table-head">Référence</th>
               <th className="table-head">Tiers</th>
@@ -281,13 +352,13 @@ export default function ProductHistoryModal({ product, state, settings, onClose 
               <th className="table-head text-right">Prix unitaire</th>
               <th className="table-head text-right">Montant</th>
               <th className="table-head text-right">Gain</th>
-              <th className="table-head text-right">Document</th>
+              <th className="table-head text-center">Action</th>
             </>}>
               {rows.map(m => {
                 const Icon = KIND_ICON[m.kind];
                 return (
                   <tr key={m.id} className={cn('hover:bg-slate-50', m.canceled && 'opacity-60')}>
-                    <td className="table-cell whitespace-nowrap text-slate-500">{formatDate(m.date)}</td>
+                    <td className="table-cell"><When date={m.date} /></td>
                     <td className="table-cell">
                       <Badge tone={KIND_TONE[m.kind]}><Icon className="w-3 h-3" /> {MOVEMENT_LABEL[m.kind]}</Badge>
                       {m.status && <div className="text-[10px] text-slate-400 mt-0.5">{m.status}</div>}
@@ -296,40 +367,34 @@ export default function ProductHistoryModal({ product, state, settings, onClose 
                     <td className="table-cell text-slate-500">{m.party}</td>
                     <td className={cn('table-cell tabular-nums text-right font-bold',
                       m.direction === 'in' ? 'text-emerald-600' : 'text-red-600')}>
-                      <span className="inline-flex items-center gap-1">
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap">
                         {m.direction === 'in' ? <ArrowDownRight className="w-3.5 h-3.5" /> : <ArrowUpRight className="w-3.5 h-3.5" />}
                         {m.direction === 'in' ? '+' : '−'}{formatQty(m.qty)}
                         {product.unit ? <span className="text-[10px] text-slate-400 font-medium"> {product.unit}</span> : null}
                       </span>
                     </td>
-                    <td className="table-cell tabular-nums text-right text-slate-500">{money(m.unitPrice)}</td>
-                    <td className={cn('table-cell tabular-nums text-right font-black', m.canceled && 'line-through text-slate-400')}>
+                    <td className="table-cell tabular-nums text-right text-slate-500 whitespace-nowrap">{money(m.unitPrice)}</td>
+                    <td className={cn('table-cell tabular-nums text-right font-black whitespace-nowrap', m.canceled && 'line-through text-slate-400')}>
                       {money(m.total)}
                     </td>
-                    <td className={cn('table-cell tabular-nums text-right font-bold',
+                    <td className={cn('table-cell tabular-nums text-right font-bold whitespace-nowrap',
                       m.gain > 0 ? 'text-emerald-600' : m.gain < 0 ? 'text-red-600' : 'text-slate-300')}>
                       {m.kind === 'sale' || m.kind === 'reparation' ? money(m.gain) : '—'}
                     </td>
-                    <td className="table-cell text-right">
-                      {m.doc ? (
-                        <button onClick={() => setDoc(m.doc)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-black text-[#003087] hover:bg-blue-50 transition-colors">
-                          <FileText className="w-3.5 h-3.5" />
-                          {m.kind === 'purchase' ? 'Bon d\'achat' : m.kind === 'sale' ? 'Bon de vente' : 'Bon'}
-                        </button>
-                      ) : <span className="text-[10px] text-slate-300 italic pr-2">—</span>}
-                    </td>
+                    <td className="table-cell text-center"><DocButton m={m} onOpen={() => setDoc(m.doc)} /></td>
                   </tr>
                 );
               })}
             </Table>
+            </div>
+            </>
           )}
 
           {rows.some(m => m.note) && (
             <div className="space-y-1.5">
               {rows.filter(m => m.note).slice(0, 8).map(m => (
                 <p key={`n-${m.id}`} className="text-[11px] text-slate-400 italic">
-                  <b className="text-slate-500">{formatDate(m.date)} · {m.ref}</b> — {m.note}
+                  <b className="text-slate-500">{formatDate(m.date)}{hasTime(m.date) ? ` ${formatTime(m.date)}` : ''} · {m.ref}</b> — {m.note}
                 </p>
               ))}
             </div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { IMAGE_PRESETS } from "@/src/lib/imageCompress";
 import { useTranslation } from "react-i18next";
 import {
   Settings as SettingsIcon,
@@ -428,7 +429,7 @@ const Settings = () => {
       let avatarUrl = profile.photo;
       if (avatarFile) {
         const path = `admin/${userId}/${Date.now()}-${avatarFile.name}`;
-        const url = await uploadFile(BUCKETS.WORKER_PHOTOS, path, avatarFile);
+        const url = await uploadFile(BUCKETS.WORKER_PHOTOS, path, avatarFile, IMAGE_PRESETS.avatar);
         if (url) {
           avatarUrl = url;
           setAvatarFile(null);

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   ShoppingCart, Plus, Search, Trash2 as TrashIcon, X, Truck, Receipt, Wallet, CircleDollarSign, Package,
-  Tag, Banknote, Droplet, Scale, Info, Printer, Barcode,
+  Tag, Banknote, Droplet, Scale, Info, Printer, Barcode, FileImage,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
@@ -19,10 +19,12 @@ import { useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
   RowActions, ActionBtn, Eye, Edit2, Trash2, Confirm, Modal, Field, Input, Select, Switch, FormSection,
-  StaticField, money, formatDate,
+  StaticField, money, formatDate, formatTime,
 } from '@/src/components/biz/Kit';
+import { stampOf, hasTime } from '@/src/lib/productHistory';
 import { ProductModal, ContactModal, PayDebtModal, printPurchaseInvoice, productMatches, stationFromSettings } from './_shared';
 import PurchaseLabelsModal from '@/src/components/biz/PurchaseLabelsModal';
+import { InvoiceImageField, InvoiceImageView } from '@/src/components/biz/InvoiceImage';
 
 export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey }) {
   const cfg = MODULES[moduleKey];
@@ -235,7 +237,7 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 text-sm">
               <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Fournisseur</p><p className="font-bold text-slate-700 break-words">{viewing.supplierName}</p></div>
-              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Date</p><p className="font-bold text-slate-700">{formatDate(viewing.date)}</p></div>
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Date</p><p className="font-bold text-slate-700">{formatDate(viewing.date)}{hasTime(stampOf(viewing)) ? ` à ${formatTime(stampOf(viewing))}` : ''}</p></div>
               <div className="rounded-xl bg-slate-50 border border-slate-200 p-3"><p className="text-[10px] uppercase font-black text-slate-400">Articles</p><p className="font-bold text-slate-700">{viewing.items.length}</p></div>
             </div>
             <Table head={<>
@@ -299,6 +301,8 @@ export default function ModulePurchases({ moduleKey }: { moduleKey: ModuleKey })
               </div>
             )}
 
+            <InvoiceImageView url={viewing.invoiceImage} />
+
             <div className="grid grid-cols-3 gap-2 sm:gap-3">
               <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Total</p><p className="font-black text-slate-700 tabular-nums text-sm sm:text-base">{money(viewing.total)}</p></div>
               <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-center"><p className="text-[10px] uppercase font-black text-slate-400">Payé</p><p className="font-black text-emerald-600 tabular-nums text-sm sm:text-base">{money(viewing.paid)}</p></div>
@@ -346,6 +350,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const [supplierId, setSupplierId] = useState(initial?.supplierId || '');
   const [date, setDate] = useState(initial ? initial.date.split('T')[0] : new Date().toISOString().split('T')[0]);
   const [paidStr, setPaidStr] = useState<string>(initial ? String(initial.paid) : '');
+  const [invoiceImage, setInvoiceImage] = useState<string | undefined>(initial?.invoiceImage);
+  const [uploading, setUploading] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
   const [showSupplierModal, setShowSupplierModal] = useState(false);
 
@@ -438,6 +444,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   };
 
   const save = () => {
+    if (uploading) { toast.error("Patientez : la facture est en cours d'envoi"); return; }
     if (items.length === 0) { toast.error('Ajoutez au moins un produit'); return; }
     if (!supplierId) { toast.error('Sélectionnez un fournisseur'); return; }
     const supplier = suppliers.find(s => s.id === supplierId);
@@ -460,6 +467,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
       supplierId, supplierName: supplier?.name || '—',
       items: savedItems, total, paid, rest, date: new Date(date).toISOString(),
       createdAt: initial?.createdAt || new Date().toISOString(), createdBy: 'Admin',
+      ...(invoiceImage ? { invoiceImage } : {}),
       // Une facture existante garde son mode d'origine : rebasculer l'option
       // après coup ne doit pas réécrire une histoire qui a déjà servi.
       ...(isEdit ? (initial?.useAverageCost ? { useAverageCost: true } : {}) : (useAvg ? { useAverageCost: true } : {})),
@@ -503,7 +511,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
             {rest > 0 && <span className="text-red-600">Dette {money(rest)}</span>}
           </div>
           <button className="btn-ghost" onClick={onClose}>Annuler</button>
-          <button className="btn-primary" onClick={save}>{isEdit ? 'Enregistrer' : 'Créer l\'achat'}</button>
+          <button className="btn-primary" onClick={save} disabled={uploading}>{isEdit ? 'Enregistrer' : 'Créer l\'achat'}</button>
         </>}>
         <div className="space-y-4 sm:space-y-5">
           {/* Récapitulatif de l'achat — repris en permanence dans le pied de page. */}
@@ -865,6 +873,15 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                 </div>
               </div>
             </div>
+          </FormSection>
+
+          {/* ── 4. Facture du fournisseur ── */}
+          <FormSection step={4} icon={FileImage} title="Facture du fournisseur">
+            <InvoiceImageField value={invoiceImage} onChange={setInvoiceImage} onBusy={setUploading} />
+            <p className="mt-2 text-[11px] text-slate-400 flex items-start gap-1.5">
+              <Info className="w-3.5 h-3.5 shrink-0 mt-px" />
+              Facultatif. La photo est allégée automatiquement avant l'envoi et se retrouve dans « Voir » de l'achat.
+            </p>
           </FormSection>
         </div>
       </Modal>

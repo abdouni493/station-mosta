@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef } from "react";
+import { compressImage, fileToDataUrl, IMAGE_PRESETS } from "@/src/lib/imageCompress";
 import { useTranslation } from "react-i18next";
 import { 
   Plus, 
@@ -303,15 +304,12 @@ const Expenses = () => {
     };
   }, [expenses]);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormData({ ...formData, receipt: reader.result });
-      };
-      reader.readAsDataURL(file);
-    }
+    if (!file) return;
+    // Le justificatif est gardé en data-URL dans la dépense : compressé d'abord.
+    const receipt = await fileToDataUrl(await compressImage(file, IMAGE_PRESETS.document));
+    setFormData(fd => ({ ...fd, receipt }));
   };
 
   const handleAddCategory = () => {

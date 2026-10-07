@@ -10,6 +10,7 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { createClient } from '@supabase/supabase-js';
+import { compressImage, IMAGE_PRESETS, CompressOptions } from './imageCompress';
 
 // Connection — values come from Vite env when present, otherwise fall back to the
 // project this app is wired to. The anon key is public by design (RLS protects data).
@@ -371,6 +372,7 @@ export const BUCKETS = {
   BON_PHOTOS:      'bon-photos',
   DELIVERY_PHOTOS: 'delivery-photos',
   INVOICES:        'invoices',
+  PURCHASE_INVOICES: 'purchase-invoices',
   EXPENSE_RECEIPTS:'expense-receipts',
   CLIENT_RECEIPTS: 'client-receipts',
 } as const;
@@ -392,10 +394,21 @@ function randomName(ext = 'jpg'): string {
   return `${id}.${ext}`;
 }
 
-/** Uploads a File to a bucket and returns its public URL (or null on failure). */
-export async function uploadFile(bucket: string, path: string, file: File): Promise<string | null> {
+/**
+ * Uploads a File to a bucket and returns its public URL (or null on failure).
+ * Images are compressed first (see `lib/imageCompress.ts`) — every upload of
+ * the app goes through here, so none of them sends a raw 5 MB phone photo.
+ */
+export async function uploadFile(
+  bucket: string, path: string, rawFile: File, preset: CompressOptions = IMAGE_PRESETS.photo,
+): Promise<string | null> {
   try {
-    const key = path && path.length ? path : randomName((file.name?.split('.').pop() || 'jpg'));
+    const file = await compressImage(rawFile, preset);
+    const ext = file.name?.split('.').pop() || 'jpg';
+    // Le contenu a pu changer de format (WebP) : l'extension du chemin suit.
+    const key = path && path.length
+      ? (file !== rawFile ? path.replace(/\.[a-z0-9]+$/i, '') + '.' + ext : path)
+      : randomName(ext);
     const { error } = await supabase.storage.from(bucket).upload(key, file, {
       upsert: true,
       contentType: file.type || 'image/jpeg',
