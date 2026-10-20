@@ -4,7 +4,7 @@ import {
   Tag, Banknote, Droplet, Scale, Info, Printer, Barcode, FileImage,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
-import { newId, matchesSearch } from '@/src/lib/utils';
+import { newId, matchesSearch, normalizeSearch } from '@/src/lib/utils';
 import {
   ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty,
   productRefLabel, productCarLabel,
@@ -381,7 +381,18 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
    */
   const matches = useMemo(() => {
     if (!pQuery.trim()) return [];
-    return products.filter(p => productMatches(p, pQuery)).slice(0, 20);
+    // Le nom qui commence par la recherche passe devant : « lave glace »
+    // ramène toute une gamme, et la fiche visée ne doit pas tomber hors de la
+    // liste. Celle-ci défile, elle n'est plus coupée à vingt.
+    const q = normalizeSearch(pQuery);
+    const rank = (p: BizProduct) => {
+      const name = normalizeSearch(p.name);
+      return name === q ? 0 : name.startsWith(q) ? 1 : name.includes(q) ? 2 : 3;
+    };
+    return products
+      .filter(p => productMatches(p, pQuery))
+      .sort((a, b) => rank(a) - rank(b) || (a.name || '').localeCompare(b.name || ''))
+      .slice(0, 100);
   }, [products, pQuery]);
 
   /**

@@ -55,6 +55,9 @@ export function normalizeSearch(value: unknown): string {
  * Une requête vide laisse tout passer : c'est l'état normal d'une barre de
  * recherche au repos.
  */
+/** Texte déjà mis à plat, privé de tout ce qui n'est ni lettre ni chiffre. */
+const compactSearch = (value: string): string => value.replace(/[^a-z0-9]/g, "");
+
 export function matchesSearch(query: string, ...fields: unknown[]): boolean {
   const terms = normalizeSearch(query).split(" ").filter(Boolean);
   if (!terms.length) return true;
@@ -65,10 +68,17 @@ export function matchesSearch(query: string, ...fields: unknown[]): boolean {
     .map(f => f.replace(/\D/g, ""))
     .filter(Boolean);
 
-  return terms.every(term =>
-    haystack.includes(term) ||
-    (/^\d+$/.test(term) && digitFields.some(d => d.includes(term)))
-  );
+  // Les séparateurs ne comptent pas : « lave-glace », « lave glace » et
+  // « laveglace » désignent le même produit, quelle que soit l'écriture de la
+  // fiche ou de la recherche.
+  const compactFields = normalized.map(compactSearch).filter(Boolean);
+
+  return terms.every(term => {
+    if (haystack.includes(term)) return true;
+    if (/^\d+$/.test(term) && digitFields.some(d => d.includes(term))) return true;
+    const compact = compactSearch(term);
+    return !!compact && compactFields.some(f => f.includes(compact));
+  });
 }
 
 /**
