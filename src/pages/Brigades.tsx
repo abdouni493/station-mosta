@@ -42,7 +42,7 @@ import { cn, newId, matchesSearch } from "@/src/lib/utils";
 import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
-import { ownsNozzleIndex } from "../lib/nozzleIndexes";
+import { ownsNozzleIndex, nozzleStartIndex } from "../lib/nozzleIndexes";
 import { toNum } from "../lib/brigadeCalc";
 import { clientChargeDelta, clientLedgers, clientStanding, ClientLedger, ClientStanding } from "../lib/clientLedger";
 import { brigadeBankLines, isBankJustification, accountOfJustification } from "../lib/brigadeBankLines";
@@ -323,7 +323,9 @@ const Brigades = () => {
   // sales recompute correctly.
   const startTankLiters = (t: Tank) => toNum(editingBrigade ? (editingBrigade.startTankLevels?.[t.id]?.liters ?? t.current) : t.current);
   const startTankDegrees = (t: Tank) => toNum(editingBrigade ? (editingBrigade.startTankLevels?.[t.id]?.degrees ?? t.degrees) : t.degrees);
-  const startNozzleIdx = (n: { id: string; lastIndex: number }) => toNum(editingBrigade ? (editingBrigade.startNozzleIndices?.[n.id] ?? n.lastIndex) : n.lastIndex);
+  // À la création, le départ est l'index de FIN de la brigade précédente, pas le
+  // compteur vivant du pistolet, qui pouvait rester en retard (lib/nozzleIndexes.ts).
+  const startNozzleIdx = (n: { id: string; lastIndex: number }) => toNum(editingBrigade ? (editingBrigade.startNozzleIndices?.[n.id] ?? n.lastIndex) : nozzleStartIndex(brigades, n));
   /**
    * Index de fin d'un pistolet tel que saisi. `parseFloat` rend `NaN` sur une
    * frappe incomplète ("12,"), et `NaN` traverse `??` sans être arrêté : il

@@ -132,3 +132,19 @@ export function nozzleIndexFixes(
   }
   return fixes;
 }
+
+/**
+ * L'index de DÉBUT d'une nouvelle brigade pour ce pistolet : l'index de fin de
+ * la brigade précédente qui l'a relevé. Le compteur `lastIndex` n'est qu'un
+ * repli (pistolet jamais relevé) — il pouvait rester en retard (écriture
+ * perdue, rechargement concurrent), et la brigade du 21/10/2026 était repartie
+ * de l'index de DÉBUT de la veille sur POMPE 4 LOURD B1.
+ */
+export function nozzleStartIndex(
+  brigades: BrigadeIndexRef[],
+  nozzle: Pick<PumpNozzle, 'id' | 'lastIndex'>,
+): number {
+  const owner = nozzleIndexOwner(brigades, nozzle.id);
+  const end = owner ? readEnd(owner, nozzle.id) : null;
+  return end !== null ? end : Number(nozzle.lastIndex) || 0;
+}

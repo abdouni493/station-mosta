@@ -14,7 +14,7 @@
  *   npx tsx src/lib/nozzleIndexes.test.ts
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { nozzleIndexOwner, ownsNozzleIndex, nozzleIndexFixes, brigadeIndexOrder } from './nozzleIndexes';
+import { nozzleIndexOwner, ownsNozzleIndex, nozzleIndexFixes, brigadeIndexOrder, nozzleStartIndex } from './nozzleIndexes';
 
 let passed = 0, failed = 0;
 const check = (label: string, got: any, want: any) => {
@@ -76,5 +76,13 @@ check('repli ultime sur la journée',
 check('une fiche sans aucune date ne prend jamais la main',
   brigadeIndexOrder({ id: 'X' }), 0);
 
+
+// Le compteur est resté en retard (5 441 429,67) : la brigade suivante doit
+// repartir de l'index de FIN de la veille, pas du compteur.
+{
+  const prev = [{ id: "b20", createdAt: "2026-10-20T14:00:00Z", endNozzleIndices: { B1: 5441871.63 } }];
+  check("départ = fin de la brigade précédente", nozzleStartIndex(prev, { id: "B1", lastIndex: 5441429.67 }), 5441871.63);
+  check("pistolet jamais relevé → compteur", nozzleStartIndex(prev, { id: "X", lastIndex: 12 }), 12);
+}
 console.log(`\n${failed === 0 ? '✅' : '❌'} ${passed} réussis, ${failed} échoués\n`);
 process.exit(failed === 0 ? 0 : 1);
