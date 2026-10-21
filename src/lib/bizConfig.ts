@@ -761,6 +761,10 @@ export interface BizSession {
 export interface BizPayRequest {
   id: string;
   ref: string;
+  /** Lavage ou vidange — absent sur les demandes d'avant ce choix. */
+  kind?: 'lavage' | 'reparation';
+  /** Fiche client choisie (absente pour un client de passage). */
+  clientId?: string;
   clientName: string;
   car: BizCar;
   amount: number;
@@ -771,6 +775,10 @@ export interface BizPayRequest {
   createdAt: string;
   collectedAt?: string;
   collectedBy?: string;
+  /** L'utilisateur connecté qui a créé la demande (employé ou admin). */
+  createdBy?: string;
+  /** L'intervention Lavage & Vidange née de la validation par l'admin. */
+  reparationId?: string;
 }
 
 export interface BizCar {

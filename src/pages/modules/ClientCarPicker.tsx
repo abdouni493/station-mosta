@@ -67,7 +67,11 @@ export function ClientCarPicker({
   const results: BizContact[] = useMemo(() => {
     const q = query.trim();
     if (!q) return clients.slice(0, MAX_SUGGESTIONS);
-    return clients.filter(c => matchesSearch(q, c.name, c.phone)).slice(0, MAX_SUGGESTIONS);
+    // Au-delà du nom et du téléphone : l'adresse et tout le parc du client
+    // (plaque, modèle, marque) — souvent c'est la voiture qu'on reconnaît.
+    return clients.filter(c => matchesSearch(q, c.name, c.phone, c.address,
+      ...(c.cars || []).flatMap(v => [v.immatriculation, v.name, v.marque, v.color])))
+      .slice(0, MAX_SUGGESTIONS);
   }, [clients, query]);
 
   const cars: BizCar[] = selected?.cars || [];
@@ -104,7 +108,7 @@ export function ClientCarPicker({
   return (
     <div className="space-y-3">
       {/* ── Le client ──────────────────────────────────────────────────────── */}
-      <Field label="Client (optionnel)" hint={`Cherchez par nom ou par téléphone. Laissez vide pour un « ${passageLabel} ».`}>
+      <Field label="Client (optionnel)" hint={`Cliquez pour voir la liste, cherchez par nom, téléphone, adresse ou plaque. Laissez vide pour un « ${passageLabel} ».`}>
         {selected ? (
           <div className="flex items-center gap-2 flex-wrap rounded-xl border-2 border-[#002d87]/20 bg-[#002d87]/5 px-3 py-2.5">
             <Users className="w-4 h-4 text-[#002d87] shrink-0" />
@@ -123,8 +127,9 @@ export function ClientCarPicker({
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 className="input-field pl-9"
-                placeholder="Nom ou téléphone du client…"
+                placeholder="Nom, téléphone, adresse ou plaque…"
                 value={query}
+                onClick={() => setOpen(true)}
                 onChange={e => { setQuery(e.target.value); setOpen(true); }}
                 onFocus={() => setOpen(true)} />
             </div>

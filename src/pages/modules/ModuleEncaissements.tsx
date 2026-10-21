@@ -9,17 +9,25 @@
 import React, { useMemo, useState } from 'react';
 import {
   BellRing, Plus, Car, User, Check, CheckCheck, X, Clock, Wallet, Trash2, CircleDollarSign,
+  Sparkles, Wrench, Send, Users, UserCheck,
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { newId, matchesSearch } from '@/src/lib/utils';
-import { ModuleKey, MODULES, BizPayRequest, BizCar } from '@/src/lib/bizConfig';
+import { ModuleKey, MODULES, BizPayRequest, BizCar, BizReparation } from '@/src/lib/bizConfig';
 import { useBiz } from '@/src/store/BizContext';
 import { useBizPermission, useAppState } from '@/src/store/AppContext';
 import {
   PageHeader, StatCard, Badge, SearchInput, ViewToggle, CardGrid, GlassCard, Table, EmptyState,
   RowActions, ActionBtn, Confirm, Modal, Field, Input, Textarea, Select,
-  money, formatDate, PeriodFilter, Period, inPeriod,
+  money, formatDateTime, PeriodFilter, Period, inPeriod,
 } from '@/src/components/biz/Kit';
+import { ContactModal, seedPayments } from './_shared';
+import { ClientCarPicker, PASSAGE_LABEL } from './ClientCarPicker';
+
+const KIND_META = {
+  lavage: { label: 'Lavage', icon: Sparkles, grad: 'linear-gradient(135deg,#0369a1,#0ea5e9)', ring: 'ring-sky-300' },
+  reparation: { label: 'Vidange', icon: Wrench, grad: 'linear-gradient(135deg,#c2410c,#f97316)', ring: 'ring-orange-300' },
+} as const;
 
 const STATUS_META: Record<BizPayRequest['status'], { label: string; tone: any }> = {
   pending: { label: 'En attente', tone: 'warning' },
@@ -31,7 +39,8 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
   const cfg = MODULES[moduleKey];
   const biz = useBiz(moduleKey);
   const perm = useBizPermission(moduleKey, 'encaissements');
-  const { currentUserName, currentModuleWorker } = useAppState();
+  const { currentUserName, currentUserRole, currentModuleWorker } = useAppState();
+  const isAdmin = currentUserRole === 'admin';
   const { payRequests, workers } = biz.state;
 
   const [search, setSearch] = useState('');
@@ -46,7 +55,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
   const [confirmAll, setConfirmAll] = useState(false);
 
   const filtered = useMemo(() => [...payRequests].filter(r => {
-    const matchQ = matchesSearch(search, r.clientName, r.car?.immatriculation, r.workerName, r.ref);
+    const matchQ = matchesSearch(search, r.clientName, r.car?.immatriculation, r.workerName, r.ref, r.createdBy);
     return matchQ && (status === 'all' || r.status === status) && inPeriod(r.createdAt, period, from, to);
   }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [payRequests, search, status, period, from, to]);
@@ -67,13 +76,64 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
    * « encaissée », quitte la liste des demandes en attente et l'alerte rouge de
    * la barre latérale se décrémente aussitôt.
    */
-  const collect = (r: BizPayRequest) => {
+  /**
+   * ─── LA VALIDATION DE L'ADMIN CRÉE L'INTERVENTION ─────────────────────────
+   * Quand c'est l'administrateur qui valide, la demande devient une vraie
+   * intervention finalisée et payée dans Lavage & Vidange — exactement comme
+   * si elle avait été saisie à la main : elle compte dans le chiffre, la caisse
+   * de la partie et la paie au pourcentage de l'employé. Pas de produits : le
+   * stock ne bouge pas. Une demande déjà liée ne crée jamais un doublon.
+   */
+  const toReparation = (r: BizPayRequest, at: string, index: number): BizReparation => {
+    const kind = r.kind || 'lavage';
+    const by = currentUserName || 'Admin';
+    return {
+      id: newId(),
+      ref: `${kind === 'lavage' ? 'LAV' : 'REP'}-${String(biz.state.reparations.length + 1 + index).padStart(4, '0')}`,
+      kind,
+      clientId: r.clientId,
+      clientName: r.clientName || PASSAGE_LABEL,
+      car: r.car || {},
+      serviceTotal: r.amount,
+      prestations: [{
+        id: newId(), kind,
+        label: r.description || KIND_META[kind].label,
+        amount: r.amount,
+        workerIds: r.workerId ? [r.workerId] : [],
+      }],
+      usedProducts: [],
+      problem: r.description ? `${r.description} (demande ${r.ref})` : `Demande ${r.ref}`,
+      subtotal: r.amount,
+      discountAmount: 0,
+      total: r.amount, paid: r.amount, rest: 0,
+      status: 'finalized',
+      date: r.createdAt,
+      finalizedAt: at,
+      outDate: at,
+      payments: seedPayments(undefined, r.amount, at, by),
+      workers: r.workerId ? [r.workerId] : [],
+      createdBy: r.createdBy || r.workerName || by,
+    };
+  };
+
+  const validate = (r: BizPayRequest, at: string, index = 0) => {
+    let reparationId = r.reparationId;
+    if (isAdmin && !reparationId) {
+      const rep = toReparation(r, at, index);
+      biz.add('reparations', rep);
+      reparationId = rep.id;
+    }
     biz.update('payRequests', {
-      ...r, status: 'collected',
-      collectedAt: new Date().toISOString(),
-      collectedBy: currentUserName || 'Caisse',
+      ...r, status: 'collected', collectedAt: at,
+      collectedBy: currentUserName || 'Caisse', reparationId,
     });
-    toast.success(`Demande ${r.ref} validée — ${money(r.amount)} encaissés`);
+  };
+
+  const collect = (r: BizPayRequest) => {
+    validate(r, new Date().toISOString());
+    toast.success(isAdmin
+      ? `Demande ${r.ref} validée — ${KIND_META[r.kind || 'lavage'].label} créé dans Lavage & Vidange`
+      : `Demande ${r.ref} validée — ${money(r.amount)} encaissés`);
   };
 
   /** Valide d'un coup toutes les demandes en attente (l'alerte retombe à zéro). */
@@ -81,9 +141,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
     const pending = payRequests.filter(r => r.status === 'pending');
     if (pending.length === 0) return;
     const at = new Date().toISOString();
-    pending.forEach(r => biz.update('payRequests', {
-      ...r, status: 'collected', collectedAt: at, collectedBy: currentUserName || 'Caisse',
-    }));
+    pending.forEach((r, i) => validate(r, at, i));
     toast.success(`${pending.length} demande(s) validée(s) — ${money(pending.reduce((s, r) => s + r.amount, 0))}`);
     setConfirmAll(false);
   };
@@ -175,7 +233,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
           message="Le laveur crée une demande avec le montant à encaisser, le nom du client et son véhicule." />
       ) : view === 'table' ? (
         <Table head={<>
-          <th className="table-head">Réf</th><th className="table-head">Client</th><th className="table-head">Véhicule</th>
+          <th className="table-head">Réf</th><th className="table-head">Type</th><th className="table-head">Client</th><th className="table-head">Véhicule</th>
           <th className="table-head">Demandée par</th><th className="table-head">Date</th>
           <th className="table-head text-right">À encaisser</th><th className="table-head">État</th>
           <th className="table-head text-right">Actions</th>
@@ -185,15 +243,19 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
             return (
               <tr key={r.id} className={r.status === 'pending' ? 'bg-amber-50/60' : undefined}>
                 <td className="table-cell font-bold">{r.ref}</td>
+                <td className="table-cell">{r.kind ? <Badge tone={r.kind === 'lavage' ? 'info' : 'warning'}>{KIND_META[r.kind].label}</Badge> : '—'}</td>
                 <td className="table-cell">
                   <div>{r.clientName}</div>
                   {r.description && <div className="text-[11px] text-slate-400 truncate max-w-[220px]" title={r.description}>{r.description}</div>}
                 </td>
                 <td className="table-cell text-slate-500 max-w-[200px] truncate" title={carLabel || undefined}>{carLabel || '—'}</td>
-                <td className="table-cell text-slate-500">{r.workerName}</td>
+                <td className="table-cell text-slate-500">
+                  <div>{r.workerName}</div>
+                  {r.createdBy && r.createdBy !== r.workerName && <div className="text-[11px] text-slate-400">Créée par {r.createdBy}</div>}
+                </td>
                 <td className="table-cell whitespace-nowrap text-slate-500">
-                  {formatDate(r.createdAt)}
-                  {r.collectedAt && <div className="text-[11px] text-emerald-600">Encaissé par {r.collectedBy}</div>}
+                  {formatDateTime(r.createdAt)}
+                  {r.collectedAt && <div className="text-[11px] text-emerald-600">Encaissé par {r.collectedBy} • {formatDateTime(r.collectedAt)}</div>}
                 </td>
                 <td className="table-cell tabular-nums text-right font-black text-[#002d87]">{money(r.amount)}</td>
                 <td className="table-cell"><Badge tone={STATUS_META[r.status].tone}>{STATUS_META[r.status].label}</Badge></td>
@@ -236,8 +298,8 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
                 <span className="font-black tabular-nums text-[#FFB800]">{money(r.amount)}</span>
               </div>
               <p className="text-[11px] text-slate-400 mt-2">
-                Par {r.workerName} • {formatDate(r.createdAt)}
-                {r.collectedAt && <> • encaissé par {r.collectedBy} le {formatDate(r.collectedAt)}</>}
+                {r.kind && <>{KIND_META[r.kind].label} • </>}Par {r.workerName}{r.createdBy && r.createdBy !== r.workerName ? ` (créée par ${r.createdBy})` : ''} • {formatDateTime(r.createdAt)}
+                {r.collectedAt && <> • encaissé par {r.collectedBy} le {formatDateTime(r.collectedAt)}</>}
               </p>
               <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
                 {/* Une demande en attente met ses deux décisions en avant,
@@ -279,6 +341,7 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
             ? workers.find(w => w.name === currentModuleWorker?.name)?.id
             : undefined}
           defaultWorkerName={currentModuleWorker?.name || currentUserName}
+          creatorName={currentModuleWorker?.name || currentUserName || 'Admin'}
           onClose={() => setCreating(false)}
         />
       )}
@@ -286,39 +349,53 @@ export default function ModuleEncaissements({ moduleKey }: { moduleKey: ModuleKe
         message={`Supprimer la demande ${toDelete?.ref} ?`} onConfirm={del} onCancel={() => setToDelete(null)} />
       <Confirm open={confirmAll} danger={false} confirmLabel="Tout valider"
         title="Valider toutes les demandes"
-        message={`Marquer ${stats.pending} demande(s) comme encaissée(s), pour un total de ${money(stats.pendingAmount)} ? L'alerte du menu disparaîtra.`}
+        message={`Marquer ${stats.pending} demande(s) comme encaissée(s), pour un total de ${money(stats.pendingAmount)} ?${isAdmin ? ' Chacune sera créée comme intervention finalisée dans Lavage & Vidange.' : ''} L'alerte du menu disparaîtra.`}
         onConfirm={collectAll} onCancel={() => setConfirmAll(false)} />
     </div>
   );
 }
 
+/**
+ * ─── LA DEMANDE, EN TROIS GESTES ──────────────────────────────────────────────
+ * Lavage ou vidange, le montant, puis le client — cherché dans la liste qui
+ * s'ouvre au premier clic, ou créé sur place avec la même fiche que dans
+ * Lavage & Vidange. Le créateur est l'utilisateur connecté, quel qu'il soit.
+ */
 function RequestForm({
-  moduleKey, defaultWorkerId, defaultWorkerName, onClose,
+  moduleKey, defaultWorkerId, defaultWorkerName, creatorName, onClose,
 }: {
-  moduleKey: ModuleKey; defaultWorkerId?: string; defaultWorkerName?: string; onClose: () => void;
+  moduleKey: ModuleKey; defaultWorkerId?: string; defaultWorkerName?: string;
+  creatorName: string; onClose: () => void;
 }) {
   const biz = useBiz(moduleKey);
-  const { workers, payRequests } = biz.state;
+  const { workers, payRequests, clients } = biz.state;
 
-  const [clientName, setClientName] = useState('');
+  const [kind, setKind] = useState<'lavage' | 'reparation'>('lavage');
+  const [clientId, setClientId] = useState('');
+  const [showClient, setShowClient] = useState(false);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [workerId, setWorkerId] = useState(defaultWorkerId || '');
   const [car, setCar] = useState<BizCar>({});
 
   const value = Number(amount) || 0;
+  const meta = KIND_META[kind];
 
   const save = () => {
     if (value <= 0) { toast.error('Montant requis'); return; }
     const worker = workers.find(w => w.id === workerId);
+    const client = clients.find(c => c.id === clientId);
     const req: BizPayRequest = {
       id: newId(),
       ref: `ENC-${String(payRequests.length + 1).padStart(4, '0')}`,
-      clientName: clientName.trim() || 'Client de passage',
+      kind,
+      clientId: client?.id,
+      clientName: client?.name || PASSAGE_LABEL,
       car, amount: value,
       description: description.trim() || undefined,
       workerId: workerId || undefined,
-      workerName: worker?.name || defaultWorkerName || 'Employé',
+      workerName: worker?.name || defaultWorkerName || creatorName,
+      createdBy: creatorName,
       status: 'pending',
       createdAt: new Date().toISOString(),
     };
@@ -328,42 +405,91 @@ function RequestForm({
   };
 
   return (
-    <Modal open onClose={onClose} icon={BellRing} size="lg"
-      title="Nouvelle demande d'encaissement"
-      subtitle="Montant à encaisser, client et véhicule"
-      footer={<>
-        <button className="btn-ghost" onClick={onClose}>Annuler</button>
-        <button className="btn-primary" onClick={save} disabled={value <= 0}>Envoyer à la caisse</button>
-      </>}>
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="Montant à encaisser (DA)" required>
-            <Input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" />
-          </Field>
-          <Field label="Employé demandeur">
-            <Select value={workerId} onChange={e => setWorkerId(e.target.value)}>
-              <option value="">{defaultWorkerName || '— Sélectionner —'}</option>
-              {workers.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-            </Select>
-          </Field>
-        </div>
-        <Field label="Nom du client" hint="Laissez vide pour « Client de passage ».">
-          <Input value={clientName} onChange={e => setClientName(e.target.value)} placeholder="Nom du client" />
-        </Field>
-        <div>
-          <label className="label-field">Informations du véhicule</label>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            <Input placeholder="Nom / modèle" value={car.name || ''} onChange={e => setCar({ ...car, name: e.target.value })} />
-            <Input placeholder="Marque" value={car.marque || ''} onChange={e => setCar({ ...car, marque: e.target.value })} />
-            <Input placeholder="Couleur" value={car.color || ''} onChange={e => setCar({ ...car, color: e.target.value })} />
-            <Input placeholder="Année" value={car.year || ''} onChange={e => setCar({ ...car, year: e.target.value })} />
-            <Input placeholder="Immatriculation" value={car.immatriculation || ''} onChange={e => setCar({ ...car, immatriculation: e.target.value })} />
+    <>
+      <Modal open onClose={onClose} icon={BellRing} size="lg"
+        title="Nouvelle demande d'encaissement"
+        subtitle={`Créée par ${creatorName} — envoyée à la caisse`}
+        footer={<>
+          <button className="btn-ghost" onClick={onClose}>Annuler</button>
+          <button onClick={save} disabled={value <= 0}
+            className="h-11 px-5 rounded-xl font-black text-sm text-white flex items-center gap-2 transition-transform active:scale-[0.98] disabled:opacity-50"
+            style={{ background: meta.grad, boxShadow: '0 6px 16px rgba(0,0,0,0.18)' }}>
+            <Send className="w-4 h-4" /> Envoyer à la caisse
+          </button>
+        </>}>
+        <div className="space-y-4">
+          {/* ── 1 · Lavage ou vidange ─────────────────────────────────────── */}
+          <div className="grid grid-cols-2 gap-3">
+            {(['lavage', 'reparation'] as const).map(k => {
+              const m = KIND_META[k]; const Icon = m.icon; const on = kind === k;
+              return (
+                <button key={k} type="button" onClick={() => setKind(k)}
+                  className={`h-16 rounded-2xl flex items-center justify-center gap-2.5 font-black text-base transition-all active:scale-[0.98]
+                    ${on ? `text-white ring-4 ${m.ring}` : 'bg-white text-slate-500 border-2 border-slate-200 hover:border-slate-300'}`}
+                  style={on ? { background: m.grad } : undefined}>
+                  <Icon className="w-5 h-5" /> {m.label}
+                  {on && <Check className="w-4 h-4" />}
+                </button>
+              );
+            })}
           </div>
+
+          {/* ── 2 · Montant et employé ────────────────────────────────────── */}
+          <div className="rounded-2xl p-4 text-white" style={{ background: 'linear-gradient(135deg,#001435,#003087 60%,#0044bb)' }}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-[11px] font-black uppercase tracking-wider text-blue-200 flex items-center gap-1.5 mb-1.5">
+                  <CircleDollarSign className="w-3.5 h-3.5 text-[#FFB800]" /> Montant à encaisser (DA) *
+                </label>
+                <input type="number" min={0} inputMode="decimal" value={amount} autoFocus
+                  onChange={e => setAmount(e.target.value)} placeholder="0"
+                  className="w-full h-14 rounded-xl bg-white/10 border-2 border-white/20 focus:border-[#FFB800] outline-none px-4 text-2xl font-black tabular-nums text-[#FFB800] placeholder:text-white/30" />
+              </div>
+              <div>
+                <label className="text-[11px] font-black uppercase tracking-wider text-blue-200 flex items-center gap-1.5 mb-1.5">
+                  <UserCheck className="w-3.5 h-3.5" /> Employé ({meta.label.toLowerCase()})
+                </label>
+                <select value={workerId} onChange={e => setWorkerId(e.target.value)}
+                  className="w-full h-14 rounded-xl bg-white/10 border-2 border-white/20 focus:border-[#FFB800] outline-none px-3 font-bold text-white [&>option]:text-slate-800">
+                  <option value="">{defaultWorkerName || '— Sélectionner —'}</option>
+                  {workers.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* ── 3 · Client et véhicule ────────────────────────────────────── */}
+          <div className="rounded-2xl border-2 border-indigo-200 overflow-hidden">
+            <div className="px-4 py-2.5 text-white flex items-center gap-2" style={{ background: 'linear-gradient(135deg,#3730a3,#6366f1)' }}>
+              <Users className="w-4 h-4" />
+              <span className="text-xs font-black uppercase tracking-wider">Client & véhicule</span>
+              <button type="button" onClick={() => setShowClient(true)}
+                className="ml-auto text-[11px] font-black bg-white/20 hover:bg-white/30 rounded-lg px-2.5 py-1 flex items-center gap-1">
+                <Plus className="w-3.5 h-3.5" /> Nouveau client
+              </button>
+            </div>
+            <div className="p-4 bg-white">
+              <ClientCarPicker
+                clients={clients}
+                clientId={clientId}
+                onClientId={setClientId}
+                car={car}
+                onCar={setCar}
+                onCreateClient={() => setShowClient(true)}
+                passageLabel={PASSAGE_LABEL} />
+            </div>
+          </div>
+
+          <Field label="Détail de la prestation">
+            <Textarea value={description} onChange={e => setDescription(e.target.value)}
+              placeholder={kind === 'lavage' ? 'Ex: lavage complet + aspiration' : 'Ex: vidange 5W40 + filtre à huile'} />
+          </Field>
         </div>
-        <Field label="Détail de la prestation">
-          <Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Ex: lavage complet + aspiration" />
-        </Field>
-      </div>
-    </Modal>
+      </Modal>
+
+      {/* La même fiche client que dans Lavage & Vidange. */}
+      <ContactModal biz={biz} coll="clients" open={showClient} onClose={() => setShowClient(false)}
+        onSaved={c => { setClientId(c.id); if ((c.cars || []).length === 1) setCar({ ...c.cars![0] }); }} />
+    </>
   );
 }
