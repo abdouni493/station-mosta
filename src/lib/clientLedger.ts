@@ -564,7 +564,9 @@ export function clientStanding(
   const limit = num(client?.creditLimit);
   return {
     debt,
-    advance: advanceAvailable(client),
+    // Les pièces font foi pour l'avance comme pour la dette ; le compteur de la
+    // fiche n'est qu'un repli quand le compte n'a pas été relu.
+    advance: ledger ? Math.max(0, ledger.advanceLeft) : advanceAvailable(client),
     restCredit: limit > 0 ? limit - debt : Infinity,
     fromDocuments: !!ledger,
   };

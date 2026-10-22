@@ -95,13 +95,37 @@ section('Un bon pris sur l\'AVANCE ne creuse aucune dette');
       { id: 'a1', brigadeId: 'b1', justifications: [{ id: 'j1', clientId: 'c1', amount: 10000, liters: 200, fuelType: 'GASOIL', paymentMode: 'AVANCE' }] },
     ],
   };
-  const client = { ...CLIENT, paymentMode: 'ADVANCE', advanceBalance: 40000, transactionHistory: [] };
+  const client = {
+    ...CLIENT, paymentMode: 'ADVANCE', advanceBalance: 40000,
+    transactionHistory: [{ id: 'r1', date: '2026-02-01', type: 'RECHARGE', amount: 50000, mode: 'ESPECES' }],
+  };
   const st = fuelClientStatement({ ...app, clients: [client] }, client);
   check('la consommation est bien comptée', st.totals.charged, 10000);
   check('mais aucune dette n\'est créée', st.closingDebt, 0);
   check('elle sort de l\'avance', st.totals.advanceUsed, 10000);
   check('solde d\'avance de clôture', st.closingAdvance, 40000);
-  check('donc 50000 avant la période', st.openingAdvance, 50000);
+  check('rien avant la première recharge', st.openingAdvance, 0);
+}
+
+section('Le trop-perçu se lit sur les pièces, même quand le compteur l\'a perdu');
+{
+  // Cas réel (SOLTANI HOUCINE, 22/10/2026) : 64 395 DA de dette, 100 000 DA
+  // versés. Le règlement se scinde en PAYMENT 64 395 + RECHARGE 35 605, mais
+  // les colonnes d'avance de la fiche sont restées à 0 — le journal annonçait
+  // « solde 0 », l'avance nulle part.
+  const client = {
+    ...CLIENT, debt: 0, balance: 0, advanceBalance: 0,
+    openingDebt: 64395, openingDate: '2026-08-14',
+    transactionHistory: [
+      { id: 'p1', date: '2026-10-22', type: 'PAYMENT', amount: 64395, mode: 'VIREMENT' },
+      { id: 'r1', date: '2026-10-22', type: 'RECHARGE', amount: 35605, mode: 'VIREMENT', notes: 'Trop-perçu porté en avance' },
+    ],
+  };
+  const st = fuelClientStatement({ ...fuelApp, brigadeAccountings: [], clients: [client] }, client);
+  check('la dette est soldée', st.netDebt, 0);
+  check('l\'avance de 35 605 est détenue', st.advanceHeld, 35605);
+  check('et reste entière au client', st.advanceLeft, 35605);
+  check('les 100 000 versés sont encaissés', st.totals.paid, 100000);
 }
 
 // ─── Cafétéria / Lavage ───────────────────────────────────────────────────────

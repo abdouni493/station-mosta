@@ -789,7 +789,7 @@ const Clients = () => {
     [state, reportClient]);
 
   /** L'avance encore disponible — la même règle que la liste des clients. */
-  const advanceLeft = advanceAvailable(selectedClient);
+  const advanceLeft = ledger ? Math.max(0, ledger.advanceLeft) : advanceAvailable(selectedClient);
   /**
    * Les clients enregistrés avant que les deux colonnes de l'avance ne soient
    * synchronisées en gardent deux valeurs différentes. On le DIT au lieu de
@@ -1403,7 +1403,7 @@ const Clients = () => {
                         </span>
                       </td>
                       <td className="px-8 py-5 text-right font-black text-green-600 text-base italic">
-                        {advanceAvailable(c).toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
+                        {Math.max(0, cl.advanceLeft).toLocaleString()} <span className="text-[10px] opacity-40 italic">DA</span>
                       </td>
                       <td className="px-8 py-5 text-right">
                         <div className="flex flex-col items-end gap-1">

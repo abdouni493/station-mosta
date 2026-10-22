@@ -27,7 +27,7 @@
  *    comme reconstruit plutôt qu'inventé en silence.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { clientLedger, clientOpening, ClientEntry, advanceAvailable } from './clientLedger';
+import { clientLedger, clientOpening, ClientEntry } from './clientLedger';
 import { BizSale, BizReparation, BizContact, BizDocPayment, ModuleState, prestationsOf } from './bizConfig';
 
 const num = (v: any): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -267,9 +267,11 @@ export function fuelClientStatement(
     },
     partLabel: 'Carburant',
     from, to, allLines: lines,
-    // L'avance vit sur la fiche client : c'est le solde d'AUJOURD'HUI, donc la
-    // clôture. L'ouverture se déduit en remontant les mouvements de la période.
-    currentAdvance: advanceAvailable(client),
+    // L'avance se lit sur les PIÈCES (reprise + recharges − bons pris sur
+    // l'avance), comme la dette. Les colonnes `balance` / `advance_balance` de
+    // la fiche sont des compteurs qu'une écriture concurrente peut écraser : un
+    // trop-perçu de 35 605 DA disparaissait ainsi du compte, solde affiché 0.
+    currentAdvance: ledger.advanceFromDocuments,
   });
 }
 

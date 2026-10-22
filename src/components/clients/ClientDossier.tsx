@@ -37,6 +37,10 @@ import {
 } from 'lucide-react';
 import { cn, matchesSearch } from '@/src/lib/utils';
 import { money } from '@/src/components/biz/Kit';
+
+/** Un solde net : « 12 000 DA » dû, ou « Avance 35 605 DA » détenue pour le client. */
+const positionLabel = (v: number): string =>
+  v < -0.005 ? `Avance ${money(-v)}` : money(Math.max(0, v));
 import {
   ClientStatement, StatementLine, StatementPayment, StatementKind, KIND_COLOR, KIND_LABEL,
 } from '@/src/lib/clientStatement';
@@ -280,18 +284,20 @@ export default function ClientDossier(props: ClientDossierProps) {
   const lines = st.allLines;
 
   /**
-   * Le solde de la dette APRÈS chaque opération.
+   * La POSITION du compte APRÈS chaque opération : dette moins avance.
    *
-   * Un journal qui n'aligne que des montants ne se vérifie pas : il faut voir la
-   * dette monter puis redescendre pour savoir d'où vient le reste dû. On remonte
-   * donc le compte de la plus ancienne à la plus récente, puis on rend la table
-   * dans l'ordre d'affichage.
+   * Positive, le client doit ; négative, la station détient son argent (une
+   * avance). Ne suivre que la dette rendait une recharge invisible : un client
+   * qui versait 100 000 DA sur 64 395 DA de dette finissait le journal à « 0 »,
+   * ses 35 605 DA de trop-perçu nulle part. On remonte le compte de la plus
+   * ancienne opération à la plus récente, puis on rend la table dans l'ordre
+   * d'affichage.
    */
-  const runningDebt = useMemo(() => {
+  const runningDebt = useMemo((): Record<string, number> => {
     const out: Record<string, number> = {};
     let acc = 0;
     for (let i = lines.length - 1; i >= 0; i--) {
-      acc += lines[i].debtEffect;
+      acc += lines[i].debtEffect - lines[i].advanceEffect;
       out[lines[i].id] = acc;
     }
     return out;
@@ -370,6 +376,8 @@ export default function ClientDossier(props: ClientDossierProps) {
   /** L'avance a-t-elle absorbé une partie de la dette ? */
   const advanceApplied = Math.max(0, advanceHeld - advanceLeft);
   const gap = recordedDebt === undefined ? 0 : recordedDebt - debtFromDocs;
+  /** Le solde net du compte : > 0 il doit, < 0 la station lui doit (avance). */
+  const position: number = netDebt > 0 ? netDebt : -advanceLeft;
   const overLimit = creditLimit !== undefined && creditLimit > 0 && netDebt > creditLimit;
 
   const toggle = (id: string) => setExpanded(o => ({ ...o, [id]: !o[id] }));
@@ -680,7 +688,8 @@ export default function ClientDossier(props: ClientDossierProps) {
           {lines.length
             ? ` du ${shortDate(lines[lines.length - 1].date)} au ${shortDate(lines[0].date)}, ${lines.length} opération(s).`
             : ' aucune opération enregistrée pour l\'instant.'}
-          {' '}La colonne <b>Solde</b> donne la dette juste après chaque ligne ; une ligne
+          {' '}La colonne <b>Solde</b> donne la position du compte juste après chaque ligne — en rouge ce qu'il doit,
+          en vert « Avance » ce que la station détient pour lui ; une ligne
           qui porte un détail se déplie d'un clic. Pour un document borné à une période, passez par le rapport.
         </p>
       </div>
@@ -746,9 +755,9 @@ export default function ClientDossier(props: ClientDossierProps) {
                         <td className="px-3 py-2.5 font-black whitespace-nowrap" style={{ color: KIND_COLOR[l.kind] }}>{l.kindLabel}</td>
                         <td className="px-3 py-2.5 text-slate-400 font-bold whitespace-nowrap">{l.ref || '—'}</td>
                         <td className="px-3 py-2.5 text-slate-600 max-w-[300px]">
-                          <span className="block truncate font-semibold" title={l.label}>{l.label}</span>
+                          <span className="block font-semibold break-words" title={l.label}>{l.label}</span>
                           {(l.qtyLabel || l.mode || l.status || l.reference || l.notes) && (
-                            <span className="block text-[10px] text-slate-400 font-bold truncate">
+                            <span className="block text-[10px] text-slate-400 font-bold break-words">
                               {[l.qtyLabel, l.mode, l.status, l.reference, l.notes].filter(Boolean).join(' · ')}
                             </span>
                           )}
@@ -763,8 +772,9 @@ export default function ClientDossier(props: ClientDossierProps) {
                           {l.rest ? money(l.rest) : '—'}
                         </td>
                         <td className={cn('px-3 py-2.5 text-right tabular-nums font-black whitespace-nowrap',
-                          (runningDebt[l.id] || 0) > 0 ? 'text-red-500' : 'text-slate-300')}>
-                          {money(runningDebt[l.id] || 0)}
+                          (runningDebt[l.id] || 0) > 0.005 ? 'text-red-500'
+                            : (runningDebt[l.id] || 0) < -0.005 ? 'text-teal-600' : 'text-slate-300')}>
+                          {positionLabel(runningDebt[l.id] || 0)}
                         </td>
                         {(onSettleLine || onPrintReceipt) && (
                           <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
@@ -802,7 +812,9 @@ export default function ClientDossier(props: ClientDossierProps) {
                   <td className="px-3 py-3 text-right tabular-nums">{money(visible.reduce((s, l) => s + l.charged, 0))}</td>
                   <td className="px-3 py-3 text-right tabular-nums text-emerald-600">{money(visible.reduce((s, l) => s + l.paid, 0))}</td>
                   <td className="px-3 py-3 text-right tabular-nums text-red-600">{money(visible.reduce((s, l) => s + l.rest, 0))}</td>
-                  <td className="px-3 py-3 text-right tabular-nums text-red-600">{money(debtFromDocs)}</td>
+                  <td className={cn('px-3 py-3 text-right tabular-nums', position > 0 ? 'text-red-600' : position < 0 ? 'text-teal-600' : 'text-slate-400')}>
+                    {positionLabel(position)}
+                  </td>
                   {(onSettleLine || onPrintReceipt) && <td />}
                 </tr>
               </tfoot>
@@ -925,21 +937,21 @@ export default function ClientDossier(props: ClientDossierProps) {
   const reglements = () => (
     <div className="space-y-4">
       <div className={cn('rounded-2xl p-6 text-white shadow-lg relative overflow-hidden flex flex-wrap items-center justify-between gap-5',
-        debtFromDocs > 0
+        netDebt > 0
           ? 'bg-gradient-to-r from-red-600 via-red-700 to-rose-800'
           : 'bg-gradient-to-r from-emerald-600 via-emerald-700 to-emerald-800')}>
         <div className="absolute -top-10 -right-6 w-40 h-40 bg-white/5 rounded-full blur-2xl" />
         <div className="relative z-10">
           <p className="text-[10px] font-black uppercase tracking-[0.25em] opacity-80">
-            {debtFromDocs > 0 ? 'Reste dû par le client' : 'Compte soldé'}
+            {netDebt > 0 ? 'Reste dû par le client' : advanceLeft > 0 ? 'Avance en faveur du client' : 'Compte soldé'}
           </p>
-          <p className="text-4xl font-black tabular-nums leading-none mt-1.5">{money(debtFromDocs)}</p>
+          <p className="text-4xl font-black tabular-nums leading-none mt-1.5">{money(netDebt > 0 ? netDebt : advanceLeft)}</p>
           <p className="text-[11px] font-bold opacity-80 mt-2">
             {money(st.totals.charged)} consommés — {money(st.totals.paid)} encaissés
             {' '}sur {payments.length} règlement(s)
           </p>
         </div>
-        {onPayDebt && debtFromDocs > 0 && (
+        {onPayDebt && netDebt > 0 && (
           <button onClick={onPayDebt}
             className="relative z-10 px-6 py-3 bg-white text-red-700 rounded-xl text-[10px] font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-md flex items-center gap-2">
             <CircleDollarSign className="w-4 h-4" /> Encaisser un règlement
@@ -1182,9 +1194,9 @@ export default function ClientDossier(props: ClientDossierProps) {
                 <p className="text-base font-black tabular-nums text-emerald-300">{money(st.totals.paid)}</p>
               </div>
               <div className="text-right">
-                <p className="text-[9px] font-black uppercase tracking-widest text-blue-300">Reste dû</p>
-                <p className={cn('text-base font-black tabular-nums', debtFromDocs > 0 ? 'text-red-300' : 'text-emerald-300')}>
-                  {money(debtFromDocs)}
+                <p className="text-[9px] font-black uppercase tracking-widest text-blue-300">{position < 0 ? 'Avance' : 'Reste dû'}</p>
+                <p className={cn('text-base font-black tabular-nums', position > 0 ? 'text-red-300' : 'text-emerald-300')}>
+                  {money(Math.abs(position))}
                 </p>
               </div>
             </div>
@@ -1255,7 +1267,7 @@ export default function ClientDossier(props: ClientDossierProps) {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] sm:text-xs font-bold mr-auto">
               <span className="text-[#002d87]">Consommé {money(st.totals.charged)}</span>
               <span className="text-emerald-600">Encaissé {money(st.totals.paid)}</span>
-              <span className={debtFromDocs > 0 ? 'text-red-600' : 'text-slate-400'}>Reste dû {money(debtFromDocs)}</span>
+              <span className={netDebt > 0 ? 'text-red-600' : 'text-slate-400'}>Reste dû {money(netDebt)}</span>
               {advance && <span className="text-amber-600">Avance {money(advance.available)}</span>}
             </div>
             <button onClick={onClose} className="btn-ghost !py-2 !px-4 text-xs">Fermer</button>

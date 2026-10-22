@@ -87,7 +87,9 @@ console.log('\nLes quatre écarts que le compteur creusait');
 check('CL1 — le bon oublié du compteur compte (6 000 + 4 000)', standing('CL1').debt, 10_000);
 check("CL1 — le compteur, lui, en annonçait 6 000", clientOf('CL1').debt, 6_000);
 check('CL2 — prépayé : il ne doit rien', standing('CL2').debt, 0);
-check("CL2 — son avance reste visible", standing('CL2').advance, 20_000);
+// 20 000 rechargés − 5 000 consommés sur l'avance : ce sont les PIÈCES qui le
+// disent, même quand le compteur de la fiche n'a pas suivi le bon.
+check("CL2 — son avance reste visible, consommation déduite", standing('CL2').advance, 15_000);
 check('CL3 — la dette de reprise est bien une dette', standing('CL3').debt, 30_000);
 check('CL4 — 8 000 dus − 3 000 d\'avance', standing('CL4').debt, 5_000);
 
