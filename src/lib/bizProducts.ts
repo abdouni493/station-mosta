@@ -120,6 +120,32 @@ export async function loadBizProducts(): Promise<ProductsLoadResult> {
   }
 }
 
+/**
+ * Relit QUELQUES fiches, fraîches, directement dans la table — quelques
+ * kilo-octets. Sert juste avant d'ajouter une quantité reçue : le stock doit
+ * partir de la valeur que la base connaît À CET INSTANT (une vente faite sur un
+ * autre poste y est peut-être déjà), et non de la copie que cet écran garde
+ * depuis des minutes. Rend `null` quand la lecture est impossible (table
+ * absente, réseau) : l'appelant retombe alors sur sa copie locale.
+ */
+export async function loadBizProductsByIds(ids: string[]): Promise<Map<string, BizProduct> | null> {
+  const wanted = [...new Set(ids.filter(Boolean))];
+  if (!wanted.length) return new Map();
+  try {
+    const { data, error } = await supabase
+      .from('biz_products').select('id, module_key, data').in('id', wanted);
+    if (error) return null;
+    const out = new Map<string, BizProduct>();
+    for (const row of (data || []) as BizProductRow[]) {
+      const product = rowToProduct(row);
+      if (product) out.set(product.id, product);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /** La fiche portée par une ligne — son `id` fait foi sur celui du JSON. */
 function rowToProduct(row: BizProductRow): BizProduct | null {
   const data = row?.data;

@@ -16,7 +16,7 @@
  * prochain achat — exactement comme le reste de l'application.
  * ──────────────────────────────────────────────────────────────────────────────
  */
-import { BizProduct, BizPurchase, formatQty, roundQty } from './bizConfig';
+import { BizLineItem, BizProduct, BizPurchase, formatQty, roundQty } from './bizConfig';
 import { effectiveAvgCost, lineSnapshot, reverseAverageCost, usesAverageCost } from './bizAverageCost';
 
 /** Ce qu'une ligne d'achat va rendre au stock quand la facture est annulée. */
@@ -159,4 +159,152 @@ export function deleteBizPurchase(
 /** Total des quantités reprises — pour le message de succès. */
 export function totalRolledBack(deltas: PurchaseStockDelta[]): number {
   return roundQty(deltas.filter(d => !d.missing).reduce((s, d) => s + d.qty, 0));
+}
+
+// ─── Création / modification d'un bon d'achat ─────────────────────────────────
+/**
+ * Le chemin inverse de l'annulation ci-dessus : ce qu'une facture saisie ou
+ * modifiée doit faire au stock. Tout est ici, sans React, pour être vérifiable
+ * (`npx tsx src/lib/bizPurchase.test.ts`).
+ *
+ * Ce qui n'allait pas :
+ *   • MODIFIER une facture ne touchait jamais au stock. Corriger « 10 » en
+ *     « 12 », ajouter une pièce oubliée ou retirer une ligne laissait le stock
+ *     sur l'ancienne saisie — la facture et le stock ne racontaient plus la
+ *     même histoire ;
+ *   • une quantité vide, nulle ou illisible passait (`Number('')` vaut 0, et un
+ *     stock non numérique se CONCATÉNAIT : « 5 » + 3 = « 53 ») ;
+ *   • le numéro « A-000x » se calculait sur le NOMBRE de factures : après une
+ *     suppression, deux achats portaient le même numéro.
+ */
+
+/** Nombre sûr : une valeur illisible vaut 0 au lieu d'empoisonner le calcul. */
+const num = (v: unknown): number => {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/**
+ * Vérifie les lignes AVANT tout enregistrement. Rend le message à afficher, ou
+ * `null` quand la facture est saisissable.
+ */
+export function validatePurchaseLines(items: BizLineItem[]): string | null {
+  if (!items.length) return 'Ajoutez au moins un produit';
+  const seen = new Set<string>();
+  for (const it of items) {
+    const name = it.productName || 'un produit';
+    if (!it.productId) return `« ${name} » n'est relié à aucune fiche produit`;
+    if (seen.has(it.productId)) return `« ${name} » figure deux fois sur la facture`;
+    seen.add(it.productId);
+    const qty = Number(it.qty);
+    if (!Number.isFinite(qty) || qty <= 0) return `Quantité reçue invalide pour « ${name} » (elle doit être supérieure à 0)`;
+    const price = Number(it.unitPrice);
+    if (!Number.isFinite(price) || price < 0) return `Prix d'achat invalide pour « ${name} »`;
+  }
+  return null;
+}
+
+/** Quantité reçue par produit — plusieurs lignes d'un même produit se cumulent. */
+export function purchaseQtyByProduct(items: BizLineItem[] | null | undefined): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const it of items || []) {
+    if (!it?.productId) continue;
+    out.set(it.productId, roundQty((out.get(it.productId) || 0) + Math.max(0, num(it.qty))));
+  }
+  return out;
+}
+
+/**
+ * Ce que la saisie change au stock, produit par produit.
+ *   • création (`before` absent) : chaque produit reçoit sa quantité ;
+ *   • modification : seule la DIFFÉRENCE s'applique — une quantité corrigée,
+ *     une ligne ajoutée (+) ou retirée (−). Rien n'est compté deux fois.
+ * Seuls les produits dont le stock bouge réellement sont rendus.
+ */
+export function purchaseStockChanges(
+  before: BizLineItem[] | null | undefined,
+  after: BizLineItem[],
+): Map<string, number> {
+  const was = purchaseQtyByProduct(before);
+  const now = purchaseQtyByProduct(after);
+  const out = new Map<string, number>();
+  for (const id of new Set([...was.keys(), ...now.keys()])) {
+    const delta = roundQty((now.get(id) || 0) - (was.get(id) || 0));
+    if (delta !== 0) out.set(id, delta);
+  }
+  return out;
+}
+
+/**
+ * Prochain numéro de facture : un de plus que le PLUS GRAND déjà attribué —
+ * jamais le nombre de factures, qui redescend après une suppression.
+ */
+export function nextPurchaseRef(purchases: Pick<BizPurchase, 'ref'>[]): string {
+  let max = 0;
+  for (const p of purchases || []) {
+    const m = /^A-(\d+)$/.exec(String(p?.ref || '').trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  const next = Math.max(max, (purchases || []).length) + 1;
+  return `A-${String(next).padStart(4, '0')}`;
+}
+
+/**
+ * Des deux copies d'une fiche (celle de l'écran, celle relue en base), la plus
+ * récemment écrite — même règle que la fusion (`_upd`).
+ */
+export function newerProduct(local?: BizProduct, remote?: BizProduct): BizProduct | undefined {
+  if (!local) return remote;
+  if (!remote) return local;
+  const l = String((local as any)._upd || (local as any).updatedAt || '');
+  const r = String((remote as any)._upd || (remote as any).updatedAt || '');
+  return r > l ? remote : local;
+}
+
+/**
+ * La fiche produit après la réception (ou la correction) d'une ligne.
+ *
+ *   • `qtyDelta` s'ajoute au reste en stock ET au cumul reçu (`principalQty`,
+ *     qui ne descend jamais sous zéro) ;
+ *   • `line` reporte les réglages commerciaux saisis sur la facture (prix,
+ *     seuil, expiration, prix au détail) — absent quand la ligne a été retirée ;
+ *   • `avgCost` : CUMP calculé à la création d'un achat au coût moyen ;
+ *   • `keepCost` : facture au coût moyen MODIFIÉE — le coût de revient du
+ *     produit ne doit pas retomber sur le prix brut de la ligne.
+ */
+export function receivePurchaseLine(
+  prod: BizProduct,
+  opts: { qtyDelta: number; line?: BizLineItem; avgCost?: number; keepCost?: boolean },
+): BizProduct {
+  const delta = num(opts.qtyDelta);
+  const principal = num(prod.principalQty);
+  const current = num(prod.currentQty);
+  const next: BizProduct = {
+    ...prod,
+    principalQty: roundQty(Math.max(0, principal + delta)),
+    currentQty: roundQty(current + delta),
+  };
+  const it = opts.line;
+  if (!it) return next;
+
+  const unitPrice = num(it.unitPrice);
+  if (opts.avgCost !== undefined) {
+    next.purchasePrice = opts.avgCost;
+    next.averageCost = opts.avgCost;
+    next.lastPurchasePrice = unitPrice;
+  } else if (opts.keepCost) {
+    next.lastPurchasePrice = unitPrice;
+  } else {
+    next.purchasePrice = unitPrice;
+  }
+  if (it.minQty !== undefined && Number.isFinite(Number(it.minQty))) next.minQty = num(it.minQty);
+  if (it.salePrice !== undefined && Number.isFinite(Number(it.salePrice))) next.salePrice = num(it.salePrice);
+  if (it.hasExpiration !== undefined) next.hasExpiration = it.hasExpiration;
+  if (it.hasExpiration) next.expirationDate = it.expirationDate;
+  // Le prix au détail n'est écrit que si le produit est vendu au détail ;
+  // 0 ⇒ le point de vente retombe sur prix de vente ÷ contenance.
+  if (prod.sellByDetail) {
+    next.detailSalePrice = num(it.detailSalePrice) > 0 ? num(it.detailSalePrice) : undefined;
+  }
+  return next;
 }

@@ -39,7 +39,7 @@ import {
   loadBizProducts, saveBizProducts, deleteBizProducts, mergeRemoteProducts,
   productsMissingFromRemote, ProductRowInput,
 } from '../lib/bizProducts';
-import { mergeBizState, stampItem, nowIso, SyncModuleState } from '../lib/bizSync';
+import { mergeBizState, stampItem, nowIso, SyncModuleState, STAMP } from '../lib/bizSync';
 import { purgeSeedRows, relinkOrphanRefs } from '../lib/bizSeedPurge';
 
 const STORAGE_KEY = 'stationpro_biz_v1';
@@ -644,7 +644,9 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
    */
   const dispatchSync = useCallback((action: Action) => {
     if ((action.type === 'ADD' || action.type === 'UPDATE') && action.coll === 'products' && action.item?.id) {
-      const at = nowIso();
+      // L'appelant peut imposer l'horodatage : c'est à lui qu'il reconnaîtra,
+      // dans l'état rendu, SA version de la fiche (voir `confirmProduct`).
+      const at = action.at || nowIso();
       const item = stampItem(action.item, at) as BizProduct;
       queueProduct(action.module, item.id, item);
       dispatch({ ...action, item, at });
@@ -675,9 +677,14 @@ export function BizProvider({ children }: { children: React.ReactNode }) {
   const confirmProduct = useCallback(async (
     module: ModuleKey, product: BizProduct, mode: 'add' | 'update',
   ): Promise<SaveOutcome> => {
-    dispatchSync({ type: mode === 'add' ? 'ADD' : 'UPDATE', module, coll: 'products', item: product });
-    // La fiche doit être passée par le rendu avant qu'on annonce quoi que ce soit.
-    await waitFor(s => ((s[module].products || []) as BizProduct[]).some(p => p?.id === product.id));
+    const at = nowIso();
+    dispatchSync({ type: mode === 'add' ? 'ADD' : 'UPDATE', module, coll: 'products', item: product, at });
+    // La fiche doit être passée par le rendu avant qu'on annonce quoi que ce
+    // soit — et c'est CETTE version qu'on attend (son horodatage), pas la simple
+    // présence de l'id : en modification, l'ancienne version est déjà là, et
+    // l'envoi du blob serait parti sans la nouvelle.
+    await waitFor(s => ((s[module].products || []) as BizProduct[])
+      .some(p => p?.id === product.id && (p as any)?.[STAMP] === at));
 
     // Table absente (migration non passée) : le blob décide, comme avant.
     if (!productsSyncRef.current.relational) return flush();
@@ -944,10 +951,16 @@ export function useBiz(module: ModuleKey): BizApi {
       mode: 'add' | 'update', coll: BizCollection, item: any,
     ): Promise<SaveOutcome> => {
       if (coll === 'products' && item?.id) return confirmProduct(module, item, mode);
-      dispatch({ type: mode === 'add' ? 'ADD' : 'UPDATE', module, coll, item });
-      // L'enregistrement doit porter SUR la ligne qu'on vient d'écrire : on
-      // attend qu'elle soit dans l'état avant de l'envoyer.
-      await waitFor(s => (s[module][coll] as any[]).some(x => x?.id === item?.id));
+      // L'horodatage est fixé ICI : c'est lui qui permet de reconnaître, dans
+      // l'état rendu, la version qu'on vient d'écrire. Attendre la seule
+      // présence de l'id ne suffisait pas pour une MODIFICATION — l'ancienne
+      // version était déjà là, l'envoi partait sans la nouvelle et annonçait
+      // pourtant « enregistré ».
+      const at = nowIso();
+      dispatch({ type: mode === 'add' ? 'ADD' : 'UPDATE', module, coll, item, at });
+      const seen = await waitFor(s => (s[module][coll] as any[])
+        .some(x => x?.id === item?.id && x?.[STAMP] === at));
+      if (!seen) return { ok: false, error: "L'écriture n'a pas été prise en compte à temps" };
       return flush();
     };
 

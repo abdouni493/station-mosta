@@ -9,11 +9,15 @@ import {
   ModuleKey, MODULES, BizPurchase, BizLineItem, BizProduct, detailPrice, formatQty,
   productRefLabel, productCarLabel,
 } from '@/src/lib/bizConfig';
-import { deleteBizPurchase, describePurchaseRollback, purchaseStockDeltas, totalRolledBack } from '@/src/lib/bizPurchase';
+import {
+  deleteBizPurchase, describePurchaseRollback, purchaseStockDeltas, totalRolledBack,
+  validatePurchaseLines, purchaseStockChanges, nextPurchaseRef, newerProduct, receivePurchaseLine,
+} from '@/src/lib/bizPurchase';
+import { loadBizProductsByIds } from '@/src/lib/bizProducts';
 import {
   snapshotFor, stampLine, lineSnapshot, effectiveAvgCost, usesAverageCost, roundCost,
 } from '@/src/lib/bizAverageCost';
-import { useBiz } from '@/src/store/BizContext';
+import { useBiz, useBizProductsSync } from '@/src/store/BizContext';
 import { useBizPermission } from '@/src/store/AppContext';
 import { useAppState } from '@/src/store/AppContext';
 import {
@@ -338,6 +342,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
    */
   const productsRef = useRef(products);
   productsRef.current = products;
+  /** Catalogue écrit dans sa table ? Sinon (migration non passée) le blob seul fait foi. */
+  const productsSync = useBizProductsSync();
   const isEdit = !!initial;
   /** Pièces détachées : la partie Lavage & Vidange est la seule concernée. */
   const isLavage = moduleKey === 'lavage';
@@ -361,12 +367,36 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const [uploading, setUploading] = useState(false);
   /** La facture est en route vers le serveur : un second clic la doublerait. */
   const [saving, setSaving] = useState(false);
+  /**
+   * Même verrou, lu SANS attendre le rendu : deux clics rapprochés passaient
+   * tous les deux le test de l'état et créaient deux factures.
+   */
+  const savingRef = useRef(false);
+  /**
+   * Fermer la fenêtre pendant l'enregistrement est refusé : l'enregistrement
+   * continuerait sans écran, sur une copie du stock figée au moment de la
+   * fermeture — et la quantité reçue partirait d'un stock périmé.
+   */
+  const close = () => {
+    if (savingRef.current) { toast("Patientez : l'achat est en cours d'enregistrement", { icon: '⏳' }); return; }
+    onClose();
+  };
   const [showProductModal, setShowProductModal] = useState(false);
   const [showSupplierModal, setShowSupplierModal] = useState(false);
 
-  const total = useMemo(() => items.reduce((s, it) => s + it.qty * it.unitPrice, 0), [items]);
-  const paid = paidStr === '' ? total : Number(paidStr);
+  const total = useMemo(
+    () => items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitPrice) || 0), 0), [items]);
+  // Un montant payé illisible ou négatif ne doit pas fausser la caisse ; payé
+  // au-delà du total n'a pas de sens sur une facture fournisseur.
+  const paidRaw = paidStr.trim() === '' ? total : Number(paidStr);
+  const paid = Math.min(total, Math.max(0, Number.isFinite(paidRaw) ? paidRaw : 0));
   const rest = Math.max(0, total - paid);
+  /**
+   * Ce que l'enregistrement fera au stock de chaque produit : toute la quantité
+   * en création, la seule différence avec la facture d'origine en modification.
+   */
+  const stockDeltas = useMemo(
+    () => purchaseStockChanges(isEdit ? (initial?.items || []) : null, items), [isEdit, initial, items]);
   /** Expected margin of the whole basket, at the sale prices typed on the lines. */
   const expectedMargin = useMemo(
     () => items.reduce((s, it) => s + it.qty * ((it.salePrice ?? 0) - it.unitPrice), 0), [items]);
@@ -428,136 +458,193 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
   const rmItem = (id: string) => setItems(prev => prev.filter(it => it.productId !== id));
 
   /**
-   * Writes a line's commercial settings back onto the product it points to.
+   * Applique la facture au stock, produit par produit — et ATTEND le verdict
+   * de la base pour chacun.
    *
-   * `snap` n'est fourni qu'à la CRÉATION d'un achat au coût moyen : le produit
-   * prend alors le CUMP calculé comme coût de revient (c'est lui qui vaut le
-   * stock et qui donne la marge au point de vente), et le prix réellement payé
-   * au fournisseur est conservé à part dans `lastPurchasePrice`.
+   *   • Le stock part de la fiche la PLUS RÉCENTE : celle de l'écran, ou celle
+   *     relue à l'instant dans la table quand un autre poste (point de vente,
+   *     atelier) l'a modifiée depuis. Partir de la copie de l'écran faisait
+   *     écraser une vente faite ailleurs — ou perdre la quantité reçue.
+   *   • En création, chaque produit reçoit sa quantité ; en modification, seule
+   *     la DIFFÉRENCE s'applique (quantité corrigée, ligne ajoutée ou retirée).
    *
-   * Sans `snap`, la fonction se comporte exactement comme avant : le prix
-   * d'achat du produit devient le dernier prix payé.
+   * Rend la liste des produits dont l'écriture n'a pas été confirmée (ils
+   * restent dans la file et repartent seuls) et ceux qui n'existent plus.
    */
-  const applyToProduct = (
-    it: BizLineItem,
-    addStock: boolean,
-    snap?: { resultAvgCost: number },
-  ) => {
-    const prod = productsRef.current.find(p => p.id === it.productId);
-    if (!prod) return;
-    biz.update('products', {
-      ...prod,
-      principalQty: addStock ? prod.principalQty + it.qty : prod.principalQty,
-      currentQty: addStock ? prod.currentQty + it.qty : prod.currentQty,
-      minQty: it.minQty ?? prod.minQty,
-      purchasePrice: snap ? snap.resultAvgCost : it.unitPrice,
-      ...(snap ? { averageCost: snap.resultAvgCost, lastPurchasePrice: it.unitPrice } : {}),
-      salePrice: it.salePrice ?? prod.salePrice,
-      hasExpiration: it.hasExpiration ?? prod.hasExpiration,
-      expirationDate: it.hasExpiration ? it.expirationDate : prod.expirationDate,
-      // Le prix au détail n'est écrit que si le produit est vendu au détail ;
-      // 0 ⇒ le POS retombe sur prix de vente ÷ contenance.
-      detailSalePrice: prod.sellByDetail
-        ? (Number(it.detailSalePrice) > 0 ? Number(it.detailSalePrice) : undefined)
-        : prod.detailSalePrice,
-    });
+  const applyStock = async (
+    lines: BizLineItem[],
+    before: BizLineItem[] | null,
+    avgCostById: Map<string, number>,
+    keepCost: boolean,
+  ): Promise<{ unconfirmed: string[]; missing: string[] }> => {
+    const deltas = purchaseStockChanges(before, lines);
+    const lineById = new Map(lines.map(it => [it.productId, it]));
+    const ids = [...new Set([...lineById.keys(), ...deltas.keys()])];
+
+    const fresh = productsSync.relational ? await loadBizProductsByIds(ids) : null;
+    const names = new Map([...(before || []), ...lines].map(it => [it.productId, it.productName]));
+    const missing: string[] = [];
+    const writes: Promise<{ ok: boolean; name: string }>[] = [];
+
+    for (const id of ids) {
+      const local = productsRef.current.find(p => p.id === id);
+      const base = local ? newerProduct(local, fresh?.get(id)) : undefined;
+      if (!base) { missing.push(names.get(id) || id); continue; }
+      const next = receivePurchaseLine(base, {
+        qtyDelta: deltas.get(id) || 0,
+        line: lineById.get(id),
+        avgCost: avgCostById.get(id),
+        keepCost,
+      });
+      writes.push(
+        biz.updateAndConfirm('products', next)
+          .then(r => ({ ok: r.ok, name: next.name }))
+          .catch(() => ({ ok: false, name: next.name })),
+      );
+    }
+    const results = await Promise.all(writes);
+    return { unconfirmed: results.filter(r => !r.ok).map(r => r.name), missing };
   };
 
   /**
    * LA FACTURE D'ABORD, LE STOCK ENSUITE.
    *
    * Le stock part dans sa propre table (`biz_products`, ~1 Ko, une demi-seconde)
-   * alors que la facture part dans le blob partagé (plusieurs Mo, envoi différé
-   * de 2,5 s). L'ancienne version écrivait les deux sans rien attendre et
-   * refermait la fenêtre : quand l'envoi du blob n'aboutissait pas (réseau,
-   * page fermée ou rechargée entre-temps), le stock était augmenté mais la
-   * facture n'existait nulle part — ni dans la liste des achats, ni dans
-   * l'historique du produit, ni dans la caisse (incident du 2026-10-07 :
-   * « TD 15/40 VRAC » +200 L sans aucun achat).
+   * alors que la facture part dans le blob partagé (plusieurs Mo). L'ancienne
+   * version écrivait les deux sans rien attendre et refermait la fenêtre : quand
+   * l'envoi du blob n'aboutissait pas, le stock était augmenté mais la facture
+   * n'existait nulle part (incident du 2026-10-07 : « TD 15/40 VRAC » +200 L
+   * sans aucun achat).
    *
-   * Désormais la facture est confirmée par le serveur AVANT que le moindre
-   * produit bouge ; en cas d'échec la fenêtre reste ouverte, rien n'est
-   * appliqué, et il suffit de réessayer.
+   * La facture est donc confirmée par le serveur AVANT que le moindre produit
+   * bouge (avec une seconde tentative automatique) ; en cas d'échec la fenêtre
+   * reste ouverte, rien n'est appliqué, et il suffit de réessayer. Le stock est
+   * ensuite écrit à partir de la fiche la plus fraîche, et son verdict attendu.
    */
   const save = async () => {
-    if (saving) return;
+    if (savingRef.current) return;
     if (uploading) { toast.error("Patientez : la facture est en cours d'envoi"); return; }
-    if (items.length === 0) { toast.error('Ajoutez au moins un produit'); return; }
+    const invalid = validatePurchaseLines(items);
+    if (invalid) { toast.error(invalid); return; }
     if (!supplierId) { toast.error('Sélectionnez un fournisseur'); return; }
     const supplier = suppliers.find(s => s.id === supplierId);
-
-    // Coût moyen : chaque produit est calculé POUR LUI-MÊME (jamais une moyenne
-    // de la facture entière) et la photo du calcul est figée sur la ligne, pour
-    // que la facture reste lisible telle quelle dans dix achats.
-    const applyAvg = useAvg && !isEdit;
-    const savedItems = applyAvg
-      ? items.map(it => {
-        const prod = products.find(p => p.id === it.productId);
-        if (!prod) return it;
-        return stampLine(it, snapshotFor(prod, it.qty, it.unitPrice));
-      })
-      : items;
-
-    const purchase: BizPurchase = {
-      id: initial?.id || newId(),
-      ref: initial?.ref || `A-${String(biz.state.purchases.length + 1).padStart(4, '0')}`,
-      supplierId, supplierName: supplier?.name || '—',
-      items: savedItems, total, paid, rest, date: new Date(date).toISOString(),
-      createdAt: initial?.createdAt || new Date().toISOString(), createdBy: 'Admin',
-      ...(invoiceImage ? { invoiceImage } : {}),
-      // Une facture existante garde son mode d'origine : rebasculer l'option
-      // après coup ne doit pas réécrire une histoire qui a déjà servi.
-      ...(isEdit ? (initial?.useAverageCost ? { useAverageCost: true } : {}) : (useAvg ? { useAverageCost: true } : {})),
-    };
-
-    setSaving(true);
-    let outcome: { ok: boolean; error?: string };
-    try {
-      outcome = isEdit
-        ? await biz.updateAndConfirm('purchases', purchase)
-        : await biz.addAndConfirm('purchases', purchase);
-    } catch (e: any) {
-      outcome = { ok: false, error: e?.message || String(e) };
-    }
-    if (!outcome.ok) {
-      setSaving(false);
-      // Une création non confirmée est RETIRÉE : sans cela l'envoi différé la
-      // ferait arriver plus tard, seule, sans son stock — l'erreur inverse. La
-      // pierre tombale l'efface aussi si le serveur l'avait reçue malgré tout.
-      if (!isEdit) biz.remove('purchases', purchase.id);
-      // Le stock n'a PAS été touché : on le dit, plutôt que d'annoncer un succès.
-      toast.error(`Achat non confirmé par le serveur — stock inchangé. ${outcome.error || ''} Réessayez.`);
+    const missingNow = items.filter(it => !productsRef.current.some(p => p.id === it.productId));
+    if (missingNow.length) {
+      toast.error(`Produit introuvable au catalogue : ${missingNow.map(it => it.productName).join(', ')} — retirez la ligne.`);
       return;
     }
 
-    if (isEdit) {
-      // Le stock n'est ajouté qu'à la création — une modification ne réapplique
-      // que les prix et le seuil, sinon la quantité serait comptée deux fois.
-      // Le coût moyen n'est pas recalculé non plus, pour la même raison : la
-      // photo figée sur la facture reste la vérité de cette réception.
-      items.forEach(it => applyToProduct(it, false, undefined));
-    } else {
-      savedItems.forEach(it => {
-        const snap = applyAvg ? lineSnapshot(it) : null;
-        applyToProduct(it, true, snap ? { resultAvgCost: snap.resultAvgCost } : undefined);
-      });
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      // Lignes propres : quantités et prix en NOMBRES (un champ effacé valait
+      // une chaîne vide, qui se concaténait au stock au lieu de s'y ajouter).
+      const cleanItems: BizLineItem[] = items.map(it => ({
+        ...it,
+        qty: Number(it.qty),
+        unitPrice: Number(it.unitPrice),
+        ...(it.salePrice !== undefined ? { salePrice: Number(it.salePrice) || 0 } : {}),
+        ...(it.minQty !== undefined ? { minQty: Number(it.minQty) || 0 } : {}),
+      }));
+
+      // Coût moyen : chaque produit est calculé POUR LUI-MÊME (jamais une
+      // moyenne de la facture entière), sur le stock le plus frais connu, et la
+      // photo du calcul est figée sur la ligne.
+      const applyAvg = useAvg && !isEdit;
+      let savedItems = cleanItems;
+      if (applyAvg) {
+        const fresh = productsSync.relational
+          ? await loadBizProductsByIds(cleanItems.map(it => it.productId)) : null;
+        savedItems = cleanItems.map(it => {
+          const prod = newerProduct(productsRef.current.find(p => p.id === it.productId), fresh?.get(it.productId));
+          return prod ? stampLine(it, snapshotFor(prod, it.qty, it.unitPrice)) : it;
+        });
+      }
+
+      const purchase: BizPurchase = {
+        id: initial?.id || newId(),
+        ref: initial?.ref || nextPurchaseRef(biz.state.purchases),
+        supplierId, supplierName: supplier?.name || '—',
+        items: savedItems, total, paid, rest, date: new Date(date).toISOString(),
+        createdAt: initial?.createdAt || new Date().toISOString(), createdBy: initial?.createdBy || 'Admin',
+        ...(invoiceImage ? { invoiceImage } : {}),
+        // Une facture existante garde son mode d'origine : rebasculer l'option
+        // après coup ne doit pas réécrire une histoire qui a déjà servi.
+        ...(isEdit ? (initial?.useAverageCost ? { useAverageCost: true } : {}) : (useAvg ? { useAverageCost: true } : {})),
+      };
+
+      const confirm = async () => {
+        try {
+          return isEdit
+            ? await biz.updateAndConfirm('purchases', purchase)
+            : await biz.addAndConfirm('purchases', purchase);
+        } catch (e: any) {
+          return { ok: false, error: e?.message || String(e) };
+        }
+      };
+      let outcome = await confirm();
+      // Un conflit avec un autre poste ou un réseau capricieux se règle
+      // souvent au second essai : on le tente avant de déranger l'utilisateur.
+      if (!outcome.ok) outcome = await confirm();
+
+      if (!outcome.ok) {
+        if (isEdit) {
+          // La modification reste dans la file et repartira seule ; le stock,
+          // lui, n'a pas bougé — l'utilisateur peut réessayer.
+          biz.update('purchases', initial);
+        } else {
+          // Une création non confirmée est RETIRÉE : sans cela l'envoi différé
+          // la ferait arriver plus tard, seule, sans son stock. La pierre
+          // tombale l'efface aussi si le serveur l'avait reçue malgré tout.
+          biz.remove('purchases', purchase.id);
+        }
+        toast.error(`Achat non confirmé par le serveur — stock inchangé. ${outcome.error || ''} Réessayez.`, { duration: 8000 });
+        return;
+      }
+
+      const avgCostById = new Map<string, number>();
+      if (applyAvg) {
+        for (const it of savedItems) {
+          const snap = lineSnapshot(it);
+          if (snap) avgCostById.set(it.productId, snap.resultAvgCost);
+        }
+      }
+      const { unconfirmed, missing } = await applyStock(
+        savedItems,
+        isEdit ? (initial?.items || []) : null,
+        avgCostById,
+        // Une facture au coût moyen modifiée ne réécrit pas le coût de revient
+        // avec le prix brut : la photo figée à la réception reste la vérité.
+        isEdit && usesAverageCost(initial!),
+      );
+
+      // Le choix devient le réglage par défaut de la partie pour les prochains achats.
+      if (!isEdit && useAvg !== !!biz.state.avgCostEnabled) biz.patch({ avgCostEnabled: useAvg });
+
+      if (missing.length) {
+        toast.error(`Produit(s) introuvable(s), stock non modifié : ${missing.join(', ')}`, { duration: 8000 });
+      }
+      if (unconfirmed.length) {
+        toast(`Achat enregistré. Stock de ${unconfirmed.join(', ')} en attente de confirmation — il sera renvoyé automatiquement.`,
+          { icon: '⚠️', duration: 8000 });
+      } else {
+        toast.success(isEdit
+          ? 'Achat modifié — stock et prix mis à jour'
+          : applyAvg
+            ? 'Achat créé — stock, prix et coût moyen pondéré mis à jour'
+            : 'Achat créé, stock et prix mis à jour');
+      }
+      savingRef.current = false;
+      onClose();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
-
-    // Le choix devient le réglage par défaut de la partie pour les prochains achats.
-    if (!isEdit && useAvg !== !!biz.state.avgCostEnabled) biz.patch({ avgCostEnabled: useAvg });
-
-    toast.success(isEdit
-      ? 'Achat modifié — prix mis à jour'
-      : applyAvg
-        ? 'Achat créé — stock, prix et coût moyen pondéré mis à jour'
-        : 'Achat créé, stock et prix mis à jour');
-    setSaving(false);
-    onClose();
   };
 
   return (
     <>
-      <Modal open onClose={onClose} icon={ShoppingCart} size="3xl" formScale fullHeight
+      <Modal open onClose={close} icon={ShoppingCart} size="3xl" formScale fullHeight
         title={isEdit ? 'Modifier l\'achat' : 'Nouvel achat'}
         subtitle="Produits reçus, prix de vente, fournisseur et paiement"
         footer={<>
@@ -566,7 +653,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
             <span className="text-[#002d87]">Total {money(total)}</span>
             {rest > 0 && <span className="text-red-600">Dette {money(rest)}</span>}
           </div>
-          <button className="btn-ghost" onClick={onClose}>Annuler</button>
+          <button className="btn-ghost" onClick={close} disabled={saving}>Annuler</button>
           <button className="btn-primary" onClick={save} disabled={uploading || saving}>{saving ? 'Enregistrement…' : isEdit ? 'Enregistrer' : 'Créer l\'achat'}</button>
         </>}>
         <div className="space-y-4 sm:space-y-5">
@@ -711,7 +798,7 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
               <div className="space-y-3">
                 {items.map((it, idx) => {
                   const prod = products.find(p => p.id === it.productId);
-                  const lineTotal = it.qty * it.unitPrice;
+                  const lineTotal = (Number(it.qty) || 0) * (Number(it.unitPrice) || 0);
                   const unitMargin = (it.salePrice ?? 0) - it.unitPrice;
                   const marginPct = it.unitPrice > 0 ? (unitMargin / it.unitPrice) * 100 : 0;
                   const detailUnit = it.detailUnit || prod?.detailUnit || 'L';
@@ -739,8 +826,8 @@ function PurchaseForm({ moduleKey, initial, onClose }: { moduleKey: ModuleKey; i
                             )}
                           </p>
                           <p className="text-[11px] text-slate-400 truncate">
-                            Stock actuel {prod?.currentQty ?? 0} {prod?.unit || 'unité'}
-                            {prod ? ` → ${(prod.currentQty + (Number(it.qty) || 0)).toLocaleString('fr-FR')} après réception` : ''}
+                            Stock actuel {formatQty(Number(prod?.currentQty) || 0)} {prod?.unit || 'unité'}
+                            {prod ? ` → ${formatQty((Number(prod.currentQty) || 0) + (stockDeltas.get(it.productId) || 0))} ${isEdit ? 'après correction' : 'après réception'}` : ''}
                           </p>
                         </div>
                         <div className="text-right shrink-0 hidden sm:block">

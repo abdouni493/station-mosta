@@ -22,7 +22,7 @@ import {
   productRefLabel, productCarLabel, productSearchFields,
 } from '@/src/lib/bizConfig';
 import { saveDraft, resolveDraft, failDraft, ProductDraft } from '@/src/lib/productDrafts';
-import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate } from '@/src/components/biz/Kit';
+import { Modal, ModalPortal, Field, Input, Textarea, Select, Switch, InlineCreate, StaticField } from '@/src/components/biz/Kit';
 import BarcodeScannerModal from '@/src/components/BarcodeScannerModal';
 import { uploadFile } from '@/src/lib/supabase';
 import {
@@ -495,6 +495,8 @@ export function ProductModal({
    * numéro d'origine ni voiture compatible.
    */
   const showAutoParts = biz.module === 'lavage';
+  /** Nouvelle fiche ouverte depuis un achat : c'est la facture qui portera le stock. */
+  const stockFromPurchase = origin === 'purchase' && !isEdit;
 
   React.useEffect(() => { setForm(initial || emptyProduct()); setHideSuggestions(false); }, [initial, open]);
 
@@ -548,7 +550,10 @@ export function ProductModal({
    */
   const save = async () => {
     if (!form.name?.trim() || saving) return;
-    const product = buildProduct(form, { marques: biz.state.marques, categories: biz.state.categories });
+    let product = buildProduct(form, { marques: biz.state.marques, categories: biz.state.categories });
+    // Créé depuis un ACHAT : son stock viendra de la facture. Une quantité
+    // saisie ici s'ajoutait à celle de la ligne d'achat — comptée deux fois.
+    if (stockFromPurchase) product = { ...product, principalQty: 0, currentQty: 0 };
     setSaving(true);
     try {
       if (isEdit) {
@@ -812,9 +817,15 @@ export function ProductModal({
           )}
         </Field>
 
-        <Field label="Quantité principale">
-          <Input type="number" value={form.principalQty ?? 0} onChange={e => set('principalQty', e.target.value)} />
-        </Field>
+        {stockFromPurchase ? (
+          <Field label="Quantité principale">
+            <StaticField>0 — la quantité reçue se saisit sur la ligne de l'achat</StaticField>
+          </Field>
+        ) : (
+          <Field label="Quantité principale">
+            <Input type="number" value={form.principalQty ?? 0} onChange={e => set('principalQty', e.target.value)} />
+          </Field>
+        )}
         {isEdit && (
           <Field label="Quantité restante">
             <Input type="number" value={form.currentQty ?? 0} onChange={e => set('currentQty', e.target.value)} />
