@@ -1295,7 +1295,13 @@ type AppAction =
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'HYDRATE'; payload: Partial<AppState> }
   | { type: 'ADD_TANK'; payload: Tank }
-  | { type: 'UPDATE_TANK'; payload: Tank }
+  /**
+   * `keepLevel` : la modification ne porte PAS sur le niveau (nom, seuil,
+   * favori…). Le niveau en mémoire peut être en retard sur la base — une
+   * brigade ou un achat vient peut-être de le bouger — et le réécrire en valeur
+   * absolue effaçait ce mouvement : la brigade « ne retirait rien des cuves ».
+   */
+  | { type: 'UPDATE_TANK'; payload: Tank; keepLevel?: boolean }
   | { type: 'ADJUST_TANK_LEVELS'; payload: { tankId: string; deltaLiters: number }[] }
   | { type: 'DELETE_TANK'; payload: string }
   | { type: 'ADD_PUMP'; payload: Pump }
@@ -1439,7 +1445,11 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
 
     case 'ADD_TANK':    return { ...state, tanks: [...state.tanks, action.payload] };
-    case 'UPDATE_TANK': return { ...state, tanks: state.tanks.map(t => t.id === action.payload.id ? action.payload : t) };
+    case 'UPDATE_TANK': return {
+      ...state,
+      tanks: state.tanks.map(t => t.id !== action.payload.id ? t
+        : action.keepLevel ? { ...action.payload, current: t.current, degrees: t.degrees } : action.payload),
+    };
     // Delta-based tank adjustment (livraisons). Applied against the LIVE state
     // (never a component snapshot) so successive rollback/apply pairs compose
     // correctly. `degrees` is re-derived so gauge-based displays follow.
@@ -2289,6 +2299,52 @@ async function cleanBrigadeDependencies(brigadeId: string): Promise<void> {
   if (expErr) console.warn('[brigade] dépenses de brigade non supprimées :', expErr.message);
 }
 
+// ─── Mouvements de cuve rejouables ─────────────────────────────────────────────
+/** Identifiants des mouvements d'une action, stables d'un essai à l'autre. */
+const tankOpIds = new WeakMap<object, string[]>();
+function tankOpIdsFor(action: { payload: unknown[] }): string[] {
+  let ids = tankOpIds.get(action);
+  if (!ids) { ids = action.payload.map(() => newId()); tankOpIds.set(action, ids); }
+  return ids;
+}
+/** La base n'a pas encore la RPC idempotente : on n'insiste pas à chaque appel. */
+let tankOnceRpcMissing = false;
+function isMissingRpc(error: { code?: string; message?: string }): boolean {
+  return error.code === 'PGRST202' || error.code === '42883'
+    || /could not find the function|function .* does not exist/i.test(error.message || '');
+}
+
+// ─── File d'écriture ──────────────────────────────────────────────────────────
+/**
+ * Les écritures partent UNE PAR UNE, dans l'ordre où l'écran les a produites.
+ *
+ * Enregistrer une brigade déclenche des dizaines d'écritures (la brigade, sa
+ * comptabilité, ses justifications, les lignes de trésorerie, les pistolets,
+ * les cuves…). Elles partaient toutes en même temps : sur le lien d'une
+ * station, elles se marchaient dessus, chacune attendait son tour en
+ * consommant son budget, et trois d'entre elles finissaient en « TimeoutError »
+ * — la brigade, la suppression et l'insertion des lignes de trésorerie. L'écran
+ * annulait alors ces changements, et la cuve ne voyait jamais ses litres
+ * retirés. En file, chaque requête a tout son budget, la base ne voit plus
+ * d'écritures concurrentes sur les mêmes lignes, et l'ordre parent → enfant
+ * (brigade avant comptabilité, suppression avant réinsertion) est garanti.
+ */
+let writeChain: Promise<unknown> = Promise.resolve();
+let pendingWrites = 0;
+export function pendingWriteCount(): number { return pendingWrites; }
+function enqueueWrite<T>(job: () => Promise<T>): Promise<T> {
+  pendingWrites++;
+  const run = writeChain.then(job, job);
+  writeChain = run.catch(() => undefined).finally(() => { pendingWrites--; });
+  return run;
+}
+if (typeof window !== 'undefined') {
+  // Fermer l'onglet pendant que la file se vide perdrait les écritures restantes.
+  window.addEventListener('beforeunload', (e) => {
+    if (pendingWrites > 0) { e.preventDefault(); e.returnValue = ''; }
+  });
+}
+
 // ─── Supabase sync function (standalone, not a hook) ─────────────────────────
 // This is extracted here so AppProvider can wrap dispatch with it.
 // NOTE: errors are intentionally NOT caught here — they propagate to
@@ -2298,19 +2354,39 @@ async function syncToSupabase(action: AppAction): Promise<void> {
       case 'ADD_TANK':
         await db.addTank({ id: action.payload.id, name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes, is_favorite: !!action.payload.isFavorite });
         break;
-      case 'UPDATE_TANK':
-        await db.updateTank(action.payload.id, { name: action.payload.name, type: action.payload.type, capacity: action.payload.capacity, current: action.payload.current, degrees: action.payload.degrees, alert_threshold: action.payload.alertThreshold, notes: action.payload.notes, is_favorite: !!action.payload.isFavorite });
+      case 'UPDATE_TANK': {
+        const t = action.payload;
+        await db.updateTank(t.id, {
+          name: t.name, type: t.type, capacity: t.capacity,
+          ...(action.keepLevel ? {} : { current: t.current, degrees: t.degrees }),
+          alert_threshold: t.alertThreshold, notes: t.notes, is_favorite: !!t.isFavorite,
+        });
         break;
-      case 'ADJUST_TANK_LEVELS':
+      }
+      case 'ADJUST_TANK_LEVELS': {
         // Atomic server-side delta (SET current = current + delta) so concurrent
-        // sessions can't clobber each other. Requires the adjust_tank_level RPC
-        // (supabase/migrations/tank_level_delta_rpc.sql).
-        for (const d of action.payload) {
+        // sessions can't clobber each other.
+        //
+        // Chaque mouvement porte un identifiant fixé UNE fois pour l'action :
+        // `adjust_tank_level_once` ignore un identifiant déjà appliqué, ce qui
+        // permet de rejouer l'appel après une coupure sans retirer deux fois les
+        // litres (migration 2026-11-19_tank_level_ops_idempotent.sql). Tant que
+        // la migration n'est pas passée, on retombe sur `adjust_tank_level`.
+        const opIds = tankOpIdsFor(action);
+        for (let i = 0; i < action.payload.length; i++) {
+          const d = action.payload[i];
           if (!d.tankId || !d.deltaLiters) continue;
+          if (!tankOnceRpcMissing) {
+            const { error } = await supabase.rpc('adjust_tank_level_once', { p_op_id: opIds[i], p_tank_id: d.tankId, p_delta: d.deltaLiters });
+            if (!error) continue;
+            if (!isMissingRpc(error)) throw new Error(`RPC adjust_tank_level_once: ${error.message}`);
+            tankOnceRpcMissing = true;
+          }
           const { error } = await supabase.rpc('adjust_tank_level', { p_tank_id: d.tankId, p_delta: d.deltaLiters });
           if (error) throw new Error(`RPC adjust_tank_level: ${error.message}`);
         }
         break;
+      }
       case 'DELETE_TANK': await db.deleteTank(action.payload); break;
       case 'ADD_PERMISSION_TEMPLATE':
         await db.addPermissionTemplate({ id: action.payload.id, name: action.payload.name, role: action.payload.role, permissions: action.payload.permissions });
@@ -3780,7 +3856,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
   const syncedDispatch = useCallback((action: AppAction): void => {
     dispatch(action); // optimistic update first — UI stays snappy
 
-    syncToSupabase(action).then(async () => {
+    enqueueWrite(() => syncToSupabase(action)).then(async () => {
       // Le niveau des cuves est le seul chiffre que le SERVEUR calcule et non le
       // client : `adjust_tank_level` fait `current = current + delta` sur la
       // ligne verrouillée. L'optimisme local part, lui, de l'état du navigateur —

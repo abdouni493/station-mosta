@@ -672,7 +672,7 @@ const Tanks = () => {
     [tanks, purchases, deliveryNotes, brigades, pumpNozzles, pumps]);
 
   const toggleFavorite = (tank: Tank) => {
-    dispatch({ type: "UPDATE_TANK", payload: { ...tank, isFavorite: !tank.isFavorite } });
+    dispatch({ type: "UPDATE_TANK", payload: { ...tank, isFavorite: !tank.isFavorite }, keepLevel: true });
     dispatch({
       type: "ADD_TOAST",
       payload: {
@@ -701,7 +701,12 @@ const Tanks = () => {
 
     // ── Persist ─────────────────────────────────────────────────────────────
     if (editTank) {
-      dispatch({ type: "UPDATE_TANK", payload: { ...editTank, ...form } });
+      // Le niveau n'est réécrit que si l'utilisateur l'a VRAIMENT changé : sinon
+      // la valeur de la fiche, ouverte avant la dernière brigade, effaçait les
+      // litres que celle-ci venait de retirer.
+      const levelChanged = Math.abs(Number(form.current) - Number(editTank.current || 0)) > 0.01
+        || Math.abs(Number(form.degrees) - Number(editTank.degrees || 0)) > 0.01;
+      dispatch({ type: "UPDATE_TANK", payload: { ...editTank, ...form }, keepLevel: !levelChanged });
     } else {
       // newId() produces a valid UUID, required by the Postgres UUID column.
       dispatch({ type: "ADD_TANK", payload: { id: newId(), ...form } });

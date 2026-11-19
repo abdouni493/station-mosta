@@ -1,3 +1,24 @@
+# Mise à jour du 19/11/2026 — erreurs de sauvegarde des brigades et cuves
+
+**Corrigé dans le code (rien à faire) :**
+
+- Plus de « Erreur de sauvegarde (UPDATE_BRIGADE / DELETE_TREASURY_TX /
+  ADD_TREASURY_TX) : TimeoutError — le serveur n'a pas répondu en 8 s ». Les
+  écritures d'une brigade partent désormais une par une, dans l'ordre, au lieu de
+  toutes en même temps ; une écriture dispose de 25 s au lieu de 8 ; une
+  écriture coupée en route est rejouée automatiquement quand cela ne peut rien
+  doubler.
+- Le navigateur prévient si l'on ferme l'onglet avant la fin des enregistrements.
+- Les cuves : modifier le nom d'une cuve ou l'épingler en favori ne réécrit plus
+  son niveau (cela effaçait les litres qu'une brigade venait de retirer).
+
+**Recommandé (2 minutes) :** dans Supabase → SQL Editor, exécutez
+[`supabase/migrations/2026-11-19_tank_level_ops_idempotent.sql`](supabase/migrations/2026-11-19_tank_level_ops_idempotent.sql).
+Il permet de rejouer sans risque le retrait des litres d'une brigade après une
+coupure réseau. Le script peut être relancé sans risque. L'application fonctionne aussi sans lui.
+
+---
+
 # Ce qu'il vous reste à faire — guide pas à pas
 
 Cette mise à jour apporte six choses. **Cinq fonctionnent dès que le code est

@@ -95,6 +95,17 @@ export function readPersistedSession(): PersistedSession | null {
  * saturée ne fait qu'ajouter des connexions à une file qui n'avance plus.
  */
 const REQUEST_TIMEOUT_MS = 8_000;
+/**
+ * Budget d'une ÉCRITURE (POST / PATCH / DELETE).
+ *
+ * Huit secondes conviennent à une lecture, pas à une écriture : une brigade part
+ * avec ses index de pistolets, ses niveaux de cuves et sa comptabilité en JSON,
+ * et l'enregistrement s'accompagne de dizaines d'autres écritures. Sur le lien
+ * d'une station, l'écran affichait « Erreur de sauvegarde (UPDATE_BRIGADE) :
+ * TimeoutError — le serveur n'a pas répondu en 8 s » alors que la base allait
+ * très bien : la requête attendait simplement son tour.
+ */
+const WRITE_TIMEOUT_MS = 25_000;
 const MAX_RETRIES = 1;
 /**
  * Un envoi de fichier n'est pas une requête : une photo de bon de livraison sur
@@ -165,13 +176,19 @@ async function fetchWithRetry(
   maxRetries: number = MAX_RETRIES,
 ): Promise<Response> {
   const method = (init?.method ?? 'GET').toUpperCase();
-  // Only replay requests that cannot have taken effect server-side.
-  const replayable = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
   const callerSignal = init?.signal ?? undefined;
   const url = urlOf(input);
+  const isRead = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+  // Rejouer une requête n'est sûr que si la rejouer ne change rien de plus :
+  // lectures, PATCH / DELETE de PostgREST (on réécrit les mêmes valeurs, on
+  // supprime la même ligne), upserts, et les insertions — dont un doublon au
+  // second essai prouve que le premier a abouti (voir plus bas). Un appel RPC
+  // n'est rejoué que s'il est idempotent par construction.
+  const kind = writeKind(method, url, init);
+  const replayable = isRead || kind !== 'unsafe';
   const budget = isStorageRequest(url) ? UPLOAD_TIMEOUT_MS
     : isBulkStateRequest(url) ? BULK_STATE_TIMEOUT_MS
-      : REQUEST_TIMEOUT_MS;
+      : isRead ? REQUEST_TIMEOUT_MS : WRITE_TIMEOUT_MS;
 
   let lastError: unknown;
 
@@ -190,6 +207,16 @@ async function fetchWithRetry(
 
     try {
       const res = await fetch(input, { ...init, signal: controller.signal });
+
+      // Une insertion rejouée après une coupure, qui bute sur sa propre clé :
+      // c'est la PREMIÈRE tentative qui a été enregistrée, la réponse s'était
+      // seulement perdue en route. L'écriture a donc réussi.
+      if (attempt > 0 && kind === 'insert' && res.status === 409) {
+        const body = await res.clone().text().catch(() => '');
+        if (/23505|duplicate key/i.test(body)) {
+          return new Response(null, { status: 201, statusText: 'Created' });
+        }
+      }
 
       // 429: rejected by the rate limiter before any processing → always safe to retry.
       // 5xx: may have been applied → replay only idempotent methods.
@@ -212,6 +239,39 @@ async function fetchWithRetry(
   }
 
   throw lastError;
+}
+
+/** RPC dont un second appel avec les mêmes arguments ne change rien. */
+const IDEMPOTENT_RPCS = ['adjust_tank_level_once'];
+
+function headerOf(init: RequestInit | undefined, name: string): string {
+  const h = init?.headers;
+  if (!h) return '';
+  if (h instanceof Headers) return h.get(name) || '';
+  if (Array.isArray(h)) return h.find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1] || '';
+  const rec = h as Record<string, string>;
+  const key = Object.keys(rec).find(k => k.toLowerCase() === name.toLowerCase());
+  return key ? rec[key] : '';
+}
+
+/**
+ * Comment une écriture peut être rejouée sans risque.
+ *   • `idempotent` — PATCH, DELETE, upsert, RPC idempotente ;
+ *   • `insert`     — POST simple : rejouable, un doublon au second essai vaut succès ;
+ *   • `unsafe`     — tout le reste (RPC à effet cumulatif, Auth, Storage…).
+ */
+export function writeKind(method: string, url: string, init?: RequestInit): 'idempotent' | 'insert' | 'unsafe' {
+  if (!url.includes('/rest/v1/')) return 'unsafe';
+  if (url.includes('/rest/v1/rpc/')) {
+    return IDEMPOTENT_RPCS.some(fn => url.includes(`/rest/v1/rpc/${fn}`)) ? 'idempotent' : 'unsafe';
+  }
+  if (method === 'PATCH' || method === 'DELETE') return 'idempotent';
+  if (method === 'POST') {
+    if (/resolution=(merge|ignore)-duplicates/.test(headerOf(init, 'Prefer'))) return 'idempotent';
+    // Les écritures de la grosse ligne partagée passent par leur propre RPC.
+    return 'insert';
+  }
+  return 'unsafe';
 }
 
 /** In-flight refresh, shared by every caller so a burst becomes one request. */
