@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { 
   Users, 
@@ -39,7 +39,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, newId, matchesSearch } from "@/src/lib/utils";
-import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID } from "../store/AppContext";
+import { useAppState, useAppDispatch, useModulePermission, Brigade, Pump, Tank, Pompiste, Client, BrigadeDecalageAlert, BrigadeAccounting, BrigadeAccountingJustification, nozzleTankId, pumpTankIds, pumpsInCreationOrder, nozzlesInCreationOrder, CAISSE_ID, fetchBrigadeAccounting } from "../store/AppContext";
 import { useNavigate } from "react-router-dom";
 import { brigadeTankConsumption, brigadeTankDeltas, brigadeLiters } from "../lib/brigadeTanks";
 import { ownsNozzleIndex, nozzleStartIndex } from "../lib/nozzleIndexes";
@@ -120,6 +120,9 @@ const Brigades = () => {
   const { brigades, pumps, tanks, pompistes, brigadeChefs, settings, currentUserRole, currentUserId, currentUserName, workers, gerants, magasinWorkers, tracks, pumpNozzles = [], brigadeAccountings = [], shopSales = [], clients = [], bankAccounts = [], treasuryTransactions = [], expenses = [] } = appState;
   const perm = useModulePermission('Brigades');
   const dispatch = useAppDispatch();
+  // Les comptabilités à jour, pour une relecture qui se termine plus tard.
+  const brigadeAccountingsRef = useRef(brigadeAccountings);
+  brigadeAccountingsRef.current = brigadeAccountings;
 
   const [showModal, setShowModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -993,7 +996,17 @@ const Brigades = () => {
       if (x?.pompisteId) pumpMap[x.pompisteId] = x.pumpIds || [];
     });
     setPompistePumps(pumpMap);
-    setVersements({});
+    // Les versements espèce horodatés reviennent tels qu'enregistrés : les
+    // effacer ici faisait disparaître le détail saisi sur une brigade « En
+    // attente » dès qu'on la rouvrait pour la compléter.
+    const versMap: Record<string, Array<{ id: string; amount: number; at: string; notes?: string }>> = {};
+    (b.versements || []).forEach(v => {
+      if (!v?.pompisteId) return;
+      (versMap[v.pompisteId] = versMap[v.pompisteId] || []).push({
+        id: v.id || newId(), amount: +v.amount || 0, at: v.at, notes: v.notes,
+      });
+    });
+    setVersements(versMap);
 
     // datetimes (string-split to avoid timezone drift)
     const splitDT = (iso?: string) => {
@@ -1024,12 +1037,49 @@ const Brigades = () => {
     setWizEndNozzleIndices({ ...(b.endNozzleIndices || {}) });
 
     // payments + justifications from the accounting record
+    // `collected.cash` contient DÉJÀ les versements : le montant tapé est ce
+    // qui reste une fois ceux-ci retirés, sinon ils compteraient deux fois.
     const payments: Record<string, number> = {};
     Object.entries(b.pompisteData || {}).forEach(([pid, d]: [string, any]) => {
-      payments[pid] = d?.collected?.cash ?? d?.totalCollected ?? 0;
+      const total = d?.collected?.cash ?? d?.totalCollected ?? 0;
+      const versed = (versMap[pid] || []).reduce((sum, v) => sum + (v.amount || 0), 0);
+      payments[pid] = Math.max(0, total - versed);
     });
     setPompistePayments(payments);
 
+    setPompisteJustifications(justificationsToWizard(b, acc));
+
+    setJustifClientSearch({});
+    setExpenseDraft({});
+    setShowNewClientForm(null);
+    setStep(1);
+    setActionMenuOpen(null);
+    setShowModal(true);
+
+    // La comptabilité absente de l'écran n'est pas absente de la base : on la
+    // relit, pour que les bons et justifications enregistrés reviennent, et
+    // que l'enregistrement mette à jour CETTE comptabilité au lieu d'en créer
+    // une seconde, vide.
+    if (!acc || !(acc.justifications || []).length) {
+      fetchBrigadeAccounting(b.id).then(fresh => {
+        if (!fresh) return;
+        const known = brigadeAccountingsRef.current.some(a => a.id === fresh.id);
+        dispatch({ type: 'HYDRATE', payload: {
+          brigadeAccountings: known
+            ? brigadeAccountingsRef.current.map(a => a.id === fresh.id ? fresh : a)
+            : [...brigadeAccountingsRef.current, fresh],
+        } });
+        if ((fresh.justifications || []).length) {
+          // Ne remplace que si l'utilisateur n'a encore rien saisi entre-temps.
+          setPompisteJustifications(prev =>
+            (Object.values(prev) as WizardJustification[][]).some(list => list.length) ? prev : justificationsToWizard(b, fresh));
+        }
+      }).catch(err => console.warn('[Brigades] relecture de la comptabilité impossible :', err));
+    }
+  };
+
+  /** Les pièces d'une comptabilité, remises dans la forme de l'assistant. */
+  const justificationsToWizard = (b: Brigade, acc?: BrigadeAccounting): Record<string, WizardJustification[]> => {
     const justifMap: Record<string, WizardJustification[]> = {};
     (acc?.justifications || []).forEach(j => {
       // Une pièce sans pompiste — la fenêtre Comptabilité en écrit pour les
@@ -1070,14 +1120,7 @@ const Brigades = () => {
         clientName: j.clientName,
       });
     });
-    setPompisteJustifications(justifMap);
-
-    setJustifClientSearch({});
-    setExpenseDraft({});
-    setShowNewClientForm(null);
-    setStep(1);
-    setActionMenuOpen(null);
-    setShowModal(true);
+    return justifMap;
   };
 
   const resetForm = () => {

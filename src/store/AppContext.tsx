@@ -1911,17 +1911,49 @@ async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccoun
       const acct = accountings.find(a => a.id === jr.accounting_id);
       if (!acct) return;
       if (!acct.justifications) acct.justifications = [];
-      acct.justifications.push({
-        id: jr.id, accountingId: jr.accounting_id, clientId: jr.client_id || '',
-        amount: +jr.amount || 0, clientType: jr.client_type, paymentMode: jr.payment_mode,
-        notes: jr.notes, justificationType: jr.justification_type || 'CLIENT', bankAccountId: jr.bank_account_id ?? undefined,
-        clientName: jr.client_name, fuelType: jr.fuel_type, liters: +jr.liters || 0,
-        pricePerLiter: +jr.price_per_liter || 0, trackId: jr.track_id, pompisteId: jr.pompiste_id,
-        expenseCategory: jr.expense_category ?? undefined,
-      });
+      acct.justifications.push(mapBrigadeAccountingJustification(jr));
     });
   }
   return accountings;
+}
+
+function mapBrigadeAccountingJustification(jr: any): BrigadeAccountingJustification {
+  return {
+    id: jr.id, accountingId: jr.accounting_id, clientId: jr.client_id || '',
+    amount: +jr.amount || 0, clientType: jr.client_type, paymentMode: jr.payment_mode,
+    notes: jr.notes, justificationType: jr.justification_type || 'CLIENT', bankAccountId: jr.bank_account_id ?? undefined,
+    clientName: jr.client_name, fuelType: jr.fuel_type, liters: +jr.liters || 0,
+    pricePerLiter: +jr.price_per_liter || 0, trackId: jr.track_id, pompisteId: jr.pompiste_id,
+    expenseCategory: jr.expense_category ?? undefined,
+  };
+}
+
+/**
+ * Relit EN BASE la comptabilité d'une brigade, justifications comprises.
+ *
+ * Rouvrir une brigade « En attente » pour la compléter lit d'abord l'état de
+ * l'écran. S'il a perdu la comptabilité (rafraîchissement arrivé trop tôt,
+ * autre poste…), l'assistant repartait sans aucun bon ni justification — et
+ * l'enregistrement créait alors une SECONDE comptabilité vide. La base fait
+ * foi : on la relit avant de remplir l'assistant. Attend la file d'écriture,
+ * pour ne jamais lire une comptabilité à moitié réécrite.
+ */
+export async function fetchBrigadeAccounting(brigadeId: string): Promise<BrigadeAccounting | undefined> {
+  await whenWritesIdle();
+  const { data: rows, error } = await supabase
+    .from('brigade_accounting').select('*').eq('brigade_id', brigadeId);
+  if (error || !rows?.length) return undefined;
+  // Plusieurs comptabilités pour une brigade : celle qui porte des pièces
+  // prime, sinon la plus récente.
+  const accountings = (rows as any[]).map(mapBrigadeAccounting);
+  const { data: jrows } = await supabase
+    .from('brigade_accounting_justifications').select('*')
+    .in('accounting_id', accountings.map(a => a.id));
+  ((jrows ?? []) as any[]).forEach(jr => {
+    const acct = accountings.find(a => a.id === jr.accounting_id);
+    if (acct) (acct.justifications ||= []).push(mapBrigadeAccountingJustification(jr));
+  });
+  return accountings.find(a => (a.justifications?.length || 0) > 0) ?? accountings[accountings.length - 1];
 }
 
 /**
@@ -2331,9 +2363,25 @@ function isMissingRpc(error: { code?: string; message?: string }): boolean {
  */
 let writeChain: Promise<unknown> = Promise.resolve();
 let pendingWrites = 0;
+/** Augmente à chaque écriture mise en file : sert à détecter une lecture dépassée. */
+let writeGeneration = 0;
 export function pendingWriteCount(): number { return pendingWrites; }
+/**
+ * Se résout quand la file d'écriture est VIDE.
+ *
+ * Une relecture temps réel lancée pendant que la file se vide remplaçait l'état
+ * de l'écran par une base encore incomplète. Cas typique : enregistrer une
+ * brigade « En attente » — la ligne `brigades` arrive en premier, l'événement
+ * temps réel relit aussitôt les comptabilités… avant que la comptabilité et ses
+ * justifications (les bons !) ne soient écrites. L'écran les perdait, et
+ * rouvrir la brigade pour la compléter la montrait sans aucun bon.
+ */
+export async function whenWritesIdle(): Promise<void> {
+  while (pendingWrites > 0) await writeChain.catch(() => undefined);
+}
 function enqueueWrite<T>(job: () => Promise<T>): Promise<T> {
   pendingWrites++;
+  writeGeneration++;
   const run = writeChain.then(job, job);
   writeChain = run.catch(() => undefined).finally(() => { pendingWrites--; });
   return run;
@@ -3737,17 +3785,46 @@ export const AppProvider = ({ children }: AppProviderProps) => {
 
     const unsubs: (() => void)[] = [];
 
+    /**
+     * Relit une table SANS écraser des écritures encore en route.
+     *
+     * On attend que la file d'écriture soit vide avant de lire, et si une
+     * écriture a été mise en file pendant la lecture, la lecture est dépassée :
+     * on recommence. Sinon l'état optimiste (une comptabilité de brigade et
+     * ses bons tout juste saisis) était remplacé par une base incomplète.
+     */
+    const freshSlice = async (sliceFn: SliceFn): Promise<Partial<AppState> | null> => {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await whenWritesIdle();
+        const generation = writeGeneration;
+        const payload = await sliceFn();
+        if (pendingWrites === 0 && generation === writeGeneration) return payload;
+      }
+      return null; // l'écran écrit sans cesse : la prochaine relecture fera foi
+    };
+
+    // Plusieurs événements d'une même table pendant une relecture n'en
+    // relancent qu'UNE de plus, au lieu d'une par événement.
+    const inFlight: Record<string, boolean> = {};
+    const rerun: Record<string, boolean> = {};
+    const refreshTable = async (table: string, sliceFn: SliceFn) => {
+      if (inFlight[table]) { rerun[table] = true; return; }
+      inFlight[table] = true;
+      try {
+        do {
+          rerun[table] = false;
+          const payload = await freshSlice(sliceFn);
+          if (payload) dispatch({ type: 'HYDRATE', payload });
+        } while (rerun[table]);
+      } catch (err) {
+        console.error(`[realtime] Refetch failed for ${table}:`, err);
+      } finally {
+        inFlight[table] = false;
+      }
+    };
+
     for (const [table, sliceFn] of Object.entries(tableMap)) {
-      unsubs.push(
-        subscribeTable(table, async () => {
-          try {
-            const payload = await sliceFn();
-            dispatch({ type: 'HYDRATE', payload });
-          } catch (err) {
-            console.error(`[realtime] Refetch failed for ${table}:`, err);
-          }
-        })
-      );
+      unsubs.push(subscribeTable(table, () => { void refreshTable(table, sliceFn); }));
     }
 
     // ── Fallback when the websocket cannot be reached ────────────────────────
@@ -3778,7 +3855,8 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           const sliceFn = tableMap[table];
           if (!sliceFn) continue;
           try {
-            dispatch({ type: 'HYDRATE', payload: await sliceFn() });
+            const payload = await freshSlice(sliceFn);
+            if (payload) dispatch({ type: 'HYDRATE', payload });
           } catch (err) {
             console.warn(`[poll] Refresh failed for ${table}:`, err);
           }
