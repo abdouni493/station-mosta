@@ -1243,6 +1243,13 @@ export interface AppState {
    *  (Restaurant / Cafétéria / Lavage / Magasin) and their `iface.action` grants. */
   currentModuleWorker?: ModuleWorkerSession;
   isLoading: boolean;
+  /**
+   * L'application est affichée mais l'historique (brigades, trésorerie,
+   * ventes…) arrive encore en arrière-plan. Les écrans qui CALCULENT à partir
+   * de cet historique avant d'écrire (une nouvelle brigade part de l'index de
+   * fin de la précédente) attendent qu'il soit `false`.
+   */
+  isSyncing?: boolean;
 }
 
 // ─── Empty initial state (data comes from Supabase) ───────────────────────────
@@ -1287,6 +1294,7 @@ const initialState: AppState = {
   currentUserAvatarUrl: undefined,
   currentUserPermissions: undefined,
   isLoading: true,
+  isSyncing: true,
 };
 
 // ─── Action Types ─────────────────────────────────────────────────────────────
@@ -1894,26 +1902,61 @@ function mapBrigadeAccounting(r: any): BrigadeAccounting {
     pompisteSummary: r.pompiste_summary || {},
   };
 }
+/**
+ * Range des lignes par clé, en UN passage.
+ *
+ * Les fusions parent/enfant du chargement faisaient `parents.map(p =>
+ * enfants.filter(e => e.parent === p.id))` : pour 5 000 ventes et 20 000
+ * articles, cent millions de comparaisons — plusieurs secondes de calcul où un
+ * téléphone reste figé sur « Chargement des données ». Un index par clé ramène
+ * chaque fusion à un seul passage.
+ */
+function groupBy<T>(rows: T[] | null | undefined, key: (r: T) => unknown): Map<unknown, T[]> {
+  const m = new Map<unknown, T[]>();
+  for (const r of rows || []) {
+    const k = key(r);
+    const list = m.get(k);
+    if (list) list.push(r); else m.set(k, [r]);
+  }
+  return m;
+}
+const EMPTY: any[] = [];
+
+/**
+ * `rows.filter(r => r[field] === key)`, mais en UN passage par tableau : l'index
+ * est construit au premier appel puis réutilisé pour tous les parents suivants.
+ */
+const rowIndexes = new WeakMap<object, Map<string, Map<unknown, any[]>>>();
+function rowsWhere(rows: any[] | null | undefined, field: string, key: unknown): any[] {
+  if (!rows) return EMPTY;
+  let byField = rowIndexes.get(rows);
+  if (!byField) { byField = new Map(); rowIndexes.set(rows, byField); }
+  let index = byField.get(field);
+  if (!index) { index = groupBy(rows, r => r?.[field]); byField.set(field, index); }
+  return index.get(key) || EMPTY;
+}
+
 /** Load every brigade accounting with its justifications attached. Shared by the
  *  initial hydration (Phase 2) and the realtime `brigades` refetch so both paths
  *  always produce identical, complete accounting data (espèces reçues, TPE/Tags,
  *  décalages par pompiste). Previously accountings were only loaded on realtime
  *  events, so a freshly-loaded Fiche Journalière could miss this data. */
 async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccounting[]> {
-  const accountingsRaw = await db.getBrigadeAccountings().catch(() => []);
+  // Les deux tables partent ENSEMBLE : la seconde attendait la première.
+  // Lecture PAGINÉE : au-delà du plafond du serveur, les justifications les
+  // plus anciennes ne remontaient plus — et l'historique d'un client se
+  // réduisait alors aux dernières brigades chargées.
+  const [accountingsRaw, justifRaw] = await Promise.all([
+    db.getBrigadeAccountings().catch(() => []),
+    dbSelectAll<any>('brigade_accounting_justifications'),
+  ]);
   const accountings = ((accountingsRaw as any[]) || []).map(mapBrigadeAccounting);
-  if (accountings.length > 0) {
-    // Lecture PAGINÉE : au-delà du plafond du serveur, les justifications les
-    // plus anciennes ne remontaient plus — et l'historique d'un client se
-    // réduisait alors aux dernières brigades chargées.
-    const justifRaw = await dbSelectAll<any>('brigade_accounting_justifications');
-    ((justifRaw ?? []) as any[]).forEach((jr: any) => {
-      const acct = accountings.find(a => a.id === jr.accounting_id);
-      if (!acct) return;
-      if (!acct.justifications) acct.justifications = [];
-      acct.justifications.push(mapBrigadeAccountingJustification(jr));
-    });
-  }
+  const byId = new Map(accountings.map(a => [a.id, a]));
+  ((justifRaw ?? []) as any[]).forEach((jr: any) => {
+    const acct = byId.get(jr.accounting_id);
+    if (!acct) return;
+    (acct.justifications ||= []).push(mapBrigadeAccountingJustification(jr));
+  });
   return accountings;
 }
 
@@ -1983,9 +2026,9 @@ async function loadClientsEnriched(): Promise<Client[]> {
   ]);
   return (rows as any[]).map(c => {
     const m = mapClient(c);
-    m.appointments = (appts as any[]).filter(a => a.client_id === c.id)
+    m.appointments = rowsWhere(appts as any[], 'client_id', c.id)
       .map(a => ({ id: a.id, saleId: a.sale_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
-    m.transactionHistory = (txs as any[]).filter(t => t.client_id === c.id)
+    m.transactionHistory = rowsWhere(txs as any[], 'client_id', c.id)
       .map(t => ({ id: t.id, date: t.date, type: t.type, amount: +t.amount, mode: t.mode, receiptNumber: t.receipt_number, receiptPhoto: t.receipt_photo_url, notes: t.notes }));
     return m;
   });
@@ -2000,9 +2043,9 @@ async function loadSuppliersEnriched(): Promise<Supplier[]> {
   ]);
   return (rows as any[]).map(s => {
     const m = mapSupplier(s);
-    m.appointments = (appts as any[]).filter(a => a.supplier_id === s.id)
+    m.appointments = rowsWhere(appts as any[], 'supplier_id', s.id)
       .map(a => ({ id: a.id, purchaseId: a.purchase_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
-    m.debtPayments = (payments as any[]).filter(p => p.supplier_id === s.id)
+    m.debtPayments = rowsWhere(payments as any[], 'supplier_id', s.id)
       .map(p => ({ id: p.id, purchaseId: p.purchase_id, deliveryNoteId: p.delivery_note_id, date: p.date, amount: +p.amount, totalDue: +p.total_due, rest: +p.rest, paymentMode: p.payment_mode, chequeNumber: p.cheque_number, notes: p.notes }));
     return m;
   });
@@ -2020,7 +2063,7 @@ async function loadShopSalesEnriched(): Promise<ShopSale[]> {
   ]);
   return (rows as any[]).map(s => {
     const m = mapShopSale(s);
-    m.items = (items as any[]).filter(i => i.sale_id === s.id)
+    m.items = rowsWhere(items as any[], 'sale_id', s.id)
       .map(i => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, price: +i.price, tva: +(i.tva ?? 0) }));
     return m;
   });
@@ -2041,9 +2084,9 @@ async function loadPompistesEnriched(): Promise<Pompiste[]> {
   ]);
   return (rows as any[]).map(p => {
     const m = mapPompiste(p);
-    m.acomptes      = (acomptes as any[]).filter(a => a.worker_id === p.id).map(mapAcompte);
-    m.absences      = (absences as any[]).filter(a => a.worker_id === p.id).map(mapAbsence);
-    m.paymentRecord = (payments as any[]).filter(r => r.worker_id === p.id).map(mapPaymentRecord);
+    m.acomptes      = rowsWhere(acomptes as any[], 'worker_id', p.id).map(mapAcompte);
+    m.absences      = rowsWhere(absences as any[], 'worker_id', p.id).map(mapAbsence);
+    m.paymentRecord = rowsWhere(payments as any[], 'worker_id', p.id).map(mapPaymentRecord);
     m.decalageHistory = (decalage as any[])
       .filter(d => d.pompiste_id === p.id)
       .map(d => ({ brigadeId: d.brigade_id, date: d.date, amount: +d.amount, type: d.type as 'BONUS' | 'RETENUE' }));
@@ -2060,10 +2103,10 @@ async function loadBrigadeChefsEnriched(): Promise<BrigadeChef[]> {
   ]);
   return (rows as any[]).map(c => {
     const m = mapBrigadeChef(c);
-    m.pompisteIds   = (assignments as any[]).filter(a => a.chef_id === c.id).map(a => a.pompiste_id);
-    m.acomptes      = (acomptes as any[]).filter(a => a.worker_id === c.id).map(mapAcompte);
-    m.absences      = (absences as any[]).filter(a => a.worker_id === c.id).map(mapAbsence);
-    m.paymentRecord = (payments as any[]).filter(r => r.worker_id === c.id).map(mapPaymentRecord);
+    m.pompisteIds   = rowsWhere(assignments as any[], 'chef_id', c.id).map(a => a.pompiste_id);
+    m.acomptes      = rowsWhere(acomptes as any[], 'worker_id', c.id).map(mapAcompte);
+    m.absences      = rowsWhere(absences as any[], 'worker_id', c.id).map(mapAbsence);
+    m.paymentRecord = rowsWhere(payments as any[], 'worker_id', c.id).map(mapPaymentRecord);
     return m;
   });
 }
@@ -2076,9 +2119,9 @@ async function loadGerantsEnriched(): Promise<GerantWorker[]> {
   ]);
   return (rows as any[]).map(g => {
     const m = mapGerant(g);
-    m.acomptes      = (acomptes as any[]).filter(a => a.worker_id === g.id).map(mapAcompte);
-    m.absences      = (absences as any[]).filter(a => a.worker_id === g.id).map(mapAbsence);
-    m.paymentRecord = (payments as any[]).filter(r => r.worker_id === g.id).map(mapPaymentRecord);
+    m.acomptes      = rowsWhere(acomptes as any[], 'worker_id', g.id).map(mapAcompte);
+    m.absences      = rowsWhere(absences as any[], 'worker_id', g.id).map(mapAbsence);
+    m.paymentRecord = rowsWhere(payments as any[], 'worker_id', g.id).map(mapPaymentRecord);
     return m;
   });
 }
@@ -2091,9 +2134,9 @@ async function loadMagasinWorkersEnriched(): Promise<MagasinWorker[]> {
   ]);
   return (rows as any[]).map(w => {
     const m = mapMagasinWorker(w);
-    m.acomptes      = (acomptes as any[]).filter(a => a.worker_id === w.id).map(mapAcompte);
-    m.absences      = (absences as any[]).filter(a => a.worker_id === w.id).map(mapAbsence);
-    m.paymentRecord = (payments as any[]).filter(r => r.worker_id === w.id).map(mapPaymentRecord);
+    m.acomptes      = rowsWhere(acomptes as any[], 'worker_id', w.id).map(mapAcompte);
+    m.absences      = rowsWhere(absences as any[], 'worker_id', w.id).map(mapAbsence);
+    m.paymentRecord = rowsWhere(payments as any[], 'worker_id', w.id).map(mapPaymentRecord);
     return m;
   });
 }
@@ -2386,6 +2429,69 @@ function enqueueWrite<T>(job: () => Promise<T>): Promise<T> {
   writeChain = run.catch(() => undefined).finally(() => { pendingWrites--; });
   return run;
 }
+
+/**
+ * ─── Écritures groupées ──────────────────────────────────────────────────────
+ *
+ * Enregistrer une brigade enchaîne des séries d'écritures IDENTIQUES sur des
+ * lignes différentes : vingt pistolets mis à jour, les lignes de trésorerie
+ * supprimées puis recréées, les dépenses, les comptes clients… En file stricte,
+ * chacune attendait la précédente : vingt allers-retours pour vingt pistolets.
+ *
+ * Des actions CONSÉCUTIVES du même type, sur des lignes DIFFÉRENTES, forment
+ * désormais un lot envoyé d'un coup (en parallèle). L'ordre entre les lots ne
+ * change pas : un lot ne prend que des actions qui se suivent, et se ferme dès
+ * qu'une autre action est mise en file. Deux écritures sur la MÊME ligne ne sont
+ * jamais dans le même lot.
+ */
+const BATCHABLE = new Set<string>([
+  'UPDATE_NOZZLE',
+  'ADD_TREASURY_TX', 'DELETE_TREASURY_TX',
+  'ADD_EXPENSE', 'UPDATE_EXPENSE', 'DELETE_EXPENSE',
+  'ADD_BRIGADE_DECALAGE_ALERT',
+  'UPDATE_CLIENT',
+]);
+const MAX_BATCH = 25;
+interface WriteBatch {
+  type: string;
+  keys: Set<unknown>;
+  items: Array<{ action: AppAction; resolve: () => void; reject: (e: unknown) => void }>;
+  started: boolean;
+}
+let openBatch: WriteBatch | null = null;
+
+function entityKeyOf(action: AppAction): unknown {
+  const p = (action as any).payload;
+  return typeof p === 'string' ? p : p?.id;
+}
+
+function enqueueSync(action: AppAction): Promise<void> {
+  const key = entityKeyOf(action);
+  const batchable = BATCHABLE.has(action.type) && key !== undefined && key !== null;
+  const b = openBatch;
+  if (batchable && b && !b.started && b.type === action.type && !b.keys.has(key) && b.items.length < MAX_BATCH) {
+    b.keys.add(key);
+    writeGeneration++;
+    return new Promise<void>((resolve, reject) => b.items.push({ action, resolve, reject }));
+  }
+  openBatch = null;
+  if (!batchable) return enqueueWrite(() => syncToSupabase(action));
+
+  const batch: WriteBatch = { type: action.type, keys: new Set([key]), items: [], started: false };
+  const first = new Promise<void>((resolve, reject) => batch.items.push({ action, resolve, reject }));
+  openBatch = batch;
+  void enqueueWrite(async () => {
+    batch.started = true;
+    if (openBatch === batch) openBatch = null;
+    const results = await Promise.allSettled(batch.items.map(it => syncToSupabase(it.action)));
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') batch.items[i].resolve();
+      else batch.items[i].reject(r.reason);
+    });
+  });
+  return first;
+}
+
 if (typeof window !== 'undefined') {
   // Fermer l'onglet pendant que la file se vide perdrait les écritures restantes.
   window.addEventListener('beforeunload', (e) => {
@@ -3077,7 +3183,7 @@ async function refetchEntityAfterAction(
         const assignRaw = await supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id').then(r => r.data ?? []);
         const brigades  = (raw as any[]).map(b => {
           const m = mapBrigade(b);
-          m.pompisteIds = (assignRaw as any[]).filter(a => a.brigade_id === b.id).map(a => a.pompiste_id);
+          m.pompisteIds = rowsWhere(assignRaw as any[], 'brigade_id', b.id).map(a => a.pompiste_id);
           return m;
         });
         // Supprimer une brigade emporte ses lignes de trésorerie côté base
@@ -3115,9 +3221,9 @@ async function refetchEntityAfterAction(
         const itemsData    = await supabase.from('delivery_note_items').select('*').then(r => r.data ?? []);
         const deliveryNotes = (raw as any[]).map(d => {
           const m = mapDeliveryNote(d);
-          m.photos   = (photosData as any[]).filter(p => p.delivery_note_id === d.id).map(p => p.photo_url);
-          m.items    = (itemsData as any[]).filter(i => i.delivery_note_id === d.id).map(mapDeliveryNoteItem);
-          m.payments = (paymentsData as any[]).filter(p => p.delivery_note_id === d.id).map(p => ({ id: p.id, date: p.date, amount: +p.amount, mode: p.mode, receiptNumber: p.receipt_number, receiptPhoto: p.receipt_photo_url }));
+          m.photos   = rowsWhere(photosData as any[], 'delivery_note_id', d.id).map(p => p.photo_url);
+          m.items    = rowsWhere(itemsData as any[], 'delivery_note_id', d.id).map(mapDeliveryNoteItem);
+          m.payments = rowsWhere(paymentsData as any[], 'delivery_note_id', d.id).map(p => ({ id: p.id, date: p.date, amount: +p.amount, mode: p.mode, receiptNumber: p.receipt_number, receiptPhoto: p.receipt_photo_url }));
           return m;
         });
         dispatch({ type: 'HYDRATE', payload: { deliveryNotes } });
@@ -3129,7 +3235,7 @@ async function refetchEntityAfterAction(
         const blsRaw = await supabase.from('fuel_invoice_bls').select('*').then(r => r.data ?? []);
         const fuelInvoices = (raw as any[]).map(r => {
           const m = mapFuelInvoice(r);
-          m.deliveryNoteIds = (blsRaw as any[]).filter(b => b.invoice_id === r.id).map(b => b.delivery_note_id);
+          m.deliveryNoteIds = rowsWhere(blsRaw as any[], 'invoice_id', r.id).map(b => b.delivery_note_id);
           return m;
         });
         dispatch({ type: 'HYDRATE', payload: { fuelInvoices } });
@@ -3141,7 +3247,7 @@ async function refetchEntityAfterAction(
         const invsRaw = await supabase.from('fuel_receipt_invoices').select('*').then(r => r.data ?? []);
         const fuelReceipts = (raw as any[]).map(r => {
           const m = mapFuelReceipt(r);
-          m.invoiceIds = (invsRaw as any[]).filter(b => b.receipt_id === r.id).map(b => b.invoice_id);
+          m.invoiceIds = rowsWhere(invsRaw as any[], 'receipt_id', r.id).map(b => b.invoice_id);
           return m;
         });
         dispatch({ type: 'HYDRATE', payload: { fuelReceipts } });
@@ -3296,11 +3402,10 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       // ── DB Connectivity diagnostic ───────────────────────────────────────
       // Try a tiny read on startup. If it fails (RLS, wrong credentials, network)
       // we surface a visible error instead of loading silently for 30 s.
-      {
-        const { error: connectErr } = await supabase
-          .from('station_settings')
-          .select('id')
-          .limit(1);
+      // Lancé EN PARALLÈLE du chargement : il ajoutait un aller-retour complet
+      // avant la première requête utile.
+      void supabase.from('station_settings').select('id').limit(1).then(({ error: connectErr }) => {
+        if (cancelled) return;
         if (connectErr) {
           console.error('[DB] Connectivity check failed:', connectErr.message, connectErr);
           dispatch({
@@ -3315,7 +3420,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         } else {
           console.log('[DB] Connectivity check OK');
         }
-      }
+      });
 
       // 15-second timeout guards Phase 1 only (Phase 2 uses safeQ per table)
       phase1Timeout = setTimeout(() => {
@@ -3336,15 +3441,19 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         // to Phase 2 so the first paint is not blocked by large-table scans.
         console.log('[hydrate] Phase 1 – critical tables…');
 
+        // L'historique lourd — toutes les brigades (index, cuves, encaissements
+        // de chaque pompiste) et tout le grand livre de trésorerie — bloquait
+        // l'écran « Chargement des données » : plusieurs Mo à télécharger sur
+        // le réseau d'un téléphone avant d'afficher quoi que ce soit. Il part
+        // désormais JUSTE APRÈS les tables légères, sans bloquer l'affichage.
         const [
           tanksRaw, pumpsRaw, nozzlesRaw, tracksRaw, driversRaw,
           productsRaw, brandsRaw,
           pompistesRaw, chefsRaw, gerantsRaw, magasinRaw,
           clientsRaw, suppliersRaw,
-          brigadesRaw, settingsRaw,
-          brigadeAssignmentsRaw, chefAssignmentsRaw,
+          settingsRaw,
+          chefAssignmentsRaw,
           permissionTemplatesRaw,
-          bankAccountsRaw, treasuryRaw,
         ] = await Promise.all([
           db.getTanks(),
           db.getPumps(),
@@ -3359,13 +3468,9 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           db.getMagasinWorkers(),
           db.getClients(),
           db.getSuppliers(),
-          db.getBrigades(),
           db.getSettings(),
-          supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id').then(r => r.data ?? []),
           supabase.from('chef_pompiste_assignments').select('chef_id, pompiste_id').then(r => r.data ?? []),
           db.getPermissionTemplates().catch(() => []),
-          db.getBankAccounts().catch(() => []),
-          db.getTreasuryTransactions().catch(() => []),
         ]);
 
         if (cancelled) return;
@@ -3382,9 +3487,10 @@ export const AppProvider = ({ children }: AppProviderProps) => {
 
         // Workers without payroll sub-records (added in Phase 2)
         const pompistes = (pompistesRaw as any[]).map(mapPompiste);
+        const chefAssignByChef = groupBy(chefAssignmentsRaw as any[], a => a.chef_id);
         const brigadeChefs = (chefsRaw as any[]).map(c => {
           const m = mapBrigadeChef(c);
-          m.pompisteIds = (chefAssignmentsRaw as any[]).filter(a => a.chef_id === c.id).map(a => a.pompiste_id);
+          m.pompisteIds = (chefAssignByChef.get(c.id) || EMPTY).map(a => a.pompiste_id);
           return m;
         });
         const gerants        = (gerantsRaw  as any[]).map(mapGerant);
@@ -3394,20 +3500,8 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const clients   = (clientsRaw   as any[]).map(mapClient);
         const suppliers = (suppliersRaw as any[]).map(mapSupplier);
 
-        const brigades = (brigadesRaw as any[]).map(b => {
-          const m = mapBrigade(b);
-          m.pompisteIds = (brigadeAssignmentsRaw as any[]).filter(a => a.brigade_id === b.id).map(a => a.pompiste_id);
-          return m;
-        });
-
         const settings = settingsRaw ? mapSettings(settingsRaw) : emptySettings;
         const permissionTemplates = (permissionTemplatesRaw as any[]).map(mapPermissionTemplate);
-        const treasuryTransactions = (treasuryRaw as any[]).map(mapTreasuryTx);
-        // Bank balances are derived from the ledger so a card can never drift
-        // from its own history.
-        const bankAccounts = (bankAccountsRaw as any[])
-          .map(mapBankAccount)
-          .map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) }));
 
         // Release loading spinner; app can render now
         clearTimeout(phase1Timeout);
@@ -3419,11 +3513,11 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           payload: {
             tanks, pumps, pumpNozzles, tracks, drivers, products, productBrands: brands,
             pompistes, brigadeChefs, gerants, magasinWorkers,
-            clients, suppliers, brigades, settings, permissionTemplates,
-            bankAccounts, treasuryTransactions,
+            clients, suppliers, settings, permissionTemplates,
             // Transactional tables start empty; filled by Phase 2 momentarily
             fuelSales: [], shopSales: [], deliveryNotes: [], purchases: [],
             expenses: [], inventories: [], dailyReports: [],
+            isSyncing: true,
           },
         });
 
@@ -3444,7 +3538,35 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           }
         };
 
+        // L'historique des brigades et la trésorerie arrivent en premier : ce
+        // sont eux que le tableau de bord et les caisses affichent d'abord.
+        const historyP = Promise.all([
+          safeQ('Brigades', () => db.getBrigades()),
+          safeQ('Brigade Assignments', async () => {
+            const { data, error } = await supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id');
+            if (error) throw error; return data ?? [];
+          }),
+          safeQ('Bank Accounts', () => db.getBankAccounts()),
+          safeQ('Treasury', () => db.getTreasuryTransactions()),
+        ]).then(([brigadesRaw, brigadeAssignmentsRaw, bankAccountsRaw, treasuryRaw]) => {
+          if (cancelled) return;
+          const assignByBrigade = groupBy(brigadeAssignmentsRaw as any[], a => a.brigade_id);
+          const brigades = (brigadesRaw as any[]).map(b => {
+            const m = mapBrigade(b);
+            m.pompisteIds = (assignByBrigade.get(b.id) || EMPTY).map(a => a.pompiste_id);
+            return m;
+          });
+          const treasuryTransactions = (treasuryRaw as any[]).map(mapTreasuryTx);
+          // Bank balances are derived from the ledger so a card can never drift
+          // from its own history.
+          const bankAccounts = (bankAccountsRaw as any[])
+            .map(mapBankAccount)
+            .map(b => ({ ...b, balance: bankBalanceOf(b, treasuryTransactions) }));
+          dispatch({ type: 'HYDRATE', payload: { brigades, treasuryTransactions, bankAccounts } });
+        });
+
         const [
+          decalageHistoryRaw, tpeRaw, alertsRaw, brigadeAccountings,
           fuelSalesRaw, shopSalesRaw, deliveryNotesRaw, purchasesRaw,
           expensesRaw, inventoriesRaw, dailyReportsRaw,
           acomptesRaw, absencesRaw, paymentRecordsRaw,
@@ -3456,6 +3578,23 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           dnItemsRaw,
           fuelInvoicesRaw, fuelInvoiceBlsRaw, fuelReceiptsRaw, fuelReceiptInvoicesRaw,
         ] = await Promise.all([
+          // Ces quatre lectures attendaient chacune la précédente, APRÈS tout le
+          // reste : elles partent maintenant avec les autres.
+          safeQ('Décalage History', async () => {
+            const { data, error } = await supabase.from('pompiste_decalage_history').select('*');
+            if (error) throw error; return data ?? [];
+          }),
+          safeQ('TPE Transactions', async () => {
+            const { data, error } = await supabase.from('tpe_transactions').select('*').order('date', { ascending: false });
+            if (error) throw error; return data ?? [];
+          }),
+          safeQ('Brigade Décalage Alerts', async () => {
+            const { data, error } = await supabase.from('brigade_decalage_alerts').select('*').order('created_at', { ascending: false }).limit(200);
+            if (error) throw error; return data ?? [];
+          }),
+          // Brigade accountings (+ justifications) — required by the Fiche Journalière
+          // (espèces reçues, TPE/Tags, décalages par pompiste) and the dashboards.
+          safeQ('Brigade Accountings', loadBrigadeAccountingsWithJustifications),
           // Large tables — capped at 500 most-recent rows
           safeQ('Fuel Sales', async () => {
             return dbSelectAll<any>('fuel_sales');
@@ -3541,28 +3680,47 @@ export const AppProvider = ({ children }: AppProviderProps) => {
 
         const fuelSales = (fuelSalesRaw as any[]).map(mapFuelSale);
 
+        // Un index par clé pour chaque fusion parent/enfant — voir `groupBy`.
+        const shopItemsBySale   = groupBy(shopItemsRaw as any[], i => i.sale_id);
+        const dnPhotosByNote    = groupBy(dnPhotosRaw as any[], p => p.delivery_note_id);
+        const dnItemsByNote     = groupBy(dnItemsRaw as any[], i => i.delivery_note_id);
+        const dnPaymentsByNote  = groupBy(dnPaymentsRaw as any[], p => p.delivery_note_id);
+        const blsByInvoice      = groupBy(fuelInvoiceBlsRaw as any[], b => b.invoice_id);
+        const invoicesByReceipt = groupBy(fuelReceiptInvoicesRaw as any[], b => b.receipt_id);
+        const workerKey = (r: any) => `${r.worker_type}|${r.worker_id}`;
+        const acomptesByWorker  = groupBy(acomptesRaw as any[], workerKey);
+        const absencesByWorker  = groupBy(absencesRaw as any[], workerKey);
+        const paymentsByWorker  = groupBy(paymentRecordsRaw as any[], workerKey);
+        const decalageByPompiste = groupBy(decalageHistoryRaw as any[], d => d.pompiste_id);
+        const chefAssignByChef2 = groupBy(chefAssignmentsRaw as any[], a => a.chef_id);
+        const supplierApptBy    = groupBy(supplierApptRaw as any[], a => a.supplier_id);
+        const supplierDebtBy    = groupBy(supplierDebtRaw as any[], p => p.supplier_id);
+        const clientApptBy      = groupBy(clientApptRaw as any[], a => a.client_id);
+        const clientTxBy        = groupBy(clientTxRaw as any[], t => t.client_id);
+        const of = (m: Map<unknown, any[]>, k: unknown) => m.get(k) || EMPTY;
+
         const shopSales = (shopSalesRaw as any[]).map(s => {
           const m = mapShopSale(s);
-          m.items = (shopItemsRaw as any[]).filter(i => i.sale_id === s.id).map(i => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, price: +i.price, tva: +(i.tva ?? 0) }));
+          m.items = of(shopItemsBySale, s.id).map(i => ({ productId: i.product_id, productName: i.product_name, quantity: +i.quantity, price: +i.price, tva: +(i.tva ?? 0) }));
           return m;
         });
 
         const deliveryNotes = (deliveryNotesRaw as any[]).map(d => {
           const m = mapDeliveryNote(d);
-          m.photos   = (dnPhotosRaw   as any[]).filter(p => p.delivery_note_id === d.id).map(p => p.photo_url);
-          m.items    = (dnItemsRaw    as any[]).filter(i => i.delivery_note_id === d.id).map(mapDeliveryNoteItem);
-          m.payments = (dnPaymentsRaw as any[]).filter(p => p.delivery_note_id === d.id).map(p => ({ id: p.id, date: p.date, amount: +p.amount, mode: p.mode, receiptNumber: p.receipt_number, receiptPhoto: p.receipt_photo_url }));
+          m.photos   = of(dnPhotosByNote, d.id).map(p => p.photo_url);
+          m.items    = of(dnItemsByNote, d.id).map(mapDeliveryNoteItem);
+          m.payments = of(dnPaymentsByNote, d.id).map(p => ({ id: p.id, date: p.date, amount: +p.amount, mode: p.mode, receiptNumber: p.receipt_number, receiptPhoto: p.receipt_photo_url }));
           return m;
         });
 
         const fuelInvoices = (fuelInvoicesRaw as any[]).map(r => {
           const m = mapFuelInvoice(r);
-          m.deliveryNoteIds = (fuelInvoiceBlsRaw as any[]).filter(b => b.invoice_id === r.id).map(b => b.delivery_note_id);
+          m.deliveryNoteIds = of(blsByInvoice, r.id).map(b => b.delivery_note_id);
           return m;
         });
         const fuelReceipts = (fuelReceiptsRaw as any[]).map(r => {
           const m = mapFuelReceipt(r);
-          m.invoiceIds = (fuelReceiptInvoicesRaw as any[]).filter(b => b.receipt_id === r.id).map(b => b.invoice_id);
+          m.invoiceIds = of(invoicesByReceipt, r.id).map(b => b.invoice_id);
           return m;
         });
 
@@ -3573,19 +3731,13 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const inventories  = (inventoriesRaw  as any[]).map(mapInventory);
         const dailyReports = (dailyReportsRaw as any[]).map(mapDailyReport);
 
-        // Merge payroll sub-records into workers (reuses Phase 1 raw arrays)
-        const decalageHistoryRaw = await supabase
-          .from('pompiste_decalage_history')
-          .select('*')
-          .then(r => r.data ?? []);
 
         const pompistesWithPayroll = (pompistesRaw as any[]).map(p => {
           const m = mapPompiste(p);
-          m.acomptes      = (acomptesRaw      as any[]).filter(a => a.worker_id === p.id && a.worker_type === 'pompiste').map(mapAcompte);
-          m.absences      = (absencesRaw      as any[]).filter(a => a.worker_id === p.id && a.worker_type === 'pompiste').map(mapAbsence);
-          m.paymentRecord = (paymentRecordsRaw as any[]).filter(r => r.worker_id === p.id && r.worker_type === 'pompiste').map(mapPaymentRecord);
-          m.decalageHistory = (decalageHistoryRaw as any[])
-            .filter(d => d.pompiste_id === p.id)
+          m.acomptes      = of(acomptesByWorker, 'pompiste|' + p.id).map(mapAcompte);
+          m.absences      = of(absencesByWorker, 'pompiste|' + p.id).map(mapAbsence);
+          m.paymentRecord = of(paymentsByWorker, 'pompiste|' + p.id).map(mapPaymentRecord);
+          m.decalageHistory = of(decalageByPompiste, p.id)
             .map(d => ({
               brigadeId: d.brigade_id,
               date: d.date,
@@ -3597,68 +3749,59 @@ export const AppProvider = ({ children }: AppProviderProps) => {
 
         const brigadeChefWithPayroll = (chefsRaw as any[]).map(c => {
           const m = mapBrigadeChef(c);
-          m.pompisteIds   = (chefAssignmentsRaw  as any[]).filter(a => a.chef_id === c.id).map(a => a.pompiste_id);
-          m.acomptes      = (acomptesRaw         as any[]).filter(a => a.worker_id === c.id && a.worker_type === 'chef_brigade').map(mapAcompte);
-          m.absences      = (absencesRaw         as any[]).filter(a => a.worker_id === c.id && a.worker_type === 'chef_brigade').map(mapAbsence);
-          m.paymentRecord = (paymentRecordsRaw   as any[]).filter(r => r.worker_id === c.id && r.worker_type === 'chef_brigade').map(mapPaymentRecord);
+          m.pompisteIds   = of(chefAssignByChef2, c.id).map(a => a.pompiste_id);
+          m.acomptes      = of(acomptesByWorker, 'chef_brigade|' + c.id).map(mapAcompte);
+          m.absences      = of(absencesByWorker, 'chef_brigade|' + c.id).map(mapAbsence);
+          m.paymentRecord = of(paymentsByWorker, 'chef_brigade|' + c.id).map(mapPaymentRecord);
           return m;
         });
 
         const gerantsWithPayroll = (gerantsRaw as any[]).map(g => {
           const m = mapGerant(g);
-          m.acomptes      = (acomptesRaw      as any[]).filter(a => a.worker_id === g.id && a.worker_type === 'gerant').map(mapAcompte);
-          m.absences      = (absencesRaw      as any[]).filter(a => a.worker_id === g.id && a.worker_type === 'gerant').map(mapAbsence);
-          m.paymentRecord = (paymentRecordsRaw as any[]).filter(r => r.worker_id === g.id && r.worker_type === 'gerant').map(mapPaymentRecord);
+          m.acomptes      = of(acomptesByWorker, 'gerant|' + g.id).map(mapAcompte);
+          m.absences      = of(absencesByWorker, 'gerant|' + g.id).map(mapAbsence);
+          m.paymentRecord = of(paymentsByWorker, 'gerant|' + g.id).map(mapPaymentRecord);
           return m;
         });
 
         const magasinWithPayroll = (magasinRaw as any[]).map(m2 => {
           const m = mapMagasinWorker(m2);
-          m.acomptes      = (acomptesRaw      as any[]).filter(a => a.worker_id === m2.id && a.worker_type === 'magasin').map(mapAcompte);
-          m.absences      = (absencesRaw      as any[]).filter(a => a.worker_id === m2.id && a.worker_type === 'magasin').map(mapAbsence);
-          m.paymentRecord = (paymentRecordsRaw as any[]).filter(r => r.worker_id === m2.id && r.worker_type === 'magasin').map(mapPaymentRecord);
+          m.acomptes      = of(acomptesByWorker, 'magasin|' + m2.id).map(mapAcompte);
+          m.absences      = of(absencesByWorker, 'magasin|' + m2.id).map(mapAbsence);
+          m.paymentRecord = of(paymentsByWorker, 'magasin|' + m2.id).map(mapPaymentRecord);
           return m;
         });
 
         // Merge supplier sub-records
         const suppliersWithSub = (suppliersRaw as any[]).map(s => {
           const m = mapSupplier(s);
-          m.appointments = (supplierApptRaw as any[]).filter(a => a.supplier_id === s.id).map(a => ({ id: a.id, purchaseId: a.purchase_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
-          m.debtPayments = (supplierDebtRaw as any[]).filter(p => p.supplier_id === s.id).map(p => ({ id: p.id, purchaseId: p.purchase_id, deliveryNoteId: p.delivery_note_id, date: p.date, amount: +p.amount, totalDue: +p.total_due, rest: +p.rest, paymentMode: p.payment_mode, chequeNumber: p.cheque_number, notes: p.notes }));
+          m.appointments = of(supplierApptBy, s.id).map(a => ({ id: a.id, purchaseId: a.purchase_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
+          m.debtPayments = of(supplierDebtBy, s.id).map(p => ({ id: p.id, purchaseId: p.purchase_id, deliveryNoteId: p.delivery_note_id, date: p.date, amount: +p.amount, totalDue: +p.total_due, rest: +p.rest, paymentMode: p.payment_mode, chequeNumber: p.cheque_number, notes: p.notes }));
           return m;
         });
 
         // Merge client sub-records
         const clientsWithSub = (clientsRaw as any[]).map(c => {
           const m = mapClient(c);
-          m.appointments      = (clientApptRaw as any[]).filter(a => a.client_id === c.id).map(a => ({ id: a.id, saleId: a.sale_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
-          m.transactionHistory = (clientTxRaw as any[]).filter(t => t.client_id === c.id).map(t => ({ id: t.id, date: t.date, type: t.type, amount: +t.amount, mode: t.mode, receiptNumber: t.receipt_number, receiptPhoto: t.receipt_photo_url, notes: t.notes }));
+          m.appointments      = of(clientApptBy, c.id).map(a => ({ id: a.id, saleId: a.sale_id, date: a.date, amount: +a.amount, notes: a.notes, isPaid: a.is_paid }));
+          m.transactionHistory = of(clientTxBy, c.id).map(t => ({ id: t.id, date: t.date, type: t.type, amount: +t.amount, mode: t.mode, receiptNumber: t.receipt_number, receiptPhoto: t.receipt_photo_url, notes: t.notes }));
           return m;
         });
 
-        // Caisse TPE — TAG/TPE transactions
-        const tpeRaw = await safeQ('TPE Transactions', async () => {
-          const { data, error } = await supabase.from('tpe_transactions').select('*').order('date', { ascending: false });
-          if (error) throw error; return data ?? [];
-        });
         const tpeTransactions = (tpeRaw as any[]).map(mapTpeTransaction);
 
-        // Brigade décalage alerts (admin dashboard)
-        const alertsRaw = await safeQ('Brigade Décalage Alerts', async () => {
-          const { data, error } = await supabase.from('brigade_decalage_alerts').select('*').order('created_at', { ascending: false }).limit(200);
-          if (error) throw error; return data ?? [];
-        });
         const brigadeDecalageAlerts = (alertsRaw as any[]).map(mapBrigadeDecalageAlert);
 
-        // Brigade accountings (+ justifications) — required by the Fiche Journalière
-        // (espèces reçues, TPE/Tags, décalages par pompiste) and the dashboards.
-        const brigadeAccountings = await safeQ('Brigade Accountings', loadBrigadeAccountingsWithJustifications);
 
+        // L'historique (brigades, trésorerie) doit être en place avant de
+        // déclarer le chargement terminé.
+        await historyP;
         if (cancelled) return;
 
         dispatch({
           type: 'HYDRATE',
           payload: {
+            isSyncing: false,
             fuelSales, shopSales, deliveryNotes, purchases,
             fuelInvoices, fuelReceipts,
             expenses, inventories, dailyReports,
@@ -3681,6 +3824,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         if (cancelled) return;
         console.error('[hydrate] Critical error in Phase 1:', err);
         dispatch({ type: 'SET_LOADING', payload: false });
+        dispatch({ type: 'HYDRATE', payload: { isSyncing: false } });
         dispatch({
           type: 'ADD_TOAST',
           payload: {
@@ -3745,7 +3889,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const raw       = await db.getBrigades();
         const assignRaw = await supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id').then(r => r.data ?? []);
         const brigadeAccountings = await loadBrigadeAccountingsWithJustifications();
-        return { brigades: (raw as any[]).map(b => { const m = mapBrigade(b); m.pompisteIds = (assignRaw as any[]).filter(a => a.brigade_id === b.id).map(a => a.pompiste_id); return m; }), brigadeAccountings };
+        return { brigades: (raw as any[]).map(b => { const m = mapBrigade(b); m.pompisteIds = rowsWhere(assignRaw as any[], 'brigade_id', b.id).map(a => a.pompiste_id); return m; }), brigadeAccountings };
       },
       fuel_sales: async () => {
         const data = await dbSelectAll<any>('fuel_sales');
@@ -3762,9 +3906,9 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         const itemsData    = await supabase.from('delivery_note_items').select('*').then(r => r.data ?? []);
         const deliveryNotes = (raw as any[]).map(d => {
           const m = mapDeliveryNote(d);
-          m.photos   = (photosData as any[]).filter(p => p.delivery_note_id === d.id).map(p => p.photo_url);
-          m.items    = (itemsData as any[]).filter(i => i.delivery_note_id === d.id).map(mapDeliveryNoteItem);
-          m.payments = (paymentsData as any[]).filter(p => p.delivery_note_id === d.id).map(p => ({ id: p.id, date: p.date, amount: +p.amount, mode: p.mode, receiptNumber: p.receipt_number, receiptPhoto: p.receipt_photo_url }));
+          m.photos   = rowsWhere(photosData as any[], 'delivery_note_id', d.id).map(p => p.photo_url);
+          m.items    = rowsWhere(itemsData as any[], 'delivery_note_id', d.id).map(mapDeliveryNoteItem);
+          m.payments = rowsWhere(paymentsData as any[], 'delivery_note_id', d.id).map(p => ({ id: p.id, date: p.date, amount: +p.amount, mode: p.mode, receiptNumber: p.receipt_number, receiptPhoto: p.receipt_photo_url }));
           return m;
         });
         return { deliveryNotes };
@@ -3823,9 +3967,18 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       }
     };
 
+    // Un enregistrement envoie une RAFALE d'événements sur la même table (vingt
+    // pistolets, dix lignes de trésorerie…). On attend que la rafale se calme
+    // avant de relire : une seule relecture au lieu d'une par ligne écrite.
+    const debounce: Record<string, ReturnType<typeof setTimeout>> = {};
+    const REALTIME_DEBOUNCE_MS = 600;
     for (const [table, sliceFn] of Object.entries(tableMap)) {
-      unsubs.push(subscribeTable(table, () => { void refreshTable(table, sliceFn); }));
+      unsubs.push(subscribeTable(table, () => {
+        clearTimeout(debounce[table]);
+        debounce[table] = setTimeout(() => { void refreshTable(table, sliceFn); }, REALTIME_DEBOUNCE_MS);
+      }));
     }
+    unsubs.push(() => Object.values(debounce).forEach(clearTimeout));
 
     // ── Fallback when the websocket cannot be reached ────────────────────────
     // Some machines sit behind a resolver or firewall that blocks `wss://`
@@ -3934,7 +4087,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
   const syncedDispatch = useCallback((action: AppAction): void => {
     dispatch(action); // optimistic update first — UI stays snappy
 
-    enqueueWrite(() => syncToSupabase(action)).then(async () => {
+    enqueueSync(action).then(async () => {
       // Le niveau des cuves est le seul chiffre que le SERVEUR calcule et non le
       // client : `adjust_tank_level` fait `current = current + delta` sur la
       // ligne verrouillée. L'optimisme local part, lui, de l'état du navigateur —

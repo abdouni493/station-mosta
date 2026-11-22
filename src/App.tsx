@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import Layout from "./components/Layout";
@@ -13,53 +13,84 @@ import { useAuth, type AuthPhase } from "./hooks/useAuth";
 import { db, supabase, BUCKETS, getPublicUrl, getMyModuleWorker } from "./lib/supabase";
 import { installAutoTranslate, sweep } from "./lib/autoTranslate";
 import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Tanks from "./pages/Tanks";
-import Pumps from "./pages/Pumps";
-import Pompistes from "./pages/Pompistes";
-import Brigades from "./pages/Brigades";
-import Suppliers from "./pages/Suppliers";
-import FuelPurchases from "./pages/FuelPurchases";
-import Clients from "./pages/Clients";
-import DailyReport from "./pages/DailyReport";
-import Expenses from "./pages/Expenses";
-import Permissions from "./pages/Permissions";
-import Inventory from "./pages/Inventory";
-import Statistics from "./pages/Statistics";
-import Reports from "./pages/Reports";
-import Settings from "./pages/Settings";
-import Gerants from "./pages/Gerants";
-import MagasinWorkers from "./pages/MagasinWorkers";
-import MyBrigade from "./pages/MyBrigade";
-import MyPayments from "./pages/MyPayments";
-import MySettings from "./pages/MySettings";
-import CaisseGenerale from "./pages/CaisseGenerale";
-import BankAccounts from "./pages/BankAccounts";
-import Feedbacks from "./pages/Feedbacks";
-import ClientFeedback from "./pages/ClientFeedback";
 import { FeedbackProvider } from "./store/FeedbackContext";
 
 // ─── Business modules (Cafétéria / Lavage & Vidange) ───────────────────────
 import { BizProvider } from "./store/BizContext";
 import { MODULES, ModuleKey } from "./lib/bizConfig";
-import ModuleStock from "./pages/modules/ModuleStock";
-import ModuleInventaire from "./pages/modules/ModuleInventaire";
-import ModulePurchases from "./pages/modules/ModulePurchases";
-import ModuleProduction from "./pages/modules/ModuleProduction";
-import ModuleComptoir from "./pages/modules/ModuleComptoir";
-import ModulePOS from "./pages/modules/ModulePOS";
-import ModuleSales from "./pages/modules/ModuleSales";
-import ModuleClients from "./pages/modules/ModuleClients";
-import ModuleMessages from "./pages/modules/ModuleMessages";
-import ModuleSuppliers from "./pages/modules/ModuleSuppliers";
-import ModuleWorkers from "./pages/modules/ModuleWorkers";
-import ModuleExpenses from "./pages/modules/ModuleExpenses";
-import ModuleCaisse from "./pages/modules/ModuleCaisse";
-import ModuleReports from "./pages/modules/ModuleReports";
-import ModuleReparations from "./pages/modules/ModuleReparations";
-import ModuleEncaissements from "./pages/modules/ModuleEncaissements";
-import ModuleFeedbacks from "./pages/modules/ModuleFeedbacks";
-import GeneralReports from "./pages/GeneralReports";
+
+
+// ─── Écrans chargés à la demande ──────────────────────────────────────────────
+/**
+ * Chaque écran est un fichier séparé, téléchargé la première fois qu'on
+ * l'ouvre. Tous les écrans partaient dans un seul fichier de près de 3 Mo, que
+ * le téléphone devait télécharger ET analyser avant d'afficher quoi que ce soit.
+ *
+ * Après une mise en ligne, un onglet resté ouvert réclame l'ANCIEN fichier d'un
+ * écran, qui n'existe plus : on recharge alors la page une fois, pour prendre la
+ * nouvelle version, au lieu d'afficher un écran blanc.
+ */
+function lazyPage<T extends React.ComponentType<any>>(load: () => Promise<{ default: T }>) {
+  return React.lazy(() => load().then(
+    mod => { try { sessionStorage.removeItem('chunk-reload'); } catch { /* ignore */ } return mod; },
+    err => {
+      let reloaded = false;
+      try { reloaded = sessionStorage.getItem('chunk-reload') === '1'; sessionStorage.setItem('chunk-reload', '1'); } catch { /* ignore */ }
+      if (!reloaded) { window.location.reload(); return new Promise<{ default: T }>(() => {}); }
+      throw err;
+    },
+  ));
+}
+
+/** Ce qui s'affiche le temps qu'un écran arrive. */
+const PageFallback = () => (
+  <div className="flex items-center justify-center py-24">
+    <div className="w-10 h-10 border-4 border-blue-100 border-t-[#003087] rounded-full animate-spin" />
+  </div>
+);
+
+const Dashboard = lazyPage(() => import("./pages/Dashboard"));
+const Tanks = lazyPage(() => import("./pages/Tanks"));
+const Pumps = lazyPage(() => import("./pages/Pumps"));
+const Pompistes = lazyPage(() => import("./pages/Pompistes"));
+const Brigades = lazyPage(() => import("./pages/Brigades"));
+const Suppliers = lazyPage(() => import("./pages/Suppliers"));
+const FuelPurchases = lazyPage(() => import("./pages/FuelPurchases"));
+const Clients = lazyPage(() => import("./pages/Clients"));
+const DailyReport = lazyPage(() => import("./pages/DailyReport"));
+const Expenses = lazyPage(() => import("./pages/Expenses"));
+const Permissions = lazyPage(() => import("./pages/Permissions"));
+const Inventory = lazyPage(() => import("./pages/Inventory"));
+const Statistics = lazyPage(() => import("./pages/Statistics"));
+const Reports = lazyPage(() => import("./pages/Reports"));
+const Settings = lazyPage(() => import("./pages/Settings"));
+const Gerants = lazyPage(() => import("./pages/Gerants"));
+const MagasinWorkers = lazyPage(() => import("./pages/MagasinWorkers"));
+const MyBrigade = lazyPage(() => import("./pages/MyBrigade"));
+const MyPayments = lazyPage(() => import("./pages/MyPayments"));
+const MySettings = lazyPage(() => import("./pages/MySettings"));
+const CaisseGenerale = lazyPage(() => import("./pages/CaisseGenerale"));
+const BankAccounts = lazyPage(() => import("./pages/BankAccounts"));
+const Feedbacks = lazyPage(() => import("./pages/Feedbacks"));
+const ClientFeedback = lazyPage(() => import("./pages/ClientFeedback"));
+const ModuleStock = lazyPage(() => import("./pages/modules/ModuleStock"));
+const ModuleInventaire = lazyPage(() => import("./pages/modules/ModuleInventaire"));
+const ModulePurchases = lazyPage(() => import("./pages/modules/ModulePurchases"));
+const ModuleProduction = lazyPage(() => import("./pages/modules/ModuleProduction"));
+const ModuleComptoir = lazyPage(() => import("./pages/modules/ModuleComptoir"));
+const ModulePOS = lazyPage(() => import("./pages/modules/ModulePOS"));
+const ModuleSales = lazyPage(() => import("./pages/modules/ModuleSales"));
+const ModuleClients = lazyPage(() => import("./pages/modules/ModuleClients"));
+const ModuleMessages = lazyPage(() => import("./pages/modules/ModuleMessages"));
+const ModuleSuppliers = lazyPage(() => import("./pages/modules/ModuleSuppliers"));
+const ModuleWorkers = lazyPage(() => import("./pages/modules/ModuleWorkers"));
+const ModuleExpenses = lazyPage(() => import("./pages/modules/ModuleExpenses"));
+const ModuleCaisse = lazyPage(() => import("./pages/modules/ModuleCaisse"));
+const ModuleReports = lazyPage(() => import("./pages/modules/ModuleReports"));
+const ModuleReparations = lazyPage(() => import("./pages/modules/ModuleReparations"));
+const ModuleEncaissements = lazyPage(() => import("./pages/modules/ModuleEncaissements"));
+const ModuleFeedbacks = lazyPage(() => import("./pages/modules/ModuleFeedbacks"));
+const GeneralReports = lazyPage(() => import("./pages/GeneralReports"));
 
 // Builds the route list for one business module based on its capabilities.
 // `iface` is the permission interface id (see MODULE_INTERFACES) used to gate
@@ -309,6 +340,15 @@ const DbLoader = () => (
   </div>
 );
 
+// ─── Historique en cours de chargement (non bloquant) ─────────────────────────
+// L'application est utilisable ; seul l'historique arrive encore.
+const SyncBadge = () => (
+  <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-3.5 py-2 rounded-full bg-white/95 shadow-lg border border-slate-200 text-[11px] font-semibold text-slate-500 pointer-events-none">
+    <div className="w-3.5 h-3.5 border-2 border-blue-100 border-t-[#003087] rounded-full animate-spin" />
+    Synchronisation de l'historique…
+  </div>
+);
+
 export default function App() {
   const { i18n } = useTranslation();
 
@@ -329,7 +369,7 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/client" element={<ClientFeedback />} />
+        <Route path="/client" element={<Suspense fallback={<PageFallback />}><ClientFeedback /></Suspense>} />
         <Route path="*"       element={<AuthGate />} />
       </Routes>
     </Router>
@@ -388,7 +428,7 @@ function AppContent({
   userId?: string;
   onLogout: () => void;
 }) {
-  const { toasts, isLoading } = useAppState();
+  const { toasts, isLoading, isSyncing } = useAppState();
   const dispatch = useAppDispatch();
 
   // Set current user in global state and load profile (name + avatar)
@@ -476,6 +516,7 @@ function AppContent({
     <>
       {/* Show DB loading overlay while Supabase hydrates */}
       {isLoading && <DbLoader />}
+      {!isLoading && isSyncing && <SyncBadge />}
 
       <ToastContainer
         toasts={toasts}
@@ -500,6 +541,7 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
 
   return (
     <Layout onLogout={handleLogout}>
+      <Suspense fallback={<PageFallback />}>
       <Routes>
         <Route path="/dashboard"        element={<Dashboard />} />
 
@@ -553,6 +595,7 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
         {/* Default */}
         <Route path="*"                 element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      </Suspense>
     </Layout>
   );
 }

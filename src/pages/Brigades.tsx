@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { 
   Users, 
   Plus, 
+  Loader2,
   Calendar, 
   Clock, 
   X, 
@@ -517,7 +518,20 @@ const Brigades = () => {
         })));
   }, [pompisteJustifications, bankAccounts, pompistes]);
 
+  /**
+   * L'historique des brigades et des comptabilités arrive en arrière-plan juste
+   * après l'ouverture de l'application. Une brigade créée avant lui partirait
+   * d'index de départ faux, et une brigade corrigée créerait une seconde
+   * comptabilité : on attend qu'il soit là.
+   */
+  const historyNotReady = (): boolean => {
+    if (!appState.isSyncing) return false;
+    dispatch({ type: 'ADD_TOAST', payload: { type: 'info', message: "L'historique des brigades se charge encore — réessayez dans un instant." } });
+    return true;
+  };
+
   const handleStartBrigade = (forcedStatus?: 'Clôturée' | 'En attente') => {
+    if (historyNotReady()) return;
     if (unbankedJustifs.length > 0) {
       const first = unbankedJustifs[0];
       dispatch({ type: 'ADD_TOAST', payload: { type: 'error', message:
@@ -1294,8 +1308,10 @@ const Brigades = () => {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           {perm.creer && (
-            <button onClick={() => { setEditingBrigade(null); resetForm(); setShowModal(true); }} className="h-14 px-8 bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] text-[#FFB800] border border-blue-900 hover:border-[#FFB800] rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-950/20 hover:scale-105 transition-all flex items-center gap-3 italic">
-              <Plus className="w-5 h-5 text-[#FFB800]" /> CRÉER NOUVELLE BRIGADE
+            <button onClick={() => { if (historyNotReady()) return; setEditingBrigade(null); resetForm(); setShowModal(true); }} disabled={!!appState.isSyncing} className="disabled:opacity-60 disabled:cursor-wait h-14 px-8 bg-gradient-to-r from-[#001f5c] via-[#002d85] to-[#001f5c] text-[#FFB800] border border-blue-900 hover:border-[#FFB800] rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-blue-950/20 hover:scale-105 transition-all flex items-center gap-3 italic">
+              {appState.isSyncing
+                ? <><Loader2 className="w-5 h-5 text-[#FFB800] animate-spin" /> CHARGEMENT DE L'HISTORIQUE…</>
+                : <><Plus className="w-5 h-5 text-[#FFB800]" /> CRÉER NOUVELLE BRIGADE</>}
             </button>
           )}
         </div>
@@ -1552,7 +1568,7 @@ const Brigades = () => {
                       <RowActions>
                         <ActionBtn icon={EyeIcon} tone="blue" title="Voir les détails" onClick={() => { setSelectedBrigade(b); setShowDetail(true); setDetailTab('info'); }} />
                         <ActionBtn icon={FileText} tone="slate" title="Fiche de brigade" onClick={() => { setSelectedBrigade(b); setShowFicheModal(true); }} />
-                        {perm.modifier && <ActionBtn icon={Pencil} tone="amber" title="Modifier" onClick={() => { resetForm(); loadBrigadeIntoWizard(b); }} />}
+                        {perm.modifier && <ActionBtn icon={Pencil} tone="amber" title="Modifier" onClick={() => { if (historyNotReady()) return; resetForm(); loadBrigadeIntoWizard(b); }} />}
                         {perm.supprimer && <ActionBtn icon={Trash2} tone="red" title="Supprimer" onClick={() => { setSelectedBrigade(b); setShowConfirmDelete(true); }} />}
                       </RowActions>
                     </td>
@@ -1653,7 +1669,7 @@ const Brigades = () => {
                                   <div className="divide-y divide-slate-100">
                                     {perm.modifier && (
                                       <button
-                                        onClick={() => { resetForm(); loadBrigadeIntoWizard(b); }}
+                                        onClick={() => { if (historyNotReady()) return; resetForm(); loadBrigadeIntoWizard(b); }}
                                         className="w-full px-4 py-3 text-left text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors"
                                       >
                                         <Pencil className="w-4 h-4" /> Modifier
@@ -1791,7 +1807,7 @@ const Brigades = () => {
                 description={hasActiveFilters ? "Aucune brigade ne correspond aux filtres sélectionnés" : "L'historique est vide pour le moment"}
                 {...(hasActiveFilters
                   ? { actionLabel: "✕ Effacer filtres", action: clearBrigadeFilters }
-                  : (currentUserRole !== 'gerant' ? { actionLabel: "Ouvrir Brigade", action: () => { setEditingBrigade(null); resetForm(); setShowModal(true); } } : {}))}
+                  : (currentUserRole !== 'gerant' ? { actionLabel: "Ouvrir Brigade", action: () => { if (historyNotReady()) return; setEditingBrigade(null); resetForm(); setShowModal(true); } } : {}))}
               />
             </div>
           )}

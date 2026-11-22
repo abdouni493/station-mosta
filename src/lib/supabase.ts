@@ -1002,33 +1002,75 @@ export async function dbSelectAll<T>(
 ): Promise<T[]> {
   const orderBy = opts?.orderBy || (NO_CREATED_AT.has(tableName) ? 'id' : 'created_at');
   const ascending = opts?.ascending ?? false;
-  const out: any[] = [];
 
-  for (let page = 0; ; page++) {
-    let q = supabase.from(tableName).select('*');
+  const pageQuery = (page: number, withCount = false) => {
+    let q = withCount
+      ? supabase.from(tableName).select('*', { count: 'exact' })
+      : supabase.from(tableName).select('*');
     if (opts?.eq) for (const [k, v] of Object.entries(opts.eq)) q = q.eq(k, v as any);
     // `nullsFirst: false` garde les lignes sans horodatage à la fin plutôt que de
     // les faire remonter en tête à chaque tranche.
-    q = q.order(orderBy, { ascending, nullsFirst: false })
+    return q.order(orderBy, { ascending, nullsFirst: false })
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+  };
+  const fail = (error: { message?: string }): never => {
+    console.error(`[dbSelectAll:${tableName}]`, error);
+    throw new Error(`[select ${tableName}] ${error.message}`);
+  };
 
-    const { data, error } = await q;
-    if (error) {
-      // La colonne d'ordre n'existe pas : on repagine sur `id` plutôt que de
-      // retomber sur `dbSelect`, qui ne pagine pas et tronquerait à 1000 lignes.
-      // Ce n'est plus qu'un filet — les tables connues sont déclarées ci-dessus.
-      if (page === 0 && orderBy !== 'id' && /column .* does not exist|42703/i.test(error.message || '')) {
-        console.warn(`[dbSelectAll:${tableName}] pas de colonne « ${orderBy} » — tri sur « id »`);
-        return dbSelectAll<T>(tableName, { ...opts, orderBy: 'id' });
-      }
-      console.error(`[dbSelectAll:${tableName}]`, error);
-      throw new Error(`[select ${tableName}] ${error.message}`);
+  // ── Première tranche, avec le NOMBRE total de lignes ──────────────────────
+  const first = await pageQuery(0, true);
+  if (first.error) {
+    // La colonne d'ordre n'existe pas : on repagine sur `id` plutôt que de
+    // retomber sur `dbSelect`, qui ne pagine pas et tronquerait à 1000 lignes.
+    // Ce n'est plus qu'un filet — les tables connues sont déclarées ci-dessus.
+    if (orderBy !== 'id' && /column .* does not exist|42703/i.test(first.error.message || '')) {
+      console.warn(`[dbSelectAll:${tableName}] pas de colonne « ${orderBy} » — tri sur « id »`);
+      return dbSelectAll<T>(tableName, { ...opts, orderBy: 'id' });
     }
-    const rows = (data as any[]) || [];
+    fail(first.error);
+  }
+  const out: any[] = [...((first.data as any[]) || [])];
+  if (out.length < PAGE_SIZE) return out as T[];
+
+  // ── Les tranches suivantes partent EN PARALLÈLE ───────────────────────────
+  // Elles partaient une à une : une table de 10 000 lignes coûtait dix
+  // allers-retours successifs, soit plusieurs secondes sur le réseau d'un
+  // téléphone. Le total connu, on les demande ensemble (par lots de 4 pour ne
+  // pas saturer la connexion).
+  const total = first.count ?? 0;
+  const pages = total > PAGE_SIZE ? Math.ceil(total / PAGE_SIZE) : 0;
+  const CONCURRENCY = 4;
+  for (let start = 1; start < pages; start += CONCURRENCY) {
+    const batch = [];
+    for (let p = start; p < Math.min(pages, start + CONCURRENCY); p++) batch.push(pageQuery(p));
+    const results = await Promise.all(batch);
+    for (const r of results) {
+      if (r.error) fail(r.error);
+      out.push(...((r.data as any[]) || []));
+    }
+  }
+
+  // Filet : des lignes ajoutées entre le comptage et la lecture, ou un total
+  // inconnu — on termine tranche par tranche, comme avant.
+  for (let page = Math.max(pages, 1); ; page++) {
+    if (out.length < page * PAGE_SIZE) break;
+    const r = await pageQuery(page);
+    if (r.error) fail(r.error);
+    const rows = (r.data as any[]) || [];
     out.push(...rows);
     if (rows.length < PAGE_SIZE) break;
   }
-  return out as T[];
+
+  // Une ligne insérée pendant la lecture décale les tranches : sans doublons.
+  const seen = new Set<unknown>();
+  return out.filter(r => {
+    const id = r?.id;
+    if (id === undefined || id === null) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  }) as T[];
 }
 
 /**
