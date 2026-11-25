@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { Suspense, useEffect, useState } from "react";
+import React, { Suspense, useEffect, useLayoutEffect, useState } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
+import { markNavStart, markNavReady } from "./lib/perf";
 import { useTranslation } from "react-i18next";
 import Layout from "./components/Layout";
-import { AppProvider, useAppState, useAppDispatch, UserPermissions } from "./store/AppContext";
+import { AppProvider, useAppState, useAppDispatch, useHydrationSummary, UserPermissions } from "./store/AppContext";
 import { ToastContainer } from "./components/Toast";
 import { useAuth, type AuthPhase } from "./hooks/useAuth";
 import { db, supabase, BUCKETS, getPublicUrl, getMyModuleWorker } from "./lib/supabase";
@@ -340,6 +341,63 @@ const DbLoader = () => (
   </div>
 );
 
+// ─── Bannière d'erreur de chargement, PAR table (non bloquante) ───────────────
+/**
+ * Remplace le message générique « Certaines données peuvent être manquantes »
+ * par la liste EXACTE des tables dont la lecture a échoué, pour que l'utilisateur
+ * sache quels écrans sont incomplets — et propose de réessayer. Une lecture en
+ * échec n'est jamais présentée comme une liste vide réussie.
+ */
+const HydrationErrorBanner = () => {
+  const { failed, startupError } = useHydrationSummary();
+  const [dismissed, setDismissed] = useState(false);
+
+  if (dismissed) return null;
+  if (!startupError && failed.length === 0) return null;
+
+  const names = failed.map(f => f.label);
+  const shown = names.slice(0, 4);
+  const extra = names.length - shown.length;
+
+  return (
+    <div
+      role="alert"
+      className="fixed bottom-4 inset-x-0 z-50 flex justify-center px-4 pointer-events-none"
+    >
+      <div className="pointer-events-auto flex items-start gap-3 max-w-lg w-full px-4 py-3 rounded-2xl bg-white shadow-xl border border-red-200">
+        <span className="mt-0.5 text-lg" aria-hidden>⚠️</span>
+        <div className="flex-1 min-w-0 text-[13px] leading-snug">
+          <p className="font-bold text-red-700">
+            {startupError
+              ? "Le chargement initial a échoué."
+              : "Certaines données n'ont pas pu être lues :"}
+          </p>
+          {!startupError && (
+            <p className="text-slate-600 mt-0.5 break-words">
+              {shown.join(', ')}{extra > 0 ? ` +${extra}` : ''}.
+              <span className="text-slate-500"> Ces écrans peuvent être incomplets.</span>
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col gap-1.5 flex-shrink-0">
+          <button
+            onClick={() => window.location.reload()}
+            className="px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider text-white bg-[#003087] hover:bg-[#002470] transition-colors"
+          >
+            Réessayer
+          </button>
+          <button
+            onClick={() => setDismissed(true)}
+            className="px-3 py-1 rounded-lg text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+          >
+            Ignorer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Historique en cours de chargement (non bloquant) ─────────────────────────
 // L'application est utilisable ; seul l'historique arrive encore.
 const SyncBadge = () => (
@@ -517,6 +575,8 @@ function AppContent({
       {/* Show DB loading overlay while Supabase hydrates */}
       {isLoading && <DbLoader />}
       {!isLoading && isSyncing && <SyncBadge />}
+      {/* Erreurs de lecture par table — identifie précisément ce qui a échoué. */}
+      {!isLoading && <HydrationErrorBanner />}
 
       <ToastContainer
         toasts={toasts}
@@ -529,9 +589,27 @@ function AppContent({
   );
 }
 
+// ─── Navigation timing (diagnostic) ───────────────────────────────────────────
+/**
+ * Mesure le temps entre un changement d'écran et son premier rendu utilisable.
+ * Rendu DANS la frontière `<Suspense>` : quand l'écran demandé n'est pas encore
+ * téléchargé, React suspend ce marqueur avec lui et ne le valide qu'au moment où
+ * l'écran est prêt — c'est donc l'instant exact du premier rendu. Inerte tant que
+ * le diagnostic est désactivé (voir lib/perf.ts).
+ */
+function RouteReadyMarker({ route }: { route: string }): null {
+  useLayoutEffect(() => { markNavReady(route); }, [route]);
+  return null;
+}
+
 // ─── Routes component (inside Router context so useNavigate works) ─────────────
 function AppRoutes({ onLogout }: { onLogout: () => void }) {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Départ du chronomètre au changement d'écran (le marqueur ci-dessous arrête
+  // le chrono au premier rendu). Les deux sont inertes hors diagnostic.
+  useLayoutEffect(() => { markNavStart(location.pathname); }, [location.pathname]);
 
   // Handle logout with redirect to login page
   const handleLogout = async () => {
@@ -542,6 +620,7 @@ function AppRoutes({ onLogout }: { onLogout: () => void }) {
   return (
     <Layout onLogout={handleLogout}>
       <Suspense fallback={<PageFallback />}>
+      <RouteReadyMarker route={location.pathname} />
       <Routes>
         <Route path="/dashboard"        element={<Dashboard />} />
 

@@ -11,6 +11,11 @@ import React, {
 } from 'react';
 import { ToastMessage, ToastType } from '../components/Toast';
 import {
+  type HydrationStatus, type HydrationSummary, type HydrationIssue,
+  type ResourceStatus, type ResourceLoadState,
+  hydrationLabel, summarizeHydration,
+} from '../lib/hydrationSummary';
+import {
   db, supabase, subscribeTable, uploadFile, uploadBase64, BUCKETS,
   onRealtimeHealthChange, readPersistedSession, dbSelectAll,
 } from '../lib/supabase';
@@ -1250,6 +1255,13 @@ export interface AppState {
    * fin de la précédente) attendent qu'il soit `false`.
    */
   isSyncing?: boolean;
+  /**
+   * Statut de chargement PAR ressource. Il remplace le message générique « Délai
+   * de chargement dépassé » par un état fiable et des erreurs identifiables table
+   * par table : un écran peut dire précisément « Ventes carburant : échec de
+   * lecture » au lieu d'afficher une liste vide trompeuse.
+   */
+  hydration?: HydrationStatus;
 }
 
 // ─── Empty initial state (data comes from Supabase) ───────────────────────────
@@ -1295,6 +1307,7 @@ const initialState: AppState = {
   currentUserPermissions: undefined,
   isLoading: true,
   isSyncing: true,
+  hydration: {},
 };
 
 // ─── Action Types ─────────────────────────────────────────────────────────────
@@ -1302,6 +1315,7 @@ const initialState: AppState = {
 type AppAction =
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'HYDRATE'; payload: Partial<AppState> }
+  | { type: 'SET_HYDRATION_STATUS'; payload: HydrationStatus }
   | { type: 'ADD_TANK'; payload: Tank }
   /**
    * `keepLevel` : la modification ne porte PAS sur le niveau (nom, seuil,
@@ -1431,6 +1445,11 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, isLoading: action.payload };
     case 'HYDRATE':
       return { ...state, ...action.payload, isLoading: false };
+
+    // Fusionne les statuts par ressource sans écraser les autres : un échec de
+    // lecture d'une table reste visible même quand une autre vient de réussir.
+    case 'SET_HYDRATION_STATUS':
+      return { ...state, hydration: { ...(state.hydration || {}), ...action.payload } };
 
     case 'HYDRATE_TABLES':
       return { ...state, isLoading: true };
@@ -3427,9 +3446,17 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         if (!cancelled) {
           console.error('[hydrate] Phase 1 timeout: releasing loading spinner');
           dispatch({ type: 'SET_LOADING', payload: false });
+          // On NE déclare PAS les données complètes : on signale que le démarrage
+          // est lent et que le chargement CONTINUE en arrière-plan. L'indicateur
+          // par ressource (voir `hydration`) dit ensuite quelles tables ont
+          // réellement abouti et lesquelles ont échoué.
+          dispatch({ type: 'SET_HYDRATION_STATUS', payload: { __startup: { state: 'slow', at: Date.now() } } });
           dispatch({
             type: 'ADD_TOAST',
-            payload: { type: 'error', message: 'Délai de chargement dépassé. Certaines données peuvent être manquantes.' },
+            payload: {
+              type: 'warning',
+              message: 'Connexion lente : l’application s’ouvre, les données continuent d’arriver en arrière-plan. Les écrans signalent ce qui n’est pas encore chargé.',
+            },
           });
         }
       }, 15000);
@@ -3521,6 +3548,10 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           },
         });
 
+        // Phase 1 a abouti : le squelette et les écrans de référence sont fiables.
+        // Si le délai de 15 s avait levé l'alerte « lent », elle se résout ici.
+        dispatch({ type: 'SET_HYDRATION_STATUS', payload: { __startup: { state: 'ready', at: Date.now() } } });
+
         console.log('[hydrate] Phase 1 complete — UI unblocked');
 
         // ── PHASE 2: Large/transactional tables (background) ─────────────
@@ -3530,10 +3561,24 @@ export const AppProvider = ({ children }: AppProviderProps) => {
 
         console.log('[hydrate] Phase 2 – transactional tables…');
 
+        // `safeQ` empêche toujours qu'une table en échec fasse tomber les autres,
+        // mais une lecture ÉCHOUÉE n'est plus présentée comme une liste vide
+        // réussie : son statut passe à `error`, visible à l'écran et dans le
+        // diagnostic. Elle rend quand même `[]` pour que le reste s'affiche — le
+        // statut dit que ce vide est une ERREUR, pas « rien à afficher ».
         const safeQ = async <T,>(name: string, fn: () => Promise<T>): Promise<T> => {
-          try { return await fn(); }
-          catch (err) {
+          try {
+            const r = await fn();
+            if (!cancelled) dispatch({ type: 'SET_HYDRATION_STATUS', payload: { [name]: { state: 'ready', at: Date.now() } } });
+            return r;
+          } catch (err) {
             console.error(`[hydrate] Phase 2 – ${name} failed:`, err);
+            if (!cancelled) {
+              dispatch({
+                type: 'SET_HYDRATION_STATUS',
+                payload: { [name]: { state: 'error', error: err instanceof Error ? err.message : String(err), at: Date.now() } },
+              });
+            }
             return [] as unknown as T;
           }
         };
@@ -3825,6 +3870,10 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         console.error('[hydrate] Critical error in Phase 1:', err);
         dispatch({ type: 'SET_LOADING', payload: false });
         dispatch({ type: 'HYDRATE', payload: { isSyncing: false } });
+        dispatch({
+          type: 'SET_HYDRATION_STATUS',
+          payload: { __startup: { state: 'error', error: err instanceof Error ? err.message : 'Erreur inconnue', at: Date.now() } },
+        });
         dispatch({
           type: 'ADD_TOAST',
           payload: {
@@ -4138,6 +4187,24 @@ export const useAppDispatch = () => {
   if (!ctx) throw new Error('useAppDispatch must be used within AppProvider');
   return ctx;
 };
+
+// Réexport des types/outils de statut (définis dans lib/hydrationSummary, pure
+// et testable hors React) pour que les consommateurs existants continuent de les
+// importer depuis le store.
+export {
+  hydrationLabel, summarizeHydration,
+  type HydrationStatus, type HydrationSummary, type HydrationIssue,
+  type ResourceStatus, type ResourceLoadState,
+};
+
+/**
+ * Résumé actionnable de l'état de chargement, pour les bannières et badges.
+ * Remplace le message générique par la liste exacte de ce qui n'a pas abouti.
+ */
+export function useHydrationSummary(): HydrationSummary {
+  const { hydration } = useAppState();
+  return useMemo(() => summarizeHydration(hydration), [hydration]);
+}
 
 export const useRtl = () => {
   const { isRtl } = useAppState();

@@ -11,6 +11,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { compressImage, IMAGE_PRESETS, CompressOptions } from './imageCompress';
+import { perfEnabled, recordQuery } from './perf';
 
 // Connection — values come from Vite env when present, otherwise fall back to the
 // project this app is wired to. The anon key is public by design (RLS protects data).
@@ -205,8 +206,17 @@ async function fetchWithRetry(
     );
     callerSignal?.addEventListener('abort', onCallerAbort);
 
+    // Instrumentation (désactivée par défaut — voir lib/perf.ts). Chaque
+    // tentative est mesurée séparément, pour que les reprises apparaissent telles
+    // quelles dans le diagnostic. Aucun surcoût quand le diagnostic est éteint.
+    const perfOn = perfEnabled();
+    const perfStart = perfOn ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) : 0;
+    const perfNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
     try {
       const res = await fetch(input, { ...init, signal: controller.signal });
+
+      if (perfOn) recordQuery({ url, method, startedAt: perfStart, ms: perfNow() - perfStart, res });
 
       // Une insertion rejouée après une coupure, qui bute sur sa propre clé :
       // c'est la PREMIÈRE tentative qui a été enregistrée, la réponse s'était
@@ -228,6 +238,7 @@ async function fetchWithRetry(
       return res;
     } catch (err) {
       lastError = err;
+      if (perfOn) recordQuery({ url, method, startedAt: perfStart, ms: perfNow() - perfStart, failed: true });
       // The caller aborted on purpose (component unmounted, request superseded).
       if (callerSignal?.aborted) throw err;
       if (!replayable || attempt >= maxRetries) throw err;
