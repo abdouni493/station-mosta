@@ -50,6 +50,7 @@
 -- │ présente, colonne présente, pas déjà indexée). N'exécuter ensuite QUE       │
 -- │ les CREATE correspondants.                                                  │
 -- ╰───────────────────────────────────────────────────────────────────────────╯
+set statement_timeout = '120s';
 WITH wanted(idx_name, table_name, column_name) AS (
   VALUES
     ('idx_fuel_sales_created_at',             'fuel_sales',               'created_at'),
@@ -79,18 +80,27 @@ indexed_first_col AS (
   JOIN pg_namespace n ON n.oid = t.relnamespace
   JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ix.indkey[0]
   WHERE n.nspname = 'public'
+),
+-- Colonnes réelles des tables (pg_catalog, rapide — pas d'information_schema qui
+-- est lent sur une base chargée et provoquait des « connection timeout »).
+real_cols AS (
+  SELECT c.relname AS table_name, a.attname AS column_name
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+  WHERE n.nspname = 'public' AND c.relkind = 'r'
 )
 SELECT
   w.idx_name, w.table_name, w.column_name,
   CASE
-    WHEN to_regclass('public.' || w.table_name) IS NULL          THEN 'TABLE ABSENTE → ne pas créer'
-    WHEN NOT EXISTS (SELECT 1 FROM information_schema.columns ic
-                     WHERE ic.table_schema='public' AND ic.table_name=w.table_name
-                       AND ic.column_name=w.column_name)          THEN 'COLONNE ABSENTE → ne pas créer'
+    WHEN to_regclass('public.' || w.table_name) IS NULL          THEN 'TABLE ABSENTE -> ne pas créer'
+    WHEN NOT EXISTS (SELECT 1 FROM real_cols rc
+                     WHERE rc.table_name=w.table_name AND rc.column_name=w.column_name)
+                                                                  THEN 'COLONNE ABSENTE -> ne pas créer'
     WHEN EXISTS (SELECT 1 FROM indexed_first_col f
                  WHERE f.table_name=w.table_name AND f.column_name=w.column_name)
-                                                                  THEN 'DÉJÀ INDEXÉ → ne pas créer'
-    ELSE 'MANQUANT → créer'
+                                                                  THEN 'DÉJÀ INDEXÉ -> ne pas créer'
+    ELSE 'MANQUANT -> créer'
   END AS action
 FROM wanted w
 ORDER BY action, w.table_name;
@@ -183,10 +193,13 @@ BEGIN
       RAISE NOTICE 'Table % absente — index % ignoré', r.table_name, r.idx_name;
       CONTINUE;
     END IF;
-    -- Colonne absente → on passe.
+    -- Colonne absente → on passe. (pg_catalog, rapide — pas d'information_schema.)
     SELECT EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema='public' AND table_name=r.table_name AND column_name=r.check_col
+      SELECT 1
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+      WHERE n.nspname = 'public' AND c.relname = r.table_name AND a.attname = r.check_col
     ) INTO has_col;
     IF NOT has_col THEN
       RAISE NOTICE 'Colonne %.% absente — index % ignoré', r.table_name, r.check_col, r.idx_name;
