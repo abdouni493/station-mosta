@@ -1960,6 +1960,46 @@ function rowsWhere(rows: any[] | null | undefined, field: string, key: unknown):
  *  always produce identical, complete accounting data (espèces reçues, TPE/Tags,
  *  décalages par pompiste). Previously accountings were only loaded on realtime
  *  events, so a freshly-loaded Fiche Journalière could miss this data. */
+/**
+ * Démarrage en UNE requête (voir `supabase/optimizations/bootstrap_rpc.sql`).
+ *
+ * `app_bootstrap_phase1/2` renvoient d'un seul coup toutes les tables brutes
+ * d'une phase, au lieu de ~16 puis ~32 allers-retours REST — c'est le gros
+ * gain sur réseau lent. Les lignes sont IDENTIQUES à un `select *` (colonnes
+ * snake_case) : le mapping d'hydratation ne change pas d'une ligne. Si la
+ * fonction manque (SQL pas encore appliqué) ou échoue, on renvoie `null` et
+ * l'appelant retombe sur les lectures table par table — rien ne casse.
+ */
+async function fetchBootstrapBundle(phase: 1 | 2): Promise<Record<string, any> | null> {
+  const fn = phase === 1 ? 'app_bootstrap_phase1' : 'app_bootstrap_phase2';
+  try {
+    const { data, error } = await supabase.rpc(fn);
+    if (error) {
+      console.warn(`[hydrate] ${fn} indisponible — lecture table par table:`, error.message);
+      return null;
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    return data as Record<string, any>;
+  } catch (e) {
+    console.warn(`[hydrate] ${fn} a échoué — lecture table par table:`, e);
+    return null;
+  }
+}
+
+/** Jointure PURE comptabilités de brigade + leurs justifications. Partagée par
+ *  la lecture en direct ET le bundle de démarrage, pour que les deux chemins
+ *  produisent exactement la même donnée. */
+function mergeBrigadeAccountings(accountingsRaw: any[], justifRaw: any[]): BrigadeAccounting[] {
+  const accountings = ((accountingsRaw as any[]) || []).map(mapBrigadeAccounting);
+  const byId = new Map(accountings.map(a => [a.id, a]));
+  ((justifRaw ?? []) as any[]).forEach((jr: any) => {
+    const acct = byId.get(jr.accounting_id);
+    if (!acct) return;
+    (acct.justifications ||= []).push(mapBrigadeAccountingJustification(jr));
+  });
+  return accountings;
+}
+
 async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccounting[]> {
   // Les deux tables partent ENSEMBLE : la seconde attendait la première.
   // Lecture PAGINÉE : au-delà du plafond du serveur, les justifications les
@@ -1969,14 +2009,7 @@ async function loadBrigadeAccountingsWithJustifications(): Promise<BrigadeAccoun
     db.getBrigadeAccountings().catch(() => []),
     dbSelectAll<any>('brigade_accounting_justifications'),
   ]);
-  const accountings = ((accountingsRaw as any[]) || []).map(mapBrigadeAccounting);
-  const byId = new Map(accountings.map(a => [a.id, a]));
-  ((justifRaw ?? []) as any[]).forEach((jr: any) => {
-    const acct = byId.get(jr.accounting_id);
-    if (!acct) return;
-    (acct.justifications ||= []).push(mapBrigadeAccountingJustification(jr));
-  });
-  return accountings;
+  return mergeBrigadeAccountings(accountingsRaw as any[], justifRaw ?? []);
 }
 
 function mapBrigadeAccountingJustification(jr: any): BrigadeAccountingJustification {
@@ -3473,6 +3506,37 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         // l'écran « Chargement des données » : plusieurs Mo à télécharger sur
         // le réseau d'un téléphone avant d'afficher quoi que ce soit. Il part
         // désormais JUSTE APRÈS les tables légères, sans bloquer l'affichage.
+        // UNE requête (bootstrap) au lieu de ces 16 lectures. Absente/en échec
+        // → repli sur les 16 lectures d'origine, dans le même ordre.
+        const b1 = await fetchBootstrapBundle(1);
+        const p1vals: any[] = b1
+          ? [
+              b1.tanks ?? [], b1.pumps ?? [], b1.pump_nozzles ?? [], b1.tracks ?? [], b1.drivers ?? [],
+              b1.products ?? [], b1.product_brands ?? [],
+              b1.pompistes ?? [], b1.brigade_chefs ?? [], b1.gerants ?? [], b1.magasin_workers ?? [],
+              b1.clients ?? [], b1.suppliers ?? [],
+              b1.station_settings ?? null,
+              b1.chef_pompiste_assignments ?? [],
+              b1.permission_templates ?? [],
+            ]
+          : await Promise.all([
+              db.getTanks(),
+              db.getPumps(),
+              db.getNozzles(),
+              db.getTracks(),
+              db.getDrivers(),
+              db.getProducts(),
+              db.getBrands(),
+              db.getPompistes(),
+              db.getBrigadeChefs(),
+              db.getGerants(),
+              db.getMagasinWorkers(),
+              db.getClients(),
+              db.getSuppliers(),
+              db.getSettings(),
+              supabase.from('chef_pompiste_assignments').select('chef_id, pompiste_id').then(r => r.data ?? []),
+              db.getPermissionTemplates().catch(() => []),
+            ]);
         const [
           tanksRaw, pumpsRaw, nozzlesRaw, tracksRaw, driversRaw,
           productsRaw, brandsRaw,
@@ -3481,24 +3545,7 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           settingsRaw,
           chefAssignmentsRaw,
           permissionTemplatesRaw,
-        ] = await Promise.all([
-          db.getTanks(),
-          db.getPumps(),
-          db.getNozzles(),
-          db.getTracks(),
-          db.getDrivers(),
-          db.getProducts(),
-          db.getBrands(),
-          db.getPompistes(),
-          db.getBrigadeChefs(),
-          db.getGerants(),
-          db.getMagasinWorkers(),
-          db.getClients(),
-          db.getSuppliers(),
-          db.getSettings(),
-          supabase.from('chef_pompiste_assignments').select('chef_id, pompiste_id').then(r => r.data ?? []),
-          db.getPermissionTemplates().catch(() => []),
-        ]);
+        ] = p1vals;
 
         if (cancelled) return;
 
@@ -3583,16 +3630,41 @@ export const AppProvider = ({ children }: AppProviderProps) => {
           }
         };
 
+        // ── Démarrage en UNE requête (voir fetchBootstrapBundle) ──────────
+        // Une seule requête ramène toutes les tables transactionnelles au lieu
+        // de ~32 allers-retours. Absente/en échec → `q` retombe sur `safeQ`,
+        // table par table, avec le statut par ressource intact.
+        const b2 = await fetchBootstrapBundle(2);
+        if (b2 && !cancelled) {
+          const at = Date.now();
+          const readyNames = [
+            'Brigades', 'Brigade Assignments', 'Bank Accounts', 'Treasury',
+            'Décalage History', 'TPE Transactions', 'Brigade Décalage Alerts', 'Brigade Accountings',
+            'Fuel Sales', 'Shop Sales', 'Delivery Notes', 'Purchases', 'Expenses', 'Inventories', 'Daily Reports',
+            'Worker Acomptes', 'Worker Absences', 'Payment Records', 'DN Payments', 'DN Photos',
+            'Purchase Items', 'Purchase Payments', 'Shop Sale Items', 'Supplier Appointments', 'Supplier Debt Payments',
+            'Client Appointments', 'Client Transactions', 'Delivery Note Items',
+            'Fuel Invoices', 'Fuel Invoice BLs', 'Fuel Receipts', 'Fuel Receipt Invoices',
+          ];
+          const statusPayload: Record<string, { state: 'ready'; at: number }> = {};
+          for (const n of readyNames) statusPayload[n] = { state: 'ready', at };
+          dispatch({ type: 'SET_HYDRATION_STATUS', payload: statusPayload });
+        }
+        // Lit depuis le bundle s'il est présent, sinon la lecture d'origine (qui
+        // marque elle-même son statut). `fn` n'est appelée QUE sans bundle.
+        const q = <T,>(name: string, key: string, fn: () => Promise<T>): Promise<T> =>
+          b2 ? Promise.resolve((b2[key] ?? []) as unknown as T) : safeQ(name, fn);
+
         // L'historique des brigades et la trésorerie arrivent en premier : ce
         // sont eux que le tableau de bord et les caisses affichent d'abord.
         const historyP = Promise.all([
-          safeQ('Brigades', () => db.getBrigades()),
-          safeQ('Brigade Assignments', async () => {
+          q('Brigades', 'brigades', () => db.getBrigades()),
+          q('Brigade Assignments', 'brigade_pompiste_assignments', async () => {
             const { data, error } = await supabase.from('brigade_pompiste_assignments').select('brigade_id, pompiste_id');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Bank Accounts', () => db.getBankAccounts()),
-          safeQ('Treasury', () => db.getTreasuryTransactions()),
+          q('Bank Accounts', 'bank_accounts', () => db.getBankAccounts()),
+          q('Treasury', 'treasury_transactions', () => db.getTreasuryTransactions()),
         ]).then(([brigadesRaw, brigadeAssignmentsRaw, bankAccountsRaw, treasuryRaw]) => {
           if (cancelled) return;
           const assignByBrigade = groupBy(brigadeAssignmentsRaw as any[], a => a.brigade_id);
@@ -3625,95 +3697,99 @@ export const AppProvider = ({ children }: AppProviderProps) => {
         ] = await Promise.all([
           // Ces quatre lectures attendaient chacune la précédente, APRÈS tout le
           // reste : elles partent maintenant avec les autres.
-          safeQ('Décalage History', async () => {
+          q('Décalage History', 'pompiste_decalage_history', async () => {
             const { data, error } = await supabase.from('pompiste_decalage_history').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('TPE Transactions', async () => {
+          q('TPE Transactions', 'tpe_transactions', async () => {
             const { data, error } = await supabase.from('tpe_transactions').select('*').order('date', { ascending: false });
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Brigade Décalage Alerts', async () => {
+          q('Brigade Décalage Alerts', 'brigade_decalage_alerts', async () => {
             const { data, error } = await supabase.from('brigade_decalage_alerts').select('*').order('created_at', { ascending: false }).limit(200);
             if (error) throw error; return data ?? [];
           }),
           // Brigade accountings (+ justifications) — required by the Fiche Journalière
           // (espèces reçues, TPE/Tags, décalages par pompiste) and the dashboards.
-          safeQ('Brigade Accountings', loadBrigadeAccountingsWithJustifications),
+          // Depuis le bundle : jointure locale des deux tables brutes (même
+          // résultat que `loadBrigadeAccountingsWithJustifications`).
+          b2
+            ? Promise.resolve(mergeBrigadeAccountings(b2.brigade_accounting ?? [], b2.brigade_accounting_justifications ?? []))
+            : safeQ('Brigade Accountings', loadBrigadeAccountingsWithJustifications),
           // Large tables — capped at 500 most-recent rows
-          safeQ('Fuel Sales', async () => {
+          q('Fuel Sales', 'fuel_sales', async () => {
             return dbSelectAll<any>('fuel_sales');
           }),
-          safeQ('Shop Sales', async () => {
+          q('Shop Sales', 'shop_sales', async () => {
             return dbSelectAll<any>('shop_sales');
           }),
-          safeQ('Delivery Notes', () => db.getDeliveryNotes()),
-          safeQ('Purchases', async () => {
+          q('Delivery Notes', 'delivery_notes', () => db.getDeliveryNotes()),
+          q('Purchases', 'purchases', async () => {
             const { data, error } = await supabase.from('purchases').select('*').order('created_at', { ascending: false }).limit(500);
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Expenses', () => db.getExpenses()),
-          safeQ('Inventories', () => db.getInventories()),
-          safeQ('Daily Reports', () => db.getDailyReports()),
+          q('Expenses', 'expenses', () => db.getExpenses()),
+          q('Inventories', 'inventories', () => db.getInventories()),
+          q('Daily Reports', 'daily_reports', () => db.getDailyReports()),
           // Payroll sub-records (all workers combined)
-          safeQ('Worker Acomptes', async () => {
+          q('Worker Acomptes', 'worker_acomptes', async () => {
             const { data, error } = await supabase.from('worker_acomptes').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Worker Absences', async () => {
+          q('Worker Absences', 'worker_absences', async () => {
             const { data, error } = await supabase.from('worker_absences').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Payment Records', async () => {
+          q('Payment Records', 'worker_payment_records', async () => {
             const { data, error } = await supabase.from('worker_payment_records').select('*');
             if (error) throw error; return data ?? [];
           }),
           // Sub-records for delivery notes / purchases / shop sales
-          safeQ('DN Payments', async () => {
+          q('DN Payments', 'delivery_note_payments', async () => {
             const { data, error } = await supabase.from('delivery_note_payments').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('DN Photos', async () => {
+          q('DN Photos', 'delivery_note_photos', async () => {
             const { data, error } = await supabase.from('delivery_note_photos').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Purchase Items', async () => {
+          q('Purchase Items', 'purchase_items', async () => {
             const { data, error } = await supabase.from('purchase_items').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Purchase Payments', async () => {
+          q('Purchase Payments', 'purchase_payments', async () => {
             const { data, error } = await supabase.from('purchase_payments').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Shop Sale Items', () => dbSelectAll<any>('shop_sale_items', { orderBy: 'sale_id', ascending: true })),
+          q('Shop Sale Items', 'shop_sale_items', () => dbSelectAll<any>('shop_sale_items', { orderBy: 'sale_id', ascending: true })),
           // Client / Supplier sub-records
-          safeQ('Supplier Appointments', async () => {
+          q('Supplier Appointments', 'supplier_appointments', async () => {
             const { data, error } = await supabase.from('supplier_appointments').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Supplier Debt Payments', async () => {
+          q('Supplier Debt Payments', 'supplier_debt_payments', async () => {
             const { data, error } = await supabase.from('supplier_debt_payments').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Client Appointments', () => dbSelectAll<any>('client_appointments')),
-          safeQ('Client Transactions', () => dbSelectAll<any>('client_transactions')),
-          safeQ('Delivery Note Items', async () => {
+          q('Client Appointments', 'client_appointments', () => dbSelectAll<any>('client_appointments')),
+          q('Client Transactions', 'client_transactions', () => dbSelectAll<any>('client_transactions')),
+          q('Delivery Note Items', 'delivery_note_items', async () => {
             const { data, error } = await supabase.from('delivery_note_items').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Fuel Invoices', async () => {
+          q('Fuel Invoices', 'fuel_invoices', async () => {
             const { data, error } = await supabase.from('fuel_invoices').select('*').order('created_at', { ascending: false }).limit(500);
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Fuel Invoice BLs', async () => {
+          q('Fuel Invoice BLs', 'fuel_invoice_bls', async () => {
             const { data, error } = await supabase.from('fuel_invoice_bls').select('*');
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Fuel Receipts', async () => {
+          q('Fuel Receipts', 'fuel_receipts', async () => {
             const { data, error } = await supabase.from('fuel_receipts').select('*').order('created_at', { ascending: false }).limit(500);
             if (error) throw error; return data ?? [];
           }),
-          safeQ('Fuel Receipt Invoices', async () => {
+          q('Fuel Receipt Invoices', 'fuel_receipt_invoices', async () => {
             const { data, error } = await supabase.from('fuel_receipt_invoices').select('*');
             if (error) throw error; return data ?? [];
           }),
@@ -4038,6 +4114,25 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       'tanks', 'products', 'fuel_sales', 'shop_sales', 'purchases',
       'expenses', 'treasury_transactions', 'brigades', 'clients',
     ];
+    // Les tables PHYSIQUES qui composent chaque entrée polled — tables filles
+    // comprises. Un changement sur une seule d'entre elles doit relire l'entité :
+    // sinon un nouveau règlement client (dans `client_transactions`) passerait
+    // inaperçu parce que la ligne `clients` n'a pas bougé.
+    const POLL_COMPONENTS: Record<string, string[]> = {
+      tanks:                 ['tanks'],
+      products:              ['products'],
+      fuel_sales:            ['fuel_sales'],
+      shop_sales:            ['shop_sales', 'shop_sale_items'],
+      purchases:             ['purchases', 'purchase_items', 'purchase_payments'],
+      expenses:              ['expenses'],
+      treasury_transactions: ['treasury_transactions', 'bank_accounts'],
+      brigades:              ['brigades', 'brigade_pompiste_assignments', 'brigade_accounting', 'brigade_accounting_justifications'],
+      clients:               ['clients', 'client_transactions', 'client_appointments'],
+    };
+    const allPhysical = [...new Set(POLLED_TABLES.flatMap(t => POLL_COMPONENTS[t] ?? [t]))];
+    // Dernière empreinte VUE ET APPLIQUÉE, par table physique. Tant qu'elle ne
+    // change pas, inutile de retélécharger la table.
+    const lastFingerprint: Record<string, string> = {};
     const POLL_INTERVAL_MS = 60_000;
     const POLL_MIN_GAP_MS  = 20_000;
     const WARN_AFTER_MS    = 30_000;
@@ -4053,12 +4148,33 @@ export const AppProvider = ({ children }: AppProviderProps) => {
       pollInFlight = true;
       lastPollAt = Date.now();
       try {
+        // UNE sonde légère : l'empreinte de contenu de chaque table physique.
+        // On ne relit que les entités dont au moins une composante a changé.
+        // Sonde absente/en échec → `fps` reste null → on relit TOUT, comme avant.
+        let fps: Record<string, string> | null = null;
+        try {
+          const { data, error } = await supabase.rpc('app_tables_fingerprint', { tbls: allPhysical });
+          if (!error && data && typeof data === 'object' && !Array.isArray(data)) {
+            fps = data as Record<string, string>;
+          }
+        } catch { /* sonde indisponible → relecture complète ci-dessous */ }
+
         for (const table of POLLED_TABLES) {
           const sliceFn = tableMap[table];
           if (!sliceFn) continue;
+          const comps = POLL_COMPONENTS[table] ?? [table];
+          // Sans empreinte : relecture (comportement d'origine). Avec empreinte :
+          // seulement si une composante a changé depuis la dernière APPLICATION.
+          const changed = !fps || comps.some(c => fps![c] !== lastFingerprint[c]);
+          if (!changed) continue;
           try {
             const payload = await freshSlice(sliceFn);
-            if (payload) dispatch({ type: 'HYDRATE', payload });
+            if (payload) {
+              dispatch({ type: 'HYDRATE', payload });
+              // N'enregistre l'empreinte qu'APRÈS application réussie : une
+              // relecture dépassée par une écriture (payload null) sera reprise.
+              if (fps) for (const c of comps) lastFingerprint[c] = fps[c];
+            }
           } catch (err) {
             console.warn(`[poll] Refresh failed for ${table}:`, err);
           }
