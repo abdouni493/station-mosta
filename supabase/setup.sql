@@ -1,6 +1,6 @@
 -- =====================================================================================
 --  StationPro — Supabase full setup
---  Project: mgmtggxjlhzsekkrxaus
+--  Project: boevubahaxsoqbvazgtt
 --
 --  HOW TO RUN
 --  1. Open your project → SQL Editor → New query.

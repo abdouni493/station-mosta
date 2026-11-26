@@ -6,7 +6,7 @@
  * button in the app talks to the live database and Storage buckets without any
  * other file needing changes.
  *
- * Project: mgmtggxjlhzsekkrxaus   (see supabase/setup.sql for the schema)
+ * Project: boevubahaxsoqbvazgtt   (see supabase/setup.sql for the schema)
  * ──────────────────────────────────────────────────────────────────────────────
  */
 import { createClient } from '@supabase/supabase-js';
@@ -17,10 +17,10 @@ import { perfEnabled, recordQuery } from './perf';
 // project this app is wired to. The anon key is public by design (RLS protects data).
 const SUPABASE_URL =
   (import.meta as any).env?.VITE_SUPABASE_URL ||
-  'https://mgmtggxjlhzsekkrxaus.supabase.co';
+  'https://boevubahaxsoqbvazgtt.supabase.co';
 const SUPABASE_ANON_KEY =
   (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1nbXRnZ3hqbGh6c2Vra3J4YXVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5MjI0MjIsImV4cCI6MjEwMDQ5ODQyMn0._SXlyMqNozPIt7Z8jVmKTbYt2caRQ45s3muLTfJbgmk';
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJvZXZ1YmFoYXhzb3FidmF6Z3R0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU2NjIxNjQsImV4cCI6MjExMTIzODE2NH0.pwruDXgHZH6GDUkt2Rwg9PcfWvUfbKXazKKxxugxW7U';
 
 export const AUTH_STORAGE_KEY = 'stationpro.auth';
 
